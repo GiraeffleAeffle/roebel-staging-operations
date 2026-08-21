@@ -1,0 +1,216 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "annotations": {
+      "stadtstack.io/release-set-sha256": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977",
+      "stadtstack.io/source-revision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+    },
+    "labels": {
+      "app.kubernetes.io/component": "public-mecky",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/owner": "stadtstack-operations-private",
+      "stadtstack.io/release": "roebel-staging-lab-v1",
+      "stadtstack.io/synthetic": "true"
+    },
+    "name": "public-mecky",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "progressDeadlineSeconds": 600,
+    "replicas": 1,
+    "revisionHistoryLimit": 10,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "public-mecky",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "strategy": {
+      "type": "Recreate"
+    },
+    "template": {
+      "metadata": {
+        "annotations": {
+          "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
+          "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
+          "stadtstack.io/release": "roebel-mecky-model-compat-v1",
+          "stadtstack.io/source-revision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df",
+          "stadtstack.io/update": "retry-ordinary-conversation-inference"
+        },
+        "labels": {
+          "app.kubernetes.io/component": "public-mecky",
+          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "NODE_ID",
+                "value": "roebel-e2e"
+              },
+              {
+                "name": "NODE_NAME",
+                "value": "R\u00f6bel/M\u00fcritz E2E"
+              },
+              {
+                "name": "AGENT_NAME",
+                "value": "mecky"
+              },
+              {
+                "name": "AGENT_DISPLAY_NAME",
+                "value": "Mecky \u00b7 E2E"
+              },
+              {
+                "name": "INPUT_RELAY_URL",
+                "value": "ws://citizen-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"
+              },
+              {
+                "name": "OUTPUT_RELAY_URL",
+                "value": "ws://agent-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"
+              },
+              {
+                "name": "STADTSTACK_PUBLIC_BASE_URL",
+                "value": "http://stadtstack-public.stadtstack-roebel-staging-lab.svc.cluster.local:18080"
+              },
+              {
+                "name": "STADTSTACK_E2E_MODE",
+                "value": "synthetic-reviewed"
+              },
+              {
+                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "evidence.json",
+                    "name": "reviewed-evidence",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
+                "valueFrom": {
+                  "configMapKeyRef": {
+                    "key": "evidence.sha256",
+                    "name": "reviewed-evidence",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "MECKY_MUNICIPALITY_ID",
+                "value": "roebel-mueritz"
+              },
+              {
+                "name": "MECKY_SOURCE_CASE_ID",
+                "value": "marienfelder-strasse"
+              },
+              {
+                "name": "MECKY_CANONICAL_CASE_ID",
+                "value": "urn:stadtstack:case:municipality:roebel-mueritz:018f0000-0000-7000-8000-000000000001"
+              },
+              {
+                "name": "MECKY_INFERENCE_BASE_URL",
+                "value": "https://inference.hetzner.com/api/v1"
+              },
+              {
+                "name": "MECKY_INFERENCE_MODEL",
+                "value": "Qwen/Qwen3.6-35B-A3B-FP8"
+              },
+              {
+                "name": "MECKY_INFERENCE_TIMEOUT_MS",
+                "value": "60000"
+              },
+              {
+                "name": "WATCH_INTERVAL_SECONDS",
+                "value": "5"
+              },
+              {
+                "name": "AGENT_PER_AUTHOR_PER_HOUR",
+                "value": "10"
+              },
+              {
+                "name": "AGENT_PER_DAY",
+                "value": "100"
+              },
+              {
+                "name": "NODE_AGENT_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "NODE_AGENT_SECRET",
+                    "name": "public-mecky-identity",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "MECKY_INFERENCE_API_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "MECKY_INFERENCE_API_KEY",
+                    "name": "public-mecky-inference",
+                    "optional": false
+                  }
+                }
+              }
+            ],
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:a2fa6db03406105460d8e7b0d3ec6b34e9ee860a0b80f572f8bcb533ff7f206f",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "public-mecky",
+            "resources": {
+              "limits": {
+                "cpu": "500m",
+                "memory": "768Mi"
+              },
+              "requests": {
+                "cpu": "50m",
+                "memory": "64Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              }
+            ]
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {
+          "fsGroup": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "terminationGracePeriodSeconds": 20,
+        "volumes": [
+          {
+            "emptyDir": {
+              "sizeLimit": "64Mi"
+            },
+            "name": "tmp"
+          }
+        ]
+      }
+    }
+  }
+}

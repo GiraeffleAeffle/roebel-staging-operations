@@ -1,0 +1,64 @@
+{
+  "schemaVersion": "roebel_staging_operations_repository_v1",
+  "repository": "GiraeffleAeffle/roebel-staging-operations",
+  "visibility": "public",
+  "defaultBranch": "main",
+  "environment": "roebel-staging",
+  "reviewedRenderRoot": "reviewed-render/roebel-staging",
+  "componentOrder": [
+    "public-mecky",
+    "roebel-web-staging"
+  ],
+  "components": [
+    {
+      "component": "public-mecky",
+      "directory": "public-mecky",
+      "repository": "ghcr.io/giraeffleaeffle/public-mecky",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "name": "public-mecky",
+      "container": "public-mecky"
+    },
+    {
+      "component": "roebel-web-staging",
+      "directory": "web",
+      "repository": "ghcr.io/giraeffleaeffle/roebel-web-staging",
+      "namespace": "stadtstack-roebel-web-preview",
+      "name": "roebel-web-presentation",
+      "container": "web"
+    }
+  ],
+  "schemas": {
+    "head": "roebel_staging_release_set_head_v1",
+    "reviewedRender": "roebel_staging_reviewed_render_v1"
+  },
+  "publicMetadataBoundary": {
+    "allowedKinds": [
+      "Deployment"
+    ],
+    "secretObjectsAllowed": false,
+    "secretValuesAllowed": false,
+    "secretReferencesAllowed": true,
+    "personalDataAllowed": false,
+    "civicRecordsAllowed": false,
+    "runtimeStatusAllowed": false
+  },
+  "promotionBoundary": {
+    "pullRequestMayChangeOnlyReviewedRender": true,
+    "completePreviousHeadRequired": true,
+    "immutableDigestRequired": true,
+    "imagePullPolicy": "IfNotPresent",
+    "noOpPromotionAllowed": false
+  },
+  "requiredBranchProtection": {
+    "requiredStatusChecks": [
+      "reviewed-render-admission"
+    ],
+    "requiredApprovingReviewCount": 1,
+    "dismissStaleReviews": true,
+    "requireCodeOwnerReviews": true,
+    "requireConversationResolution": true,
+    "requireLinearHistory": true,
+    "allowForcePushes": false,
+    "allowDeletions": false
+  }
+}

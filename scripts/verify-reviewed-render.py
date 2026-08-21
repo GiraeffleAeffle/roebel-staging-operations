@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Fail-closed verifier for the public Röbel staging reviewed render.
+
+For pull requests this exact script is loaded from the protected base branch
+and receives the candidate checkout only as data. The candidate therefore
+cannot weaken its own admission policy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+
+SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+IMMUTABLE_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
+RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
+RENDER_ROOT = "reviewed-render/roebel-staging"
+COMPONENT_ORDER = ("public-mecky", "roebel-web-staging")
+COMPONENTS = {
+    "public-mecky": {
+        "directory": "public-mecky",
+        "repository": "ghcr.io/giraeffleaeffle/public-mecky",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "name": "public-mecky",
+        "container": "public-mecky",
+    },
+    "roebel-web-staging": {
+        "directory": "web",
+        "repository": "ghcr.io/giraeffleaeffle/roebel-web-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "name": "roebel-web-presentation",
+        "container": "web",
+    },
+}
+
+EXPECTED_FILES = {
+    ".github/CODEOWNERS",
+    ".github/workflows/reviewed-render-admission.yml",
+    ".gitignore",
+    "LICENSE",
+    "README.md",
+    "policy/repository-contract.json",
+    "scripts/test_verify_reviewed_render.py",
+    "scripts/verify-reviewed-render.py",
+    f"{RENDER_ROOT}/head.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/public-mecky/kustomization.yaml",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/kustomization.yaml",
+}
+
+ALLOWED_PATCH_PATHS = {
+    "/metadata/annotations/stadtstack.io~1source-revision",
+    "/metadata/annotations/stadtstack.io~1release-set-sha256",
+    "/spec/template/metadata/annotations/stadtstack.io~1source-revision",
+    "/spec/template/spec/containers/0/image",
+    "/spec/template/spec/containers/0/imagePullPolicy",
+}
+
+
+class VerificationError(RuntimeError):
+    pass
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise VerificationError(message)
+
+
+def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise VerificationError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def load_json(path: Path) -> Any:
+    return json.loads(path.read_text(), object_pairs_hook=object_pairs)
+
+
+def closed(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    require(isinstance(value, dict), f"{label} must be an object")
+    require(set(value) == keys, f"{label} keys mismatch")
+    return value
+
+
+def canonical_json(value: Any) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode()
+
+
+def digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(canonical_json(value)).hexdigest()
+
+
+def iter_keys(value: Any):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from iter_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_keys(child)
+
+
+def repository_files(root: Path) -> set[str]:
+    files: set[str] = set()
+    for path in root.rglob("*"):
+        relative = path.relative_to(root)
+        if relative.parts and relative.parts[0] == ".git":
+            continue
+        require(not path.is_symlink(), f"symlink forbidden: {relative}")
+        if path.is_file():
+            require(path.is_file(), f"non-regular file forbidden: {relative}")
+            files.add(str(relative))
+    return files
+
+
+def verify_contract(root: Path) -> dict[str, Any]:
+    contract = load_json(root / "policy/repository-contract.json")
+    require(contract == {
+        "schemaVersion": "roebel_staging_operations_repository_v1",
+        "repository": "GiraeffleAeffle/roebel-staging-operations",
+        "visibility": "public",
+        "defaultBranch": "main",
+        "environment": "roebel-staging",
+        "reviewedRenderRoot": RENDER_ROOT,
+        "componentOrder": list(COMPONENT_ORDER),
+        "components": [
+            {"component": component, **COMPONENTS[component]}
+            for component in COMPONENT_ORDER
+        ],
+        "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
+        "publicMetadataBoundary": {
+            "allowedKinds": ["Deployment"],
+            "secretObjectsAllowed": False,
+            "secretValuesAllowed": False,
+            "secretReferencesAllowed": True,
+            "personalDataAllowed": False,
+            "civicRecordsAllowed": False,
+            "runtimeStatusAllowed": False,
+        },
+        "promotionBoundary": {
+            "pullRequestMayChangeOnlyReviewedRender": True,
+            "completePreviousHeadRequired": True,
+            "immutableDigestRequired": True,
+            "imagePullPolicy": "IfNotPresent",
+            "noOpPromotionAllowed": False,
+        },
+        "requiredBranchProtection": {
+            "requiredStatusChecks": ["reviewed-render-admission"],
+            "requiredApprovingReviewCount": 1,
+            "dismissStaleReviews": True,
+            "requireCodeOwnerReviews": True,
+            "requireConversationResolution": True,
+            "requireLinearHistory": True,
+            "allowForcePushes": False,
+            "allowDeletions": False,
+        },
+    }, "repository contract drift")
+    return contract
+
+
+def verify_head(value: Any, label: str) -> dict[str, Any]:
+    head = closed(value, {"schemaVersion", "promotionRevision", "releaseSetDigest", "components"}, label)
+    require(head["schemaVersion"] == HEAD_SCHEMA, f"{label} schema drift")
+    require(isinstance(head["promotionRevision"], str) and REVISION.fullmatch(head["promotionRevision"]), f"{label} promotion revision invalid")
+    require(isinstance(head["releaseSetDigest"], str) and SHA256.fullmatch(head["releaseSetDigest"]), f"{label} release digest invalid")
+    require(isinstance(head["components"], list) and len(head["components"]) == 2, f"{label} component count invalid")
+    parsed = []
+    for index, component in enumerate(head["components"]):
+        item = closed(component, {"component", "sourceRevision", "manifestDigest"}, f"{label}.components[{index}]")
+        require(item["component"] == COMPONENT_ORDER[index], f"{label} component order invalid")
+        require(isinstance(item["sourceRevision"], str) and REVISION.fullmatch(item["sourceRevision"]), f"{label} source revision invalid")
+        require(isinstance(item["manifestDigest"], str) and SHA256.fullmatch(item["manifestDigest"]), f"{label} manifest digest invalid")
+        parsed.append(item)
+    return head
+
+
+def component_map(head: dict[str, Any]) -> dict[str, dict[str, str]]:
+    return {item["component"]: item for item in head["components"]}
+
+
+def verify_deployment(root: Path, component: str, head: dict[str, Any]) -> dict[str, Any]:
+    policy = COMPONENTS[component]
+    path = root / RENDER_ROOT / policy["directory"] / "deployment.json"
+    deployment = load_json(path)
+    require(isinstance(deployment, dict), f"{component} Deployment must be an object")
+    require(deployment.get("apiVersion") == "apps/v1" and deployment.get("kind") == "Deployment", f"{component} object kind invalid")
+    require(set(deployment) == {"apiVersion", "kind", "metadata", "spec"}, f"{component} top-level shape invalid")
+    metadata = deployment.get("metadata")
+    require(isinstance(metadata, dict), f"{component} metadata invalid")
+    require(metadata.get("namespace") == policy["namespace"] and metadata.get("name") == policy["name"], f"{component} identity invalid")
+    require(not ({"uid", "resourceVersion", "managedFields", "creationTimestamp"} & set(metadata)), f"{component} runtime metadata forbidden")
+    require("status" not in deployment, f"{component} runtime status forbidden")
+    annotations = metadata.get("annotations")
+    require(isinstance(annotations, dict), f"{component} annotations invalid")
+    record = component_map(head)[component]
+    require(annotations.get("stadtstack.io/source-revision") == record["sourceRevision"], f"{component} source annotation mismatch")
+    require(annotations.get("stadtstack.io/release-set-sha256") == head["releaseSetDigest"], f"{component} release annotation mismatch")
+    try:
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        pod_annotations = deployment["spec"]["template"]["metadata"]["annotations"]
+    except (KeyError, TypeError):
+        raise VerificationError(f"{component} Pod template invalid") from None
+    require(isinstance(containers, list), f"{component} containers invalid")
+    primary = [container for container in containers if isinstance(container, dict) and container.get("name") == policy["container"]]
+    require(len(primary) == 1, f"{component} primary container invalid")
+    expected_image = f"{policy['repository']}@{record['manifestDigest']}"
+    require(primary[0].get("image") == expected_image, f"{component} image binding invalid")
+    require(primary[0].get("imagePullPolicy") == "IfNotPresent", f"{component} pull policy invalid")
+    require(isinstance(pod_annotations, dict) and pod_annotations.get("stadtstack.io/source-revision") == record["sourceRevision"], f"{component} Pod source annotation mismatch")
+
+    keys = set(iter_keys(deployment))
+    require(not ({"data", "stringData", "binaryData"} & keys), f"{component} Secret payload-shaped field forbidden")
+    serialized = json.dumps(deployment, sort_keys=True)
+    for forbidden in ("BEGIN PRIVATE KEY", "BEGIN OPENSSH PRIVATE KEY", "AGE-SECRET-KEY-", "ghp_", "github_pat_"):
+        require(forbidden not in serialized, f"{component} secret-shaped content forbidden")
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for env in container.get("env", []):
+            if not isinstance(env, dict):
+                continue
+            name = env.get("name", "")
+            if isinstance(name, str) and re.search(r"(?:SECRET|TOKEN|PASSWORD|API_KEY)$", name):
+                require("value" not in env and "valueFrom" in env, f"{component} literal secret-shaped environment value forbidden: {name}")
+    return deployment
+
+
+def verify_kustomizations(root: Path) -> None:
+    expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n"
+    for component in COMPONENT_ORDER:
+        directory = COMPONENTS[component]["directory"]
+        require((root / RENDER_ROOT / directory / "kustomization.yaml").read_text() == expected, f"{component} Flux path widened")
+
+
+def expected_patch_value(component: str, path: str, head: dict[str, Any]) -> str:
+    record = component_map(head)[component]
+    if path in {
+        "/metadata/annotations/stadtstack.io~1source-revision",
+        "/spec/template/metadata/annotations/stadtstack.io~1source-revision",
+    }:
+        return record["sourceRevision"]
+    if path == "/metadata/annotations/stadtstack.io~1release-set-sha256":
+        return head["releaseSetDigest"]
+    if path == "/spec/template/spec/containers/0/image":
+        return f"{COMPONENTS[component]['repository']}@{record['manifestDigest']}"
+    if path == "/spec/template/spec/containers/0/imagePullPolicy":
+        return "IfNotPresent"
+    raise VerificationError("unreachable patch path")
+
+
+def verify_live_preconditions(root: Path, head: dict[str, Any]) -> dict[str, Any]:
+    value = load_json(root / RENDER_ROOT / "live-preconditions.json")
+    record = closed(value, {"previousEnvironmentHead", "requiredLivePreconditions", "patches"}, "live-preconditions")
+    previous = verify_head(record["previousEnvironmentHead"], "previousEnvironmentHead")
+    require(isinstance(record["requiredLivePreconditions"], list) and len(record["requiredLivePreconditions"]) == 2, "live precondition count invalid")
+    require(isinstance(record["patches"], list) and len(record["patches"]) == 2, "patch count invalid")
+    for index, component in enumerate(COMPONENT_ORDER):
+        policy = COMPONENTS[component]
+        precondition = closed(record["requiredLivePreconditions"][index], {"component", "currentImage", "resourceVersion", "target", "uid"}, f"precondition[{index}]")
+        require(precondition["component"] == component, "precondition component order invalid")
+        require(isinstance(precondition["currentImage"], str) and IMMUTABLE_IMAGE.fullmatch(precondition["currentImage"]), "precondition current image invalid")
+        require(isinstance(precondition["resourceVersion"], str) and precondition["resourceVersion"].isdigit(), "precondition resourceVersion invalid")
+        require(isinstance(precondition["uid"], str) and UUID.fullmatch(precondition["uid"]), "precondition uid invalid")
+        expected_target = {"apiVersion": "apps/v1", "kind": "Deployment", "name": policy["name"], "namespace": policy["namespace"]}
+        require(precondition["target"] == expected_target, "precondition target invalid")
+
+        patch = closed(record["patches"][index], {"component", "operations", "target"}, f"patch[{index}]")
+        require(patch["component"] == component and patch["target"] == expected_target, "patch target invalid")
+        require(isinstance(patch["operations"], list), "patch operations invalid")
+        seen: set[str] = set()
+        for operation in patch["operations"]:
+            item = closed(operation, {"op", "path", "value"}, f"{component} patch operation")
+            require(item["op"] in {"add", "replace"}, "patch operation invalid")
+            require(item["path"] in ALLOWED_PATCH_PATHS and item["path"] not in seen, "patch path invalid or repeated")
+            require(item["value"] == expected_patch_value(component, item["path"], head), "patch value invalid")
+            seen.add(item["path"])
+    return {"previous": previous, "preconditions": record["requiredLivePreconditions"], "patches": record["patches"]}
+
+
+def verify_tree(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    require(root.is_dir(), "repository root missing")
+    require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
+    verify_contract(root)
+    head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
+    integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256"}, "integrity")
+    require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
+    require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
+    require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
+    objects = [verify_deployment(root, component, head) for component in COMPONENT_ORDER]
+    require(integrity["desiredRenderSha256"] == digest({"nextEnvironmentHead": head, "objects": objects}), "reviewed render checksum mismatch")
+    verify_kustomizations(root)
+    live = verify_live_preconditions(root, head)
+    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "live": live}
+
+
+def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    for relative in EXPECTED_FILES:
+        if not relative.startswith(RENDER_ROOT + "/"):
+            require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
+
+    previous = candidate["live"]["previous"]
+    require(previous == base["head"], "candidate previous head does not equal protected base head")
+    require(candidate["head"] != base["head"], "no-op promotion forbidden")
+    base_components = component_map(base["head"])
+    candidate_components = component_map(candidate["head"])
+    changed = []
+    for component in COMPONENT_ORDER:
+        if candidate_components[component] == base_components[component]:
+            continue
+        changed.append(component)
+    require(changed, "promotion must change at least one component")
+    require(any(candidate_components[component]["sourceRevision"] == candidate["head"]["promotionRevision"] for component in changed), "promotion revision is not bound to a changed component")
+    base_images = {
+        component: next(container for container in base["objects"][index]["spec"]["template"]["spec"]["containers"] if container.get("name") == COMPONENTS[component]["container"])["image"]
+        for index, component in enumerate(COMPONENT_ORDER)
+    }
+    for index, component in enumerate(COMPONENT_ORDER):
+        require(candidate["live"]["preconditions"][index]["currentImage"] == base_images[component], f"{component} live CAS image does not equal protected base image")
+
+
+def verify(root: Path, base_root: Path | None = None) -> dict[str, Any]:
+    candidate = verify_tree(root)
+    if base_root is not None:
+        base = verify_tree(base_root)
+        verify_transition(candidate, base)
+    return {
+        "schemaVersion": "roebel_staging_operations_verification_v1",
+        "status": "passed",
+        "repository": "GiraeffleAeffle/roebel-staging-operations",
+        "environment": "roebel-staging",
+        "releaseSetDigest": candidate["head"]["releaseSetDigest"],
+        "desiredRenderSha256": candidate["integrity"]["desiredRenderSha256"],
+        "components": [
+            {
+                "component": item["component"],
+                "sourceRevision": item["sourceRevision"],
+                "manifestDigest": item["manifestDigest"],
+            }
+            for item in candidate["head"]["components"]
+        ],
+        "baseTransitionVerified": base_root is not None,
+        "effects": {
+            "secretRead": False,
+            "secretWrite": False,
+            "clusterMutation": False,
+            "civicMutation": False,
+        },
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--base-root", type=Path)
+    args = parser.parse_args(argv)
+    try:
+        result = verify(args.root, args.base_root)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, VerificationError) as error:
+        print(f"reviewed-render verification failed: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

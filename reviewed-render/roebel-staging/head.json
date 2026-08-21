@@ -1,0 +1,17 @@
+{
+  "components": [
+    {
+      "component": "public-mecky",
+      "manifestDigest": "sha256:a2fa6db03406105460d8e7b0d3ec6b34e9ee860a0b80f572f8bcb533ff7f206f",
+      "sourceRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+    },
+    {
+      "component": "roebel-web-staging",
+      "manifestDigest": "sha256:acfc3f253751b2af37b3e2c0b4eafb3e9df29870ba1adf6e9e729612a9f131d4",
+      "sourceRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+    }
+  ],
+  "promotionRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df",
+  "releaseSetDigest": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977",
+  "schemaVersion": "roebel_staging_release_set_head_v1"
+}

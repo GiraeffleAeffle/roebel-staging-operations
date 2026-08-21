@@ -1,0 +1,119 @@
+{
+  "patches": [
+    {
+      "component": "public-mecky",
+      "operations": [
+        {
+          "op": "add",
+          "path": "/metadata/annotations/stadtstack.io~1source-revision",
+          "value": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+        },
+        {
+          "op": "add",
+          "path": "/metadata/annotations/stadtstack.io~1release-set-sha256",
+          "value": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/metadata/annotations/stadtstack.io~1source-revision",
+          "value": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/spec/containers/0/image",
+          "value": "ghcr.io/giraeffleaeffle/public-mecky@sha256:a2fa6db03406105460d8e7b0d3ec6b34e9ee860a0b80f572f8bcb533ff7f206f"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/spec/containers/0/imagePullPolicy",
+          "value": "IfNotPresent"
+        }
+      ],
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "public-mecky",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    {
+      "component": "roebel-web-staging",
+      "operations": [
+        {
+          "op": "add",
+          "path": "/metadata/annotations/stadtstack.io~1source-revision",
+          "value": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+        },
+        {
+          "op": "add",
+          "path": "/metadata/annotations/stadtstack.io~1release-set-sha256",
+          "value": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/metadata/annotations/stadtstack.io~1source-revision",
+          "value": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/spec/containers/0/image",
+          "value": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:acfc3f253751b2af37b3e2c0b4eafb3e9df29870ba1adf6e9e729612a9f131d4"
+        },
+        {
+          "op": "replace",
+          "path": "/spec/template/spec/containers/0/imagePullPolicy",
+          "value": "IfNotPresent"
+        }
+      ],
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "roebel-web-presentation",
+        "namespace": "stadtstack-roebel-web-preview"
+      }
+    }
+  ],
+  "previousEnvironmentHead": {
+    "components": [
+      {
+        "component": "public-mecky",
+        "manifestDigest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
+        "sourceRevision": "ea916adf0604fbaea615d18806fefddd1b529556"
+      },
+      {
+        "component": "roebel-web-staging",
+        "manifestDigest": "sha256:c64b81d8434f3903207cdff27ef2515329a2079b3f70a4a99ddaa30f55cb007a",
+        "sourceRevision": "ebee49e174071b7359be59eab338bc5f9f698967"
+      }
+    ],
+    "promotionRevision": "ea916adf0604fbaea615d18806fefddd1b529556",
+    "releaseSetDigest": "sha256:77465d6c7d42214d54742d5f2d763c9495c93c7071867fb02dad0b64305ed9aa",
+    "schemaVersion": "roebel_staging_release_set_head_v1"
+  },
+  "requiredLivePreconditions": [
+    {
+      "component": "public-mecky",
+      "currentImage": "registry.agentcart.eu/civic/roebel-staging-public-mecky@sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
+      "resourceVersion": "12038091",
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "public-mecky",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "uid": "96987f99-0fb7-4149-a5e7-f0b7c469ab75"
+    },
+    {
+      "component": "roebel-web-staging",
+      "currentImage": "registry.agentcart.eu/civic/roebel-staging-web@sha256:c64b81d8434f3903207cdff27ef2515329a2079b3f70a4a99ddaa30f55cb007a",
+      "resourceVersion": "12037856",
+      "target": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "name": "roebel-web-presentation",
+        "namespace": "stadtstack-roebel-web-preview"
+      },
+      "uid": "d897bda4-a820-4bce-b1fa-3d769fc67ddd"
+    }
+  ]
+}

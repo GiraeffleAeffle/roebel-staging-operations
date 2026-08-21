@@ -1,0 +1,55 @@
+# Röbel staging operations
+
+This public repository is the value-free, reviewed desired-state source for
+exactly two existing Röbel staging Deployments:
+
+- `stadtstack-roebel-web-preview/roebel-web-presentation`
+- `stadtstack-roebel-staging-lab/public-mecky`
+
+It is deliberately not an infrastructure repository and not a civic record.
+It contains immutable image digests, source revisions, checksums, Kubernetes
+object identities, and references to existing ConfigMaps or Secrets. It may
+not contain a Secret object, a Secret value, credentials, personal data,
+posts, discussions, Civic Cases, municipal records, or runtime status.
+
+## Promotion flow
+
+1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
+   once and publishes an immutable GHCR digest with provenance and SPDX SBOM.
+2. A protected promotion transaction verifies that evidence, compares the
+   complete previous environment head, renders only the two admitted
+   Deployments, and opens a pull request here.
+3. The `reviewed-render-admission` check runs the verifier from the protected
+   base branch against the pull-request data. A pull request cannot weaken its
+   own verifier.
+4. Human review admits the new Release Set. Flux may read only
+   `reviewed-render/roebel-staging/{web,public-mecky}` and reconciles through
+   exact-name, namespace-scoped service accounts.
+
+Build completion is not deployment authority. Git promotion cannot create or
+change Secrets, namespaces, RBAC, storage, networking, Talos, Hetzner
+resources, civic publication state, governance state, or treasury state.
+
+## Repository invariants
+
+- `main` is protected by the exact `reviewed-render-admission` check, stale
+  review dismissal, CODEOWNERS review, conversation resolution, linear
+  history, and force-push/deletion denial.
+- Ordinary promotion pull requests may change only the seven files below
+  `reviewed-render/roebel-staging`.
+- The complete previous head is the compare-and-swap boundary.
+- Images are exact `ghcr.io/...@sha256:...` references with
+  `imagePullPolicy: IfNotPresent`; tags are rejected.
+- The verifier rejects extra files, symlinks, Secret payload-shaped fields,
+  literal values for secret-shaped environment names, runtime metadata, and
+  any object other than the two exact Deployments.
+
+Run the same check locally:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_reviewed_render.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
+```
+
+The source remains safe to read anonymously. Runtime credentials and civic
+authority stay outside Git and outside Flux.
