@@ -13,7 +13,7 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
     def test_workflow_is_remote_pull_based_and_human_reviewed(self) -> None:
         source = WORKFLOW.read_text()
         for marker in (
-            'cron: "7,22,37,52 * * * *"',
+            'cron: "*/5 * * * *"',
             "workflow_dispatch:",
             "release-set-$SOURCE_REVISION",
             "gh attestation verify",
