@@ -121,10 +121,10 @@ jobs:
           previous-head.json
           release-set.candidate.json
           EOF
-          sed -i "0,/PROVENANCE/s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component==\"public-mecky\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
-          sed -i "s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component==\"roebel-web-staging\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
-          sed -i "0,/SBOM/s#SBOM#sha256-$(jq -er '.components[]|select(.component==\"public-mecky\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
-          sed -i "s#SBOM#sha256-$(jq -er '.components[]|select(.component==\"roebel-web-staging\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "0,/PROVENANCE/s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component=="public-mecky")|.manifestDigest|sub("^sha256:";"")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component=="roebel-web-staging")|.manifestDigest|sub("^sha256:";"")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "0,/SBOM/s#SBOM#sha256-$(jq -er '.components[]|select(.component=="public-mecky")|.manifestDigest|sub("^sha256:";"")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "s#SBOM#sha256-$(jq -er '.components[]|select(.component=="roebel-web-staging")|.manifestDigest|sub("^sha256:";"")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
           LC_ALL=C sort -o "$RUNNER_TEMP/files.expected" "$RUNNER_TEMP/files.expected"
           diff -u "$RUNNER_TEMP/files.expected" "$RUNNER_TEMP/files.actual"
           candidate_digest="$(jq -er .candidatePayloadDigest incoming/release-set/release-set.candidate.json)"
