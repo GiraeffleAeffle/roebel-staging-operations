@@ -52,8 +52,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
         integrity = json.loads((render / "integrity.json").read_text())
         integrity["releaseSetDigest"] = new_release
+        service = json.loads((render / "public-mecky/service.json").read_text())
+        network_policy = json.loads((render / "public-mecky/networkpolicy.json").read_text())
         integrity["desiredRenderSha256"] = VERIFIER.digest(
-            {"nextEnvironmentHead": head, "objects": [public, web]}
+            {"nextEnvironmentHead": head, "objects": [public, service, network_policy, web]}
         )
         (render / "integrity.json").write_text(json.dumps(integrity, indent=2) + "\n")
 
@@ -154,6 +156,48 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         value["spec"]["template"]["spec"]["containers"][0]["data"] = {"token": "hidden"}
         path.write_text(json.dumps(value, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Secret payload-shaped"):
+            VERIFIER.verify(candidate)
+
+    def test_public_mecky_service_cannot_be_exposed_publicly(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/service.json"
+        value = json.loads(path.read_text())
+        value["spec"]["type"] = "LoadBalancer"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Service drift"):
+            VERIFIER.verify(candidate)
+
+    def test_public_mecky_ingress_cannot_widen_beyond_exact_web_pods(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/networkpolicy.json"
+        value = json.loads(path.read_text())
+        value["spec"]["ingress"][0]["from"][0]["namespaceSelector"] = {}
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy drift"):
+            VERIFIER.verify(candidate)
+
+    def test_web_cannot_point_public_mecky_at_an_external_url(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "reviewed-render/roebel-staging/web/deployment.json"
+        value = json.loads(path.read_text())
+        env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+        next(item for item in env if item["name"] == "PUBLIC_MECKY_CHAT_URL")["value"] = "https://example.invalid"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Public Mecky URL invalid"):
+            VERIFIER.verify(candidate)
+
+    def test_public_mecky_listener_port_is_fixed(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        value = json.loads(path.read_text())
+        env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+        next(item for item in env if item["name"] == "MECKY_CHAT_PORT")["value"] = "8080"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "MECKY_CHAT_PORT binding invalid"):
             VERIFIER.verify(candidate)
 
     def test_integrity_drift_is_rejected(self) -> None:

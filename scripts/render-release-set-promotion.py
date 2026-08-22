@@ -206,7 +206,7 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
         "schemaVersion": "roebel_staging_release_set_head_v1",
     }
 
-    desired_objects: list[dict[str, Any]] = []
+    desired_deployments: list[dict[str, Any]] = []
     previous_preconditions = load(render_root / "live-preconditions.json")["requiredLivePreconditions"]
     preconditions: list[dict[str, Any]] = []
     patches: list[dict[str, Any]] = []
@@ -222,7 +222,7 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
         container = primary_container(deployment, name)
         container["image"] = f"{policy['repository']}@{record['manifestDigest']}"
         container["imagePullPolicy"] = "IfNotPresent"
-        desired_objects.append(deployment)
+        desired_deployments.append(deployment)
         precondition = copy.deepcopy(previous_preconditions[index])
         require(precondition["component"] == name, "base precondition order invalid")
         precondition["currentImage"] = current_image
@@ -247,6 +247,12 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
             }
         )
 
+    desired_objects = [
+        desired_deployments[0],
+        load(render_root / "public-mecky/service.json"),
+        load(render_root / "public-mecky/networkpolicy.json"),
+        desired_deployments[1],
+    ]
     integrity = {
         "desiredRenderSha256": digest_bytes(canonical_render({"nextEnvironmentHead": next_head, "objects": desired_objects})),
         "releaseSetDigest": next_head["releaseSetDigest"],
@@ -261,7 +267,7 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
     write_json(render_root / "integrity.json", integrity)
     write_json(render_root / "live-preconditions.json", live)
     for index, name in enumerate(COMPONENT_ORDER):
-        write_json(render_root / POLICY[name]["directory"] / "deployment.json", desired_objects[index])
+        write_json(render_root / POLICY[name]["directory"] / "deployment.json", desired_deployments[index])
     return {
         "schemaVersion": "roebel_staging_automatic_promotion_render_v1",
         "status": "rendered_effect_free",

@@ -1,0 +1,48 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "public-mecky",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none"
+    },
+    "name": "public-mecky-chat-from-web",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "ingress": [
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/name": "roebel-web-presentation"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18084,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ],
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "public-mecky",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ]
+  }
+}
