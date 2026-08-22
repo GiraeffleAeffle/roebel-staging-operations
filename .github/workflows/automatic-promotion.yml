@@ -183,6 +183,8 @@ jobs:
             --candidate incoming/release-set/release-set.candidate.json \
             --evidence-root incoming/release-set \
             > "$RUNNER_TEMP/promotion-render.json"
+          test -d incoming && test ! -L incoming
+          rm -rf -- incoming
           python3 scripts/verify-reviewed-render.py --root . --base-root "$RUNNER_TEMP/protected-base"
           python3 -m unittest -v scripts/test_verify_reviewed_render.py scripts/test_render_release_set_promotion.py
           git diff --check
