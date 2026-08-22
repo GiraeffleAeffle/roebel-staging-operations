@@ -45,11 +45,15 @@ COMPONENTS = {
 
 EXPECTED_FILES = {
     ".github/CODEOWNERS",
+    ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
     ".gitignore",
     "LICENSE",
     "README.md",
     "policy/repository-contract.json",
+    "scripts/render-release-set-promotion.py",
+    "scripts/test_automatic_promotion_workflow.py",
+    "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
     "scripts/verify-reviewed-render.py",
     f"{RENDER_ROOT}/head.json",
