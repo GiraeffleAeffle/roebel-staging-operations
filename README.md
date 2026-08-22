@@ -26,6 +26,23 @@ posts, discussions, Civic Cases, municipal records, or runtime status.
    `reviewed-render/roebel-staging/{web,public-mecky}` and reconciles through
    exact-name, namespace-scoped service accounts.
 
+The protected `automatic-release-set-promotion` workflow removes the laptop
+handoff between steps 1 and 2. Every five minutes (or on manual dispatch) it
+looks up the exact protected Röbel-App `main` revision, pulls that revision's
+immutable Release Set from public GHCR, independently verifies both SLSA and
+SPDX attestations, compares the complete previous head, renders the five
+allowed Deployment fields, and opens or replaces one automation-owned pull
+request. A missing publication is retried on the next poll; a stale CAS fails
+closed. The workflow has no Kubernetes, Talos, runtime Secret, civic-data, or
+treasury access. CODEOWNER approval and the protected-base verifier remain the
+deployment authority. Auto-merge is armed only after the pull request exists;
+it waits for that required approval and verifier instead of asking the reviewer
+to return for a separate merge click.
+
+The five-minute poll keeps the scheduled wait below five minutes without
+putting a cluster credential in GitHub. A manual dispatch can start the same
+verified path immediately when a person is already testing staging.
+
 Build completion is not deployment authority. Git promotion cannot create or
 change Secrets, namespaces, RBAC, storage, networking, Talos, Hetzner
 resources, civic publication state, governance state, or treasury state.

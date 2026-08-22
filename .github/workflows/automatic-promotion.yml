@@ -1,0 +1,243 @@
+name: automatic-release-set-promotion
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      source_revision:
+        description: Optional exact protected Roebel-App main revision
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  packages: read
+  attestations: read
+
+concurrency:
+  group: roebel-staging-automatic-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Verify Release Set and open reviewed promotion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ROEBEL_REPOSITORY: GiraeffleAeffle/Roebel-App
+      RELEASE_SET_REPOSITORY: ghcr.io/giraeffleaeffle/roebel-web-staging
+      SIGNER_IDENTITY: https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/roebel-staging-publish.yml@refs/heads/main
+      AUTOMATION_BRANCH: automation/roebel-staging-latest
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out protected operations main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Resolve the exact protected application revision
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested='${{ inputs.source_revision }}'
+          if test -n "$requested"; then
+            [[ "$requested" =~ ^[0-9a-f]{40}$ ]]
+            observed="$(gh api "repos/$ROEBEL_REPOSITORY/commits/$requested" --jq .sha)"
+            test "$observed" = "$requested"
+          else
+            observed="$(gh api "repos/$ROEBEL_REPOSITORY/commits/main" --jq .sha)"
+          fi
+          [[ "$observed" =~ ^[0-9a-f]{40}$ ]]
+          current="$(jq -er .promotionRevision reviewed-render/roebel-staging/head.json)"
+          if test "$observed" = "$current"; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "protected operations head already represents $observed"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "revision=$observed" >> "$GITHUB_OUTPUT"
+
+      - name: Set up pinned ORAS
+        if: steps.source.outputs.changed == 'true'
+        uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+        with:
+          version: 1.3.0
+
+      - name: Fetch the immutable Release Set handoff
+        if: steps.source.outputs.changed == 'true'
+        id: handoff
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          target="$RELEASE_SET_REPOSITORY:release-set-$SOURCE_REVISION"
+          state=ERROR
+          for attempt in 1 2 3; do
+            error_file="$RUNNER_TEMP/release-set-resolve-$attempt.log"
+            if artifact_digest="$(oras resolve "$target" 2>"$error_file")"; then
+              state=EXACT
+              break
+            fi
+            if grep -Eqi '(not found|404|manifest unknown|name unknown|MANIFEST_UNKNOWN|NAME_UNKNOWN)' "$error_file"; then
+              state=ABSENT
+              break
+            fi
+            test "$attempt" -lt 3
+            sleep "$attempt"
+          done
+          if test "$state" = ABSENT; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo "publisher has not produced $target yet; the next poll will retry"
+            exit 0
+          fi
+          test "$state" = EXACT
+          [[ "$artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          manifest="$RUNNER_TEMP/release-set-manifest.json"
+          oras manifest fetch "$RELEASE_SET_REPOSITORY@$artifact_digest" > "$manifest"
+          jq -e \
+            --arg source "$SOURCE_REVISION" \
+            '.artifactType == "application/vnd.stadtstack.roebel.release-set.v1" and
+             .annotations["org.opencontainers.image.revision"] == $source and
+             (.annotations["stadtstack.io/candidate-payload-digest"] | test("^sha256:[0-9a-f]{64}$"))' \
+            "$manifest" >/dev/null
+          mkdir incoming
+          oras pull "$RELEASE_SET_REPOSITORY@$artifact_digest" --output incoming
+          test "$(find incoming/release-set -type f | wc -l | tr -d ' ')" = 8
+          test "$(find incoming/release-set -type l | wc -l | tr -d ' ')" = 0
+          find incoming/release-set -type f -print | sed 's#^incoming/release-set/##' | LC_ALL=C sort > "$RUNNER_TEMP/files.actual"
+          cat > "$RUNNER_TEMP/files.expected" <<'EOF'
+          bundles/provenance/public-mecky/PROVENANCE
+          bundles/provenance/roebel-web-staging/PROVENANCE
+          bundles/sbom/public-mecky/SBOM
+          bundles/sbom/roebel-web-staging/SBOM
+          evidence/public-mecky.component-evidence.json
+          evidence/roebel-web-staging.component-evidence.json
+          previous-head.json
+          release-set.candidate.json
+          EOF
+          sed -i "0,/PROVENANCE/s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component==\"public-mecky\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "s#PROVENANCE#sha256-$(jq -er '.components[]|select(.component==\"roebel-web-staging\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "0,/SBOM/s#SBOM#sha256-$(jq -er '.components[]|select(.component==\"public-mecky\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          sed -i "s#SBOM#sha256-$(jq -er '.components[]|select(.component==\"roebel-web-staging\")|.manifestDigest|sub(\"^sha256:\";\"\")' incoming/release-set/release-set.candidate.json).jsonl#" "$RUNNER_TEMP/files.expected"
+          LC_ALL=C sort -o "$RUNNER_TEMP/files.expected" "$RUNNER_TEMP/files.expected"
+          diff -u "$RUNNER_TEMP/files.expected" "$RUNNER_TEMP/files.actual"
+          candidate_digest="$(jq -er .candidatePayloadDigest incoming/release-set/release-set.candidate.json)"
+          test "$(jq -er '.annotations["stadtstack.io/candidate-payload-digest"]' "$manifest")" = "$candidate_digest"
+          test "$(jq -er .promotionRevision incoming/release-set/release-set.candidate.json)" = "$SOURCE_REVISION"
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+          echo "artifact_digest=$artifact_digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify component attestations independently
+        if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true'
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          candidate=incoming/release-set/release-set.candidate.json
+          verify_component() {
+            component="$1"
+            image="$2"
+            manifest="$(jq -er --arg component "$component" '.components[]|select(.component==$component)|.manifestDigest' "$candidate")"
+            source="$(jq -er --arg component "$component" '.components[]|select(.component==$component)|.sourceRevision' "$candidate")"
+            test "$source" = "$SOURCE_REVISION"
+            bundle="incoming/release-set/bundles/provenance/$component/sha256-${manifest#sha256:}.jsonl"
+            sbom_bundle="incoming/release-set/bundles/sbom/$component/sha256-${manifest#sha256:}.jsonl"
+            gh attestation verify "oci://$image@$manifest" \
+              --bundle "$bundle" \
+              --repo "$ROEBEL_REPOSITORY" \
+              --cert-identity "$SIGNER_IDENTITY" \
+              --source-digest "$source" \
+              --source-ref refs/heads/main \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --deny-self-hosted-runners \
+              --format json --jq 'length == 1' | grep -Fx true
+            gh attestation verify "oci://$image@$manifest" \
+              --bundle "$sbom_bundle" \
+              --repo "$ROEBEL_REPOSITORY" \
+              --cert-identity "$SIGNER_IDENTITY" \
+              --source-digest "$source" \
+              --source-ref refs/heads/main \
+              --predicate-type https://spdx.dev/Document/v2.3 \
+              --deny-self-hosted-runners \
+              --format json --jq 'length == 1' | grep -Fx true
+          }
+          verify_component public-mecky ghcr.io/giraeffleaeffle/public-mecky
+          verify_component roebel-web-staging ghcr.io/giraeffleaeffle/roebel-web-staging
+
+      - name: Render and verify the strict CAS transition
+        if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/protected-base"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/protected-base"
+          python3 scripts/render-release-set-promotion.py \
+            --root . \
+            --candidate incoming/release-set/release-set.candidate.json \
+            --evidence-root incoming/release-set \
+            > "$RUNNER_TEMP/promotion-render.json"
+          python3 scripts/verify-reviewed-render.py --root . --base-root "$RUNNER_TEMP/protected-base"
+          python3 -m unittest -v scripts/test_verify_reviewed_render.py scripts/test_render_release_set_promotion.py
+          git diff --check
+          git diff --name-only | LC_ALL=C sort > "$RUNNER_TEMP/changed.actual"
+          cat > "$RUNNER_TEMP/changed.expected" <<'EOF'
+          reviewed-render/roebel-staging/head.json
+          reviewed-render/roebel-staging/integrity.json
+          reviewed-render/roebel-staging/live-preconditions.json
+          reviewed-render/roebel-staging/public-mecky/deployment.json
+          reviewed-render/roebel-staging/web/deployment.json
+          EOF
+          diff -u "$RUNNER_TEMP/changed.expected" "$RUNNER_TEMP/changed.actual"
+
+      - name: Open or replace the single latest promotion pull request
+        if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true'
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+          ARTIFACT_DIGEST: ${{ steps.handoff.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          base_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main
+          test "$(git rev-parse origin/main)" = "$base_sha"
+          git config user.name 'stadtstack-release-bot'
+          git config user.email 'stadtstack-release-bot@users.noreply.github.com'
+          git switch -c "$AUTOMATION_BRANCH"
+          git add reviewed-render/roebel-staging
+          git commit -m "chore: promote Röbel staging $SOURCE_REVISION"
+          remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | cut -f1)"
+          if test -n "$remote_sha"; then
+            git push --force-with-lease="refs/heads/$AUTOMATION_BRANCH:$remote_sha" origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+          fi
+          title="chore: promote Röbel staging ${SOURCE_REVISION:0:12}"
+          body="$RUNNER_TEMP/promotion-body.md"
+          cat > "$body" <<EOF
+          Automated, effect-free Release Set promotion.
+
+          - Röbel source: \`$SOURCE_REVISION\`
+          - Release Set artifact: \`$RELEASE_SET_REPOSITORY@$ARTIFACT_DIGEST\`
+          - Complete previous-head CAS: verified
+          - SLSA provenance and SPDX attestations: independently verified
+          - Runtime Secrets, cluster credentials and civic data: not accessed
+
+          Human CODEOWNER review remains the deployment authority. Flux will
+          reconcile only after this protected pull request is approved and merged.
+          EOF
+          number="$(gh pr list --state open --base main --head "$AUTOMATION_BRANCH" --json number --jq '.[0].number // empty')"
+          if test -n "$number"; then
+            gh pr edit "$number" --title "$title" --body-file "$body"
+          else
+            gh pr create --base main --head "$AUTOMATION_BRANCH" --title "$title" --body-file "$body"
+            number="$(gh pr list --state open --base main --head "$AUTOMATION_BRANCH" --json number --jq '.[0].number // empty')"
+          fi
+          test -n "$number"
+          gh pr merge "$number" --auto --squash
