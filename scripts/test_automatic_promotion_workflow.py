@@ -20,6 +20,7 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
             "render-release-set-promotion.py",
             "verify-reviewed-render.py --root . --base-root",
             "gh pr create",
+            'gh pr merge "$number" --auto --squash',
             "Human CODEOWNER review remains the deployment authority",
         ):
             self.assertIn(marker, source)
@@ -64,6 +65,12 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
         self.assertIn("--force-with-lease=", source)
         self.assertNotIn("git push --force ", source)
         self.assertIn("cancel-in-progress: false", source)
+
+    def test_auto_merge_waits_for_the_existing_review_and_check_gate(self) -> None:
+        source = WORKFLOW.read_text()
+        self.assertIn('test -n "$number"', source)
+        self.assertIn('gh pr merge "$number" --auto --squash', source)
+        self.assertNotIn("--admin", source)
 
 
 if __name__ == "__main__":

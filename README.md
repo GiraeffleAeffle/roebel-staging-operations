@@ -35,7 +35,9 @@ allowed Deployment fields, and opens or replaces one automation-owned pull
 request. A missing publication is retried on the next poll; a stale CAS fails
 closed. The workflow has no Kubernetes, Talos, runtime Secret, civic-data, or
 treasury access. CODEOWNER approval and the protected-base verifier remain the
-deployment authority.
+deployment authority. Auto-merge is armed only after the pull request exists;
+it waits for that required approval and verifier instead of asking the reviewer
+to return for a separate merge click.
 
 The five-minute poll keeps the scheduled wait below five minutes without
 putting a cluster credential in GitHub. A manual dispatch can start the same

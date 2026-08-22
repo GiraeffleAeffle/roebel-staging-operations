@@ -237,4 +237,7 @@ jobs:
             gh pr edit "$number" --title "$title" --body-file "$body"
           else
             gh pr create --base main --head "$AUTOMATION_BRANCH" --title "$title" --body-file "$body"
+            number="$(gh pr list --state open --base main --head "$AUTOMATION_BRANCH" --json number --jq '.[0].number // empty')"
           fi
+          test -n "$number"
+          gh pr merge "$number" --auto --squash
