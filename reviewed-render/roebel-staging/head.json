@@ -2,16 +2,16 @@
   "components": [
     {
       "component": "public-mecky",
-      "manifestDigest": "sha256:a2fa6db03406105460d8e7b0d3ec6b34e9ee860a0b80f572f8bcb533ff7f206f",
-      "sourceRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+      "manifestDigest": "sha256:c20c3c33abb9723374de05d86b63ca1062ab13425e548938c4a8a937d4c8a33e",
+      "sourceRevision": "585df3dc2fa090ac8d6b51b9b4607f8106037cec"
     },
     {
       "component": "roebel-web-staging",
-      "manifestDigest": "sha256:acfc3f253751b2af37b3e2c0b4eafb3e9df29870ba1adf6e9e729612a9f131d4",
-      "sourceRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+      "manifestDigest": "sha256:8a29ea2e19d7bf39606d575e767b2c8987f3e3f6fd312aa6194a53d35bcd60ae",
+      "sourceRevision": "585df3dc2fa090ac8d6b51b9b4607f8106037cec"
     }
   ],
-  "promotionRevision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df",
-  "releaseSetDigest": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977",
+  "promotionRevision": "585df3dc2fa090ac8d6b51b9b4607f8106037cec",
+  "releaseSetDigest": "sha256:aa30432de22194feb88c9aa4bf1ae54b76676bcf3228e62ab5b095dff642dcfd",
   "schemaVersion": "roebel_staging_release_set_head_v1"
 }
