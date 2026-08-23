@@ -144,9 +144,14 @@ jobs:
           verify_component() {
             component="$1"
             image="$2"
-            manifest="$(jq -er --arg component "$component" '.components[]|select(.component==$component)|.manifestDigest' "$candidate")"
-            source="$(jq -er --arg component "$component" '.components[]|select(.component==$component)|.sourceRevision' "$candidate")"
-            test "$source" = "$SOURCE_REVISION"
+            manifest="$(jq -er --arg component "$component" '[.components[] | select(.component == $component)] | if length == 1 then .[0].manifestDigest else error("component binding invalid") end' "$candidate")"
+            source="$(jq -er --arg component "$component" '[.components[] | select(.component == $component)] | if length == 1 then .[0].sourceRevision else error("component binding invalid") end' "$candidate")"
+            previous_manifest="$(jq -er --arg component "$component" '[.expectedPreviousHead.components[] | select(.component == $component)] | if length == 1 then .[0].manifestDigest else error("previous component binding invalid") end' "$candidate")"
+            previous_source="$(jq -er --arg component "$component" '[.expectedPreviousHead.components[] | select(.component == $component)] | if length == 1 then .[0].sourceRevision else error("previous component binding invalid") end' "$candidate")"
+            if test "$source" != "$SOURCE_REVISION"; then
+              test "$source" = "$previous_source"
+              test "$manifest" = "$previous_manifest"
+            fi
             bundle="incoming/release-set/bundles/provenance/$component/sha256-${manifest#sha256:}.jsonl"
             sbom_bundle="incoming/release-set/bundles/sbom/$component/sha256-${manifest#sha256:}.jsonl"
             gh attestation verify "oci://$image@$manifest" \

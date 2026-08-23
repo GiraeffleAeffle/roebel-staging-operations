@@ -115,13 +115,63 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
 
-    def test_valid_web_only_transition_is_accepted(self) -> None:
+    def test_valid_mixed_source_web_only_transition_is_accepted(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         self.make_valid_transition(candidate)
         result = VERIFIER.verify(candidate, ROOT)
         self.assertTrue(result["baseTransitionVerified"])
         self.assertEqual(result["components"][1]["sourceRevision"], "a" * 40)
+        base_head = json.loads((ROOT / "reviewed-render/roebel-staging/head.json").read_text())
+        self.assertEqual(result["components"][0]["sourceRevision"], base_head["components"][0]["sourceRevision"])
+
+    def test_changed_component_cannot_substitute_an_arbitrary_historical_source(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_valid_transition(candidate)
+        render = candidate / "reviewed-render/roebel-staging"
+        head_path = render / "head.json"
+        head = json.loads(head_path.read_text())
+        historical = "d" * 40
+        head["components"][1]["sourceRevision"] = historical
+        head_path.write_text(json.dumps(head, indent=2) + "\n")
+
+        web_path = render / "web/deployment.json"
+        web = json.loads(web_path.read_text())
+        web["metadata"]["annotations"]["stadtstack.io/source-revision"] = historical
+        web["spec"]["template"]["metadata"]["annotations"]["stadtstack.io/source-revision"] = historical
+        web_path.write_text(json.dumps(web, indent=2) + "\n")
+
+        live_path = render / "live-preconditions.json"
+        live = json.loads(live_path.read_text())
+        live["patches"][1]["operations"][0]["value"] = historical
+        live["patches"][1]["operations"][2]["value"] = historical
+        live_path.write_text(json.dumps(live, indent=2) + "\n")
+
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        public = json.loads((render / "public-mecky/deployment.json").read_text())
+        service = json.loads((render / "public-mecky/service.json").read_text())
+        network_policy = json.loads((render / "public-mecky/networkpolicy.json").read_text())
+        web_network_policy = json.loads((render / "web/networkpolicy.json").read_text())
+        web_ingress = json.loads((render / "web/ingress.json").read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(
+            {
+                "nextEnvironmentHead": head,
+                "objects": [
+                    public,
+                    service,
+                    network_policy,
+                    web,
+                    web_network_policy,
+                    web_ingress,
+                ],
+            }
+        )
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "must bind to the promotion revision"):
+            VERIFIER.verify(candidate, ROOT)
 
     def test_extra_file_is_rejected(self) -> None:
         temp, candidate = self.candidate()

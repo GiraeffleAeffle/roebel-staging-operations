@@ -72,6 +72,23 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
         self.assertIn('gh pr merge "$number" --auto --squash', source)
         self.assertNotIn("--admin", source)
 
+    def test_component_reuse_is_exact_and_fetched_handoff_is_removed(self) -> None:
+        source = WORKFLOW.read_text()
+        # Keep the component identifier data-bound.  A single-quoted jq
+        # program cannot interpolate the shell variable, so this must remain
+        # an explicit --arg binding.
+        self.assertIn('jq -er --arg component "$component"', source)
+        self.assertNotIn('select(.component=="$component")', source)
+        self.assertIn('previous_manifest=', source)
+        self.assertIn('previous_source=', source)
+        self.assertIn('test "$manifest" = "$previous_manifest"', source)
+        self.assertIn('test "$source" = "$previous_source"', source)
+        self.assertIn('rm -rf -- incoming', source)
+        self.assertLess(
+            source.index('python3 scripts/render-release-set-promotion.py'),
+            source.index('rm -rf -- incoming'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

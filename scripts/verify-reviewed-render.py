@@ -683,7 +683,12 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
             continue
         changed.append(component)
     require(changed, "promotion must change at least one component")
-    require(any(candidate_components[component]["sourceRevision"] == candidate["head"]["promotionRevision"] for component in changed), "promotion revision is not bound to a changed component")
+    for component in changed:
+        require(
+            candidate_components[component]["sourceRevision"]
+            == candidate["head"]["promotionRevision"],
+            f"{component} changed component must bind to the promotion revision",
+        )
     base_images = {
         component: next(container for container in base["deployments"][component]["spec"]["template"]["spec"]["containers"] if container.get("name") == COMPONENTS[component]["container"])["image"]
         for component in COMPONENT_ORDER

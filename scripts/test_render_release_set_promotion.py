@@ -114,6 +114,48 @@ class AutomaticPromotionTests(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
 
+    def test_renders_mixed_source_reuse_from_exact_expected_previous_head(self) -> None:
+        temporary, root, incoming, candidate_path = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        candidate = json.loads(candidate_path.read_text())
+        previous = candidate["expectedPreviousHead"]["components"][0]
+        component = candidate["components"][0]
+        component["sourceRevision"] = previous["sourceRevision"]
+        component["manifestDigest"] = previous["manifestDigest"]
+
+        provenance_bundle = b'{"component":"public-mecky","kind":"reused-provenance"}\n'
+        bundle_name = f"sha256-{component['manifestDigest'].removeprefix('sha256:')}.jsonl"
+        provenance_path = incoming / "bundles" / "provenance" / "public-mecky" / bundle_name
+        sbom_path = incoming / "bundles" / "sbom" / "public-mecky" / bundle_name
+        provenance_path.write_bytes(provenance_bundle)
+        sbom_path.write_text('{"kind":"reused-sbom-attestation"}\n')
+        component["provenance"]["attestationDigest"] = sha(provenance_bundle)
+        evidence = json.loads((incoming / "evidence/public-mecky.component-evidence.json").read_text())
+        evidence["sourceRevision"] = component["sourceRevision"]
+        evidence["manifestDigest"] = component["manifestDigest"]
+        evidence["provenance"]["subjectDigest"] = component["manifestDigest"]
+        evidence["provenance"]["attestationDigest"] = component["provenance"]["attestationDigest"]
+        evidence["sbom"]["subjectDigest"] = component["manifestDigest"]
+        (incoming / "evidence/public-mecky.component-evidence.json").write_text(json.dumps(evidence))
+        payload = {key: value for key, value in candidate.items() if key != "candidatePayloadDigest"}
+        candidate["candidatePayloadDigest"] = sha(MODULE.canonical_candidate_payload(payload))
+        candidate_path.write_text(json.dumps(candidate, indent=2) + "\n")
+
+        result = MODULE.render(root, candidate_path, incoming)
+        self.assertEqual(result["changedComponents"], ["roebel-web-staging"])
+
+    def test_rejects_non_promotion_component_from_arbitrary_history(self) -> None:
+        temporary, root, incoming, candidate_path = self.fixture()
+        self.addCleanup(temporary.cleanup)
+        candidate = json.loads(candidate_path.read_text())
+        candidate["components"][0]["sourceRevision"] = "0" * 40
+        payload = {key: value for key, value in candidate.items() if key != "candidatePayloadDigest"}
+        candidate["candidatePayloadDigest"] = sha(MODULE.canonical_candidate_payload(payload))
+        candidate_path.write_text(json.dumps(candidate))
+
+        with self.assertRaisesRegex(MODULE.PromotionError, "must exactly reuse the expected previous head"):
+            MODULE.render(root, candidate_path, incoming)
+
     def test_rejects_stale_previous_head(self) -> None:
         temporary, root, incoming, candidate_path = self.fixture()
         self.addCleanup(temporary.cleanup)
