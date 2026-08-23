@@ -200,6 +200,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(VERIFIER.VerificationError, "MECKY_CHAT_PORT binding invalid"):
             VERIFIER.verify(candidate)
 
+    def test_public_mecky_synthetic_evidence_requires_explicit_capability(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        value = json.loads(path.read_text())
+        env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+        next(
+            item for item in env
+            if item["name"] == "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED"
+        )["value"] = "false"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED binding invalid",
+        ):
+            VERIFIER.verify(candidate)
+
     def test_integrity_drift_is_rejected(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
