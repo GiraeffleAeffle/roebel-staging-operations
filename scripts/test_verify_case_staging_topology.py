@@ -47,6 +47,51 @@ class CaseStagingTopologyVerifierTests(unittest.TestCase):
         self.assertFalse(result["fluxKustomizationAllowed"])
         self.assertFalse(result["effects"]["clusterMutation"])
         self.assertFalse(result["effects"]["workloadDefinition"])
+        contract = json.loads((ROOT / "case-staging-topology/contract.json").read_text())
+        self.assertEqual(contract["controlDeploymentPreflight"]["status"], "blocked")
+        self.assertEqual(contract["controlDeploymentPreflight"]["schemaVersion"], "staging_case_control_deployment_binding_v1")
+        self.assertEqual(contract["allowedKinds"], ["NetworkPolicy", "Service", "ServiceAccount"])
+        self.assertFalse(contract["invariants"]["pvcObjectsAllowed"])
+        self.assertFalse(contract["invariants"]["workloadDefinitionAllowed"])
+        binding = contract["controlDeploymentPreflight"]["binding"]
+        self.assertEqual(binding["workloadName"], "roebel-case-steward-control")
+        self.assertEqual(binding["deployment"]["strategy"], "Recreate")
+        self.assertEqual([listener["id"] for listener in binding["listeners"]], ["admission", "private-outbox", "probe"])
+        self.assertIsNone(contract["controlDeploymentPreflight"]["expectedBindingChecksum"])
+        self.assertIsNone(binding["releaseDigest"])
+        self.assertIsNone(binding["operationsTopologyChecksum"])
+        self.assertIsNone(binding["bindingChecksum"])
+
+    def test_control_preflight_rejects_placeholders_and_missing_evidence_drift(self) -> None:
+        mutations = (
+            lambda value: value["controlDeploymentPreflight"]["binding"]["storage"].update({"pvcUid": "TBD"}),
+            lambda value: value["controlDeploymentPreflight"]["binding"].update({"releaseDigest": "pending"}),
+            lambda value: value["controlDeploymentPreflight"].update({"expectedBindingChecksum": "pending"}),
+            lambda value: value["controlDeploymentPreflight"]["missingEvidence"].pop(),
+            lambda value: value["controlDeploymentPreflight"].update({"status": "ready"}),
+        )
+        for mutator in mutations:
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path, contract = self.load(candidate, "contract.json")
+            mutator(contract)
+            self.write(path, contract)
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "(?:placeholder|missing evidence|must stay blocked|runtime gate contract drift)"):
+                VERIFIER.verify(candidate)
+
+    def test_public_workload_cannot_receive_control_storage_preflight(self) -> None:
+        for field, value in (
+            ("controlDeploymentPreflight", {"status": "blocked"}),
+            ("storage", {"pvc": None}),
+            ("stateMount", {"rootPath": "/var/lib/stadtstack/case-control"}),
+        ):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path, contract = self.load(candidate, "contract.json")
+            contract["futureWorkloads"]["public"][field] = value
+            self.write(path, contract)
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "public workload cannot carry"):
+                VERIFIER.verify(candidate)
 
     def test_control_and_public_service_accounts_cannot_mount_a_token(self) -> None:
         for name in (

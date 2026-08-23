@@ -24,6 +24,27 @@ CONTROL_COMPONENT = "case-steward-control"
 PUBLIC_COMPONENT = "case-public-binding"
 WEB_NAMESPACE = "stadtstack-roebel-web-preview"
 DNS_NAMESPACE = "kube-system"
+MISSING_CONTROL_PREFLIGHT_EVIDENCE = [
+    "controlDeploymentPreflight.expectedBindingChecksum",
+    "controlDeploymentPreflight.binding.releaseDigest",
+    "controlDeploymentPreflight.binding.operationsTopologyChecksum",
+    "controlDeploymentPreflight.binding.storage.pvcUid",
+    "controlDeploymentPreflight.binding.storage.pvName",
+    "controlDeploymentPreflight.binding.storage.storageClass",
+    "controlDeploymentPreflight.binding.storage.accessMode",
+    "controlDeploymentPreflight.binding.storage.volumeMode",
+    "controlDeploymentPreflight.binding.storage.requestedBytes",
+    "controlDeploymentPreflight.binding.storage.uid",
+    "controlDeploymentPreflight.binding.storage.gid",
+    "controlDeploymentPreflight.binding.storage.mode",
+    "controlDeploymentPreflight.binding.storage.filesystemType",
+    "controlDeploymentPreflight.binding.storage.minAvailableBytes",
+    "controlDeploymentPreflight.binding.storage.marker.checksum",
+    "controlDeploymentPreflight.binding.storage.marker.uid",
+    "controlDeploymentPreflight.binding.storage.marker.gid",
+    "controlDeploymentPreflight.binding.storage.marker.mode",
+    "controlDeploymentPreflight.binding.bindingChecksum",
+]
 SERVICE_SPECS = (
     (CONTROL, CONTROL_COMPONENT, "admission", 18085),
     (f"{CONTROL}-private-outbox", CONTROL_COMPONENT, "private-outbox", 18087),
@@ -116,6 +137,69 @@ def expected_contract() -> dict[str, Any]:
             "rbacObjectsAllowed": False,
             "fluxObjectsAllowed": False,
         },
+        "controlDeploymentPreflight": {
+            "status": "blocked",
+            "reviewedOperations": {
+                "repository": "GiraeffleAeffle/roebel-staging-operations",
+                "ownership": "remote_but_owned",
+                "contractPath": "case-staging-topology/contract.json",
+            },
+            "schemaVersion": "staging_case_control_deployment_binding_v1",
+            "deploymentEnvironment": "staging",
+            "municipalityId": "roebel-mueritz",
+            "namespace": NAMESPACE,
+            "workloadName": CONTROL,
+            "deploymentName": CONTROL,
+            "markerSchema": "staging_case_control_storage_marker_v1",
+            "expectedBindingChecksum": None,
+            "binding": {
+                "schemaVersion": "staging_case_control_deployment_binding_v1",
+                "deploymentEnvironment": "staging",
+                "municipalityId": "roebel-mueritz",
+                "workloadName": CONTROL,
+                "workload": {
+                    "serviceAccountName": CONTROL,
+                    "automountServiceAccountToken": False,
+                },
+                "releaseDigest": None,
+                "operationsTopologyChecksum": None,
+                "deployment": {
+                    "replicas": 1,
+                    "strategy": "Recreate",
+                    "noOverlappingPods": True,
+                },
+                "storage": {
+                    "rootDir": "/var/lib/stadtstack/case-control",
+                    "pvcNamespace": NAMESPACE,
+                    "pvcName": "roebel-case-steward-control-state",
+                    "pvcUid": None,
+                    "pvName": None,
+                    "storageClass": None,
+                    "accessMode": None,
+                    "volumeMode": None,
+                    "requestedBytes": None,
+                    "uid": None,
+                    "gid": None,
+                    "mode": None,
+                    "filesystemType": None,
+                    "minAvailableBytes": None,
+                    "marker": {
+                        "fileName": ".stadtstack-control-storage-v1.json",
+                        "checksum": None,
+                        "uid": None,
+                        "gid": None,
+                        "mode": None,
+                    },
+                },
+                "listeners": [
+                    {"id": "admission", "port": 18085, "bindScope": "pod_network"},
+                    {"id": "private-outbox", "port": 18087, "bindScope": "pod_network"},
+                    {"id": "probe", "port": 18088, "bindScope": "pod_network"},
+                ],
+                "bindingChecksum": None,
+            },
+            "missingEvidence": MISSING_CONTROL_PREFLIGHT_EVIDENCE,
+        },
         "futureWorkloads": {
             "control": {
                 "deploymentName": CONTROL,
@@ -171,10 +255,65 @@ def expected_contract() -> dict[str, Any]:
             "immutable image digests with provenance and SPDX SBOM evidence are required before Deployments exist",
             "the staff gateway identity is not pinned, so admission remains default-denied",
             "the protected Roebel Web egress policy does not yet permit the public binding service on port 18086",
-            "the current Stadtstack runtime reference binds civic listeners to loopback and has no reviewed deployment bind adapter",
-            "a separate protected policy-migration ceremony must add a reviewed application composition root before reconciliation",
+            "the reviewed Stadtstack control application module is pending admission until its PR is merged; no immutable release or bind is authorized",
+            "the control PVC identity, filesystem ownership/mode/magic/free-space observation, release binding, and Operations topology digest are not yet available",
+            "a separate protected policy-migration ceremony must admit the reviewed application release and exact preflight before reconciliation",
         ],
     }
+
+
+def verify_control_deployment_preflight(contract: dict[str, Any]) -> None:
+    """Keep the deployment/storage admission record closed-world and inert."""
+
+    preflight = contract.get("controlDeploymentPreflight")
+    require(isinstance(preflight, dict), "control deployment preflight missing")
+    require(preflight.get("status") == "blocked", "control deployment preflight must stay blocked")
+    require(preflight.get("schemaVersion") == "staging_case_control_deployment_binding_v1", "control deployment preflight schema drift")
+    require(preflight.get("deploymentEnvironment") == "staging", "control deployment preflight environment drift")
+    require(preflight.get("municipalityId") == "roebel-mueritz", "control deployment preflight municipality drift")
+    require(preflight.get("namespace") == NAMESPACE, "control deployment preflight namespace drift")
+    require(preflight.get("workloadName") == CONTROL and preflight.get("deploymentName") == CONTROL, "control deployment workload name drift")
+    require(preflight.get("markerSchema") == "staging_case_control_storage_marker_v1", "control deployment marker schema drift")
+    require(preflight.get("expectedBindingChecksum") is None, "placeholder immutable deployment binding pin is forbidden")
+    require(preflight.get("reviewedOperations", {}).get("ownership") == "remote_but_owned", "reviewed Operations ownership drift")
+    binding = preflight.get("binding")
+    require(isinstance(binding, dict), "control deployment binding missing")
+    require(binding.get("schemaVersion") == "staging_case_control_deployment_binding_v1", "control deployment binding schema drift")
+    require(binding.get("deploymentEnvironment") == "staging", "control deployment binding environment drift")
+    require(binding.get("municipalityId") == "roebel-mueritz", "control deployment binding municipality drift")
+    require(binding.get("workloadName") == CONTROL, "control deployment binding workload drift")
+
+    workload = binding.get("workload")
+    require(isinstance(workload, dict), "control deployment workload preflight missing")
+    require(workload.get("serviceAccountName") == CONTROL and workload.get("automountServiceAccountToken") is False, "control deployment token posture drift")
+    require(binding.get("deployment") == {"replicas": 1, "strategy": "Recreate", "noOverlappingPods": True}, "control deployment rollout facts drift")
+    require(binding.get("listeners") == [
+        {"id": "admission", "port": 18085, "bindScope": "pod_network"},
+        {"id": "private-outbox", "port": 18087, "bindScope": "pod_network"},
+        {"id": "probe", "port": 18088, "bindScope": "pod_network"},
+    ], "control deployment listener boundary drift")
+
+    storage = binding.get("storage")
+    require(isinstance(storage, dict), "control deployment storage preflight missing")
+    require(storage.get("rootDir") == "/var/lib/stadtstack/case-control", "control deployment root drift")
+    require(storage.get("pvcNamespace") == NAMESPACE, "control deployment PVC namespace drift")
+    require(storage.get("pvcName") == "roebel-case-steward-control-state", "control deployment PVC name drift")
+    require(storage.get("marker", {}).get("fileName") == ".stadtstack-control-storage-v1.json", "control deployment marker filename drift")
+    for field in ("pvcUid", "pvName", "storageClass", "accessMode", "volumeMode", "requestedBytes", "uid", "gid", "mode", "filesystemType", "minAvailableBytes"):
+        require(storage.get(field) is None, f"placeholder storage {field} is forbidden")
+    marker = storage.get("marker")
+    require(isinstance(marker, dict), "control deployment marker preflight missing")
+    for field in ("checksum", "uid", "gid", "mode"):
+        require(marker.get(field) is None, f"placeholder marker {field} is forbidden")
+    require(binding.get("releaseDigest") is None, "placeholder release digest is forbidden")
+    require(binding.get("operationsTopologyChecksum") is None, "placeholder Operations topology checksum is forbidden")
+    require(binding.get("bindingChecksum") is None, "placeholder binding checksum is forbidden")
+    require(preflight.get("missingEvidence") == MISSING_CONTROL_PREFLIGHT_EVIDENCE, "control deployment missing evidence drift")
+
+    public = contract.get("futureWorkloads", {}).get("public", {})
+    require(isinstance(public, dict), "public workload contract missing")
+    require("controlDeploymentPreflight" not in public, "public workload cannot carry control preflight")
+    require("storage" not in public and "stateMount" not in public, "public workload cannot carry storage fields")
 
 
 def expected_service_account(capability: str, component: str) -> dict[str, Any]:
@@ -274,7 +413,10 @@ def verify(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     topology_files(root)
     topology = root / TOPOLOGY_ROOT
-    require(load_json(topology / "contract.json") == expected_contract(), "runtime gate contract drift")
+    contract = load_json(topology / "contract.json")
+    require(isinstance(contract, dict), "runtime gate contract must be an object")
+    verify_control_deployment_preflight(contract)
+    require(contract == expected_contract(), "runtime gate contract drift")
     require(load_json(topology / f"{CONTROL}-serviceaccount.json") == expected_service_account(CONTROL, CONTROL_COMPONENT), "control ServiceAccount drift")
     require(load_json(topology / f"{PUBLIC}-serviceaccount.json") == expected_service_account(PUBLIC, PUBLIC_COMPONENT), "public ServiceAccount drift")
     for name, component, port_name, port in SERVICE_SPECS:
