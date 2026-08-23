@@ -40,13 +40,39 @@ private-outbox port; control accepts only public on that port. The gate reserves
 an exact Röbel Web ingress peer on 18086, but the current protected Web policy
 does not yet allow the matching egress, so the route is not live. Admission is
 also intentionally default-denied because no staff gateway identity is pinned.
-The Stadtstack reference runtime still binds its civic listeners to loopback;
-a reviewed deployment bind adapter is required before a Service can reach it.
-The staging token-adapter marker is staging-only and rejected for production.
-A separately reviewed protected policy migration must supply that adapter, the
-Web-egress rule, deployable composition, exact image evidence, and the required
-staff-gateway decision before any Flux reference may be added. Routine image
-promotion preserves every runtime-gate byte unchanged.
+The reviewed Stadtstack control application module is pending admission until
+its PR is merged; it is not represented as an admitted release on this
+Operations branch. Its immutable release and exact deployment/storage
+preflight are still pending, so no bind is authorized. The staging token-adapter
+marker is staging-only and rejected for production.
+
+`controlDeploymentPreflight` is a remote-but-owned Operations record. It fixes
+the staging environment, `roebel-mueritz` municipality, namespace, tokenless
+`roebel-case-steward-control` workload, its Recreate/no-overlap deployment
+facts, `pod_network` listeners (18085/18087/18088), and the control-only
+`/var/lib/stadtstack/case-control` root. The binding fixes marker file
+`.stadtstack-control-storage-v1.json` and marker schema
+`staging_case_control_storage_marker_v1`. It also reserves the exact PVC
+identity, PV, StorageClass, singular access/volume mode, requested bytes,
+filesystem uid/gid/mode/type/minimum-free-space, marker checksum/ownership,
+release digest, Operations topology checksum, and independently pinned binding
+checksum fields. Those live facts are deliberately `null` until a reviewed
+cluster observation exists, and every null is listed in deterministic
+`missingEvidence`; the status therefore remains `blocked`. Public workload
+records never receive these storage fields.
+
+The reviewed source binding and the deployment pin are separate: the nested
+`binding.bindingChecksum` identifies the exact reviewed binding projection,
+while the top-level `expectedBindingChecksum` is the independently pinned
+checksum expected by the immutable deployment configuration. Both remain
+`null` until the source and deployment review records exist; neither is a
+runtime secret or a live cluster lookup.
+
+The separate protected policy-migration ceremony must admit the reviewed
+application release, exact storage preflight, Web-egress rule, deployable
+composition, exact image evidence, and the required staff-gateway decision
+before any Flux reference may be added. Routine image promotion preserves every
+runtime-gate byte unchanged.
 
 ## Promotion flow
 

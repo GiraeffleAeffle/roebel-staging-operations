@@ -25,6 +25,89 @@
     "rbacObjectsAllowed": false,
     "fluxObjectsAllowed": false
   },
+  "controlDeploymentPreflight": {
+    "status": "blocked",
+    "reviewedOperations": {
+      "repository": "GiraeffleAeffle/roebel-staging-operations",
+      "ownership": "remote_but_owned",
+      "contractPath": "case-staging-topology/contract.json"
+    },
+    "schemaVersion": "staging_case_control_deployment_binding_v1",
+    "deploymentEnvironment": "staging",
+    "municipalityId": "roebel-mueritz",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "workloadName": "roebel-case-steward-control",
+    "deploymentName": "roebel-case-steward-control",
+    "markerSchema": "staging_case_control_storage_marker_v1",
+    "expectedBindingChecksum": null,
+    "binding": {
+      "schemaVersion": "staging_case_control_deployment_binding_v1",
+      "deploymentEnvironment": "staging",
+      "municipalityId": "roebel-mueritz",
+      "workloadName": "roebel-case-steward-control",
+      "workload": {
+        "serviceAccountName": "roebel-case-steward-control",
+        "automountServiceAccountToken": false
+      },
+      "releaseDigest": null,
+      "operationsTopologyChecksum": null,
+      "deployment": {
+        "replicas": 1,
+        "strategy": "Recreate",
+        "noOverlappingPods": true
+      },
+      "storage": {
+        "rootDir": "/var/lib/stadtstack/case-control",
+        "pvcNamespace": "stadtstack-roebel-staging-lab",
+        "pvcName": "roebel-case-steward-control-state",
+        "pvcUid": null,
+        "pvName": null,
+        "storageClass": null,
+        "accessMode": null,
+        "volumeMode": null,
+        "requestedBytes": null,
+        "uid": null,
+        "gid": null,
+        "mode": null,
+        "filesystemType": null,
+        "minAvailableBytes": null,
+        "marker": {
+          "fileName": ".stadtstack-control-storage-v1.json",
+          "checksum": null,
+          "uid": null,
+          "gid": null,
+          "mode": null
+        }
+      },
+      "listeners": [
+        { "id": "admission", "port": 18085, "bindScope": "pod_network" },
+        { "id": "private-outbox", "port": 18087, "bindScope": "pod_network" },
+        { "id": "probe", "port": 18088, "bindScope": "pod_network" }
+      ],
+      "bindingChecksum": null
+    },
+    "missingEvidence": [
+      "controlDeploymentPreflight.expectedBindingChecksum",
+      "controlDeploymentPreflight.binding.releaseDigest",
+      "controlDeploymentPreflight.binding.operationsTopologyChecksum",
+      "controlDeploymentPreflight.binding.storage.pvcUid",
+      "controlDeploymentPreflight.binding.storage.pvName",
+      "controlDeploymentPreflight.binding.storage.storageClass",
+      "controlDeploymentPreflight.binding.storage.accessMode",
+      "controlDeploymentPreflight.binding.storage.volumeMode",
+      "controlDeploymentPreflight.binding.storage.requestedBytes",
+      "controlDeploymentPreflight.binding.storage.uid",
+      "controlDeploymentPreflight.binding.storage.gid",
+      "controlDeploymentPreflight.binding.storage.mode",
+      "controlDeploymentPreflight.binding.storage.filesystemType",
+      "controlDeploymentPreflight.binding.storage.minAvailableBytes",
+      "controlDeploymentPreflight.binding.storage.marker.checksum",
+      "controlDeploymentPreflight.binding.storage.marker.uid",
+      "controlDeploymentPreflight.binding.storage.marker.gid",
+      "controlDeploymentPreflight.binding.storage.marker.mode",
+      "controlDeploymentPreflight.binding.bindingChecksum"
+    ]
+  },
   "futureWorkloads": {
     "control": {
       "deploymentName": "roebel-case-steward-control",
@@ -132,7 +215,8 @@
     "immutable image digests with provenance and SPDX SBOM evidence are required before Deployments exist",
     "the staff gateway identity is not pinned, so admission remains default-denied",
     "the protected Roebel Web egress policy does not yet permit the public binding service on port 18086",
-    "the current Stadtstack runtime reference binds civic listeners to loopback and has no reviewed deployment bind adapter",
-    "a separate protected policy-migration ceremony must add a reviewed application composition root before reconciliation"
+    "the reviewed Stadtstack control application module is pending admission until its PR is merged; no immutable release or bind is authorized",
+    "the control PVC identity, filesystem ownership/mode/magic/free-space observation, release binding, and Operations topology digest are not yet available",
+    "a separate protected policy-migration ceremony must admit the reviewed application release and exact preflight before reconciliation"
   ]
 }
