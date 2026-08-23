@@ -17,6 +17,213 @@ object identities, and references to existing ConfigMaps or Secrets. It may
 not contain a Secret object, a Secret value, credentials, personal data,
 posts, discussions, Civic Cases, municipal records, or runtime status.
 
+## Inert Case staging runtime gate
+
+`case-staging-topology/` is a closed-world `runtime_gate_v1` review contract
+for the future control and public Case processes. It remains
+`mode: inert_review_only`; both `reconciliationAllowed` and
+`fluxKustomizationAllowed` are false. The contract has exactly three
+ClusterIP services: admission (18085) and private outbox (18087) select only
+control, while public binding (18086) selects only public. Capability-free
+control and public probe ports are direct-only (18088/18089) and have no
+Service.
+
+The future control process is constrained to its tokenless ServiceAccount and
+may reference only the already-provisioned control runtime Secret and state
+PVC. The public process is separately tokenless and is explicitly forbidden
+from Secret, PVC, and RBAC references. The control image and public image are
+both deliberately blocked until exact immutable digests, provenance, and SPDX
+SBOM evidence exist; this contract uses no image placeholder.
+
+Default deny remains in force. Public may egress only to DNS and the control
+private-outbox port; control accepts only public on that port. The gate reserves
+an exact Röbel Web ingress peer on 18086, but the current protected Web policy
+does not yet allow the matching egress, so the route is not live. Admission is
+also intentionally default-denied because no staff gateway identity is pinned.
+The reviewed Stadtstack control application module is pending admission until
+its PR is merged; it is not represented as an admitted release on this
+Operations branch. Its immutable release and exact deployment/storage
+preflight are still pending, so no bind is authorized. The staging token-adapter
+marker is staging-only and rejected for production.
+
+`controlDeploymentPreflight` is a remote-but-owned Operations record. It fixes
+the staging environment, `roebel-mueritz` municipality, namespace, tokenless
+`roebel-case-steward-control` workload, its Recreate/no-overlap deployment
+facts, `pod_network` listeners (18085/18087/18088), and the control-only
+`/var/lib/stadtstack/case-control` root. The binding fixes marker file
+`.stadtstack-control-storage-v1.json` and marker schema
+`staging_case_control_storage_marker_v1`. It also reserves the exact PVC
+identity, PV, StorageClass, singular access/volume mode, requested bytes,
+filesystem uid/gid/mode/type/minimum-free-space, marker checksum/ownership,
+release digest, Operations topology checksum, and independently pinned binding
+checksum fields. Those live facts are deliberately `null` until a reviewed
+cluster observation exists, and every null is listed in deterministic
+`missingEvidence`; the status therefore remains `blocked`. Public workload
+records never receive these storage fields.
+
+The reviewed source binding and the deployment pin are separate: the nested
+`binding.bindingChecksum` identifies the exact reviewed binding projection,
+while the top-level `expectedBindingChecksum` is the independently pinned
+checksum expected by the immutable deployment configuration. Both remain
+`null` until the source and deployment review records exist; neither is a
+runtime secret or a live cluster lookup.
+
+The separate protected policy-migration ceremony must admit the reviewed
+application release, exact storage preflight, Web-egress rule, deployable
+composition, exact image evidence, and the required staff-gateway decision
+before any Flux reference may be added. Routine image promotion preserves every
+runtime-gate byte unchanged.
+
+## Inert case-state recovery activation gate
+
+`contracts/stadtstack-case-runtime-contract.json` records the next, separate
+recovery ceremony. The outer record remains
+`stadtstack_case_runtime_contract_v1` with `mode: inert_review_only`, an empty
+allowed-kind set and both reconciliation flags false. Its
+`recoveryActivationGate` evidence inventory has the distinct schema
+`stadtstack_case_recovery_evidence_inventory_v1` and status `blocked`; it
+cannot be confused with Stadtstack's opaque, data-free runtime gate. The
+inventory is evidence, not a controller: it creates no Kubernetes object, Job,
+PVC, Deployment, Secret, Flux object, bucket credential, or object-store
+request.
+
+The gate reserves the staging/`roebel-mueritz` scope and the exact source and
+target PVC identity, target PV, UUIDv7 `recoveryOperationId`, independently
+reviewed `controlDeploymentBindingChecksum`, and immutable
+`restoreVerifierReleaseDigest`. Its catalog record keeps the
+`catalogLocatorChecksum`, CAS generation, backup ID, and exact completion
+receipt/encrypted-manifest object locator. Each locator pins bucket, key,
+object version, and checksum; the completion receipt additionally pins its
+key version. The operational signer is an active Ed25519 signer with purpose
+`staging_case_recovery_attestation`; its key ID/version, DER SPKI and SHA-256
+pin, and active-from/active-until window remain evidence-bound fields.
+
+The policy limits recovery age to exactly 86400 seconds and restore duration
+to exactly 14400 seconds. The seal binding reserves the shutdown-seal,
+database, release, WAL-checkpoint, and recovery-evidence checksums. The
+restore report requires the independently recomputed
+`restoreReportChecksum` and the exact verifier release pin. The attestation
+reserves its checksum, Ed25519 signature, issued/expiry window, seal, backup,
+PVC, store, and signer pins.
+Every live value is currently `null` and appears once, in deterministic order,
+in `missingEvidence`; placeholders, partial evidence, ready status, and
+reconciliation are rejected by the focused verifier and tests.
+
+## Inert recovery composition review contract (v2)
+
+`contracts/stadtstack-case-recovery-composition-contract.json` is the
+Operations-side composition record for the same ceremony. It is intentionally
+separate from the application evidence inventory: it describes how a future
+review will connect the application protocols without becoming an activation
+controller. Its status is `inert_review_only`; it has no allowed kinds, no
+resource documents, no Secret or credential material, and no Flux object.
+
+The protocol pins are the current v2 boundaries: `case_shutdown_seal_v2`,
+`staging_case_recovery_attestation_v2`, `staging_case_recovery_gate_v2`,
+`case_durable_deployment_claim_v1`, `case_store_bootstrap_v1`,
+`case_open_epoch_v1`, and the `case_recovery_activation_v2` recovery marker.
+The review stages are deliberately ordered:
+
+1. Quiesce the source owner and obtain the canonical v2 shutdown seal.
+2. Produce an encrypted bundle containing the exact SQLite bytes, canonical
+   source deployment claim, canonical v2 seal, and separate pinned catalog,
+   completion-receipt, and encrypted-manifest locators with object versions,
+   checksums, and key versions where applicable.
+3. Prove a fresh target claim with distinct PVC/PV identity and a pinned
+   StorageClass; the source volume may not be reused.
+4. Restore and verify in isolation, with no database creation, exact schema
+   verification, baseline-dominance proof, and an immutable verifier image
+   pinned to provenance and SPDX SBOM checksums. This stage proves the restored
+   bytes and schema; it cannot activate the runtime or create a recovery marker.
+5. Bind the restored control slot to the exact target claim/PVC/PV and its
+   private-outbox binding. The public slot is explicitly PVC/PV/Secret/RBAC
+   free and may reference only the exact control slot/private-outbox checksums.
+6. Emit a future exact handoff receipt with the reviewed Operations revision
+   and resource-inventory checksum. Its canonical JSON checksum covers those
+   review pins together with the source and target claims, target PVC/PV,
+   release, recovery policy, and recovery attestation. This is a receipt shape
+   only, not a Flux resource and not permission to reconcile.
+7. After a separately authorized reconciliation, require the owner lock, a
+   renewed recovery gate, the exact reviewed handoff receipt, source-to-target
+   claim rotation, and pre-bind freshness before the runtime may create the v2
+   recovery marker. Ordinary-start bootstrap and open-epoch receipts remain
+   forbidden, and an abort before every listener is ready remains non-sealing.
+
+All live stage and aggregate evidence remains `null` and is enumerated in
+`missingEvidence`. The remaining blockers are the source PVC/claim and clean
+seal, encrypted backup catalog and object-lock policy, restore verifier
+release/SBOM, fresh target PVC/PV/StorageClass identity, isolated restore
+report, control/public slot references, and the separately reviewed exact
+handoff receipt and runtime activation evidence. Until those facts are
+independently reviewed, this repository
+cannot read credentials, mutate storage, create a restore job, activate a
+workload, or hand anything to Flux. The protected-base render verifier checks
+this contract on every tree and rejects duplicate keys, open shapes, resource
+documents, secret-shaped values, malformed identifiers, and cross-binding
+drift.
+
+## Inert Case image and resource inventory
+
+`contracts/stadtstack-case-image-resource-inventory-contract.json` is the
+manual admission record for the future Case control, public-binding, and
+restore-verifier images. It deliberately does not extend the routine Röbel Web
+and Public Mecky Release Set: a normal application promotion must never gain a
+path to the stateful control process or the recovery verifier.
+
+Each logical component remains blocked until one exact source revision,
+immutable manifest/config/layer digest set, GitHub-OIDC SLSA provenance, and
+SPDX 2.3 evidence are independently reviewed. Each GHCR package must be
+publicly visible and an unauthenticated resolver must prove the exact
+`@sha256` manifest can be pulled before Flux may consume it; no image-pull
+Secret is admitted as a workaround. Control and public runtime repositories
+must be distinct. The source and future publisher identity are
+pinned to the public `GiraeffleAeffle/stadtstack` repository, not the Röbel App
+publisher. The logical inventory preserves one-writer
+control storage, a public slot with no PVC/PV/Secret/token/RBAC surface, and an
+operator-only restore verifier with no source write mount, public ingress, or
+user-facing endpoint.
+
+Control is the sole exception to the no-reference rule: it may reference
+exactly the preexisting `roebel-case-steward-control-runtime` Secret already
+admitted by the topology contract, and only through container environment
+`valueFrom` runtime configuration. It cannot be attached as an image-pull
+credential. Both inert ServiceAccounts declare an empty `imagePullSecrets`
+list, and every future Case workload forbids image-pull Secrets. The allowlist
+is bound to that contract's canonical checksum. The inventory still forbids
+creating a Secret, embedding credential material, or giving public binding or
+restore verifier any Secret reference.
+
+Anonymous pull proof is not a Boolean. A future admission must provide one
+canonical receipt per component binding its name, public GHCR repository,
+immutable manifest digest, exact source revision, clean empty registry-auth
+context, anonymous ORAS resolver identity, and resolved digest. Its own
+SHA-256 digest covers every receipt field except itself. Any repository,
+revision, digest, resolver, auth-context, or receipt-checksum drift is rejected.
+
+The future Flux handoff is data only: its namespace, reconciler identity,
+source revision/path, exact resource-name allowlist checksum, inventory
+checksum, and RBAC receipt are all absent. The contract contains no Kubernetes
+or Flux document, credential value, live or unapproved Secret reference,
+reconciliation permission, or live effect. Its canonical inventory checksum is the only value the recovery
+composition may later accept as `resourceInventoryChecksum`.
+
+This first policy expansion cannot truthfully self-admit: the currently
+protected base does not contain the inventory verifier and its closed file set
+rejects those new paths. Bootstrapping therefore requires one bounded
+administrator merge of one exact, independently reviewed commit. Administrator
+enforcement must be restored even if that merge fails, and the newly protected
+`main` push verification must pass before any Case image publication,
+resource rendering, Flux handoff, or activation is allowed. Every subsequent
+inventory change is admitted only by the protected-base verifier; this
+one-time transition is not a reusable bypass.
+
+The provenance record is accepted only when its repository claim is
+`GiraeffleAeffle/stadtstack`, its source digest equals the component's exact
+40-character source revision, its Git ref is `refs/heads/main`, and its image
+subject equals the immutable manifest digest. The recovery-bound inventory
+checksum also covers the empty forbidden-resource and forbidden-secret
+inventories, so later population cannot silently weaken that boundary.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
@@ -66,20 +273,30 @@ resources, civic publication state, governance state, or treasury state.
 - The complete previous head is the compare-and-swap boundary.
 - Images are exact `ghcr.io/...@sha256:...` references with
   `imagePullPolicy: IfNotPresent`; tags are rejected.
-- The verifier rejects extra files, symlinks, Secret payload-shaped fields,
-  literal values for secret-shaped environment names, runtime metadata, and
-  any object other than the two exact Deployments, one ClusterIP Service, two
-  exact NetworkPolicies, and one exact Web Ingress. The Public Mecky Service is
-  ClusterIP-only; the Web Ingress admits only the exact GET/HEAD read surface
-  plus `POST /api/chat/mecky`, and the Web egress admits only the exact Public
-  Mecky namespace/pod selectors on TCP 18084 in addition to its existing DNS
-  and exact HTTPS egress rules.
+- The protected-base verifier rejects extra files, symlinks, Secret
+  payload-shaped fields, literal values for secret-shaped environment names,
+  runtime metadata, and every object except two exact Deployments, one
+  ClusterIP Service, two exact NetworkPolicies, one exact Web Ingress, and the
+  eleven separately verified inert Case runtime-gate records (two
+  ServiceAccounts, three ClusterIP Services, five closed-world NetworkPolicies,
+  and their contract).
+  Ordinary promotions preserve all topology records byte-for-byte. The Public
+  Mecky Service is ClusterIP-only; the Web Ingress admits only the exact
+  GET/HEAD read surface plus `POST /api/chat/mecky`, and the Web egress admits
+  only the exact Public Mecky namespace/pod selectors on TCP 18084 in addition
+  to its existing DNS and exact HTTPS egress rules.
 
 Run the same check locally:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_reviewed_render.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_case_staging_topology.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-case-staging-topology.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests/test_stadtstack_case_runtime_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-runtime-contract.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests/test_stadtstack-case-recovery-composition-contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-recovery-composition-contract.py --root .
 ```
 
 The source remains safe to read anonymously. Runtime credentials and civic

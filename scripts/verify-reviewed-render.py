@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -50,12 +51,34 @@ EXPECTED_FILES = {
     ".gitignore",
     "LICENSE",
     "README.md",
+    "contracts/stadtstack-case-image-resource-inventory-contract.json",
+    "contracts/stadtstack-case-recovery-composition-contract.json",
+    "contracts/stadtstack-case-runtime-contract.json",
     "policy/repository-contract.json",
     "scripts/render-release-set-promotion.py",
     "scripts/test_automatic_promotion_workflow.py",
+    "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
+    "scripts/verify-stadtstack-case-runtime-contract.py",
+    "scripts/verify-case-staging-topology.py",
     "scripts/verify-reviewed-render.py",
+    "scripts/verify-stadtstack-case-image-resource-inventory-contract.py",
+    "scripts/verify-stadtstack-case-recovery-composition-contract.py",
+    "tests/test_stadtstack_case_image_resource_inventory_contract.py",
+    "tests/test_stadtstack_case_runtime_contract.py",
+    "tests/test_stadtstack-case-recovery-composition-contract.py",
+    "case-staging-topology/contract.json",
+    "case-staging-topology/roebel-case-public-binding-default-deny-networkpolicy.json",
+    "case-staging-topology/roebel-case-public-binding-allow-private-outbox-and-dns-egress-networkpolicy.json",
+    "case-staging-topology/roebel-case-public-binding-allow-roebel-web-ingress-networkpolicy.json",
+    "case-staging-topology/roebel-case-public-binding-service.json",
+    "case-staging-topology/roebel-case-public-binding-serviceaccount.json",
+    "case-staging-topology/roebel-case-steward-control-allow-private-outbox-from-public-networkpolicy.json",
+    "case-staging-topology/roebel-case-steward-control-default-deny-networkpolicy.json",
+    "case-staging-topology/roebel-case-steward-control-private-outbox-service.json",
+    "case-staging-topology/roebel-case-steward-control-service.json",
+    "case-staging-topology/roebel-case-steward-control-serviceaccount.json",
     f"{RENDER_ROOT}/head.json",
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/live-preconditions.json",
@@ -138,6 +161,58 @@ def repository_files(root: Path) -> set[str]:
     return files
 
 
+def verify_case_staging_topology_with_protected_policy(root: Path) -> None:
+    """Validate candidate topology data with the verifier beside this script.
+
+    On pull_request_target this module is executed from the protected base
+    checkout.  Resolving the sibling by ``__file__`` is therefore deliberate:
+    candidate topology is data only and cannot select or execute its own
+    policy module.
+    """
+    verifier_path = Path(__file__).with_name("verify-case-staging-topology.py")
+    spec = importlib.util.spec_from_file_location("protected_case_topology_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case topology verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.verify(root)
+    except module.VerificationError as error:
+        raise VerificationError(f"Case staging topology verification failed: {error}") from error
+
+
+def verify_case_runtime_contract_with_protected_policy(root: Path) -> None:
+    """Validate the candidate recovery inventory with protected-base policy."""
+    verifier_path = Path(__file__).with_name("verify-stadtstack-case-runtime-contract.py")
+    spec = importlib.util.spec_from_file_location("protected_case_runtime_contract_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case runtime contract verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = module.verify_contract(root)
+    require(errors == [], f"Case runtime contract verification failed: {errors!r}")
+
+
+def verify_case_recovery_composition_contract_with_protected_policy(root: Path) -> None:
+    """Validate the inert recovery composition with protected-base policy."""
+    verifier_path = Path(__file__).with_name("verify-stadtstack-case-recovery-composition-contract.py")
+    spec = importlib.util.spec_from_file_location("protected_case_recovery_composition_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case recovery composition verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = module.verify_contract(root)
+    require(errors == [], f"Case recovery composition contract verification failed: {errors!r}")
+
+
+def verify_case_image_resource_inventory_contract_with_protected_policy(root: Path) -> None:
+    """Validate the inert image/resource inventory with protected-base policy."""
+    verifier_path = Path(__file__).with_name("verify-stadtstack-case-image-resource-inventory-contract.py")
+    spec = importlib.util.spec_from_file_location("protected_case_image_resource_inventory_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case image/resource inventory verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = module.verify_contract(root)
+    require(errors == [], f"Case image/resource inventory contract verification failed: {errors!r}")
+
+
 def verify_contract(root: Path) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -154,7 +229,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy"],
+            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -633,6 +708,10 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
     verify_contract(root)
+    verify_case_staging_topology_with_protected_policy(root)
+    verify_case_runtime_contract_with_protected_policy(root)
+    verify_case_recovery_composition_contract_with_protected_policy(root)
+    verify_case_image_resource_inventory_contract_with_protected_policy(root)
     head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
     integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256", "networkBoundaryMigrationSha256"}, "integrity")
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")

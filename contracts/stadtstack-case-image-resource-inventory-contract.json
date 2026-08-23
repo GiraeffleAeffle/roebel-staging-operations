@@ -1,0 +1,474 @@
+{
+  "schemaVersion": "stadtstack_case_image_resource_inventory_contract_v1",
+  "mode": "inert_review_only",
+  "status": "inert_review_only",
+  "deploymentEnvironment": "staging",
+  "municipalityId": "roebel-mueritz",
+  "reconciliationAllowed": false,
+  "fluxHandoffAllowed": false,
+  "allowedKinds": [],
+  "protectedPolicyBootstrap": {
+    "required": true,
+    "reason": "protected_base_lacks_case_image_inventory_policy_v1",
+    "mechanism": "one_time_exact_commit_administrator_merge",
+    "administratorEnforcementRestorationRequired": true,
+    "postMergePushVerificationRequired": true,
+    "activationBeforePushVerificationAllowed": false,
+    "subsequentProtectedBaseAdmissionRequired": true
+  },
+  "forbiddenResources": {
+    "documents": [],
+    "apiVersions": [],
+    "kinds": [],
+    "kubernetesObjects": [],
+    "fluxObjects": []
+  },
+  "forbiddenSecrets": {
+    "credentialValues": [],
+    "secretObjects": [],
+    "secretReferences": []
+  },
+  "releaseSetVocabulary": {
+    "schemaVersion": "stadtstack_case_release_set_candidate_v1",
+    "vocabularyDerivedFrom": "roebel_staging_release_set_candidate_v1",
+    "sourceRepository": "GiraeffleAeffle/stadtstack",
+    "sourceRevision": {
+      "encoding": "lowercase-hex",
+      "length": 40,
+      "exact": true
+    },
+    "digests": {
+      "algorithm": "sha256",
+      "format": "sha256:<64 lowercase hex>",
+      "immutable": true,
+      "requiredWhenPopulated": [
+        "manifestDigest",
+        "configDigest",
+        "layerDigests"
+      ]
+    },
+    "provenance": {
+      "issuer": "https://token.actions.githubusercontent.com",
+      "publisherIdentity": "https://github.com/GiraeffleAeffle/stadtstack/.github/workflows/case-staging-publish.yml@refs/heads/main",
+      "predicateType": "https://slsa.dev/provenance/v1",
+      "canonicalEncoding": "canonical-json",
+      "subjectDigestField": "manifestDigest",
+      "sourceBinding": {
+        "repository": "GiraeffleAeffle/stadtstack",
+        "gitRef": "refs/heads/main",
+        "repositoryClaimRequired": true,
+        "revisionClaimRequired": true,
+        "revisionMustEqualComponentSourceRevision": true,
+        "gitRefClaimRequired": true
+      }
+    },
+    "sbom": {
+      "format": "SPDX-2.3",
+      "identity": "https://spdx.dev/spdx/v2.3",
+      "canonicalEncoding": "canonical-json",
+      "subjectDigestField": "manifestDigest"
+    },
+    "checksums": {
+      "algorithm": "sha256",
+      "encoding": "canonical-json",
+      "requiredWhenPopulated": true
+    },
+    "anonymousDigestPullReceipt": {
+      "schemaVersion": "stadtstack_case_anonymous_digest_pull_receipt_v1",
+      "canonicalEncoding": "canonical-json",
+      "authContext": "clean-empty-auth-config",
+      "authConfigCanonicalJson": "{\"auths\":{}}",
+      "authConfigCanonicalSha256": "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+      "resolverIdentity": "oras-resolve-anonymous",
+      "imageReferenceFormat": "<imageRepository>@<manifestDigest>",
+      "bindings": [
+        "component",
+        "imageRepository",
+        "manifestDigest",
+        "sourceRevision"
+      ],
+      "resolvedManifestDigestMustEqualManifestDigest": true,
+      "receiptDigest": {
+        "algorithm": "sha256",
+        "encoding": "canonical-json",
+        "covers": [
+          "schemaVersion",
+          "canonicalEncoding",
+          "component",
+          "imageRepository",
+          "manifestDigest",
+          "sourceRevision",
+          "authContext",
+          "authConfigCanonicalSha256",
+          "resolverIdentity",
+          "resolvedManifestDigest"
+        ]
+      }
+    },
+    "imageBinding": {
+      "repositoryRequiredWhenPopulated": true,
+      "manifestDigestRequiredWhenRepositoryPopulated": true,
+      "allComponentRepositoriesMustDiffer": true,
+      "allComponentManifestDigestsMustDiffer": true,
+      "controlAndPublicRepositoriesMustDiffer": true,
+      "controlAndPublicManifestDigestsMustDiffer": true
+    }
+  },
+  "components": [
+    {
+      "component": "case-steward-control",
+      "order": 1,
+      "releaseSetPolicy": {
+        "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control",
+        "sourceRevisionFormat": "exact-40-lowercase-hex",
+        "immutableImageManifestRequired": true,
+        "immutableConfigDigestRequired": true,
+        "immutableLayerDigestsRequired": true,
+        "slsaProvenanceV1Required": true,
+        "spdx23Required": true,
+        "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true,
+        "imageRepositoryMustDifferFrom": "case-public-binding"
+      },
+      "logicalResourceInventory": {
+        "representation": "logical_only",
+        "oneWriterRequired": true,
+        "futureExistingPvcOnly": true,
+        "privateOutboxRequired": true,
+        "publicIngressAllowed": false,
+        "publicAuthority": "none",
+        "preexistingRuntimeSecretReferenceAllowed": true,
+        "preexistingRuntimeSecretUsage": "container_env_valueFrom_only",
+        "allowedPreexistingRuntimeSecretReferenceNames": [
+          "roebel-case-steward-control-runtime"
+        ],
+        "imagePullSecretsAllowed": false,
+        "secretObjectCreationAllowed": false,
+        "credentialMaterialIncluded": false,
+        "topologyContractBinding": {
+          "contractPath": "case-staging-topology/contract.json",
+          "canonicalJsonChecksum": "sha256:31314eaf064f3a11d9c93ed399378e3807a2686b4916033637cbcc73c07b6584",
+          "allowlistPath": "futureWorkloads.control.preexistingSecretRefs"
+        }
+      }
+    },
+    {
+      "component": "case-public-binding",
+      "order": 2,
+      "releaseSetPolicy": {
+        "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-case-public-binding",
+        "sourceRevisionFormat": "exact-40-lowercase-hex",
+        "immutableImageManifestRequired": true,
+        "immutableConfigDigestRequired": true,
+        "immutableLayerDigestsRequired": true,
+        "slsaProvenanceV1Required": true,
+        "spdx23Required": true,
+        "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true,
+        "imageRepositoryMustDifferFrom": "case-steward-control"
+      },
+      "logicalResourceInventory": {
+        "representation": "logical_only",
+        "pvcAllowed": false,
+        "pvAllowed": false,
+        "secretAllowed": false,
+        "tokenAllowed": false,
+        "rbacAllowed": false,
+        "exactControlChecksumReferencesOnly": true,
+        "allowedChecksumReferenceNames": [
+          "case-steward-control.slotChecksum",
+          "case-steward-control.privateOutboxChecksum"
+        ],
+        "publicAuthority": "none",
+        "imagePullSecretsAllowed": false,
+        "secretOrCredentialReferencesAllowed": false
+      }
+    },
+    {
+      "component": "case-restore-verifier",
+      "order": 3,
+      "releaseSetPolicy": {
+        "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-case-restore-verifier",
+        "sourceRevisionFormat": "exact-40-lowercase-hex",
+        "immutableImageManifestRequired": true,
+        "immutableConfigDigestRequired": true,
+        "immutableLayerDigestsRequired": true,
+        "slsaProvenanceV1Required": true,
+        "spdx23Required": true,
+        "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true
+      },
+      "logicalResourceInventory": {
+        "representation": "logical_only",
+        "isolated": true,
+        "operatorInvokedOnly": true,
+        "sourceWriteAllowed": false,
+        "publicIngressAllowed": false,
+        "userFacingEndpointAllowed": false,
+        "fluxManaged": false,
+        "imagePullSecretsAllowed": false,
+        "secretOrCredentialReferencesAllowed": false
+      }
+    }
+  ],
+  "inventoryChecksumPolicy": {
+    "algorithm": "sha256",
+    "encoding": "canonical-json",
+    "covers": [
+      "schemaVersion",
+      "mode",
+      "status",
+      "deploymentEnvironment",
+      "municipalityId",
+      "reconciliationAllowed",
+      "fluxHandoffAllowed",
+      "allowedKinds",
+      "protectedPolicyBootstrap",
+      "forbiddenResources",
+      "forbiddenSecrets",
+      "releaseSetVocabulary",
+      "components",
+      "liveEvidence.components",
+      "liveEvidence.resourceInventory",
+      "effects"
+    ]
+  },
+  "inventoryChecksum": null,
+  "liveEvidence": {
+    "components": [
+      {
+        "component": "case-steward-control",
+        "sourceRevision": null,
+        "attestedSourceRepository": null,
+        "attestedSourceRevision": null,
+        "attestedGitRef": null,
+        "imageRepository": null,
+        "manifestDigest": null,
+        "configDigest": null,
+        "layerDigests": null,
+        "provenanceAttestationDigest": null,
+        "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
+        "canonicalChecksums": {
+          "manifest": null,
+          "config": null,
+          "layers": null,
+          "provenance": null,
+          "sbom": null,
+          "releaseSet": null
+        }
+      },
+      {
+        "component": "case-public-binding",
+        "sourceRevision": null,
+        "attestedSourceRepository": null,
+        "attestedSourceRevision": null,
+        "attestedGitRef": null,
+        "imageRepository": null,
+        "manifestDigest": null,
+        "configDigest": null,
+        "layerDigests": null,
+        "provenanceAttestationDigest": null,
+        "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
+        "canonicalChecksums": {
+          "manifest": null,
+          "config": null,
+          "layers": null,
+          "provenance": null,
+          "sbom": null,
+          "releaseSet": null
+        }
+      },
+      {
+        "component": "case-restore-verifier",
+        "sourceRevision": null,
+        "attestedSourceRepository": null,
+        "attestedSourceRevision": null,
+        "attestedGitRef": null,
+        "imageRepository": null,
+        "manifestDigest": null,
+        "configDigest": null,
+        "layerDigests": null,
+        "provenanceAttestationDigest": null,
+        "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
+        "canonicalChecksums": {
+          "manifest": null,
+          "config": null,
+          "layers": null,
+          "provenance": null,
+          "sbom": null,
+          "releaseSet": null
+        }
+      }
+    ],
+    "resourceInventory": {
+      "controlSlotChecksum": null,
+      "controlPrivateOutboxChecksum": null,
+      "publicControlSlotReferenceChecksum": null,
+      "publicControlPrivateOutboxReferenceChecksum": null,
+      "restoreVerifierChecksum": null
+    },
+    "fluxHandoff": {
+      "namespace": null,
+      "reconcilerIdentity": null,
+      "sourceRevision": null,
+      "sourcePath": null,
+      "resourceNameAllowlistChecksum": null,
+      "resourceInventoryChecksum": null,
+      "rbacReceiptChecksum": null
+    }
+  },
+  "effects": {
+    "secretRead": false,
+    "secretWrite": false,
+    "clusterMutation": false,
+    "networkCall": false,
+    "imagePull": false,
+    "fluxReconciliation": false,
+    "civicMutation": false,
+    "treasuryMutation": false
+  },
+  "missingEvidence": [
+    "inventoryChecksum",
+    "liveEvidence.components[0].sourceRevision",
+    "liveEvidence.components[0].attestedSourceRepository",
+    "liveEvidence.components[0].attestedSourceRevision",
+    "liveEvidence.components[0].attestedGitRef",
+    "liveEvidence.components[0].imageRepository",
+    "liveEvidence.components[0].manifestDigest",
+    "liveEvidence.components[0].configDigest",
+    "liveEvidence.components[0].layerDigests",
+    "liveEvidence.components[0].provenanceAttestationDigest",
+    "liveEvidence.components[0].sbomArtifactDigest",
+    "liveEvidence.components[0].packageVisibility",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.receiptDigest",
+    "liveEvidence.components[0].canonicalChecksums.manifest",
+    "liveEvidence.components[0].canonicalChecksums.config",
+    "liveEvidence.components[0].canonicalChecksums.layers",
+    "liveEvidence.components[0].canonicalChecksums.provenance",
+    "liveEvidence.components[0].canonicalChecksums.sbom",
+    "liveEvidence.components[0].canonicalChecksums.releaseSet",
+    "liveEvidence.components[1].sourceRevision",
+    "liveEvidence.components[1].attestedSourceRepository",
+    "liveEvidence.components[1].attestedSourceRevision",
+    "liveEvidence.components[1].attestedGitRef",
+    "liveEvidence.components[1].imageRepository",
+    "liveEvidence.components[1].manifestDigest",
+    "liveEvidence.components[1].configDigest",
+    "liveEvidence.components[1].layerDigests",
+    "liveEvidence.components[1].provenanceAttestationDigest",
+    "liveEvidence.components[1].sbomArtifactDigest",
+    "liveEvidence.components[1].packageVisibility",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.receiptDigest",
+    "liveEvidence.components[1].canonicalChecksums.manifest",
+    "liveEvidence.components[1].canonicalChecksums.config",
+    "liveEvidence.components[1].canonicalChecksums.layers",
+    "liveEvidence.components[1].canonicalChecksums.provenance",
+    "liveEvidence.components[1].canonicalChecksums.sbom",
+    "liveEvidence.components[1].canonicalChecksums.releaseSet",
+    "liveEvidence.components[2].sourceRevision",
+    "liveEvidence.components[2].attestedSourceRepository",
+    "liveEvidence.components[2].attestedSourceRevision",
+    "liveEvidence.components[2].attestedGitRef",
+    "liveEvidence.components[2].imageRepository",
+    "liveEvidence.components[2].manifestDigest",
+    "liveEvidence.components[2].configDigest",
+    "liveEvidence.components[2].layerDigests",
+    "liveEvidence.components[2].provenanceAttestationDigest",
+    "liveEvidence.components[2].sbomArtifactDigest",
+    "liveEvidence.components[2].packageVisibility",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.receiptDigest",
+    "liveEvidence.components[2].canonicalChecksums.manifest",
+    "liveEvidence.components[2].canonicalChecksums.config",
+    "liveEvidence.components[2].canonicalChecksums.layers",
+    "liveEvidence.components[2].canonicalChecksums.provenance",
+    "liveEvidence.components[2].canonicalChecksums.sbom",
+    "liveEvidence.components[2].canonicalChecksums.releaseSet",
+    "liveEvidence.resourceInventory.controlSlotChecksum",
+    "liveEvidence.resourceInventory.controlPrivateOutboxChecksum",
+    "liveEvidence.resourceInventory.publicControlSlotReferenceChecksum",
+    "liveEvidence.resourceInventory.publicControlPrivateOutboxReferenceChecksum",
+    "liveEvidence.resourceInventory.restoreVerifierChecksum",
+    "liveEvidence.fluxHandoff.namespace",
+    "liveEvidence.fluxHandoff.reconcilerIdentity",
+    "liveEvidence.fluxHandoff.sourceRevision",
+    "liveEvidence.fluxHandoff.sourcePath",
+    "liveEvidence.fluxHandoff.resourceNameAllowlistChecksum",
+    "liveEvidence.fluxHandoff.resourceInventoryChecksum",
+    "liveEvidence.fluxHandoff.rbacReceiptChecksum"
+  ]
+}

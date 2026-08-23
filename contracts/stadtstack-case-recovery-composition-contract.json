@@ -1,0 +1,533 @@
+{
+  "schemaVersion": "stadtstack_case_recovery_composition_contract_v2",
+  "mode": "inert_review_only",
+  "status": "inert_review_only",
+  "deploymentEnvironment": "staging",
+  "municipalityId": "roebel-mueritz",
+  "reconciliationAllowed": false,
+  "fluxHandoffAllowed": false,
+  "allowedKinds": [],
+  "forbiddenResources": {
+    "documents": [],
+    "apiVersions": [],
+    "kinds": [],
+    "kubernetesObjects": [],
+    "fluxObjects": []
+  },
+  "forbiddenSecrets": {
+    "credentialValues": [],
+    "secretObjects": [],
+    "secretReferences": []
+  },
+  "protocols": {
+    "shutdownSeal": {
+      "schemaVersion": "case_shutdown_seal_v2",
+      "canonicalEncoding": "canonical-json",
+      "mode": "0600"
+    },
+    "recoveryAttestation": {
+      "schemaVersion": "staging_case_recovery_attestation_v2",
+      "canonicalEncoding": "canonical-json"
+    },
+    "recoveryPolicy": {
+      "schemaVersion": "staging_case_recovery_policy_v1",
+      "canonicalEncoding": "canonical-json"
+    },
+    "backupCatalog": {
+      "schemaVersion": "case_backup_catalog_locator_v1",
+      "canonicalEncoding": "canonical-json"
+    },
+    "recoveryGate": {
+      "schemaVersion": "staging_case_recovery_gate_v2",
+      "capability": "opaque-data-free-gate",
+      "serializableChecksum": false
+    },
+    "deploymentClaim": {
+      "schemaVersion": "case_durable_deployment_claim_v1",
+      "canonicalEncoding": "canonical-json"
+    },
+    "bootstrap": {
+      "schemaVersion": "case_store_bootstrap_v1",
+      "canonicalEncoding": "canonical-json"
+    },
+    "openEpoch": {
+      "schemaVersion": "case_open_epoch_v1",
+      "canonicalEncoding": "canonical-json"
+    },
+    "recoveryMarker": {
+      "schemaVersion": "case_recovery_activation_v2",
+      "canonicalEncoding": "canonical-json"
+    }
+  },
+  "imageResourceInventory": {
+    "schemaVersion": "stadtstack_case_image_resource_inventory_contract_v1",
+    "contractPath": "contracts/stadtstack-case-image-resource-inventory-contract.json",
+    "inventoryChecksum": null
+  },
+  "stages": [
+    {
+      "stage": "source_quiesce",
+      "status": "inert_review_only",
+      "protocolRefs": ["shutdownSeal", "deploymentClaim"],
+      "requirements": {
+        "databaseOwnerMustStop": true,
+        "walCheckpoint": "TRUNCATE",
+        "existingDurableClaimRequired": true,
+        "canonicalShutdownSealRequired": true,
+        "maintenanceWindowRequired": true,
+        "exactSourceControlBindingRequired": true,
+        "liveMutationAllowed": false
+      },
+      "evidence": {
+        "maintenanceStartedAtUtc": null,
+        "maintenanceCompletedAtUtc": null,
+        "sourceControlDeploymentBindingChecksum": null,
+        "sourceClaimChecksum": null,
+        "sourcePvcUid": null,
+        "sourcePvName": null,
+        "sourceSealChecksum": null,
+        "quiesceReceiptChecksum": null
+      }
+    },
+    {
+      "stage": "encrypted_bundle",
+      "status": "inert_review_only",
+      "protocolRefs": ["deploymentClaim", "shutdownSeal", "backupCatalog"],
+      "requirements": {
+        "encryptionRequired": true,
+        "canonicalDatabaseRequired": true,
+        "canonicalSourceClaimRequired": true,
+        "canonicalV2SealRequired": true,
+        "pinnedLocatorRequired": true,
+        "credentialMaterialIncluded": false
+      },
+      "bundle": {
+        "database": {
+          "encoding": "exact-sqlite-bytes",
+          "basename": null,
+          "byteLength": null,
+          "sha256": null
+        },
+        "sourceClaim": {
+          "schemaVersion": "case_durable_deployment_claim_v1",
+          "encoding": "canonical-json",
+          "claimChecksum": null
+        },
+        "sourceSeal": {
+          "schemaVersion": "case_shutdown_seal_v2",
+          "encoding": "canonical-json",
+          "mode": "0600",
+          "sealChecksum": null
+        },
+        "catalogLocator": {
+          "bucket": null,
+          "key": null,
+          "objectVersion": null,
+          "checksum": null
+        },
+        "completionReceiptLocator": {
+          "bucket": null,
+          "key": null,
+          "objectVersion": null,
+          "checksum": null,
+          "keyVersion": null
+        },
+        "encryptedManifestLocator": {
+          "bucket": null,
+          "key": null,
+          "objectVersion": null,
+          "checksum": null
+        },
+        "bundleChecksum": null
+      }
+    },
+    {
+      "stage": "fresh_target",
+      "status": "inert_review_only",
+      "protocolRefs": ["deploymentClaim", "recoveryPolicy"],
+      "requirements": {
+        "freshTargetRequired": true,
+        "targetMustBeDistinctFromSource": true,
+        "targetClaimMustBeNew": true,
+        "storageClassMustBePinned": true,
+        "sourceVolumeReuseAllowed": false,
+        "liveMutationAllowed": false
+      },
+      "target": {
+        "deploymentClaim": {
+          "schemaVersion": "case_durable_deployment_claim_v1",
+          "claimChecksum": null,
+          "releaseDigest": null,
+          "controlDeploymentBindingChecksum": null,
+          "pvc": {
+            "namespace": null,
+            "name": null,
+            "uid": null
+          },
+          "pvName": null,
+          "storageClass": null
+        }
+      }
+    },
+    {
+      "stage": "isolated_restore_verifier",
+      "status": "inert_review_only",
+      "protocolRefs": ["recoveryPolicy", "backupCatalog", "recoveryAttestation"],
+      "requirements": {
+        "isolatedRestoreRequired": true,
+        "sourceMustNotBeMounted": true,
+        "exactDatabaseRequired": true,
+        "createOnRestoreForbidden": true,
+        "exactSchemaRequired": true,
+        "baselineDominanceRequired": true,
+        "recoveryPolicyRequired": true,
+        "backupCatalogRequired": true,
+        "recoveryAttestationRequired": true,
+        "immutableRestoreVerifierRequired": true,
+        "sourceWriteMountAllowed": false,
+        "publicIngressAllowed": false,
+        "userFacingEndpointAllowed": false,
+        "credentialMaterialIncluded": false
+      },
+      "evidence": {
+        "recoveryPolicyChecksum": null,
+        "recoveryAttestationChecksum": null,
+        "restoreReportChecksum": null,
+        "restoreVerifierImageDigest": null,
+        "restoreVerifierProvenanceSha256": null,
+        "restoreVerifierSpdxSbomSha256": null,
+        "verifiedDatabaseSha256": null,
+        "verifiedSchemaChecksum": null
+      }
+    },
+    {
+      "stage": "restored_slots",
+      "status": "inert_review_only",
+      "protocolRefs": ["deploymentClaim", "recoveryAttestation"],
+      "requirements": {
+        "controlSlotMustReferenceTarget": true,
+        "publicSlotMustBePvcPvSecretRbacFree": true,
+        "publicSlotMustReferenceControlPrivateOutbox": true,
+        "publicSlotForbiddenSurfaces": ["pvc", "pv", "secret", "rbac"],
+        "publicAuthority": "none",
+        "sameCaseBindingLineRequired": true,
+        "liveMutationAllowed": false
+      },
+      "slots": {
+        "control": {
+          "targetClaimChecksum": null,
+          "targetPvcUid": null,
+          "targetPvName": null,
+          "releaseDigest": null,
+          "controlPrivateOutboxBindingChecksum": null,
+          "referenceChecksum": null
+        },
+        "public": {
+          "controlPrivateOutboxBindingChecksum": null,
+          "controlSlotReferenceChecksum": null,
+          "referenceChecksum": null
+        }
+      }
+    },
+    {
+      "stage": "flux_handoff",
+      "status": "inert_review_only",
+      "protocolRefs": ["recoveryGate", "recoveryAttestation", "deploymentClaim", "shutdownSeal"],
+      "requirements": {
+        "exactReceiptRequired": true,
+        "reviewedOperationsRevisionRequired": true,
+        "exactResourceInventoryChecksumRequired": true,
+        "fluxObjectAllowed": false,
+        "reconciliationAllowed": false,
+        "liveMutationAllowed": false
+      },
+      "handoffReceipt": {
+        "schemaVersion": "stadtstack_case_recovery_handoff_receipt_v1",
+        "status": "inert_review_only",
+        "canonicalEncoding": "canonical-json",
+        "checksumCovers": [
+          "schemaVersion",
+          "status",
+          "canonicalEncoding",
+          "operationsRevision",
+          "resourceInventoryChecksum",
+          "sourceClaimChecksum",
+          "targetClaimChecksum",
+          "targetPvcUid",
+          "targetPvName",
+          "releaseDigest",
+          "recoveryPolicyChecksum",
+          "recoveryAttestationChecksum"
+        ],
+        "operationsRevision": null,
+        "resourceInventoryChecksum": null,
+        "sourceClaimChecksum": null,
+        "targetClaimChecksum": null,
+        "targetPvcUid": null,
+        "targetPvName": null,
+        "releaseDigest": null,
+        "recoveryPolicyChecksum": null,
+        "recoveryAttestationChecksum": null,
+        "receiptChecksum": null
+      }
+    },
+    {
+      "stage": "recovery_activation",
+      "status": "inert_review_only",
+      "protocolRefs": ["recoveryGate", "recoveryAttestation", "deploymentClaim", "recoveryMarker"],
+      "requirements": {
+        "ownerLockRequired": true,
+        "exactRenewedRecoveryGateRequired": true,
+        "reviewedHandoffReceiptRequired": true,
+        "recoveryMarkerRequired": true,
+        "sourceToTargetClaimRotationRequired": true,
+        "bootstrapReceiptForbidden": true,
+        "openEpochReceiptForbidden": true,
+        "preBindFreshnessRequired": true,
+        "nonSealingAbortRequired": true,
+        "liveMutationAllowed": false
+      },
+      "evidence": {
+        "ownerLockReceiptChecksum": null,
+        "recoveryPolicyChecksum": null,
+        "recoveryAttestationChecksum": null,
+        "handoffReceiptChecksum": null,
+        "recoveryMarkerChecksum": null,
+        "sourceClaimChecksum": null,
+        "targetClaimChecksum": null,
+        "claimRotationReceiptChecksum": null,
+        "preBindFreshnessReceiptChecksum": null
+      }
+    }
+  ],
+  "liveEvidence": {
+    "source": {
+      "maintenanceStartedAtUtc": null,
+      "maintenanceCompletedAtUtc": null,
+      "sourceControlDeploymentBindingChecksum": null,
+      "claimChecksum": null,
+      "pvc": {
+        "namespace": null,
+        "name": null,
+        "uid": null
+      },
+      "pvName": null,
+      "releaseDigest": null,
+      "sealChecksum": null
+    },
+    "bundle": {
+      "databaseBasename": null,
+      "databaseByteLength": null,
+      "databaseSha256": null,
+      "sourceClaimChecksum": null,
+      "sourceSealChecksum": null,
+      "catalogLocator": {
+        "bucket": null,
+        "key": null,
+        "objectVersion": null,
+        "checksum": null
+      },
+      "completionReceiptLocator": {
+        "bucket": null,
+        "key": null,
+        "objectVersion": null,
+        "checksum": null,
+        "keyVersion": null
+      },
+      "encryptedManifestLocator": {
+        "bucket": null,
+        "key": null,
+        "objectVersion": null,
+        "checksum": null
+      },
+      "bundleChecksum": null
+    },
+    "target": {
+      "claimChecksum": null,
+      "pvc": {
+        "namespace": null,
+        "name": null,
+        "uid": null
+      },
+      "pvName": null,
+      "storageClass": null,
+      "releaseDigest": null
+    },
+    "restore": {
+      "recoveryPolicyChecksum": null,
+      "recoveryAttestationChecksum": null,
+      "restoreReportChecksum": null,
+      "restoreVerifierImageDigest": null,
+      "restoreVerifierProvenanceSha256": null,
+      "restoreVerifierSpdxSbomSha256": null,
+      "databaseSha256": null,
+      "schemaChecksum": null
+    },
+    "recoveryActivation": {
+      "ownerLockReceiptChecksum": null,
+      "recoveryPolicyChecksum": null,
+      "recoveryAttestationChecksum": null,
+      "handoffReceiptChecksum": null,
+      "recoveryMarkerChecksum": null,
+      "sourceClaimChecksum": null,
+      "targetClaimChecksum": null,
+      "claimRotationReceiptChecksum": null,
+      "preBindFreshnessReceiptChecksum": null
+    },
+    "slots": {
+      "controlReferenceChecksum": null,
+      "controlPrivateOutboxBindingChecksum": null,
+      "publicControlSlotReferenceChecksum": null,
+      "publicControlPrivateOutboxBindingChecksum": null,
+      "publicReferenceChecksum": null
+    },
+    "fluxHandoff": {
+      "operationsRevision": null,
+      "resourceInventoryChecksum": null,
+      "receiptChecksum": null
+    }
+  },
+  "effects": {
+    "secretRead": false,
+    "secretWrite": false,
+    "clusterMutation": false,
+    "civicMutation": false,
+    "treasuryMutation": false,
+    "fluxReconciliation": false
+  },
+  "missingEvidence": [
+    "imageResourceInventory.inventoryChecksum",
+    "stages[0].evidence.maintenanceStartedAtUtc",
+    "stages[0].evidence.maintenanceCompletedAtUtc",
+    "stages[0].evidence.sourceControlDeploymentBindingChecksum",
+    "stages[0].evidence.sourceClaimChecksum",
+    "stages[0].evidence.sourcePvcUid",
+    "stages[0].evidence.sourcePvName",
+    "stages[0].evidence.sourceSealChecksum",
+    "stages[0].evidence.quiesceReceiptChecksum",
+    "stages[1].bundle.database.basename",
+    "stages[1].bundle.database.byteLength",
+    "stages[1].bundle.database.sha256",
+    "stages[1].bundle.sourceClaim.claimChecksum",
+    "stages[1].bundle.sourceSeal.sealChecksum",
+    "stages[1].bundle.catalogLocator.bucket",
+    "stages[1].bundle.catalogLocator.key",
+    "stages[1].bundle.catalogLocator.objectVersion",
+    "stages[1].bundle.catalogLocator.checksum",
+    "stages[1].bundle.completionReceiptLocator.bucket",
+    "stages[1].bundle.completionReceiptLocator.key",
+    "stages[1].bundle.completionReceiptLocator.objectVersion",
+    "stages[1].bundle.completionReceiptLocator.checksum",
+    "stages[1].bundle.completionReceiptLocator.keyVersion",
+    "stages[1].bundle.encryptedManifestLocator.bucket",
+    "stages[1].bundle.encryptedManifestLocator.key",
+    "stages[1].bundle.encryptedManifestLocator.objectVersion",
+    "stages[1].bundle.encryptedManifestLocator.checksum",
+    "stages[1].bundle.bundleChecksum",
+    "stages[2].target.deploymentClaim.claimChecksum",
+    "stages[2].target.deploymentClaim.releaseDigest",
+    "stages[2].target.deploymentClaim.controlDeploymentBindingChecksum",
+    "stages[2].target.deploymentClaim.pvc.namespace",
+    "stages[2].target.deploymentClaim.pvc.name",
+    "stages[2].target.deploymentClaim.pvc.uid",
+    "stages[2].target.deploymentClaim.pvName",
+    "stages[2].target.deploymentClaim.storageClass",
+    "stages[3].evidence.recoveryPolicyChecksum",
+    "stages[3].evidence.recoveryAttestationChecksum",
+    "stages[3].evidence.restoreReportChecksum",
+    "stages[3].evidence.restoreVerifierImageDigest",
+    "stages[3].evidence.restoreVerifierProvenanceSha256",
+    "stages[3].evidence.restoreVerifierSpdxSbomSha256",
+    "stages[3].evidence.verifiedDatabaseSha256",
+    "stages[3].evidence.verifiedSchemaChecksum",
+    "stages[4].slots.control.targetClaimChecksum",
+    "stages[4].slots.control.targetPvcUid",
+    "stages[4].slots.control.targetPvName",
+    "stages[4].slots.control.releaseDigest",
+    "stages[4].slots.control.controlPrivateOutboxBindingChecksum",
+    "stages[4].slots.control.referenceChecksum",
+    "stages[4].slots.public.controlPrivateOutboxBindingChecksum",
+    "stages[4].slots.public.controlSlotReferenceChecksum",
+    "stages[4].slots.public.referenceChecksum",
+    "stages[5].handoffReceipt.operationsRevision",
+    "stages[5].handoffReceipt.resourceInventoryChecksum",
+    "stages[5].handoffReceipt.sourceClaimChecksum",
+    "stages[5].handoffReceipt.targetClaimChecksum",
+    "stages[5].handoffReceipt.targetPvcUid",
+    "stages[5].handoffReceipt.targetPvName",
+    "stages[5].handoffReceipt.releaseDigest",
+    "stages[5].handoffReceipt.recoveryPolicyChecksum",
+    "stages[5].handoffReceipt.recoveryAttestationChecksum",
+    "stages[5].handoffReceipt.receiptChecksum",
+    "stages[6].evidence.ownerLockReceiptChecksum",
+    "stages[6].evidence.recoveryPolicyChecksum",
+    "stages[6].evidence.recoveryAttestationChecksum",
+    "stages[6].evidence.handoffReceiptChecksum",
+    "stages[6].evidence.recoveryMarkerChecksum",
+    "stages[6].evidence.sourceClaimChecksum",
+    "stages[6].evidence.targetClaimChecksum",
+    "stages[6].evidence.claimRotationReceiptChecksum",
+    "stages[6].evidence.preBindFreshnessReceiptChecksum",
+    "liveEvidence.source.maintenanceStartedAtUtc",
+    "liveEvidence.source.maintenanceCompletedAtUtc",
+    "liveEvidence.source.sourceControlDeploymentBindingChecksum",
+    "liveEvidence.source.claimChecksum",
+    "liveEvidence.source.pvc.namespace",
+    "liveEvidence.source.pvc.name",
+    "liveEvidence.source.pvc.uid",
+    "liveEvidence.source.pvName",
+    "liveEvidence.source.releaseDigest",
+    "liveEvidence.source.sealChecksum",
+    "liveEvidence.bundle.databaseBasename",
+    "liveEvidence.bundle.databaseByteLength",
+    "liveEvidence.bundle.databaseSha256",
+    "liveEvidence.bundle.sourceClaimChecksum",
+    "liveEvidence.bundle.sourceSealChecksum",
+    "liveEvidence.bundle.catalogLocator.bucket",
+    "liveEvidence.bundle.catalogLocator.key",
+    "liveEvidence.bundle.catalogLocator.objectVersion",
+    "liveEvidence.bundle.catalogLocator.checksum",
+    "liveEvidence.bundle.completionReceiptLocator.bucket",
+    "liveEvidence.bundle.completionReceiptLocator.key",
+    "liveEvidence.bundle.completionReceiptLocator.objectVersion",
+    "liveEvidence.bundle.completionReceiptLocator.checksum",
+    "liveEvidence.bundle.completionReceiptLocator.keyVersion",
+    "liveEvidence.bundle.encryptedManifestLocator.bucket",
+    "liveEvidence.bundle.encryptedManifestLocator.key",
+    "liveEvidence.bundle.encryptedManifestLocator.objectVersion",
+    "liveEvidence.bundle.encryptedManifestLocator.checksum",
+    "liveEvidence.bundle.bundleChecksum",
+    "liveEvidence.target.claimChecksum",
+    "liveEvidence.target.pvc.namespace",
+    "liveEvidence.target.pvc.name",
+    "liveEvidence.target.pvc.uid",
+    "liveEvidence.target.pvName",
+    "liveEvidence.target.storageClass",
+    "liveEvidence.target.releaseDigest",
+    "liveEvidence.restore.recoveryPolicyChecksum",
+    "liveEvidence.restore.recoveryAttestationChecksum",
+    "liveEvidence.restore.restoreReportChecksum",
+    "liveEvidence.restore.restoreVerifierImageDigest",
+    "liveEvidence.restore.restoreVerifierProvenanceSha256",
+    "liveEvidence.restore.restoreVerifierSpdxSbomSha256",
+    "liveEvidence.restore.databaseSha256",
+    "liveEvidence.restore.schemaChecksum",
+    "liveEvidence.recoveryActivation.ownerLockReceiptChecksum",
+    "liveEvidence.recoveryActivation.recoveryPolicyChecksum",
+    "liveEvidence.recoveryActivation.recoveryAttestationChecksum",
+    "liveEvidence.recoveryActivation.handoffReceiptChecksum",
+    "liveEvidence.recoveryActivation.recoveryMarkerChecksum",
+    "liveEvidence.recoveryActivation.sourceClaimChecksum",
+    "liveEvidence.recoveryActivation.targetClaimChecksum",
+    "liveEvidence.recoveryActivation.claimRotationReceiptChecksum",
+    "liveEvidence.recoveryActivation.preBindFreshnessReceiptChecksum",
+    "liveEvidence.slots.controlReferenceChecksum",
+    "liveEvidence.slots.controlPrivateOutboxBindingChecksum",
+    "liveEvidence.slots.publicControlSlotReferenceChecksum",
+    "liveEvidence.slots.publicControlPrivateOutboxBindingChecksum",
+    "liveEvidence.slots.publicReferenceChecksum",
+    "liveEvidence.fluxHandoff.operationsRevision",
+    "liveEvidence.fluxHandoff.resourceInventoryChecksum",
+    "liveEvidence.fluxHandoff.receiptChecksum"
+  ]
+}

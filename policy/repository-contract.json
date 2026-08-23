@@ -36,7 +36,8 @@
       "Deployment",
       "Ingress",
       "Service",
-      "NetworkPolicy"
+      "NetworkPolicy",
+      "ServiceAccount"
     ],
     "secretObjectsAllowed": false,
     "secretValuesAllowed": false,
