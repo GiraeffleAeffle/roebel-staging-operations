@@ -251,6 +251,8 @@ def verify_deployment(root: Path, component: str, head: dict[str, Any]) -> dict[
     by_name = {item["name"]: item for item in env}
     if component == "public-mecky":
         expected_chat = {
+            "STADTSTACK_E2E_MODE": "synthetic-reviewed",
+            "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED": "true",
             "MECKY_CHAT_PORT": "18084",
             "MECKY_CHAT_BIND_HOST": "0.0.0.0",
             "MECKY_CHAT_PER_MINUTE": "10",

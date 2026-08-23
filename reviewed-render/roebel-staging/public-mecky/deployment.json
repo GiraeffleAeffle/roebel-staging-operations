@@ -81,6 +81,10 @@
                 "value": "synthetic-reviewed"
               },
               {
+                "name": "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED",
+                "value": "true"
+              },
+              {
                 "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE",
                 "valueFrom": {
                   "configMapKeyRef": {
