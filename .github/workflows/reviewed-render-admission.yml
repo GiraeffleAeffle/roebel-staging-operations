@@ -50,7 +50,7 @@ jobs:
       - name: Verify pull request with protected base policy
         if: github.event_name == 'pull_request_target'
         run: |
-          python3 -m unittest -v base/scripts/test_verify_reviewed_render.py
+          python3 -m unittest -v base/scripts/test_verify_reviewed_render.py base/tests/test_stadtstack_case_runtime_contract.py
           python3 base/scripts/verify-reviewed-render.py --root candidate --base-root base
 
       - name: Check out protected main
@@ -65,5 +65,5 @@ jobs:
       - name: Verify protected main
         if: github.event_name == 'push'
         run: |
-          python3 -m unittest -v candidate/scripts/test_verify_reviewed_render.py
+          python3 -m unittest -v candidate/scripts/test_verify_reviewed_render.py candidate/tests/test_stadtstack_case_runtime_contract.py
           python3 candidate/scripts/verify-reviewed-render.py --root candidate

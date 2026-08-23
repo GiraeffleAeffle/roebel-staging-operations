@@ -74,6 +74,41 @@ composition, exact image evidence, and the required staff-gateway decision
 before any Flux reference may be added. Routine image promotion preserves every
 runtime-gate byte unchanged.
 
+## Inert case-state recovery activation gate
+
+`contracts/stadtstack-case-runtime-contract.json` records the next, separate
+recovery ceremony. The outer record remains
+`stadtstack_case_runtime_contract_v1` with `mode: inert_review_only`, an empty
+allowed-kind set and both reconciliation flags false. Its
+`recoveryActivationGate` evidence inventory has the distinct schema
+`stadtstack_case_recovery_evidence_inventory_v1` and status `blocked`; it
+cannot be confused with Stadtstack's opaque, data-free runtime gate. The
+inventory is evidence, not a controller: it creates no Kubernetes object, Job,
+PVC, Deployment, Secret, Flux object, bucket credential, or object-store
+request.
+
+The gate reserves the staging/`roebel-mueritz` scope and the exact source and
+target PVC identity, target PV, UUIDv7 `recoveryOperationId`, independently
+reviewed `controlDeploymentBindingChecksum`, and immutable
+`restoreVerifierReleaseDigest`. Its catalog record keeps the
+`catalogLocatorChecksum`, CAS generation, backup ID, and exact completion
+receipt/encrypted-manifest object locator. Each locator pins bucket, key,
+object version, and checksum; the completion receipt additionally pins its
+key version. The operational signer is an active Ed25519 signer with purpose
+`staging_case_recovery_attestation`; its key ID/version, DER SPKI and SHA-256
+pin, and active-from/active-until window remain evidence-bound fields.
+
+The policy limits recovery age to exactly 86400 seconds and restore duration
+to exactly 14400 seconds. The seal binding reserves the shutdown-seal,
+database, release, WAL-checkpoint, and recovery-evidence checksums. The
+restore report requires the independently recomputed
+`restoreReportChecksum` and the exact verifier release pin. The attestation
+reserves its checksum, Ed25519 signature, issued/expiry window, seal, backup,
+PVC, store, and signer pins.
+Every live value is currently `null` and appears once, in deterministic order,
+in `missingEvidence`; placeholders, partial evidence, ready status, and
+reconciliation are rejected by the focused verifier and tests.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
@@ -143,6 +178,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_reviewed_re
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_case_staging_topology.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-case-staging-topology.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests/test_stadtstack_case_runtime_contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-runtime-contract.py --root .
 ```
 
 The source remains safe to read anonymously. Runtime credentials and civic
