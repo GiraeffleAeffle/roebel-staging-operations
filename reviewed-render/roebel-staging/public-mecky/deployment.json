@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:e182a7517fea76479a6a9164bdb5b5f1fea2ad28a682aed976f4ae0863229977",
-      "stadtstack.io/source-revision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df"
+      "stadtstack.io/release-set-sha256": "sha256:e498a7a8064bc62cad9e6be64bdbd6db77c7c121069ba0433ae61ae304173adf",
+      "stadtstack.io/source-revision": "ef50ec8bf9ec1962a81b753d200b0fcd2a0bf616"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "9171ceb3c202d7a61f3b00cf653949510a2dc8df",
+          "stadtstack.io/source-revision": "ef50ec8bf9ec1962a81b753d200b0fcd2a0bf616",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -125,6 +125,22 @@
                 "value": "60000"
               },
               {
+                "name": "MECKY_CHAT_PORT",
+                "value": "18084"
+              },
+              {
+                "name": "MECKY_CHAT_BIND_HOST",
+                "value": "0.0.0.0"
+              },
+              {
+                "name": "MECKY_CHAT_PER_MINUTE",
+                "value": "10"
+              },
+              {
+                "name": "MECKY_CHAT_PER_DAY",
+                "value": "100"
+              },
+              {
                 "name": "WATCH_INTERVAL_SECONDS",
                 "value": "5"
               },
@@ -157,9 +173,38 @@
                 }
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:a2fa6db03406105460d8e7b0d3ec6b34e9ee860a0b80f572f8bcb533ff7f206f",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:8e9d9746f6ac7bf8db791682cca6c63ca2950586e04f5bbf3f54abe75f66b08f",
             "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "httpGet": {
+                "path": "/healthz",
+                "port": "mecky-chat",
+                "scheme": "HTTP"
+              },
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
+            },
             "name": "public-mecky",
+            "ports": [
+              {
+                "containerPort": 18084,
+                "name": "mecky-chat",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "httpGet": {
+                "path": "/healthz",
+                "port": "mecky-chat",
+                "scheme": "HTTP"
+              },
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
+            },
             "resources": {
               "limits": {
                 "cpu": "500m",
@@ -178,6 +223,17 @@
                 ]
               },
               "readOnlyRootFilesystem": true
+            },
+            "startupProbe": {
+              "failureThreshold": 30,
+              "httpGet": {
+                "path": "/healthz",
+                "port": "mecky-chat",
+                "scheme": "HTTP"
+              },
+              "periodSeconds": 2,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
             },
             "terminationMessagePath": "/dev/termination-log",
             "terminationMessagePolicy": "File",

@@ -61,6 +61,8 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/live-preconditions.json",
     f"{RENDER_ROOT}/public-mecky/deployment.json",
     f"{RENDER_ROOT}/public-mecky/kustomization.yaml",
+    f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
+    f"{RENDER_ROOT}/public-mecky/service.json",
     f"{RENDER_ROOT}/web/deployment.json",
     f"{RENDER_ROOT}/web/kustomization.yaml",
 }
@@ -149,7 +151,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment"],
+            "allowedKinds": ["Deployment", "Service", "NetworkPolicy"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -242,14 +244,102 @@ def verify_deployment(root: Path, component: str, head: dict[str, Any]) -> dict[
             name = env.get("name", "")
             if isinstance(name, str) and re.search(r"(?:SECRET|TOKEN|PASSWORD|API_KEY)$", name):
                 require("value" not in env and "valueFrom" in env, f"{component} literal secret-shaped environment value forbidden: {name}")
+    env = primary[0].get("env", [])
+    require(isinstance(env, list), f"{component} environment invalid")
+    names = [item.get("name") for item in env if isinstance(item, dict)]
+    require(len(names) == len(env) and len(names) == len(set(names)), f"{component} environment names invalid or repeated")
+    by_name = {item["name"]: item for item in env}
+    if component == "public-mecky":
+        expected_chat = {
+            "MECKY_CHAT_PORT": "18084",
+            "MECKY_CHAT_BIND_HOST": "0.0.0.0",
+            "MECKY_CHAT_PER_MINUTE": "10",
+            "MECKY_CHAT_PER_DAY": "100",
+        }
+        for name, value in expected_chat.items():
+            require(by_name.get(name) == {"name": name, "value": value}, f"public-mecky {name} binding invalid")
+        require(primary[0].get("ports") == [{"containerPort": 18084, "name": "mecky-chat", "protocol": "TCP"}], "public-mecky chat port invalid")
+        expected_probe = {
+            "failureThreshold": 3,
+            "httpGet": {"path": "/healthz", "port": "mecky-chat", "scheme": "HTTP"},
+            "periodSeconds": 10,
+            "successThreshold": 1,
+            "timeoutSeconds": 3,
+        }
+        require(primary[0].get("readinessProbe") == expected_probe, "public-mecky readiness probe invalid")
+        require(primary[0].get("livenessProbe") == {**expected_probe, "periodSeconds": 20}, "public-mecky liveness probe invalid")
+        require(primary[0].get("startupProbe") == {**expected_probe, "failureThreshold": 30, "periodSeconds": 2}, "public-mecky startup probe invalid")
+    else:
+        require(by_name.get("PUBLIC_MECKY_CHAT_URL") == {
+            "name": "PUBLIC_MECKY_CHAT_URL",
+            "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084",
+        }, "Web Public Mecky URL invalid")
     return deployment
 
 
+def verify_public_mecky_service(root: Path) -> dict[str, Any]:
+    service = load_json(root / RENDER_ROOT / "public-mecky/service.json")
+    require(service == {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "labels": {
+                "app.kubernetes.io/component": "public-mecky",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none",
+            },
+            "name": "public-mecky",
+            "namespace": "stadtstack-roebel-staging-lab",
+        },
+        "spec": {
+            "ports": [{"name": "mecky-chat", "port": 18084, "protocol": "TCP", "targetPort": "mecky-chat"}],
+            "selector": {
+                "app.kubernetes.io/component": "public-mecky",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+            },
+            "type": "ClusterIP",
+        },
+    }, "Public Mecky Service drift")
+    return service
+
+
+def verify_public_mecky_network_policy(root: Path) -> dict[str, Any]:
+    policy = load_json(root / RENDER_ROOT / "public-mecky/networkpolicy.json")
+    require(policy == {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "labels": {
+                "app.kubernetes.io/component": "public-mecky",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none",
+            },
+            "name": "public-mecky-chat-from-web",
+            "namespace": "stadtstack-roebel-staging-lab",
+        },
+        "spec": {
+            "ingress": [{
+                "from": [{
+                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"}},
+                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "roebel-web-presentation"}},
+                }],
+                "ports": [{"port": 18084, "protocol": "TCP"}],
+            }],
+            "podSelector": {"matchLabels": {
+                "app.kubernetes.io/component": "public-mecky",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+            }},
+            "policyTypes": ["Ingress"],
+        },
+    }, "Public Mecky NetworkPolicy drift")
+    return policy
+
+
 def verify_kustomizations(root: Path) -> None:
-    expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n"
-    for component in COMPONENT_ORDER:
-        directory = COMPONENTS[component]["directory"]
-        require((root / RENDER_ROOT / directory / "kustomization.yaml").read_text() == expected, f"{component} Flux path widened")
+    public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+    web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n"
+    require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
+    require((root / RENDER_ROOT / "web/kustomization.yaml").read_text() == web_expected, "roebel-web-staging Flux path widened")
 
 
 def expected_patch_value(component: str, path: str, head: dict[str, Any]) -> str:
@@ -307,11 +397,14 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
-    objects = [verify_deployment(root, component, head) for component in COMPONENT_ORDER]
+    deployments = {component: verify_deployment(root, component, head) for component in COMPONENT_ORDER}
+    service = verify_public_mecky_service(root)
+    network_policy = verify_public_mecky_network_policy(root)
+    objects = [deployments["public-mecky"], service, network_policy, deployments["roebel-web-staging"]]
     require(integrity["desiredRenderSha256"] == digest({"nextEnvironmentHead": head, "objects": objects}), "reviewed render checksum mismatch")
     verify_kustomizations(root)
     live = verify_live_preconditions(root, head)
-    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "live": live}
+    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "deployments": deployments, "live": live}
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
@@ -334,8 +427,8 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     require(changed, "promotion must change at least one component")
     require(any(candidate_components[component]["sourceRevision"] == candidate["head"]["promotionRevision"] for component in changed), "promotion revision is not bound to a changed component")
     base_images = {
-        component: next(container for container in base["objects"][index]["spec"]["template"]["spec"]["containers"] if container.get("name") == COMPONENTS[component]["container"])["image"]
-        for index, component in enumerate(COMPONENT_ORDER)
+        component: next(container for container in base["deployments"][component]["spec"]["template"]["spec"]["containers"] if container.get("name") == COMPONENTS[component]["container"])["image"]
+        for component in COMPONENT_ORDER
     }
     for index, component in enumerate(COMPONENT_ORDER):
         require(candidate["live"]["preconditions"][index]["currentImage"] == base_images[component], f"{component} live CAS image does not equal protected base image")

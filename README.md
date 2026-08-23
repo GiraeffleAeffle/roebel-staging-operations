@@ -1,10 +1,13 @@
 # Röbel staging operations
 
 This public repository is the value-free, reviewed desired-state source for
-exactly two existing Röbel staging Deployments:
+exactly two existing Röbel staging Deployments and the fixed, internal-only
+Public Mecky chat network boundary:
 
 - `stadtstack-roebel-web-preview/roebel-web-presentation`
 - `stadtstack-roebel-staging-lab/public-mecky`
+- `stadtstack-roebel-staging-lab/Service/public-mecky`
+- `stadtstack-roebel-staging-lab/NetworkPolicy/public-mecky-chat-from-web`
 
 It is deliberately not an infrastructure repository and not a civic record.
 It contains immutable image digests, source revisions, checksums, Kubernetes
@@ -52,14 +55,18 @@ resources, civic publication state, governance state, or treasury state.
 - `main` is protected by the exact `reviewed-render-admission` check, stale
   review dismissal, CODEOWNERS review, conversation resolution, linear
   history, and force-push/deletion denial.
-- Ordinary promotion pull requests may change only the seven files below
-  `reviewed-render/roebel-staging`.
+- Ordinary promotion pull requests may change only the generated environment
+  head, integrity receipt, live preconditions and two Deployment image bindings
+  below `reviewed-render/roebel-staging`. The fixed Service and NetworkPolicy
+  are preserved byte-for-byte by routine promotions.
 - The complete previous head is the compare-and-swap boundary.
 - Images are exact `ghcr.io/...@sha256:...` references with
   `imagePullPolicy: IfNotPresent`; tags are rejected.
 - The verifier rejects extra files, symlinks, Secret payload-shaped fields,
   literal values for secret-shaped environment names, runtime metadata, and
-  any object other than the two exact Deployments.
+  any object other than the two exact Deployments, one ClusterIP Service and
+  one ingress-only NetworkPolicy. The Service has no public Ingress and the
+  policy admits only the exact Web namespace and pod labels on TCP 18084.
 
 Run the same check locally:
 
@@ -70,3 +77,15 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
 
 The source remains safe to read anonymously. Runtime credentials and civic
 authority stay outside Git and outside Flux.
+
+## Fixed network-boundary bootstrap
+
+Adding the Public Mecky ClusterIP and ingress-only NetworkPolicy is a protected
+policy migration, not an ordinary image promotion. The admission workflow
+deliberately loads its verifier from protected `main`, whose original closed
+file set cannot admit new Kubernetes kinds. The migration must therefore be
+reviewed and tested as one exact-head bootstrap, merged without widening the
+routine automation identity, and followed by immediate restoration of the
+normal review rule. After that bootstrap, every later Release Set promotion is
+again admitted by the protected-base verifier and cannot change either network
+object.

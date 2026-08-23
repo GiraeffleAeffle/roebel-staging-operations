@@ -33,7 +33,9 @@
   },
   "publicMetadataBoundary": {
     "allowedKinds": [
-      "Deployment"
+      "Deployment",
+      "Service",
+      "NetworkPolicy"
     ],
     "secretObjectsAllowed": false,
     "secretValuesAllowed": false,
