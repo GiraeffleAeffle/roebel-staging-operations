@@ -3,24 +3,24 @@
   "kind": "Service",
   "metadata": {
     "labels": {
-      "app.kubernetes.io/component": "case-public-binding",
+      "app.kubernetes.io/component": "case-steward-control",
       "app.kubernetes.io/part-of": "roebel-case-staging",
       "stadtstack.io/authority": "none"
     },
-    "name": "roebel-case-public-binding",
+    "name": "roebel-case-steward-control-private-outbox",
     "namespace": "stadtstack-roebel-staging-lab"
   },
   "spec": {
     "ports": [
       {
-        "name": "public",
-        "port": 18086,
+        "name": "private-outbox",
+        "port": 18087,
         "protocol": "TCP",
-        "targetPort": 18086
+        "targetPort": 18087
       }
     ],
     "selector": {
-      "app.kubernetes.io/component": "case-public-binding",
+      "app.kubernetes.io/component": "case-steward-control",
       "app.kubernetes.io/part-of": "roebel-case-staging"
     },
     "type": "ClusterIP"
