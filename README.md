@@ -109,6 +109,45 @@ Every live value is currently `null` and appears once, in deterministic order,
 in `missingEvidence`; placeholders, partial evidence, ready status, and
 reconciliation are rejected by the focused verifier and tests.
 
+## Inert recovery composition review contract (v2)
+
+`contracts/stadtstack-case-recovery-composition-contract.json` is the
+Operations-side composition record for the same ceremony. It is intentionally
+separate from the application evidence inventory: it describes how a future
+review will connect the application protocols without becoming an activation
+controller. Its status is `inert_review_only`; it has no allowed kinds, no
+resource documents, no Secret or credential material, and no Flux object.
+
+The protocol pins are the current v2 boundaries: `case_shutdown_seal_v2`,
+`staging_case_recovery_attestation_v2`, `staging_case_recovery_gate_v2`,
+`case_durable_deployment_claim_v1`, `case_store_bootstrap_v1`,
+`case_open_epoch_v1`, and the `case_recovery_activation_v2` recovery marker.
+The review stages are deliberately ordered:
+
+1. Quiesce the source owner and obtain the canonical v2 shutdown seal.
+2. Produce an encrypted bundle containing the exact SQLite bytes, canonical
+   source deployment claim, canonical v2 seal, and pinned object locators and
+   checksums.
+3. Prove a fresh target claim with distinct PVC/PV identity and a pinned
+   StorageClass; the source volume may not be reused.
+4. Restore and verify in isolation, with no database creation, exact schema
+   verification, baseline-dominance proof, and the v2 recovery marker.
+5. Bind the restored control and public slots to the exact target claim.
+6. Emit a future exact handoff receipt. This is a receipt shape only, not a
+   Flux resource and not permission to reconcile.
+
+All live stage and aggregate evidence remains `null` and is enumerated in
+`missingEvidence`. The remaining blockers are the source PVC/claim and clean
+seal, encrypted backup catalog and object-lock policy, restore verifier
+release/SBOM, fresh target PVC/PV/StorageClass identity, isolated restore
+report, control/public slot references, and the separately reviewed exact
+handoff receipt. Until those facts are independently reviewed, this repository
+cannot read credentials, mutate storage, create a restore job, activate a
+workload, or hand anything to Flux. The protected-base render verifier checks
+this contract on every tree and rejects duplicate keys, open shapes, resource
+documents, secret-shaped values, malformed identifiers, and cross-binding
+drift.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
@@ -180,6 +219,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_case_stagin
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-case-staging-topology.py --root .
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests/test_stadtstack_case_runtime_contract.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-runtime-contract.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v tests/test_stadtstack-case-recovery-composition-contract.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-recovery-composition-contract.py --root .
 ```
 
 The source remains safe to read anonymously. Runtime credentials and civic
