@@ -59,12 +59,15 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/head.json",
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
     f"{RENDER_ROOT}/public-mecky/deployment.json",
     f"{RENDER_ROOT}/public-mecky/kustomization.yaml",
     f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
     f"{RENDER_ROOT}/public-mecky/service.json",
     f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/ingress.json",
     f"{RENDER_ROOT}/web/kustomization.yaml",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
 }
 
 ALLOWED_PATCH_PATHS = {
@@ -151,7 +154,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment", "Service", "NetworkPolicy"],
+            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -337,9 +340,245 @@ def verify_public_mecky_network_policy(root: Path) -> dict[str, Any]:
     return policy
 
 
+def verify_web_network_policy(root: Path) -> dict[str, Any]:
+    policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
+    require(policy == {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "labels": {
+                "app.kubernetes.io/component": "readonly-presentation",
+                "app.kubernetes.io/name": "roebel-web-presentation",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none",
+            },
+            "name": "roebel-web-presentation",
+            "namespace": "stadtstack-roebel-web-preview",
+        },
+        "spec": {
+            "egress": [
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "kube-system"
+                            }
+                        },
+                        "podSelector": {
+                            "matchLabels": {"k8s-app": "kube-dns"}
+                        },
+                    }],
+                    "ports": [
+                        {"port": 53, "protocol": "UDP"},
+                        {"port": 53, "protocol": "TCP"},
+                    ],
+                },
+                {
+                    "to": [{"ipBlock": {"cidr": "77.42.11.9/32"}}],
+                    "ports": [{"port": 443, "protocol": "TCP"}],
+                },
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+                            }
+                        },
+                        "podSelector": {
+                            "matchLabels": {
+                                "app.kubernetes.io/component": "public-mecky",
+                                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                            }
+                        },
+                    }],
+                    "ports": [{"port": 18084, "protocol": "TCP"}],
+                },
+            ],
+            "ingress": [{
+                "from": [
+                    {"namespaceSelector": {
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": "ingress-system"
+                        }
+                    }},
+                    {"ipBlock": {"cidr": "10.42.0.10/32"}},
+                    {"ipBlock": {"cidr": "10.42.0.11/32"}},
+                    {"ipBlock": {"cidr": "10.42.0.12/32"}},
+                    {"ipBlock": {"cidr": "10.244.0.0/32"}},
+                    {"ipBlock": {"cidr": "10.244.1.0/32"}},
+                    {"ipBlock": {"cidr": "10.244.2.0/32"}},
+                    {"ipBlock": {"cidr": "10.244.0.1/32"}},
+                    {"ipBlock": {"cidr": "10.244.1.1/32"}},
+                    {"ipBlock": {"cidr": "10.244.2.1/32"}},
+                ],
+                "ports": [{"port": 8080, "protocol": "TCP"}],
+            }],
+            "podSelector": {
+                "matchLabels": {"app.kubernetes.io/name": "roebel-web-presentation"}
+            },
+            "policyTypes": ["Ingress", "Egress"],
+        },
+    }, "Web NetworkPolicy drift")
+    return policy
+
+
+def verify_web_ingress(root: Path) -> dict[str, Any]:
+    ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
+    require(ingress == {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {
+            "annotations": {
+                "haproxy-ingress.github.io/config-backend": (
+                    "http-response set-header X-Stadtstack-Public-Boundary roebel-web-readonly-presentation\n"
+                    "http-response set-header X-Robots-Tag noindex,nofollow,noarchive\n"
+                    "http-response set-header X-Frame-Options DENY\n"
+                    "http-response set-header X-Content-Type-Options nosniff\n"
+                    "http-response set-header Referrer-Policy no-referrer\n"
+                    "http-response set-header Content-Security-Policy \"default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://roebel-stadtstack.agentcart.eu; worker-src 'self' blob:;\""
+                ),
+                "haproxy-ingress.github.io/config-backend-early": (
+                    "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
+                    "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+                    "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }"
+                ),
+            },
+            "labels": {
+                "app.kubernetes.io/component": "readonly-presentation",
+                "app.kubernetes.io/name": "roebel-web-presentation",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none",
+            },
+            "name": "roebel-web-presentation",
+            "namespace": "stadtstack-roebel-web-preview",
+        },
+        "spec": {
+            "ingressClassName": "haproxy",
+            "rules": [{
+                "host": "roebel-web.staging.agentcart.eu",
+                "http": {
+                    "paths": [
+                        {
+                            "backend": {"service": {
+                                "name": "roebel-supabase-read-gateway",
+                                "port": {"name": "http"},
+                            }},
+                            "path": "/supabase-read",
+                            "pathType": "Prefix",
+                        },
+                        {
+                            "backend": {"service": {
+                                "name": "roebel-web-presentation",
+                                "port": {"name": "http"},
+                            }},
+                            "path": "/",
+                            "pathType": "Prefix",
+                        },
+                    ]
+                },
+            }],
+            "tls": [{
+                "hosts": ["roebel-web.staging.agentcart.eu"],
+                "secretName": "roebel-web-presentation-tls",
+            }],
+        },
+    }, "Web Ingress drift")
+    return ingress
+
+
+def verify_network_boundary_migration(
+    root: Path,
+    web_network_policy: dict[str, Any],
+    web_ingress: dict[str, Any],
+) -> dict[str, Any]:
+    migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
+    expected = {
+        "authority": "none",
+        "boundary": {
+            "ingress": {
+                "allowedMethods": ["GET", "HEAD", "POST"],
+                "exactPostPath": "/api/chat/mecky",
+                "otherApiPaths": "404_except_public_feed_notifications_and_exact_mecky_path",
+                "otherMethods": "405",
+                "otherPostPaths": "405",
+                "resource": {
+                    "kind": "Ingress",
+                    "name": "roebel-web-presentation",
+                    "namespace": "stadtstack-roebel-web-preview",
+                },
+            },
+            "webEgress": {
+                "destinationNamespace": "stadtstack-roebel-staging-lab",
+                "destinationPodLabels": {
+                    "app.kubernetes.io/component": "public-mecky",
+                    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                },
+                "port": 18084,
+                "protocol": "TCP",
+                "resource": {
+                    "kind": "NetworkPolicy",
+                    "name": "roebel-web-presentation",
+                    "namespace": "stadtstack-roebel-web-preview",
+                },
+            },
+        },
+        "effects": {
+            "civicMutation": False,
+            "clusterMutation": False,
+            "secretRead": False,
+            "secretWrite": False,
+        },
+        "objects": [
+            {
+                "kind": "NetworkPolicy",
+                "name": "roebel-web-presentation",
+                "namespace": "stadtstack-roebel-web-preview",
+                "sha256": digest(web_network_policy),
+            },
+            {
+                "kind": "Ingress",
+                "name": "roebel-web-presentation",
+                "namespace": "stadtstack-roebel-web-preview",
+                "sha256": digest(web_ingress),
+            },
+        ],
+        "rbacBootstrap": {
+            "createAllowed": False,
+            "deleteAllowed": False,
+            "listAllowed": False,
+            "required": True,
+            "roleNamespace": "stadtstack-roebel-web-preview",
+            "serviceAccount": {
+                "name": "roebel-web-reconciler",
+                "namespace": "flux-roebel-staging",
+            },
+            "watchAllowed": False,
+            "rules": [
+                {
+                    "apiGroups": ["networking.k8s.io"],
+                    "resourceNames": ["roebel-web-presentation"],
+                    "resources": ["networkpolicies"],
+                    "verbs": ["get", "patch", "update"],
+                },
+                {
+                    "apiGroups": ["networking.k8s.io"],
+                    "resourceNames": ["roebel-web-presentation"],
+                    "resources": ["ingresses"],
+                    "verbs": ["get", "patch", "update"],
+                },
+            ],
+            "liveMutationPerformed": False,
+        },
+        "schemaVersion": "roebel_staging_network_boundary_bootstrap_v1",
+        "status": "local_candidate_ready_for_one_time_policy_bootstrap",
+    }
+    require(migration == expected, "network-boundary migration receipt drift")
+    return migration
+
+
 def verify_kustomizations(root: Path) -> None:
     public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
-    web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n"
+    web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - networkpolicy.json\n  - ingress.json\n"
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
     require((root / RENDER_ROOT / "web/kustomization.yaml").read_text() == web_expected, "roebel-web-staging Flux path widened")
 
@@ -395,18 +634,29 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
     verify_contract(root)
     head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
-    integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256"}, "integrity")
+    integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256", "networkBoundaryMigrationSha256"}, "integrity")
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
     deployments = {component: verify_deployment(root, component, head) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
     network_policy = verify_public_mecky_network_policy(root)
-    objects = [deployments["public-mecky"], service, network_policy, deployments["roebel-web-staging"]]
+    web_network_policy = verify_web_network_policy(root)
+    web_ingress = verify_web_ingress(root)
+    migration = verify_network_boundary_migration(root, web_network_policy, web_ingress)
+    objects = [
+        deployments["public-mecky"],
+        service,
+        network_policy,
+        deployments["roebel-web-staging"],
+        web_network_policy,
+        web_ingress,
+    ]
     require(integrity["desiredRenderSha256"] == digest({"nextEnvironmentHead": head, "objects": objects}), "reviewed render checksum mismatch")
+    require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
     verify_kustomizations(root)
     live = verify_live_preconditions(root, head)
-    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "deployments": deployments, "live": live}
+    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "deployments": deployments, "migration": migration, "live": live}
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
@@ -415,6 +665,12 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):
             require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
+    for relative in (
+        f"{RENDER_ROOT}/network-boundary-migration.json",
+        f"{RENDER_ROOT}/web/ingress.json",
+        f"{RENDER_ROOT}/web/networkpolicy.json",
+    ):
+        require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected network boundary: {relative}")
 
     previous = candidate["live"]["previous"]
     require(previous == base["head"], "candidate previous head does not equal protected base head")
