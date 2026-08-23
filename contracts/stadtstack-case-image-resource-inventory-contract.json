@@ -73,6 +73,38 @@
       "encoding": "canonical-json",
       "requiredWhenPopulated": true
     },
+    "anonymousDigestPullReceipt": {
+      "schemaVersion": "stadtstack_case_anonymous_digest_pull_receipt_v1",
+      "canonicalEncoding": "canonical-json",
+      "authContext": "clean-empty-auth-config",
+      "authConfigCanonicalJson": "{\"auths\":{}}",
+      "authConfigCanonicalSha256": "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+      "resolverIdentity": "oras-resolve-anonymous",
+      "imageReferenceFormat": "<imageRepository>@<manifestDigest>",
+      "bindings": [
+        "component",
+        "imageRepository",
+        "manifestDigest",
+        "sourceRevision"
+      ],
+      "resolvedManifestDigestMustEqualManifestDigest": true,
+      "receiptDigest": {
+        "algorithm": "sha256",
+        "encoding": "canonical-json",
+        "covers": [
+          "schemaVersion",
+          "canonicalEncoding",
+          "component",
+          "imageRepository",
+          "manifestDigest",
+          "sourceRevision",
+          "authContext",
+          "authConfigCanonicalSha256",
+          "resolverIdentity",
+          "resolvedManifestDigest"
+        ]
+      }
+    },
     "imageBinding": {
       "repositoryRequiredWhenPopulated": true,
       "manifestDigestRequiredWhenRepositoryPopulated": true,
@@ -95,6 +127,8 @@
         "slsaProvenanceV1Required": true,
         "spdx23Required": true,
         "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true,
         "imageRepositoryMustDifferFrom": "case-public-binding"
       },
       "logicalResourceInventory": {
@@ -105,14 +139,16 @@
         "publicIngressAllowed": false,
         "publicAuthority": "none",
         "preexistingRuntimeSecretReferenceAllowed": true,
+        "preexistingRuntimeSecretUsage": "container_env_valueFrom_only",
         "allowedPreexistingRuntimeSecretReferenceNames": [
           "roebel-case-steward-control-runtime"
         ],
+        "imagePullSecretsAllowed": false,
         "secretObjectCreationAllowed": false,
         "credentialMaterialIncluded": false,
         "topologyContractBinding": {
           "contractPath": "case-staging-topology/contract.json",
-          "canonicalJsonChecksum": "sha256:c3833769022f5441f91fe130872b7089a621dd48e16aa0bb8256e67c3b891d18",
+          "canonicalJsonChecksum": "sha256:31314eaf064f3a11d9c93ed399378e3807a2686b4916033637cbcc73c07b6584",
           "allowlistPath": "futureWorkloads.control.preexistingSecretRefs"
         }
       }
@@ -129,6 +165,8 @@
         "slsaProvenanceV1Required": true,
         "spdx23Required": true,
         "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true,
         "imageRepositoryMustDifferFrom": "case-steward-control"
       },
       "logicalResourceInventory": {
@@ -144,6 +182,7 @@
           "case-steward-control.privateOutboxChecksum"
         ],
         "publicAuthority": "none",
+        "imagePullSecretsAllowed": false,
         "secretOrCredentialReferencesAllowed": false
       }
     },
@@ -158,7 +197,9 @@
         "immutableLayerDigestsRequired": true,
         "slsaProvenanceV1Required": true,
         "spdx23Required": true,
-        "canonicalJsonChecksumsRequired": true
+        "canonicalJsonChecksumsRequired": true,
+        "publicPackageVisibilityRequired": true,
+        "anonymousDigestPullRequired": true
       },
       "logicalResourceInventory": {
         "representation": "logical_only",
@@ -168,6 +209,7 @@
         "publicIngressAllowed": false,
         "userFacingEndpointAllowed": false,
         "fluxManaged": false,
+        "imagePullSecretsAllowed": false,
         "secretOrCredentialReferencesAllowed": false
       }
     }
@@ -209,6 +251,20 @@
         "layerDigests": null,
         "provenanceAttestationDigest": null,
         "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
         "canonicalChecksums": {
           "manifest": null,
           "config": null,
@@ -230,6 +286,20 @@
         "layerDigests": null,
         "provenanceAttestationDigest": null,
         "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
         "canonicalChecksums": {
           "manifest": null,
           "config": null,
@@ -251,6 +321,20 @@
         "layerDigests": null,
         "provenanceAttestationDigest": null,
         "sbomArtifactDigest": null,
+        "packageVisibility": null,
+        "anonymousDigestPullReceipt": {
+          "schemaVersion": null,
+          "canonicalEncoding": null,
+          "component": null,
+          "imageRepository": null,
+          "manifestDigest": null,
+          "sourceRevision": null,
+          "authContext": null,
+          "authConfigCanonicalSha256": null,
+          "resolverIdentity": null,
+          "resolvedManifestDigest": null,
+          "receiptDigest": null
+        },
         "canonicalChecksums": {
           "manifest": null,
           "config": null,
@@ -300,6 +384,18 @@
     "liveEvidence.components[0].layerDigests",
     "liveEvidence.components[0].provenanceAttestationDigest",
     "liveEvidence.components[0].sbomArtifactDigest",
+    "liveEvidence.components[0].packageVisibility",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[0].anonymousDigestPullReceipt.receiptDigest",
     "liveEvidence.components[0].canonicalChecksums.manifest",
     "liveEvidence.components[0].canonicalChecksums.config",
     "liveEvidence.components[0].canonicalChecksums.layers",
@@ -316,6 +412,18 @@
     "liveEvidence.components[1].layerDigests",
     "liveEvidence.components[1].provenanceAttestationDigest",
     "liveEvidence.components[1].sbomArtifactDigest",
+    "liveEvidence.components[1].packageVisibility",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[1].anonymousDigestPullReceipt.receiptDigest",
     "liveEvidence.components[1].canonicalChecksums.manifest",
     "liveEvidence.components[1].canonicalChecksums.config",
     "liveEvidence.components[1].canonicalChecksums.layers",
@@ -332,6 +440,18 @@
     "liveEvidence.components[2].layerDigests",
     "liveEvidence.components[2].provenanceAttestationDigest",
     "liveEvidence.components[2].sbomArtifactDigest",
+    "liveEvidence.components[2].packageVisibility",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.schemaVersion",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.canonicalEncoding",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.component",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.imageRepository",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.manifestDigest",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.sourceRevision",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.authContext",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.authConfigCanonicalSha256",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.resolverIdentity",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.resolvedManifestDigest",
+    "liveEvidence.components[2].anonymousDigestPullReceipt.receiptDigest",
     "liveEvidence.components[2].canonicalChecksums.manifest",
     "liveEvidence.components[2].canonicalChecksums.config",
     "liveEvidence.components[2].canonicalChecksums.layers",

@@ -68,6 +68,19 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         self.assertEqual(vocabulary["sbom"]["format"], "SPDX-2.3")
         self.assertEqual(vocabulary["sbom"]["subjectDigestField"], "manifestDigest")
         self.assertEqual(vocabulary["checksums"]["encoding"], "canonical-json")
+        receipt = vocabulary["anonymousDigestPullReceipt"]
+        self.assertEqual(receipt["schemaVersion"], "stadtstack_case_anonymous_digest_pull_receipt_v1")
+        self.assertEqual(receipt["canonicalEncoding"], "canonical-json")
+        self.assertEqual(receipt["authContext"], "clean-empty-auth-config")
+        self.assertEqual(receipt["authConfigCanonicalJson"], '{"auths":{}}')
+        self.assertEqual(
+            receipt["authConfigCanonicalSha256"],
+            "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+        )
+        self.assertEqual(receipt["resolverIdentity"], "oras-resolve-anonymous")
+        self.assertEqual(receipt["bindings"], ["component", "imageRepository", "manifestDigest", "sourceRevision"])
+        self.assertTrue(receipt["resolvedManifestDigestMustEqualManifestDigest"])
+        self.assertNotIn("receiptDigest", receipt["receiptDigest"]["covers"])
 
         changed = copy.deepcopy(self.contract)
         changed["releaseSetVocabulary"]["provenance"]["issuer"] = "https://example.invalid"
@@ -103,6 +116,9 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         self.assertEqual(public["releaseSetPolicy"]["imageRepositoryMustDifferFrom"], "case-steward-control")
         self.assertTrue(control["releaseSetPolicy"]["immutableImageManifestRequired"])
         self.assertTrue(public["releaseSetPolicy"]["immutableConfigDigestRequired"])
+        for component in (control, public, restore):
+            self.assertTrue(component["releaseSetPolicy"]["publicPackageVisibilityRequired"])
+            self.assertTrue(component["releaseSetPolicy"]["anonymousDigestPullRequired"])
         self.assertTrue(self.contract["releaseSetVocabulary"]["imageBinding"]["controlAndPublicRepositoriesMustDiffer"])
         self.assertTrue(self.contract["releaseSetVocabulary"]["imageBinding"]["controlAndPublicManifestDigestsMustDiffer"])
 
@@ -117,7 +133,9 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         self.assertTrue(control["privateOutboxRequired"])
         self.assertFalse(control["publicIngressAllowed"])
         self.assertTrue(control["preexistingRuntimeSecretReferenceAllowed"])
+        self.assertEqual(control["preexistingRuntimeSecretUsage"], "container_env_valueFrom_only")
         self.assertEqual(control["allowedPreexistingRuntimeSecretReferenceNames"], ["roebel-case-steward-control-runtime"])
+        self.assertFalse(control["imagePullSecretsAllowed"])
         self.assertFalse(control["secretObjectCreationAllowed"])
         self.assertFalse(control["credentialMaterialIncluded"])
         self.assertEqual(control["topologyContractBinding"]["canonicalJsonChecksum"], VERIFIER.TOPOLOGY_CONTRACT_CANONICAL_CHECKSUM)
@@ -126,6 +144,7 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         for field in ("pvcAllowed", "pvAllowed", "secretAllowed", "tokenAllowed", "rbacAllowed"):
             self.assertFalse(public[field])
         self.assertTrue(public["exactControlChecksumReferencesOnly"])
+        self.assertFalse(public["imagePullSecretsAllowed"])
         self.assertEqual(
             public["allowedChecksumReferenceNames"],
             [
@@ -141,6 +160,7 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         self.assertFalse(restore["publicIngressAllowed"])
         self.assertFalse(restore["userFacingEndpointAllowed"])
         self.assertFalse(restore["fluxManaged"])
+        self.assertFalse(restore["imagePullSecretsAllowed"])
 
         changed = copy.deepcopy(self.contract)
         changed["components"][1]["logicalResourceInventory"]["rbacAllowed"] = True
@@ -152,6 +172,17 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         self.assertEqual(
             topology["futureWorkloads"]["control"]["preexistingSecretRefs"],
             control["allowedPreexistingRuntimeSecretReferenceNames"],
+        )
+        self.assertEqual(
+            topology["futureWorkloads"]["control"]["preexistingSecretRefUsage"],
+            {"roebel-case-steward-control-runtime": control["preexistingRuntimeSecretUsage"]},
+        )
+        self.assertFalse(topology["invariants"]["imagePullSecretsAllowed"])
+        self.assertTrue(
+            all(
+                topology["futureWorkloads"][workload]["imagePullSecretsAllowed"] is False
+                for workload in ("control", "public")
+            )
         )
 
         changed = copy.deepcopy(self.contract)
@@ -214,6 +245,8 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
             self.assertIsNone(component["attestedSourceRepository"])
             self.assertIsNone(component["attestedSourceRevision"])
             self.assertIsNone(component["attestedGitRef"])
+            self.assertIsNone(component["packageVisibility"])
+            self.assertTrue(all(value is None for value in component["anonymousDigestPullReceipt"].values()))
             self.assertIn(f"liveEvidence.components[{index}].attestedSourceRepository", self.contract["missingEvidence"])
             self.assertIn(f"liveEvidence.components[{index}].attestedSourceRevision", self.contract["missingEvidence"])
             self.assertIn(f"liveEvidence.components[{index}].attestedGitRef", self.contract["missingEvidence"])
@@ -221,6 +254,78 @@ class StadtstackCaseImageResourceInventoryContractTests(unittest.TestCase):
         changed = copy.deepcopy(self.contract)
         changed["liveEvidence"]["components"][0]["attestedSourceRevision"] = "a" * 40
         self.assertTrue(self.verify(changed))
+
+    def test_public_visibility_and_anonymous_digest_pull_are_required_and_unfulfilled(self) -> None:
+        for index, component in enumerate(self.contract["liveEvidence"]["components"]):
+            self.assertIn(f"liveEvidence.components[{index}].packageVisibility", self.contract["missingEvidence"])
+            for field in component["anonymousDigestPullReceipt"]:
+                self.assertIn(
+                    f"liveEvidence.components[{index}].anonymousDigestPullReceipt.{field}",
+                    self.contract["missingEvidence"],
+                )
+
+        changed = copy.deepcopy(self.contract)
+        changed["components"][0]["releaseSetPolicy"]["publicPackageVisibilityRequired"] = False
+        self.assertTrue(self.verify(changed))
+
+        changed = copy.deepcopy(self.contract)
+        changed["liveEvidence"]["components"][0]["packageVisibility"] = "public"
+        self.assertTrue(self.verify(changed))
+
+        changed = copy.deepcopy(self.contract)
+        changed["liveEvidence"]["components"][0]["packageVisibility"] = "private"
+        self.assertTrue(self.verify(changed))
+
+        changed = copy.deepcopy(self.contract)
+        changed["liveEvidence"]["components"][0]["anonymousDigestPullReceipt"]["authContext"] = "ambient-auth"
+        self.assertTrue(self.verify(changed))
+
+    def test_future_anonymous_pull_receipt_rejects_every_binding_drift(self) -> None:
+        component = {
+            "component": "case-steward-control",
+            "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control",
+            "manifestDigest": "sha256:" + "a" * 64,
+            "sourceRevision": "b" * 40,
+        }
+        receipt = {
+            "schemaVersion": "stadtstack_case_anonymous_digest_pull_receipt_v1",
+            "canonicalEncoding": "canonical-json",
+            **component,
+            "authContext": "clean-empty-auth-config",
+            "authConfigCanonicalSha256": "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+            "resolverIdentity": "oras-resolve-anonymous",
+            "resolvedManifestDigest": component["manifestDigest"],
+            "receiptDigest": None,
+        }
+        covers = VERIFIER.RELEASE_SET_VOCABULARY["anonymousDigestPullReceipt"]["receiptDigest"]["covers"]
+        receipt["receiptDigest"] = VERIFIER._canonical_checksum({field: receipt[field] for field in covers})
+        VERIFIER.verify_populated_anonymous_digest_pull_receipt(component, receipt)
+
+        mutations = {
+            "component": "case-public-binding",
+            "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-case-public-binding",
+            "manifestDigest": "sha256:" + "c" * 64,
+            "sourceRevision": "d" * 40,
+            "authContext": "ambient-auth",
+            "authConfigCanonicalSha256": "sha256:" + "0" * 64,
+            "resolverIdentity": "authenticated-client",
+            "resolvedManifestDigest": "sha256:" + "e" * 64,
+            "receiptDigest": "sha256:" + "f" * 64,
+        }
+        for field, value in mutations.items():
+            changed = copy.deepcopy(receipt)
+            changed[field] = value
+            with self.assertRaisesRegex(
+                VERIFIER.VerificationError,
+                "(?:binding drift|authContext drift|authConfigCanonicalSha256 drift|resolverIdentity drift)",
+            ):
+                VERIFIER.verify_populated_anonymous_digest_pull_receipt(component, changed)
+
+    def test_image_pull_secrets_are_forbidden_for_every_component(self) -> None:
+        for index in range(3):
+            changed = copy.deepcopy(self.contract)
+            changed["components"][index]["logicalResourceInventory"]["imagePullSecretsAllowed"] = True
+            self.assertTrue(self.verify(changed))
 
     def test_effects_are_all_false(self) -> None:
         self.assertEqual(self.contract["effects"], VERIFIER.EFFECTS)

@@ -53,9 +53,17 @@ class CaseStagingTopologyVerifierTests(unittest.TestCase):
         self.assertEqual(contract["allowedKinds"], ["NetworkPolicy", "Service", "ServiceAccount"])
         self.assertFalse(contract["invariants"]["pvcObjectsAllowed"])
         self.assertFalse(contract["invariants"]["workloadDefinitionAllowed"])
+        self.assertFalse(contract["invariants"]["imagePullSecretsAllowed"])
+        self.assertFalse(contract["futureWorkloads"]["control"]["imagePullSecretsAllowed"])
+        self.assertFalse(contract["futureWorkloads"]["public"]["imagePullSecretsAllowed"])
+        self.assertEqual(
+            contract["futureWorkloads"]["control"]["preexistingSecretRefUsage"],
+            {"roebel-case-steward-control-runtime": "container_env_valueFrom_only"},
+        )
         binding = contract["controlDeploymentPreflight"]["binding"]
         self.assertEqual(binding["workloadName"], "roebel-case-steward-control")
         self.assertEqual(binding["deployment"]["strategy"], "Recreate")
+        self.assertEqual(binding["workload"]["imagePullSecrets"], [])
         self.assertEqual([listener["id"] for listener in binding["listeners"]], ["admission", "private-outbox", "probe"])
         self.assertIsNone(contract["controlDeploymentPreflight"]["expectedBindingChecksum"])
         self.assertIsNone(binding["releaseDigest"])
@@ -102,6 +110,48 @@ class CaseStagingTopologyVerifierTests(unittest.TestCase):
             self.addCleanup(temp.cleanup)
             path, value = self.load(candidate, name)
             value["automountServiceAccountToken"] = True
+            self.write(path, value)
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "ServiceAccount drift"):
+                VERIFIER.verify(candidate)
+
+    def test_case_workloads_and_service_accounts_cannot_reference_image_pull_secrets(self) -> None:
+        for workload in ("control", "public"):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path, contract = self.load(candidate, "contract.json")
+            contract["futureWorkloads"][workload]["imagePullSecretsAllowed"] = True
+            self.write(path, contract)
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "runtime gate contract drift"):
+                VERIFIER.verify(candidate)
+
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path, contract = self.load(candidate, "contract.json")
+        contract["controlDeploymentPreflight"]["binding"]["workload"]["imagePullSecrets"] = [
+            {"name": "forbidden-registry-credential"}
+        ]
+        self.write(path, contract)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "image-pull credential posture drift"):
+            VERIFIER.verify(candidate)
+
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path, contract = self.load(candidate, "contract.json")
+        contract["futureWorkloads"]["control"]["preexistingSecretRefUsage"][
+            "roebel-case-steward-control-runtime"
+        ] = "image_pull_secret"
+        self.write(path, contract)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "runtime gate contract drift"):
+            VERIFIER.verify(candidate)
+
+        for name in (
+            "roebel-case-steward-control-serviceaccount.json",
+            "roebel-case-public-binding-serviceaccount.json",
+        ):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path, value = self.load(candidate, name)
+            value["imagePullSecrets"] = [{"name": "forbidden-registry-credential"}]
             self.write(path, value)
             with self.assertRaisesRegex(VERIFIER.VerificationError, "ServiceAccount drift"):
                 VERIFIER.verify(candidate)

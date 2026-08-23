@@ -132,6 +132,7 @@ def expected_contract() -> dict[str, Any]:
             "publicSQLiteMountAllowed": False,
             "serviceExposure": "ClusterIP_only",
             "workloadDefinitionAllowed": False,
+            "imagePullSecretsAllowed": False,
             "secretObjectsAllowed": False,
             "pvcObjectsAllowed": False,
             "rbacObjectsAllowed": False,
@@ -160,6 +161,7 @@ def expected_contract() -> dict[str, Any]:
                 "workload": {
                     "serviceAccountName": CONTROL,
                     "automountServiceAccountToken": False,
+                    "imagePullSecrets": [],
                 },
                 "releaseDigest": None,
                 "operationsTopologyChecksum": None,
@@ -205,8 +207,12 @@ def expected_contract() -> dict[str, Any]:
                 "deploymentName": CONTROL,
                 "serviceAccount": CONTROL,
                 "automountServiceAccountToken": False,
+                "imagePullSecretsAllowed": False,
                 "image": blocked_image,
                 "preexistingSecretRefs": ["roebel-case-steward-control-runtime"],
+                "preexistingSecretRefUsage": {
+                    "roebel-case-steward-control-runtime": "container_env_valueFrom_only",
+                },
                 "preexistingPersistentVolumeClaimRefs": ["roebel-case-steward-control-state"],
                 "ports": [
                     {"name": "admission", "port": 18085},
@@ -225,8 +231,10 @@ def expected_contract() -> dict[str, Any]:
                 "deploymentName": PUBLIC,
                 "serviceAccount": PUBLIC,
                 "automountServiceAccountToken": False,
+                "imagePullSecretsAllowed": False,
                 "image": blocked_image,
                 "preexistingSecretRefs": [],
+                "preexistingSecretRefUsage": {},
                 "preexistingPersistentVolumeClaimRefs": [],
                 "forbiddenReferences": ["Secret", "PersistentVolumeClaim", "Role", "RoleBinding", "ClusterRole", "ClusterRoleBinding", "token"],
                 "ports": [{"name": "public", "port": 18086}, {"name": "public-probe", "port": 18089}],
@@ -285,7 +293,15 @@ def verify_control_deployment_preflight(contract: dict[str, Any]) -> None:
 
     workload = binding.get("workload")
     require(isinstance(workload, dict), "control deployment workload preflight missing")
-    require(workload.get("serviceAccountName") == CONTROL and workload.get("automountServiceAccountToken") is False, "control deployment token posture drift")
+    require(
+        workload
+        == {
+            "serviceAccountName": CONTROL,
+            "automountServiceAccountToken": False,
+            "imagePullSecrets": [],
+        },
+        "control deployment token/image-pull credential posture drift",
+    )
     require(binding.get("deployment") == {"replicas": 1, "strategy": "Recreate", "noOverlappingPods": True}, "control deployment rollout facts drift")
     require(binding.get("listeners") == [
         {"id": "admission", "port": 18085, "bindScope": "pod_network"},
@@ -321,6 +337,7 @@ def expected_service_account(capability: str, component: str) -> dict[str, Any]:
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "automountServiceAccountToken": False,
+        "imagePullSecrets": [],
         "metadata": metadata(capability, component),
     }
 

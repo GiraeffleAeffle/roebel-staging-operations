@@ -20,7 +20,7 @@ from typing import Any
 
 CONTRACT_RELATIVE_PATH = Path("contracts/stadtstack-case-image-resource-inventory-contract.json")
 TOPOLOGY_CONTRACT_RELATIVE_PATH = Path("case-staging-topology/contract.json")
-TOPOLOGY_CONTRACT_CANONICAL_CHECKSUM = "sha256:c3833769022f5441f91fe130872b7089a621dd48e16aa0bb8256e67c3b891d18"
+TOPOLOGY_CONTRACT_CANONICAL_CHECKSUM = "sha256:31314eaf064f3a11d9c93ed399378e3807a2686b4916033637cbcc73c07b6584"
 
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -73,6 +73,33 @@ RELEASE_SET_VOCABULARY = {
         "encoding": "canonical-json",
         "requiredWhenPopulated": True,
     },
+    "anonymousDigestPullReceipt": {
+        "schemaVersion": "stadtstack_case_anonymous_digest_pull_receipt_v1",
+        "canonicalEncoding": "canonical-json",
+        "authContext": "clean-empty-auth-config",
+        "authConfigCanonicalJson": "{\"auths\":{}}",
+        "authConfigCanonicalSha256": "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+        "resolverIdentity": "oras-resolve-anonymous",
+        "imageReferenceFormat": "<imageRepository>@<manifestDigest>",
+        "bindings": ["component", "imageRepository", "manifestDigest", "sourceRevision"],
+        "resolvedManifestDigestMustEqualManifestDigest": True,
+        "receiptDigest": {
+            "algorithm": "sha256",
+            "encoding": "canonical-json",
+            "covers": [
+                "schemaVersion",
+                "canonicalEncoding",
+                "component",
+                "imageRepository",
+                "manifestDigest",
+                "sourceRevision",
+                "authContext",
+                "authConfigCanonicalSha256",
+                "resolverIdentity",
+                "resolvedManifestDigest",
+            ],
+        },
+    },
     "imageBinding": {
         "repositoryRequiredWhenPopulated": True,
         "manifestDigestRequiredWhenRepositoryPopulated": True,
@@ -119,6 +146,8 @@ COMPONENTS = [
             "slsaProvenanceV1Required": True,
             "spdx23Required": True,
             "canonicalJsonChecksumsRequired": True,
+            "publicPackageVisibilityRequired": True,
+            "anonymousDigestPullRequired": True,
             "imageRepositoryMustDifferFrom": "case-public-binding",
         },
         "logicalResourceInventory": {
@@ -129,9 +158,11 @@ COMPONENTS = [
             "publicIngressAllowed": False,
             "publicAuthority": "none",
             "preexistingRuntimeSecretReferenceAllowed": True,
+            "preexistingRuntimeSecretUsage": "container_env_valueFrom_only",
             "allowedPreexistingRuntimeSecretReferenceNames": [
                 "roebel-case-steward-control-runtime",
             ],
+            "imagePullSecretsAllowed": False,
             "secretObjectCreationAllowed": False,
             "credentialMaterialIncluded": False,
             "topologyContractBinding": {
@@ -153,6 +184,8 @@ COMPONENTS = [
             "slsaProvenanceV1Required": True,
             "spdx23Required": True,
             "canonicalJsonChecksumsRequired": True,
+            "publicPackageVisibilityRequired": True,
+            "anonymousDigestPullRequired": True,
             "imageRepositoryMustDifferFrom": "case-steward-control",
         },
         "logicalResourceInventory": {
@@ -168,6 +201,7 @@ COMPONENTS = [
                 "case-steward-control.privateOutboxChecksum",
             ],
             "publicAuthority": "none",
+            "imagePullSecretsAllowed": False,
             "secretOrCredentialReferencesAllowed": False,
         },
     },
@@ -183,6 +217,8 @@ COMPONENTS = [
             "slsaProvenanceV1Required": True,
             "spdx23Required": True,
             "canonicalJsonChecksumsRequired": True,
+            "publicPackageVisibilityRequired": True,
+            "anonymousDigestPullRequired": True,
         },
         "logicalResourceInventory": {
             "representation": "logical_only",
@@ -192,6 +228,7 @@ COMPONENTS = [
             "publicIngressAllowed": False,
             "userFacingEndpointAllowed": False,
             "fluxManaged": False,
+            "imagePullSecretsAllowed": False,
             "secretOrCredentialReferencesAllowed": False,
         },
     },
@@ -384,6 +421,81 @@ def _optional_string(value: Any, path: str) -> None:
     raise VerificationError(f"{path} must remain null in inert_review_only mode")
 
 
+def _optional_exact_string(value: Any, expected: str, path: str) -> None:
+    if value is None:
+        return
+    _require(value == expected, f"{path} format invalid")
+    raise VerificationError(f"{path} must remain null in inert_review_only mode")
+
+
+def verify_populated_anonymous_digest_pull_receipt(
+    component_evidence: dict[str, Any], receipt_value: Any, path: str = "anonymousDigestPullReceipt"
+) -> None:
+    """Pin the exact receipt semantics a later non-inert admission must use."""
+
+    receipt = _closed(
+        receipt_value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "component",
+            "imageRepository",
+            "manifestDigest",
+            "sourceRevision",
+            "authContext",
+            "authConfigCanonicalSha256",
+            "resolverIdentity",
+            "resolvedManifestDigest",
+            "receiptDigest",
+        },
+        path,
+    )
+    policy = RELEASE_SET_VOCABULARY["anonymousDigestPullReceipt"]
+    _require(
+        "sha256:" + hashlib.sha256(policy["authConfigCanonicalJson"].encode("utf-8")).hexdigest()
+        == policy["authConfigCanonicalSha256"],
+        f"{path} clean auth-config checksum drift",
+    )
+    _require(receipt["schemaVersion"] == policy["schemaVersion"], f"{path}.schemaVersion drift")
+    _require(receipt["canonicalEncoding"] == policy["canonicalEncoding"], f"{path}.canonicalEncoding drift")
+    _require(receipt["component"] == component_evidence.get("component"), f"{path}.component binding drift")
+    _require(
+        receipt["imageRepository"] == component_evidence.get("imageRepository"),
+        f"{path}.imageRepository binding drift",
+    )
+    _require(receipt["manifestDigest"] == component_evidence.get("manifestDigest"), f"{path}.manifestDigest binding drift")
+    _require(receipt["sourceRevision"] == component_evidence.get("sourceRevision"), f"{path}.sourceRevision binding drift")
+    _require(receipt["authContext"] == policy["authContext"], f"{path}.authContext drift")
+    _require(
+        receipt["authConfigCanonicalSha256"] == policy["authConfigCanonicalSha256"],
+        f"{path}.authConfigCanonicalSha256 drift",
+    )
+    _require(receipt["resolverIdentity"] == policy["resolverIdentity"], f"{path}.resolverIdentity drift")
+    _require(
+        receipt["resolvedManifestDigest"] == component_evidence.get("manifestDigest"),
+        f"{path}.resolvedManifestDigest binding drift",
+    )
+    _require(
+        isinstance(receipt["component"], str) and receipt["component"] in COMPONENT_ORDER,
+        f"{path}.component invalid",
+    )
+    _require(
+        isinstance(receipt["imageRepository"], str) and IMAGE_REPOSITORY.fullmatch(receipt["imageRepository"]),
+        f"{path}.imageRepository invalid",
+    )
+    _require(
+        isinstance(receipt["manifestDigest"], str) and DIGEST.fullmatch(receipt["manifestDigest"]),
+        f"{path}.manifestDigest invalid",
+    )
+    _require(
+        isinstance(receipt["sourceRevision"], str) and REVISION.fullmatch(receipt["sourceRevision"]),
+        f"{path}.sourceRevision invalid",
+    )
+    digest_policy = policy["receiptDigest"]
+    payload = {field: receipt[field] for field in digest_policy["covers"]}
+    _require(receipt["receiptDigest"] == _canonical_checksum(payload), f"{path}.receiptDigest binding drift")
+
+
 def _verify_component_live_evidence(value: Any, index: int) -> None:
     path = f"liveEvidence.components[{index}]"
     item = _closed(
@@ -400,6 +512,8 @@ def _verify_component_live_evidence(value: Any, index: int) -> None:
             "layerDigests",
             "provenanceAttestationDigest",
             "sbomArtifactDigest",
+            "packageVisibility",
+            "anonymousDigestPullReceipt",
             "canonicalChecksums",
         },
         path,
@@ -412,6 +526,25 @@ def _verify_component_live_evidence(value: Any, index: int) -> None:
     _optional_repository(item["imageRepository"], f"{path}.imageRepository")
     for field in ("manifestDigest", "configDigest", "provenanceAttestationDigest", "sbomArtifactDigest"):
         _optional_digest(item[field], f"{path}.{field}")
+    _optional_exact_string(item["packageVisibility"], "public", f"{path}.packageVisibility")
+    receipt = _closed(
+        item["anonymousDigestPullReceipt"],
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "component",
+            "imageRepository",
+            "manifestDigest",
+            "sourceRevision",
+            "authContext",
+            "authConfigCanonicalSha256",
+            "resolverIdentity",
+            "resolvedManifestDigest",
+            "receiptDigest",
+        },
+        f"{path}.anonymousDigestPullReceipt",
+    )
+    _assert_all_null(receipt, f"{path}.anonymousDigestPullReceipt")
     if item["layerDigests"] is not None:
         _require(isinstance(item["layerDigests"], list) and item["layerDigests"], f"{path}.layerDigests format invalid")
         for layer_index, digest in enumerate(item["layerDigests"]):
@@ -527,6 +660,24 @@ def verify_contract(root: Path) -> list[str]:
             topology.get("futureWorkloads", {}).get("control", {}).get("preexistingSecretRefs")
             == COMPONENTS[0]["logicalResourceInventory"]["allowedPreexistingRuntimeSecretReferenceNames"],
             "control runtime Secret allowlist drift",
+        )
+        _require(
+            topology.get("futureWorkloads", {}).get("control", {}).get("preexistingSecretRefUsage")
+            == {
+                "roebel-case-steward-control-runtime": COMPONENTS[0]["logicalResourceInventory"][
+                    "preexistingRuntimeSecretUsage"
+                ]
+            },
+            "control runtime Secret usage drift",
+        )
+        _require(
+            topology.get("invariants", {}).get("imagePullSecretsAllowed") is False
+            and all(
+                topology.get("futureWorkloads", {}).get(workload, {}).get("imagePullSecretsAllowed") is False
+                for workload in ("control", "public")
+            )
+            and all(component["logicalResourceInventory"]["imagePullSecretsAllowed"] is False for component in COMPONENTS),
+            "Case imagePullSecret boundary drift",
         )
         _require(contract["inventoryChecksumPolicy"] == INVENTORY_CHECKSUM_POLICY, "inventory checksum policy drift")
         _optional_digest(contract["inventoryChecksum"], "inventoryChecksum")

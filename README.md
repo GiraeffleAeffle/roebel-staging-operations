@@ -172,8 +172,11 @@ path to the stateful control process or the recovery verifier.
 
 Each logical component remains blocked until one exact source revision,
 immutable manifest/config/layer digest set, GitHub-OIDC SLSA provenance, and
-SPDX 2.3 evidence are independently reviewed. Control and public runtime
-repositories must be distinct. The source and future publisher identity are
+SPDX 2.3 evidence are independently reviewed. Each GHCR package must be
+publicly visible and an unauthenticated resolver must prove the exact
+`@sha256` manifest can be pulled before Flux may consume it; no image-pull
+Secret is admitted as a workaround. Control and public runtime repositories
+must be distinct. The source and future publisher identity are
 pinned to the public `GiraeffleAeffle/stadtstack` repository, not the Röbel App
 publisher. The logical inventory preserves one-writer
 control storage, a public slot with no PVC/PV/Secret/token/RBAC surface, and an
@@ -182,10 +185,20 @@ user-facing endpoint.
 
 Control is the sole exception to the no-reference rule: it may reference
 exactly the preexisting `roebel-case-steward-control-runtime` Secret already
-admitted by the topology contract. The allowlist is bound to that contract's
-canonical checksum. The inventory still forbids creating a Secret, embedding
-credential material, or giving public binding or restore verifier any Secret
-reference.
+admitted by the topology contract, and only through container environment
+`valueFrom` runtime configuration. It cannot be attached as an image-pull
+credential. Both inert ServiceAccounts declare an empty `imagePullSecrets`
+list, and every future Case workload forbids image-pull Secrets. The allowlist
+is bound to that contract's canonical checksum. The inventory still forbids
+creating a Secret, embedding credential material, or giving public binding or
+restore verifier any Secret reference.
+
+Anonymous pull proof is not a Boolean. A future admission must provide one
+canonical receipt per component binding its name, public GHCR repository,
+immutable manifest digest, exact source revision, clean empty registry-auth
+context, anonymous ORAS resolver identity, and resolved digest. Its own
+SHA-256 digest covers every receipt field except itself. Any repository,
+revision, digest, resolver, auth-context, or receipt-checksum drift is rejected.
 
 The future Flux handoff is data only: its namespace, reconciler identity,
 source revision/path, exact resource-name allowlist checksum, inventory

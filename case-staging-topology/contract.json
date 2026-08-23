@@ -20,6 +20,7 @@
     "publicSQLiteMountAllowed": false,
     "serviceExposure": "ClusterIP_only",
     "workloadDefinitionAllowed": false,
+    "imagePullSecretsAllowed": false,
     "secretObjectsAllowed": false,
     "pvcObjectsAllowed": false,
     "rbacObjectsAllowed": false,
@@ -47,7 +48,8 @@
       "workloadName": "roebel-case-steward-control",
       "workload": {
         "serviceAccountName": "roebel-case-steward-control",
-        "automountServiceAccountToken": false
+        "automountServiceAccountToken": false,
+        "imagePullSecrets": []
       },
       "releaseDigest": null,
       "operationsTopologyChecksum": null,
@@ -113,6 +115,7 @@
       "deploymentName": "roebel-case-steward-control",
       "serviceAccount": "roebel-case-steward-control",
       "automountServiceAccountToken": false,
+      "imagePullSecretsAllowed": false,
       "image": {
         "state": "blocked",
         "immutableDigestOnly": true,
@@ -123,6 +126,9 @@
       "preexistingSecretRefs": [
         "roebel-case-steward-control-runtime"
       ],
+      "preexistingSecretRefUsage": {
+        "roebel-case-steward-control-runtime": "container_env_valueFrom_only"
+      },
       "preexistingPersistentVolumeClaimRefs": [
         "roebel-case-steward-control-state"
       ],
@@ -148,6 +154,7 @@
       "deploymentName": "roebel-case-public-binding",
       "serviceAccount": "roebel-case-public-binding",
       "automountServiceAccountToken": false,
+      "imagePullSecretsAllowed": false,
       "image": {
         "state": "blocked",
         "immutableDigestOnly": true,
@@ -156,6 +163,7 @@
         "value": null
       },
       "preexistingSecretRefs": [],
+      "preexistingSecretRefUsage": {},
       "preexistingPersistentVolumeClaimRefs": [],
       "forbiddenReferences": [
         "Secret",
