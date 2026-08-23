@@ -8,6 +8,8 @@ Public Mecky chat network boundary:
 - `stadtstack-roebel-staging-lab/public-mecky`
 - `stadtstack-roebel-staging-lab/Service/public-mecky`
 - `stadtstack-roebel-staging-lab/NetworkPolicy/public-mecky-chat-from-web`
+- `stadtstack-roebel-web-preview/NetworkPolicy/roebel-web-presentation`
+- `stadtstack-roebel-web-preview/Ingress/roebel-web-presentation`
 
 It is deliberately not an infrastructure repository and not a civic record.
 It contains immutable image digests, source revisions, checksums, Kubernetes
@@ -21,7 +23,8 @@ posts, discussions, Civic Cases, municipal records, or runtime status.
    once and publishes an immutable GHCR digest with provenance and SPDX SBOM.
 2. A protected promotion transaction verifies that evidence, compares the
    complete previous environment head, renders only the two admitted
-   Deployments, and opens a pull request here.
+   Deployments, and opens a pull request here. The fixed Service, Mecky
+   NetworkPolicy, Web NetworkPolicy, and Web Ingress are preserved.
 3. The `reviewed-render-admission` check runs the verifier from the protected
    base branch against the pull-request data. A pull request cannot weaken its
    own verifier.
@@ -57,16 +60,20 @@ resources, civic publication state, governance state, or treasury state.
   history, and force-push/deletion denial.
 - Ordinary promotion pull requests may change only the generated environment
   head, integrity receipt, live preconditions and two Deployment image bindings
-  below `reviewed-render/roebel-staging`. The fixed Service and NetworkPolicy
+  below `reviewed-render/roebel-staging`. The fixed Service, Mecky
+  NetworkPolicy, Web NetworkPolicy, Web Ingress, and boundary migration receipt
   are preserved byte-for-byte by routine promotions.
 - The complete previous head is the compare-and-swap boundary.
 - Images are exact `ghcr.io/...@sha256:...` references with
   `imagePullPolicy: IfNotPresent`; tags are rejected.
 - The verifier rejects extra files, symlinks, Secret payload-shaped fields,
   literal values for secret-shaped environment names, runtime metadata, and
-  any object other than the two exact Deployments, one ClusterIP Service and
-  one ingress-only NetworkPolicy. The Service has no public Ingress and the
-  policy admits only the exact Web namespace and pod labels on TCP 18084.
+  any object other than the two exact Deployments, one ClusterIP Service, two
+  exact NetworkPolicies, and one exact Web Ingress. The Public Mecky Service is
+  ClusterIP-only; the Web Ingress admits only the exact GET/HEAD read surface
+  plus `POST /api/chat/mecky`, and the Web egress admits only the exact Public
+  Mecky namespace/pod selectors on TCP 18084 in addition to its existing DNS
+  and exact HTTPS egress rules.
 
 Run the same check locally:
 
@@ -80,12 +87,17 @@ authority stay outside Git and outside Flux.
 
 ## Fixed network-boundary bootstrap
 
-Adding the Public Mecky ClusterIP and ingress-only NetworkPolicy is a protected
-policy migration, not an ordinary image promotion. The admission workflow
-deliberately loads its verifier from protected `main`, whose original closed
-file set cannot admit new Kubernetes kinds. The migration must therefore be
-reviewed and tested as one exact-head bootstrap, merged without widening the
-routine automation identity, and followed by immediate restoration of the
-normal review rule. After that bootstrap, every later Release Set promotion is
-again admitted by the protected-base verifier and cannot change either network
-object.
+Adding the Public Mecky ClusterIP, the two exact network boundaries, and the
+Web Ingress is a protected policy migration, not an ordinary image promotion.
+The `network-boundary-migration.json` receipt binds the exact object digests,
+the no-authority/no-civic-effects posture, and the one-time RBAC bootstrap
+intent. The bootstrap must grant the existing
+`flux-roebel-staging/roebel-web-reconciler` only named `get`, `patch`, and
+`update` access to `NetworkPolicy/roebel-web-presentation` and
+`Ingress/roebel-web-presentation` in `stadtstack-roebel-web-preview`; it must
+not grant create, delete, list, watch, Secret, ConfigMap, or broader namespace
+access. The migration must be reviewed and tested as one exact-head bootstrap,
+merged without widening the routine automation identity, and followed by
+immediate restoration of the normal review rule. After that bootstrap, every
+later Release Set promotion is again admitted by the protected-base verifier
+and cannot change either network object or the Ingress.

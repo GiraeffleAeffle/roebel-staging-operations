@@ -252,9 +252,17 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
         load(render_root / "public-mecky/service.json"),
         load(render_root / "public-mecky/networkpolicy.json"),
         desired_deployments[1],
+        load(render_root / "web/networkpolicy.json"),
+        load(render_root / "web/ingress.json"),
     ]
+    network_boundary_migration = load(
+        render_root / "network-boundary-migration.json"
+    )
     integrity = {
         "desiredRenderSha256": digest_bytes(canonical_render({"nextEnvironmentHead": next_head, "objects": desired_objects})),
+        "networkBoundaryMigrationSha256": digest_bytes(
+            canonical_render(network_boundary_migration)
+        ),
         "releaseSetDigest": next_head["releaseSetDigest"],
         "schemaVersion": "roebel_staging_reviewed_render_v1",
     }

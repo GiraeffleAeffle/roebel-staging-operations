@@ -54,9 +54,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         integrity["releaseSetDigest"] = new_release
         service = json.loads((render / "public-mecky/service.json").read_text())
         network_policy = json.loads((render / "public-mecky/networkpolicy.json").read_text())
+        web_network_policy = json.loads((render / "web/networkpolicy.json").read_text())
+        web_ingress = json.loads((render / "web/ingress.json").read_text())
+        migration = json.loads((render / "network-boundary-migration.json").read_text())
         integrity["desiredRenderSha256"] = VERIFIER.digest(
-            {"nextEnvironmentHead": head, "objects": [public, service, network_policy, web]}
+            {
+                "nextEnvironmentHead": head,
+                "objects": [
+                    public,
+                    service,
+                    network_policy,
+                    web,
+                    web_network_policy,
+                    web_ingress,
+                ],
+            }
         )
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
         (render / "integrity.json").write_text(json.dumps(integrity, indent=2) + "\n")
 
         live = json.loads((render / "live-preconditions.json").read_text())
@@ -177,6 +191,48 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy drift"):
             VERIFIER.verify(candidate)
+
+    def test_web_egress_cannot_widen_beyond_exact_public_mecky(self) -> None:
+        for mutation in (
+            lambda value: value["spec"]["egress"][2]["to"][0][
+                "namespaceSelector"
+            ]["matchLabels"].clear(),
+            lambda value: value["spec"]["egress"][2]["to"][0][
+                "podSelector"
+            ]["matchLabels"].update(
+                {"app.kubernetes.io/name": "public-mecky"}
+            ),
+            lambda value: value["spec"]["egress"][2]["ports"].__setitem__(
+                0, {"protocol": "TCP", "port": 443}
+            ),
+        ):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path = candidate / "reviewed-render/roebel-staging/web/networkpolicy.json"
+            value = json.loads(path.read_text())
+            mutation(value)
+            path.write_text(json.dumps(value, indent=2) + "\n")
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "Web NetworkPolicy drift"):
+                VERIFIER.verify(candidate)
+
+    def test_web_ingress_cannot_widen_mecky_post_path(self) -> None:
+        for replacement in (
+            "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky/other }\n"
+            "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky/other }",
+            "http-request deny deny_status 405 unless { method GET HEAD }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count }",
+        ):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            path = candidate / "reviewed-render/roebel-staging/web/ingress.json"
+            value = json.loads(path.read_text())
+            value["metadata"]["annotations"][
+                "haproxy-ingress.github.io/config-backend-early"
+            ] = replacement
+            path.write_text(json.dumps(value, indent=2) + "\n")
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Ingress drift"):
+                VERIFIER.verify(candidate)
 
     def test_web_cannot_point_public_mecky_at_an_external_url(self) -> None:
         temp, candidate = self.candidate()

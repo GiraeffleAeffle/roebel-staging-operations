@@ -1,0 +1,104 @@
+{
+  "authority": "none",
+  "boundary": {
+    "ingress": {
+      "allowedMethods": [
+        "GET",
+        "HEAD",
+        "POST"
+      ],
+      "exactPostPath": "/api/chat/mecky",
+      "otherApiPaths": "404_except_public_feed_notifications_and_exact_mecky_path",
+      "otherMethods": "405",
+      "otherPostPaths": "405",
+      "resource": {
+        "kind": "Ingress",
+        "name": "roebel-web-presentation",
+        "namespace": "stadtstack-roebel-web-preview"
+      }
+    },
+    "webEgress": {
+      "destinationNamespace": "stadtstack-roebel-staging-lab",
+      "destinationPodLabels": {
+        "app.kubernetes.io/component": "public-mecky",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      },
+      "port": 18084,
+      "protocol": "TCP",
+      "resource": {
+        "kind": "NetworkPolicy",
+        "name": "roebel-web-presentation",
+        "namespace": "stadtstack-roebel-web-preview"
+      }
+    }
+  },
+  "effects": {
+    "civicMutation": false,
+    "clusterMutation": false,
+    "secretRead": false,
+    "secretWrite": false
+  },
+  "objects": [
+    {
+      "kind": "NetworkPolicy",
+      "name": "roebel-web-presentation",
+      "namespace": "stadtstack-roebel-web-preview",
+      "sha256": "sha256:4c2bd4a40609f4e2920023364025bf55af167d39e25804701ad65f109b42b482"
+    },
+    {
+      "kind": "Ingress",
+      "name": "roebel-web-presentation",
+      "namespace": "stadtstack-roebel-web-preview",
+      "sha256": "sha256:b14e655bd96e8d4e676d16727bc6b4668065041d1016e7babbcc1072e222f80d"
+    }
+  ],
+  "rbacBootstrap": {
+    "createAllowed": false,
+    "deleteAllowed": false,
+    "listAllowed": false,
+    "required": true,
+    "roleNamespace": "stadtstack-roebel-web-preview",
+    "serviceAccount": {
+      "name": "roebel-web-reconciler",
+      "namespace": "flux-roebel-staging"
+    },
+    "watchAllowed": false,
+    "rules": [
+      {
+        "apiGroups": [
+          "networking.k8s.io"
+        ],
+        "resourceNames": [
+          "roebel-web-presentation"
+        ],
+        "resources": [
+          "networkpolicies"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      },
+      {
+        "apiGroups": [
+          "networking.k8s.io"
+        ],
+        "resourceNames": [
+          "roebel-web-presentation"
+        ],
+        "resources": [
+          "ingresses"
+        ],
+        "verbs": [
+          "get",
+          "patch",
+          "update"
+        ]
+      }
+    ],
+    "liveMutationPerformed": false
+  },
+  "schemaVersion": "roebel_staging_network_boundary_bootstrap_v1",
+  "status": "local_candidate_ready_for_one_time_policy_bootstrap"
+}
