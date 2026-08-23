@@ -13,7 +13,7 @@
   "spec": {
     "ports": [
       {
-        "name": "http",
+        "name": "admission",
         "port": 18085,
         "protocol": "TCP",
         "targetPort": 18085

@@ -17,24 +17,36 @@ object identities, and references to existing ConfigMaps or Secrets. It may
 not contain a Secret object, a Secret value, credentials, personal data,
 posts, discussions, Civic Cases, municipal records, or runtime status.
 
-## Inert Case staging topology foundation
+## Inert Case staging runtime gate
 
-`case-staging-topology/` is a separate, static contract for the next Case
-transport slice. It reserves two deliberately disjoint internal identities and
-ClusterIP service names—`roebel-case-steward-control` and
-`roebel-case-public-binding`—with `automountServiceAccountToken: false` and a
-per-capability default-deny ingress/egress policy. Its closed-world
-`allowedKinds` list contains only `NetworkPolicy`, `Service`, and
-`ServiceAccount`; every other kind is forbidden. These files are not in a Flux
-Kustomization and therefore create nothing by themselves.
+`case-staging-topology/` is a closed-world `runtime_gate_v1` review contract
+for the future control and public Case processes. It remains
+`mode: inert_review_only`; both `reconciliationAllowed` and
+`fluxKustomizationAllowed` are false. The contract has exactly three
+ClusterIP services: admission (18085) and private outbox (18087) select only
+control, while public binding (18086) selects only public. Capability-free
+control and public probe ports are direct-only (18088/18089) and have no
+Service.
 
-The contract intentionally has no Deployment, Pod template, image, Secret,
-RBAC, Ingress, PVC, ConfigMap, storage mount, allowed network edge, or live
-listener. In particular, it never grants a public workload access to SQLite.
-A later application composition root must introduce each omitted concern in a
-separate reviewed slice, starting from these deny-by-default identities and
-network boundaries. The automatic image-promotion workflow cannot mutate this
-topology contract.
+The future control process is constrained to its tokenless ServiceAccount and
+may reference only the already-provisioned control runtime Secret and state
+PVC. The public process is separately tokenless and is explicitly forbidden
+from Secret, PVC, and RBAC references. The control image and public image are
+both deliberately blocked until exact immutable digests, provenance, and SPDX
+SBOM evidence exist; this contract uses no image placeholder.
+
+Default deny remains in force. Public may egress only to DNS and the control
+private-outbox port; control accepts only public on that port. The gate reserves
+an exact Röbel Web ingress peer on 18086, but the current protected Web policy
+does not yet allow the matching egress, so the route is not live. Admission is
+also intentionally default-denied because no staff gateway identity is pinned.
+The Stadtstack reference runtime still binds its civic listeners to loopback;
+a reviewed deployment bind adapter is required before a Service can reach it.
+The staging token-adapter marker is staging-only and rejected for production.
+A separately reviewed protected policy migration must supply that adapter, the
+Web-egress rule, deployable composition, exact image evidence, and the required
+staff-gateway decision before any Flux reference may be added. Routine image
+promotion preserves every runtime-gate byte unchanged.
 
 ## Promotion flow
 
@@ -89,8 +101,9 @@ resources, civic publication state, governance state, or treasury state.
   payload-shaped fields, literal values for secret-shaped environment names,
   runtime metadata, and every object except two exact Deployments, one
   ClusterIP Service, two exact NetworkPolicies, one exact Web Ingress, and the
-  seven separately verified inert Case topology records (two ServiceAccounts,
-  two ClusterIP Services, two default-deny NetworkPolicies, and their contract).
+  eleven separately verified inert Case runtime-gate records (two
+  ServiceAccounts, three ClusterIP Services, five closed-world NetworkPolicies,
+  and their contract).
   Ordinary promotions preserve all topology records byte-for-byte. The Public
   Mecky Service is ClusterIP-only; the Web Ingress admits only the exact
   GET/HEAD read surface plus `POST /api/chat/mecky`, and the Web egress admits

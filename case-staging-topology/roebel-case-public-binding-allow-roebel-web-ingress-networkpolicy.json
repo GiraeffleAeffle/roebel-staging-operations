@@ -1,0 +1,48 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "case-public-binding",
+      "app.kubernetes.io/part-of": "roebel-case-staging",
+      "stadtstack.io/authority": "none"
+    },
+    "name": "roebel-case-public-binding-allow-roebel-web-ingress",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "case-public-binding",
+        "app.kubernetes.io/part-of": "roebel-case-staging"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ],
+    "ingress": [
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/name": "roebel-web-presentation"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18086,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ]
+  }
+}

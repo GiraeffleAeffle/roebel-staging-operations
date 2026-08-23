@@ -1,0 +1,70 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "case-public-binding",
+      "app.kubernetes.io/part-of": "roebel-case-staging",
+      "stadtstack.io/authority": "none"
+    },
+    "name": "roebel-case-public-binding-allow-private-outbox-and-dns-egress",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "case-public-binding",
+        "app.kubernetes.io/part-of": "roebel-case-staging"
+      }
+    },
+    "policyTypes": [
+      "Egress"
+    ],
+    "egress": [
+      {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "kube-system"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "k8s-app": "kube-dns"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 53,
+            "protocol": "UDP"
+          },
+          {
+            "port": 53,
+            "protocol": "TCP"
+          }
+        ]
+      },
+      {
+        "to": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-steward-control",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18087,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ]
+  }
+}
