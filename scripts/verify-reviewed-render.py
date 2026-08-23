@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import sys
@@ -53,9 +54,18 @@ EXPECTED_FILES = {
     "policy/repository-contract.json",
     "scripts/render-release-set-promotion.py",
     "scripts/test_automatic_promotion_workflow.py",
+    "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
+    "scripts/verify-case-staging-topology.py",
     "scripts/verify-reviewed-render.py",
+    "case-staging-topology/contract.json",
+    "case-staging-topology/roebel-case-public-binding-default-deny-networkpolicy.json",
+    "case-staging-topology/roebel-case-public-binding-service.json",
+    "case-staging-topology/roebel-case-public-binding-serviceaccount.json",
+    "case-staging-topology/roebel-case-steward-control-default-deny-networkpolicy.json",
+    "case-staging-topology/roebel-case-steward-control-service.json",
+    "case-staging-topology/roebel-case-steward-control-serviceaccount.json",
     f"{RENDER_ROOT}/head.json",
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/live-preconditions.json",
@@ -138,6 +148,25 @@ def repository_files(root: Path) -> set[str]:
     return files
 
 
+def verify_case_staging_topology_with_protected_policy(root: Path) -> None:
+    """Validate candidate topology data with the verifier beside this script.
+
+    On pull_request_target this module is executed from the protected base
+    checkout.  Resolving the sibling by ``__file__`` is therefore deliberate:
+    candidate topology is data only and cannot select or execute its own
+    policy module.
+    """
+    verifier_path = Path(__file__).with_name("verify-case-staging-topology.py")
+    spec = importlib.util.spec_from_file_location("protected_case_topology_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case topology verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.verify(root)
+    except module.VerificationError as error:
+        raise VerificationError(f"Case staging topology verification failed: {error}") from error
+
+
 def verify_contract(root: Path) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -154,7 +183,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy"],
+            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -633,6 +662,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
     verify_contract(root)
+    verify_case_staging_topology_with_protected_policy(root)
     head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
     integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256", "networkBoundaryMigrationSha256"}, "integrity")
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")

@@ -17,6 +17,25 @@ object identities, and references to existing ConfigMaps or Secrets. It may
 not contain a Secret object, a Secret value, credentials, personal data,
 posts, discussions, Civic Cases, municipal records, or runtime status.
 
+## Inert Case staging topology foundation
+
+`case-staging-topology/` is a separate, static contract for the next Case
+transport slice. It reserves two deliberately disjoint internal identities and
+ClusterIP service names—`roebel-case-steward-control` and
+`roebel-case-public-binding`—with `automountServiceAccountToken: false` and a
+per-capability default-deny ingress/egress policy. Its closed-world
+`allowedKinds` list contains only `NetworkPolicy`, `Service`, and
+`ServiceAccount`; every other kind is forbidden. These files are not in a Flux
+Kustomization and therefore create nothing by themselves.
+
+The contract intentionally has no Deployment, Pod template, image, Secret,
+RBAC, Ingress, PVC, ConfigMap, storage mount, allowed network edge, or live
+listener. In particular, it never grants a public workload access to SQLite.
+A later application composition root must introduce each omitted concern in a
+separate reviewed slice, starting from these deny-by-default identities and
+network boundaries. The automatic image-promotion workflow cannot mutate this
+topology contract.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
@@ -66,20 +85,25 @@ resources, civic publication state, governance state, or treasury state.
 - The complete previous head is the compare-and-swap boundary.
 - Images are exact `ghcr.io/...@sha256:...` references with
   `imagePullPolicy: IfNotPresent`; tags are rejected.
-- The verifier rejects extra files, symlinks, Secret payload-shaped fields,
-  literal values for secret-shaped environment names, runtime metadata, and
-  any object other than the two exact Deployments, one ClusterIP Service, two
-  exact NetworkPolicies, and one exact Web Ingress. The Public Mecky Service is
-  ClusterIP-only; the Web Ingress admits only the exact GET/HEAD read surface
-  plus `POST /api/chat/mecky`, and the Web egress admits only the exact Public
-  Mecky namespace/pod selectors on TCP 18084 in addition to its existing DNS
-  and exact HTTPS egress rules.
+- The protected-base verifier rejects extra files, symlinks, Secret
+  payload-shaped fields, literal values for secret-shaped environment names,
+  runtime metadata, and every object except two exact Deployments, one
+  ClusterIP Service, two exact NetworkPolicies, one exact Web Ingress, and the
+  seven separately verified inert Case topology records (two ServiceAccounts,
+  two ClusterIP Services, two default-deny NetworkPolicies, and their contract).
+  Ordinary promotions preserve all topology records byte-for-byte. The Public
+  Mecky Service is ClusterIP-only; the Web Ingress admits only the exact
+  GET/HEAD read surface plus `POST /api/chat/mecky`, and the Web egress admits
+  only the exact Public Mecky namespace/pod selectors on TCP 18084 in addition
+  to its existing DNS and exact HTTPS egress rules.
 
 Run the same check locally:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_reviewed_render.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_case_staging_topology.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-case-staging-topology.py --root .
 ```
 
 The source remains safe to read anonymously. Runtime credentials and civic
