@@ -115,6 +115,29 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
 
+    def test_protected_verifier_rejects_case_topology_semantic_drift(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "case-staging-topology/roebel-case-public-binding-service.json"
+        value = json.loads(path.read_text())
+        value["spec"]["type"] = "LoadBalancer"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "Case staging topology verification failed: roebel-case-public-binding Service drift",
+        ):
+            VERIFIER.verify(candidate)
+
+    def test_protected_verifier_requires_service_account_public_metadata_kind(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "policy/repository-contract.json"
+        value = json.loads(path.read_text())
+        value["publicMetadataBoundary"]["allowedKinds"].remove("ServiceAccount")
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository contract drift"):
+            VERIFIER.verify(candidate)
+
     def test_valid_mixed_source_web_only_transition_is_accepted(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)

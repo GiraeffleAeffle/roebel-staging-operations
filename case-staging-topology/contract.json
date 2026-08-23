@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "roebel_case_staging_topology_foundation_v1",
+  "mode": "inert_review_only",
+  "namespace": "stadtstack-roebel-staging-lab",
+  "applicationCompositionRequired": true,
+  "capabilities": [
+    {
+      "name": "roebel-case-steward-control",
+      "serviceAccount": "roebel-case-steward-control",
+      "service": "roebel-case-steward-control",
+      "defaultDenyNetworkPolicy": "roebel-case-steward-control-default-deny"
+    },
+    {
+      "name": "roebel-case-public-binding",
+      "serviceAccount": "roebel-case-public-binding",
+      "service": "roebel-case-public-binding",
+      "defaultDenyNetworkPolicy": "roebel-case-public-binding-default-deny"
+    }
+  ],
+  "allowedKinds": [
+    "NetworkPolicy",
+    "Service",
+    "ServiceAccount"
+  ],
+  "otherKindsAllowed": false,
+  "invariants": {
+    "automountServiceAccountToken": false,
+    "clusterMutation": false,
+    "credentialsAllowed": false,
+    "liveBindAllowed": false,
+    "publicSQLiteMountAllowed": false,
+    "serviceExposure": "ClusterIP_only",
+    "workloadDefinitionAllowed": false
+  }
+}
