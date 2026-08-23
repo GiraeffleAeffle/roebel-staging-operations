@@ -59,7 +59,10 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
         protocols = self.contract["protocols"]
         self.assertEqual(protocols["shutdownSeal"]["schemaVersion"], "case_shutdown_seal_v2")
         self.assertEqual(protocols["recoveryAttestation"]["schemaVersion"], "staging_case_recovery_attestation_v2")
+        self.assertEqual(protocols["recoveryPolicy"]["schemaVersion"], "staging_case_recovery_policy_v1")
+        self.assertEqual(protocols["backupCatalog"]["schemaVersion"], "case_backup_catalog_locator_v1")
         self.assertEqual(protocols["recoveryGate"]["schemaVersion"], "staging_case_recovery_gate_v2")
+        self.assertFalse(protocols["recoveryGate"]["serializableChecksum"])
         self.assertEqual(protocols["deploymentClaim"]["schemaVersion"], "case_durable_deployment_claim_v1")
         self.assertEqual(protocols["bootstrap"]["schemaVersion"], "case_store_bootstrap_v1")
         self.assertEqual(protocols["openEpoch"]["schemaVersion"], "case_open_epoch_v1")
@@ -73,8 +76,154 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
                 "isolated_restore_verifier",
                 "restored_slots",
                 "flux_handoff",
+                "recovery_activation",
             ],
         )
+
+    def test_recovery_marker_cannot_coexist_with_ordinary_start_receipts(self) -> None:
+        restore = self.contract["stages"][3]
+        self.assertEqual(
+            restore["protocolRefs"],
+            ["recoveryPolicy", "backupCatalog", "recoveryAttestation"],
+        )
+        self.assertNotIn("bootstrapChecksum", restore["evidence"])
+        self.assertNotIn("openEpochChecksum", restore["evidence"])
+        self.assertNotIn("recoveryMarkerChecksum", restore["evidence"])
+        self.assertNotIn("bootstrapReceiptForbidden", restore["requirements"])
+        self.assertNotIn("openEpochReceiptForbidden", restore["requirements"])
+        self.assertNotIn("bootstrapChecksum", self.contract["liveEvidence"]["restore"])
+        self.assertNotIn("openEpochChecksum", self.contract["liveEvidence"]["restore"])
+        activation = self.contract["stages"][6]
+        self.assertTrue(activation["requirements"]["ownerLockRequired"])
+        self.assertTrue(activation["requirements"]["exactRenewedRecoveryGateRequired"])
+        self.assertTrue(activation["requirements"]["reviewedHandoffReceiptRequired"])
+        self.assertTrue(activation["requirements"]["recoveryMarkerRequired"])
+        self.assertTrue(activation["requirements"]["sourceToTargetClaimRotationRequired"])
+        self.assertTrue(activation["requirements"]["bootstrapReceiptForbidden"])
+        self.assertTrue(activation["requirements"]["openEpochReceiptForbidden"])
+        self.assertTrue(activation["requirements"]["preBindFreshnessRequired"])
+        self.assertTrue(activation["requirements"]["nonSealingAbortRequired"])
+        self.assertIn("handoffReceiptChecksum", activation["evidence"])
+        self.assertIsNone(activation["evidence"]["handoffReceiptChecksum"])
+
+        candidate = copy.deepcopy(self.contract)
+        candidate["stages"][6]["protocolRefs"].append("bootstrap")
+        errors = self.verify(candidate)
+        self.assertTrue(any("protocolRefs drift" in error for error in errors))
+
+    def test_public_slot_has_no_storage_or_authority_surfaces(self) -> None:
+        requirements = self.contract["stages"][4]["requirements"]
+        self.assertNotIn("publicSlotMustReferenceTarget", requirements)
+        self.assertTrue(requirements["publicSlotMustBePvcPvSecretRbacFree"])
+        self.assertTrue(requirements["publicSlotMustReferenceControlPrivateOutbox"])
+        self.assertEqual(requirements["publicSlotForbiddenSurfaces"], ["pvc", "pv", "secret", "rbac"])
+        public = self.contract["stages"][4]["slots"]["public"]
+        self.assertEqual(
+            set(public),
+            {"controlPrivateOutboxBindingChecksum", "controlSlotReferenceChecksum", "referenceChecksum"},
+        )
+        self.assertNotIn("targetPvcUid", public)
+        self.assertNotIn("targetPvName", public)
+        self.assertNotIn("targetClaimChecksum", public)
+
+    def test_bundle_pins_three_independent_locators(self) -> None:
+        bundle = self.contract["stages"][1]["bundle"]
+        self.assertEqual(
+            set(bundle) - {"database", "sourceClaim", "sourceSeal", "bundleChecksum"},
+            {"catalogLocator", "completionReceiptLocator", "encryptedManifestLocator"},
+        )
+        self.assertEqual(
+            set(bundle["catalogLocator"]),
+            {"bucket", "key", "objectVersion", "checksum"},
+        )
+        self.assertEqual(
+            set(bundle["completionReceiptLocator"]),
+            {"bucket", "key", "objectVersion", "checksum", "keyVersion"},
+        )
+        self.assertEqual(
+            set(bundle["encryptedManifestLocator"]),
+            {"bucket", "key", "objectVersion", "checksum"},
+        )
+
+        candidate = copy.deepcopy(self.contract)
+        candidate["stages"][1]["bundle"]["completionReceiptLocator"]["objectVersion"] = "v1"
+        errors = self.verify(candidate)
+        self.assertTrue(any("completionReceiptLocator.objectVersion must remain null" in error for error in errors))
+
+    def test_restore_verifier_evidence_and_boundary_requirements_are_pinned(self) -> None:
+        restore = self.contract["stages"][3]
+        self.assertEqual(
+            set(restore["evidence"]),
+            {
+                "recoveryPolicyChecksum",
+                "recoveryAttestationChecksum",
+                "restoreReportChecksum",
+                "restoreVerifierImageDigest",
+                "restoreVerifierProvenanceSha256",
+                "restoreVerifierSpdxSbomSha256",
+                "verifiedDatabaseSha256",
+                "verifiedSchemaChecksum",
+            },
+        )
+        self.assertTrue(restore["requirements"]["immutableRestoreVerifierRequired"])
+        self.assertFalse(restore["requirements"]["sourceWriteMountAllowed"])
+        self.assertFalse(restore["requirements"]["publicIngressAllowed"])
+        self.assertFalse(restore["requirements"]["userFacingEndpointAllowed"])
+
+    def test_flux_handoff_requires_review_revision_and_inventory_checksum(self) -> None:
+        handoff = self.contract["stages"][5]
+        self.assertTrue(handoff["requirements"]["reviewedOperationsRevisionRequired"])
+        self.assertTrue(handoff["requirements"]["exactResourceInventoryChecksumRequired"])
+        self.assertEqual(handoff["handoffReceipt"]["canonicalEncoding"], "canonical-json")
+        self.assertEqual(
+            handoff["handoffReceipt"]["checksumCovers"],
+            VERIFIER.HANDOFF_CHECKSUM_COVERS,
+        )
+        self.assertEqual(
+            set(handoff["handoffReceipt"])
+            - {"schemaVersion", "status", "canonicalEncoding", "checksumCovers"},
+            {
+                "operationsRevision",
+                "resourceInventoryChecksum",
+                "sourceClaimChecksum",
+                "targetClaimChecksum",
+                "targetPvcUid",
+                "targetPvName",
+                "releaseDigest",
+                "recoveryPolicyChecksum",
+                "recoveryAttestationChecksum",
+                "receiptChecksum",
+            },
+        )
+        self.assertFalse(handoff["requirements"]["fluxObjectAllowed"])
+
+        candidate = copy.deepcopy(self.contract)
+        candidate["stages"][5]["handoffReceipt"]["checksumCovers"].remove("sourceClaimChecksum")
+        errors = self.verify(candidate)
+        self.assertTrue(any("handoffReceipt.checksumCovers drift" in error for error in errors))
+
+    def test_source_quiesce_requires_maintenance_window_and_exact_binding(self) -> None:
+        source = self.contract["stages"][0]
+        self.assertTrue(source["requirements"]["maintenanceWindowRequired"])
+        self.assertTrue(source["requirements"]["exactSourceControlBindingRequired"])
+        self.assertEqual(
+            set(source["evidence"]),
+            {
+                "maintenanceStartedAtUtc",
+                "maintenanceCompletedAtUtc",
+                "sourceControlDeploymentBindingChecksum",
+                "sourceClaimChecksum",
+                "sourcePvcUid",
+                "sourcePvName",
+                "sourceSealChecksum",
+                "quiesceReceiptChecksum",
+            },
+        )
+
+        candidate = copy.deepcopy(self.contract)
+        candidate["stages"][0]["evidence"]["maintenanceStartedAtUtc"] = "2026-08-23T00:00:00.000Z"
+        errors = self.verify(candidate)
+        self.assertTrue(any("maintenanceStartedAtUtc must remain null" in error for error in errors))
 
     def test_all_live_evidence_is_explicitly_null_and_enumerated(self) -> None:
         nulls = VERIFIER._null_paths(
@@ -152,6 +301,21 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
             contract_path = candidate / VERIFIER.CONTRACT_RELATIVE_PATH
             value = json.loads(contract_path.read_text(encoding="utf-8"))
             value["stages"][0]["evidence"]["forgedField"] = None
+            contract_path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(REVIEW_VERIFIER.VerificationError, "Case recovery composition contract verification failed"):
+                REVIEW_VERIFIER.verify(candidate, ROOT)
+
+    def test_protected_base_verifier_rejects_recovery_boundary_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "candidate"
+            shutil.copytree(
+                ROOT,
+                candidate,
+                ignore=shutil.ignore_patterns(".git", "__pycache__"),
+            )
+            contract_path = candidate / VERIFIER.CONTRACT_RELATIVE_PATH
+            value = json.loads(contract_path.read_text(encoding="utf-8"))
+            value["stages"][4]["requirements"]["publicSlotMustBePvcPvSecretRbacFree"] = False
             contract_path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
             with self.assertRaisesRegex(REVIEW_VERIFIER.VerificationError, "Case recovery composition contract verification failed"):
                 REVIEW_VERIFIER.verify(candidate, ROOT)

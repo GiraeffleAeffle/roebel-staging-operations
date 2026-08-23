@@ -126,22 +126,36 @@ The review stages are deliberately ordered:
 
 1. Quiesce the source owner and obtain the canonical v2 shutdown seal.
 2. Produce an encrypted bundle containing the exact SQLite bytes, canonical
-   source deployment claim, canonical v2 seal, and pinned object locators and
-   checksums.
+   source deployment claim, canonical v2 seal, and separate pinned catalog,
+   completion-receipt, and encrypted-manifest locators with object versions,
+   checksums, and key versions where applicable.
 3. Prove a fresh target claim with distinct PVC/PV identity and a pinned
    StorageClass; the source volume may not be reused.
 4. Restore and verify in isolation, with no database creation, exact schema
-   verification, baseline-dominance proof, and the v2 recovery marker.
-5. Bind the restored control and public slots to the exact target claim.
-6. Emit a future exact handoff receipt. This is a receipt shape only, not a
-   Flux resource and not permission to reconcile.
+   verification, baseline-dominance proof, and an immutable verifier image
+   pinned to provenance and SPDX SBOM checksums. This stage proves the restored
+   bytes and schema; it cannot activate the runtime or create a recovery marker.
+5. Bind the restored control slot to the exact target claim/PVC/PV and its
+   private-outbox binding. The public slot is explicitly PVC/PV/Secret/RBAC
+   free and may reference only the exact control slot/private-outbox checksums.
+6. Emit a future exact handoff receipt with the reviewed Operations revision
+   and resource-inventory checksum. Its canonical JSON checksum covers those
+   review pins together with the source and target claims, target PVC/PV,
+   release, recovery policy, and recovery attestation. This is a receipt shape
+   only, not a Flux resource and not permission to reconcile.
+7. After a separately authorized reconciliation, require the owner lock, a
+   renewed recovery gate, the exact reviewed handoff receipt, source-to-target
+   claim rotation, and pre-bind freshness before the runtime may create the v2
+   recovery marker. Ordinary-start bootstrap and open-epoch receipts remain
+   forbidden, and an abort before every listener is ready remains non-sealing.
 
 All live stage and aggregate evidence remains `null` and is enumerated in
 `missingEvidence`. The remaining blockers are the source PVC/claim and clean
 seal, encrypted backup catalog and object-lock policy, restore verifier
 release/SBOM, fresh target PVC/PV/StorageClass identity, isolated restore
 report, control/public slot references, and the separately reviewed exact
-handoff receipt. Until those facts are independently reviewed, this repository
+handoff receipt and runtime activation evidence. Until those facts are
+independently reviewed, this repository
 cannot read credentials, mutate storage, create a restore job, activate a
 workload, or hand anything to Flux. The protected-base render verifier checks
 this contract on every tree and rejects duplicate keys, open shapes, resource
