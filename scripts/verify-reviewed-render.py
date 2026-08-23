@@ -51,14 +51,17 @@ EXPECTED_FILES = {
     ".gitignore",
     "LICENSE",
     "README.md",
+    "contracts/stadtstack-case-runtime-contract.json",
     "policy/repository-contract.json",
     "scripts/render-release-set-promotion.py",
     "scripts/test_automatic_promotion_workflow.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
+    "scripts/verify-stadtstack-case-runtime-contract.py",
     "scripts/verify-case-staging-topology.py",
     "scripts/verify-reviewed-render.py",
+    "tests/test_stadtstack_case_runtime_contract.py",
     "case-staging-topology/contract.json",
     "case-staging-topology/roebel-case-public-binding-default-deny-networkpolicy.json",
     "case-staging-topology/roebel-case-public-binding-allow-private-outbox-and-dns-egress-networkpolicy.json",
@@ -169,6 +172,17 @@ def verify_case_staging_topology_with_protected_policy(root: Path) -> None:
         module.verify(root)
     except module.VerificationError as error:
         raise VerificationError(f"Case staging topology verification failed: {error}") from error
+
+
+def verify_case_runtime_contract_with_protected_policy(root: Path) -> None:
+    """Validate the candidate recovery inventory with protected-base policy."""
+    verifier_path = Path(__file__).with_name("verify-stadtstack-case-runtime-contract.py")
+    spec = importlib.util.spec_from_file_location("protected_case_runtime_contract_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case runtime contract verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = module.verify_contract(root)
+    require(errors == [], f"Case runtime contract verification failed: {errors!r}")
 
 
 def verify_contract(root: Path) -> dict[str, Any]:
@@ -667,6 +681,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
     verify_contract(root)
     verify_case_staging_topology_with_protected_policy(root)
+    verify_case_runtime_contract_with_protected_policy(root)
     head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
     integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256", "networkBoundaryMigrationSha256"}, "integrity")
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
