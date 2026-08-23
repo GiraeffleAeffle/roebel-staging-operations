@@ -162,6 +162,55 @@ this contract on every tree and rejects duplicate keys, open shapes, resource
 documents, secret-shaped values, malformed identifiers, and cross-binding
 drift.
 
+## Inert Case image and resource inventory
+
+`contracts/stadtstack-case-image-resource-inventory-contract.json` is the
+manual admission record for the future Case control, public-binding, and
+restore-verifier images. It deliberately does not extend the routine Röbel Web
+and Public Mecky Release Set: a normal application promotion must never gain a
+path to the stateful control process or the recovery verifier.
+
+Each logical component remains blocked until one exact source revision,
+immutable manifest/config/layer digest set, GitHub-OIDC SLSA provenance, and
+SPDX 2.3 evidence are independently reviewed. Control and public runtime
+repositories must be distinct. The source and future publisher identity are
+pinned to the public `GiraeffleAeffle/stadtstack` repository, not the Röbel App
+publisher. The logical inventory preserves one-writer
+control storage, a public slot with no PVC/PV/Secret/token/RBAC surface, and an
+operator-only restore verifier with no source write mount, public ingress, or
+user-facing endpoint.
+
+Control is the sole exception to the no-reference rule: it may reference
+exactly the preexisting `roebel-case-steward-control-runtime` Secret already
+admitted by the topology contract. The allowlist is bound to that contract's
+canonical checksum. The inventory still forbids creating a Secret, embedding
+credential material, or giving public binding or restore verifier any Secret
+reference.
+
+The future Flux handoff is data only: its namespace, reconciler identity,
+source revision/path, exact resource-name allowlist checksum, inventory
+checksum, and RBAC receipt are all absent. The contract contains no Kubernetes
+or Flux document, credential value, live or unapproved Secret reference,
+reconciliation permission, or live effect. Its canonical inventory checksum is the only value the recovery
+composition may later accept as `resourceInventoryChecksum`.
+
+This first policy expansion cannot truthfully self-admit: the currently
+protected base does not contain the inventory verifier and its closed file set
+rejects those new paths. Bootstrapping therefore requires one bounded
+administrator merge of one exact, independently reviewed commit. Administrator
+enforcement must be restored even if that merge fails, and the newly protected
+`main` push verification must pass before any Case image publication,
+resource rendering, Flux handoff, or activation is allowed. Every subsequent
+inventory change is admitted only by the protected-base verifier; this
+one-time transition is not a reusable bypass.
+
+The provenance record is accepted only when its repository claim is
+`GiraeffleAeffle/stadtstack`, its source digest equals the component's exact
+40-character source revision, its Git ref is `refs/heads/main`, and its image
+subject equals the immutable manifest digest. The recovery-bound inventory
+checksum also covers the empty forbidden-resource and forbidden-secret
+inventories, so later population cannot silently weaken that boundary.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component

@@ -51,6 +51,7 @@ EXPECTED_FILES = {
     ".gitignore",
     "LICENSE",
     "README.md",
+    "contracts/stadtstack-case-image-resource-inventory-contract.json",
     "contracts/stadtstack-case-recovery-composition-contract.json",
     "contracts/stadtstack-case-runtime-contract.json",
     "policy/repository-contract.json",
@@ -62,7 +63,9 @@ EXPECTED_FILES = {
     "scripts/verify-stadtstack-case-runtime-contract.py",
     "scripts/verify-case-staging-topology.py",
     "scripts/verify-reviewed-render.py",
+    "scripts/verify-stadtstack-case-image-resource-inventory-contract.py",
     "scripts/verify-stadtstack-case-recovery-composition-contract.py",
+    "tests/test_stadtstack_case_image_resource_inventory_contract.py",
     "tests/test_stadtstack_case_runtime_contract.py",
     "tests/test_stadtstack-case-recovery-composition-contract.py",
     "case-staging-topology/contract.json",
@@ -197,6 +200,17 @@ def verify_case_recovery_composition_contract_with_protected_policy(root: Path) 
     spec.loader.exec_module(module)
     errors = module.verify_contract(root)
     require(errors == [], f"Case recovery composition contract verification failed: {errors!r}")
+
+
+def verify_case_image_resource_inventory_contract_with_protected_policy(root: Path) -> None:
+    """Validate the inert image/resource inventory with protected-base policy."""
+    verifier_path = Path(__file__).with_name("verify-stadtstack-case-image-resource-inventory-contract.py")
+    spec = importlib.util.spec_from_file_location("protected_case_image_resource_inventory_verifier", verifier_path)
+    require(spec is not None and spec.loader is not None, "protected Case image/resource inventory verifier unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    errors = module.verify_contract(root)
+    require(errors == [], f"Case image/resource inventory contract verification failed: {errors!r}")
 
 
 def verify_contract(root: Path) -> dict[str, Any]:
@@ -697,6 +711,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
+    verify_case_image_resource_inventory_contract_with_protected_policy(root)
     head = verify_head(load_json(root / RENDER_ROOT / "head.json"), "head")
     integrity = closed(load_json(root / RENDER_ROOT / "integrity.json"), {"schemaVersion", "releaseSetDigest", "desiredRenderSha256", "networkBoundaryMigrationSha256"}, "integrity")
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")

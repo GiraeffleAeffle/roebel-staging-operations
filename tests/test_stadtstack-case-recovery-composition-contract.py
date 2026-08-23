@@ -34,6 +34,7 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.contract = VERIFIER.load_json(ROOT / VERIFIER.CONTRACT_RELATIVE_PATH)
+        cls.image_inventory = VERIFIER.load_json(ROOT / VERIFIER.IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH)
 
     def verify(self, contract: dict) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
@@ -41,6 +42,9 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
             contract_path = root / VERIFIER.CONTRACT_RELATIVE_PATH
             contract_path.parent.mkdir(parents=True)
             contract_path.write_text(json.dumps(contract), encoding="utf-8")
+            inventory_path = root / VERIFIER.IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH
+            inventory_path.parent.mkdir(parents=True, exist_ok=True)
+            inventory_path.write_text(json.dumps(self.image_inventory), encoding="utf-8")
             return VERIFIER.verify_contract(root)
 
     def test_contract_is_valid_inert_and_closed(self) -> None:
@@ -54,6 +58,22 @@ class StadtstackCaseRecoveryCompositionContractTests(unittest.TestCase):
         self.assertEqual(self.contract["forbiddenResources"]["kubernetesObjects"], [])
         self.assertEqual(self.contract["forbiddenResources"]["fluxObjects"], [])
         self.assertEqual(self.contract["forbiddenSecrets"]["credentialValues"], [])
+
+    def test_image_resource_inventory_reference_is_exact_and_checksum_bound(self) -> None:
+        reference = self.contract["imageResourceInventory"]
+        self.assertEqual(reference["schemaVersion"], "stadtstack_case_image_resource_inventory_contract_v1")
+        self.assertEqual(reference["contractPath"], VERIFIER.IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH.as_posix())
+        self.assertIsNone(reference["inventoryChecksum"])
+        self.assertEqual(reference["inventoryChecksum"], self.image_inventory["inventoryChecksum"])
+        self.assertEqual(
+            self.contract["stages"][5]["handoffReceipt"]["resourceInventoryChecksum"],
+            reference["inventoryChecksum"],
+        )
+
+        candidate = copy.deepcopy(self.contract)
+        candidate["imageResourceInventory"]["contractPath"] = "contracts/other.json"
+        errors = self.verify(candidate)
+        self.assertTrue(any("imageResourceInventory.contractPath drift" in error for error in errors))
 
     def test_current_v2_protocols_are_pinned(self) -> None:
         protocols = self.contract["protocols"]

@@ -19,6 +19,7 @@ from typing import Any
 
 
 CONTRACT_RELATIVE_PATH = Path("contracts/stadtstack-case-recovery-composition-contract.json")
+IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH = Path("contracts/stadtstack-case-image-resource-inventory-contract.json")
 
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -343,6 +344,28 @@ def _verify_protocols(value: Any) -> None:
         _require(protocols[name] == expected, f"protocols.{name} drift")
 
 
+def _verify_image_resource_inventory_reference(root: Path, value: Any) -> None:
+    reference = _closed(value, {"schemaVersion", "contractPath", "inventoryChecksum"}, "imageResourceInventory")
+    _require(
+        reference["schemaVersion"] == "stadtstack_case_image_resource_inventory_contract_v1",
+        "imageResourceInventory.schemaVersion drift",
+    )
+    _require(
+        reference["contractPath"] == IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH.as_posix(),
+        "imageResourceInventory.contractPath drift",
+    )
+    _optional_checksum(reference["inventoryChecksum"], "imageResourceInventory.inventoryChecksum")
+    inventory = load_json(root / IMAGE_RESOURCE_INVENTORY_RELATIVE_PATH)
+    _require(
+        inventory.get("schemaVersion") == reference["schemaVersion"],
+        "image resource inventory schema binding drift",
+    )
+    _require(
+        inventory.get("inventoryChecksum") == reference["inventoryChecksum"],
+        "image resource inventory checksum binding drift",
+    )
+
+
 def _verify_locator(value: Any, path: str, with_key_version: bool) -> None:
     fields = {"bucket", "key", "objectVersion", "checksum"}
     if with_key_version:
@@ -538,6 +561,7 @@ def _verify_cross_bindings(contract: dict[str, Any]) -> None:
     receipt = stages["flux_handoff"]["handoffReceipt"]
     _require(receipt["operationsRevision"] == live["fluxHandoff"]["operationsRevision"], "handoff Operations revision binding drift")
     _require(receipt["resourceInventoryChecksum"] == live["fluxHandoff"]["resourceInventoryChecksum"], "handoff resource inventory binding drift")
+    _require(receipt["resourceInventoryChecksum"] == contract["imageResourceInventory"]["inventoryChecksum"], "handoff image resource inventory binding drift")
     _require(receipt["receiptChecksum"] == live["fluxHandoff"]["receiptChecksum"], "handoff receipt binding drift")
     _require(receipt["sourceClaimChecksum"] == live["source"]["claimChecksum"], "handoff source claim binding drift")
     _require(receipt["targetClaimChecksum"] == live["target"]["claimChecksum"], "handoff target claim binding drift")
@@ -558,7 +582,7 @@ def verify_contract(root: Path) -> list[str]:
             {
                 "schemaVersion", "mode", "status", "deploymentEnvironment", "municipalityId",
                 "reconciliationAllowed", "fluxHandoffAllowed", "allowedKinds", "forbiddenResources",
-                "forbiddenSecrets", "protocols", "stages", "liveEvidence", "effects", "missingEvidence",
+                "forbiddenSecrets", "protocols", "imageResourceInventory", "stages", "liveEvidence", "effects", "missingEvidence",
             },
             "contract",
         )
@@ -570,6 +594,7 @@ def verify_contract(root: Path) -> list[str]:
         _require(contract["forbiddenResources"] == {"documents": [], "apiVersions": [], "kinds": [], "kubernetesObjects": [], "fluxObjects": []}, "forbidden resource inventory must remain empty")
         _require(contract["forbiddenSecrets"] == {"credentialValues": [], "secretObjects": [], "secretReferences": []}, "forbidden secret inventory must remain empty")
         _verify_protocols(contract["protocols"])
+        _verify_image_resource_inventory_reference(root, contract["imageResourceInventory"])
         _require(isinstance(contract["stages"], list) and len(contract["stages"]) == len(STAGE_ORDER), "stage count invalid")
         for index, stage in enumerate(contract["stages"]):
             _verify_stage(stage, index)

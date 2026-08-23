@@ -59,6 +59,11 @@
       "canonicalEncoding": "canonical-json"
     }
   },
+  "imageResourceInventory": {
+    "schemaVersion": "stadtstack_case_image_resource_inventory_contract_v1",
+    "contractPath": "contracts/stadtstack-case-image-resource-inventory-contract.json",
+    "inventoryChecksum": null
+  },
   "stages": [
     {
       "stage": "source_quiesce",
@@ -391,6 +396,7 @@
     "fluxReconciliation": false
   },
   "missingEvidence": [
+    "imageResourceInventory.inventoryChecksum",
     "stages[0].evidence.maintenanceStartedAtUtc",
     "stages[0].evidence.maintenanceCompletedAtUtc",
     "stages[0].evidence.sourceControlDeploymentBindingChecksum",
