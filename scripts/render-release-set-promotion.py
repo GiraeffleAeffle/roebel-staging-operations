@@ -120,6 +120,9 @@ def validate_candidate(value: Any, current_head: dict[str, Any]) -> dict[str, An
     )
     require(expected_head == current_head, "candidate previous head is stale")
     require(isinstance(candidate["components"], list) and len(candidate["components"]) == 2, "candidate components invalid")
+    previous_components = {
+        component["component"]: component for component in expected_head["components"]
+    }
 
     for index, component_name in enumerate(COMPONENT_ORDER):
         component = closed(
@@ -140,6 +143,18 @@ def validate_candidate(value: Any, current_head: dict[str, Any]) -> dict[str, An
         sbom = closed(component["sbom"], {"format", "identity", "artifactDigest"}, "candidate sbom")
         require(sbom["format"] == "SPDX-2.3" and sbom["identity"] == "https://spdx.dev/spdx/v2.3", "candidate sbom identity invalid")
         require(isinstance(sbom["artifactDigest"], str) and DIGEST.fullmatch(sbom["artifactDigest"]), "candidate sbom digest invalid")
+
+        # A release-set can reuse an unchanged component, but only from the
+        # complete head that this candidate compare-and-swaps.  This permits
+        # affected-component publishing without turning the handoff into a
+        # historical image-selection mechanism.
+        previous = previous_components[component_name]
+        if component["sourceRevision"] != candidate["promotionRevision"]:
+            require(
+                component["sourceRevision"] == previous["sourceRevision"]
+                and component["manifestDigest"] == previous["manifestDigest"],
+                f"{component_name} non-promotion component must exactly reuse the expected previous head",
+            )
 
     payload = {
         "schemaVersion": candidate["schemaVersion"],
