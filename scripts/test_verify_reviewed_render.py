@@ -18,15 +18,85 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 class ReviewedRenderVerifierTests(unittest.TestCase):
+    def repository_shape(self, root: Path) -> str:
+        future = root / "reviewed-render/roebel-staging/reviewed-public-knowledge"
+        return "reviewed-public-knowledge" if future.is_dir() else "current"
+
+    def normalize_current_seed(self, destination: Path) -> None:
+        """Make mutation fixtures current-shaped even when ROOT is future-shaped."""
+        render = destination / "reviewed-render/roebel-staging"
+        future = render / "reviewed-public-knowledge"
+        if not future.is_dir():
+            return
+
+        public_path = render / "public-mecky/deployment.json"
+        public = json.loads(public_path.read_text())
+        env = public["spec"]["template"]["spec"]["containers"][0]["env"]
+        env[:] = [item for item in env if item["name"] != "MECKY_REVIEWED_SOURCE_KINDS"]
+        base_url = next(item for item in env if item["name"] == "STADTSTACK_PUBLIC_BASE_URL")
+        base_url["value"] = "http://stadtstack-public.stadtstack-roebel-staging-lab.svc.cluster.local:18080"
+        url_index = env.index(base_url)
+        env[url_index + 1:url_index + 1] = [
+            {"name": "STADTSTACK_E2E_MODE", "value": "synthetic-reviewed"},
+            {"name": "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED", "value": "true"},
+            {
+                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "key": "evidence.json",
+                        "name": "reviewed-evidence",
+                        "optional": False,
+                    }
+                },
+            },
+            {
+                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
+                "valueFrom": {
+                    "configMapKeyRef": {
+                        "key": "evidence.sha256",
+                        "name": "reviewed-evidence",
+                        "optional": False,
+                    }
+                },
+            },
+        ]
+        public_path.write_text(json.dumps(public, indent=2) + "\n")
+
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(
+            {
+                "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+                "objects": [
+                    public,
+                    json.loads((render / "public-mecky/service.json").read_text()),
+                    json.loads((render / "public-mecky/networkpolicy.json").read_text()),
+                    json.loads((render / "web/deployment.json").read_text()),
+                    json.loads((render / "web/networkpolicy.json").read_text()),
+                    json.loads((render / "web/ingress.json").read_text()),
+                ],
+            }
+        )
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+        shutil.rmtree(future)
+
     def candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp = tempfile.TemporaryDirectory()
         destination = Path(temp.name) / "candidate"
         shutil.copytree(ROOT, destination, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.normalize_current_seed(destination)
         return temp, destination
+
+    def current_base(self) -> Path:
+        temp, base = self.candidate()
+        self.addCleanup(temp.cleanup)
+        return base
 
     def make_valid_transition(self, candidate: Path) -> None:
         render = candidate / "reviewed-render/roebel-staging"
-        base_head = json.loads((ROOT / "reviewed-render/roebel-staging/head.json").read_text())
+        base_head = json.loads((render / "head.json").read_text())
+        base_public = json.loads((render / "public-mecky/deployment.json").read_text())
+        base_web = json.loads((render / "web/deployment.json").read_text())
         head = json.loads((render / "head.json").read_text())
         new_revision = "a" * 40
         new_release = "sha256:" + "b" * 64
@@ -75,8 +145,6 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
         live = json.loads((render / "live-preconditions.json").read_text())
         live["previousEnvironmentHead"] = base_head
-        base_public = json.loads((ROOT / "reviewed-render/roebel-staging/public-mecky/deployment.json").read_text())
-        base_web = json.loads((ROOT / "reviewed-render/roebel-staging/web/deployment.json").read_text())
         live["requiredLivePreconditions"][0]["currentImage"] = base_public["spec"]["template"]["spec"]["containers"][0]["image"]
         live["requiredLivePreconditions"][1]["currentImage"] = base_web["spec"]["template"]["spec"]["containers"][0]["image"]
         live["patches"][0]["operations"] = [
@@ -326,7 +394,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         result = VERIFIER.verify(ROOT)
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
-        self.assertEqual(result["renderFileSet"], "current")
+        self.assertEqual(result["renderFileSet"], self.repository_shape(ROOT))
+
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        fixture = VERIFIER.verify(candidate)
+        self.assertEqual(fixture["status"], "passed")
+        self.assertEqual(fixture["renderFileSet"], "current")
 
     def test_complete_reviewed_public_knowledge_render_set_is_accepted(self) -> None:
         temp, candidate = self.candidate()
@@ -340,7 +414,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         self.make_reviewed_knowledge_render(candidate)
-        result = VERIFIER.verify(candidate, ROOT)
+        result = VERIFIER.verify(candidate, self.current_base())
         self.assertTrue(result["baseTransitionVerified"])
 
     def test_activation_rejects_unrelated_public_mecky_drift(self) -> None:
@@ -353,7 +427,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         self.refresh_reviewed_integrity(candidate)
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Public Mecky transformation drift"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_activation_rejects_public_mecky_environment_reordering(self) -> None:
         temp, candidate = self.candidate()
@@ -365,7 +439,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         self.refresh_reviewed_integrity(candidate)
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Public Mecky transformation drift"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_activation_rejects_unrelated_existing_render_drift(self) -> None:
         temp, candidate = self.candidate()
@@ -377,7 +451,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         self.refresh_reviewed_integrity(candidate)
         with self.assertRaisesRegex(VERIFIER.VerificationError, "activation changed existing file"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_first_tracer_runtime_pin_rejects_each_independent_evidence_drift(self) -> None:
         mutations = (
@@ -498,7 +572,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(value, indent=2) + "\n")
         self.refresh_reviewed_integrity(candidate)
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Deployment spec keys mismatch"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_future_runtime_proof_binds_source_tag_and_immutable_digest(self) -> None:
         temp, candidate = self.candidate()
@@ -538,10 +612,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         self.make_valid_transition(candidate)
-        result = VERIFIER.verify(candidate, ROOT)
+        result = VERIFIER.verify(candidate, self.current_base())
         self.assertTrue(result["baseTransitionVerified"])
         self.assertEqual(result["components"][1]["sourceRevision"], "a" * 40)
-        base_head = json.loads((ROOT / "reviewed-render/roebel-staging/head.json").read_text())
+        base_head = json.loads((self.current_base() / "reviewed-render/roebel-staging/head.json").read_text())
         self.assertEqual(result["components"][0]["sourceRevision"], base_head["components"][0]["sourceRevision"])
 
     def test_changed_component_cannot_substitute_an_arbitrary_historical_source(self) -> None:
@@ -590,7 +664,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
         with self.assertRaisesRegex(VERIFIER.VerificationError, "must bind to the promotion revision"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_extra_file_is_rejected(self) -> None:
         temp, candidate = self.candidate()
@@ -780,7 +854,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         live["previousEnvironmentHead"] = head
         live_path.write_text(json.dumps(live, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "no-op promotion"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
     def test_policy_change_in_promotion_is_rejected(self) -> None:
         temp, candidate = self.candidate()
@@ -788,7 +862,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         readme = candidate / "README.md"
         readme.write_text(readme.read_text() + "\nchanged\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "protected policy file"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, self.current_base())
 
 
 if __name__ == "__main__":
