@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import copy
 import shutil
 import tempfile
 import unittest
@@ -154,6 +155,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             receipt: dict[str, object] = {
                 "schemaVersion": VERIFIER.SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA,
                 "canonicalEncoding": "canonical-json",
+                "publisherPinCanonicalSha256": pin["publisherPinCanonicalSha256"],
                 "component": component["component"],
                 "imageRepository": component["image"],
                 "manifestDigest": component["manifestDigest"],
@@ -165,16 +167,73 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             }
             receipt["receiptDigest"] = VERIFIER.digest(receipt)
             receipts.append(receipt)
+        components: list[dict[str, object]] = []
+        for index, component in enumerate(publisher["components"]):
+            marker = chr(ord("a") + index)
+            components.append({
+                "component": component["component"],
+                "imageRepository": component["image"],
+                "manifestDigest": component["manifestDigest"],
+                "provenance": {
+                    "receiptId": component["provenance"]["id"],
+                    "receiptUrl": component["provenance"]["url"],
+                    "attestationDigest": "sha256:" + marker * 64,
+                    "subjectDigest": component["manifestDigest"],
+                },
+                "sbomAttestation": {
+                    "receiptId": component["sbomAttestation"]["id"],
+                    "receiptUrl": component["sbomAttestation"]["url"],
+                    "attestationDigest": "sha256:" + chr(ord("c") + index) * 64,
+                    "subjectDigest": component["manifestDigest"],
+                },
+            })
+        flux_bindings: list[dict[str, object]] = []
+        for index, component in enumerate(VERIFIER.SIGNED_NOSTR_FLUX_BINDING_ORDER):
+            namespace = VERIFIER.SIGNED_NOSTR_FLUX_NAMESPACES[component]
+            flux_bindings.append({
+                "component": component,
+                "kustomization": {
+                    "name": f"signed-nostr-{component}",
+                    "namespace": namespace,
+                    "path": VERIFIER.SIGNED_NOSTR_FLUX_PATHS[component],
+                    "sourceRef": {"kind": "GitRepository", "name": "roebel-staging-operations", "namespace": "flux-system"},
+                    "objectDigest": "sha256:" + chr(ord("a") + index) * 64,
+                },
+                "serviceAccount": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("d") + index) * 64},
+                "role": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("a") + index) * 64},
+                "roleBinding": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("d") + index) * 64},
+                "rbacScope": {"apiGroups": ["", "apps"], "resources": ["deployments", "networkpolicies", "services"], "verbs": ["get", "list", "patch"], "resourceNames": [f"signed-nostr-{component}"]},
+            })
+        private_proxy: dict[str, object] = {
+            "kind": "Service",
+            "name": "gnosis-private-rpc",
+            "namespace": "stadtstack-roebel-web-preview",
+            "port": 8545,
+        }
+        private_proxy["object"] = VERIFIER.expected_signed_nostr_gnosis_private_proxy_object(private_proxy)
+        private_proxy["objectDigest"] = VERIFIER.digest(private_proxy["object"])
+        workbench_policy = VERIFIER.expected_signed_nostr_workbench_network_policy(private_proxy)
         pin["activationEvidence"] = {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE_SCHEMA,
+            "canonicalEncoding": "canonical-json",
             "status": "reviewed",
-            "gnosisRpcEgress": {"reviewed": True},
-            "fluxIdentity": {"reviewed": True},
+            "publisherPinCanonicalSha256": pin["publisherPinCanonicalSha256"],
+            "publisherSourceRevision": publisher["sourceRevision"],
+            "publisherWorkflowIdentity": VERIFIER.SIGNED_NOSTR_WORKFLOW,
+            "components": components,
+            "fluxBindings": flux_bindings,
+            "gnosisRpcEgress": {
+                "chainId": 100,
+                "privateProxy": private_proxy,
+                "workbenchNetworkPolicy": {"object": workbench_policy, "objectDigest": VERIFIER.digest(workbench_policy)},
+                "secretReference": {"namespace": "stadtstack-roebel-web-preview", "name": "roebel-signed-nostr-runtime", "key": "GNOSIS_RPC_URL"},
+            },
             "anonymousDigestPullReceipts": receipts,
         }
         return pin
 
-    def signed_nostr_runtime(self, root: Path) -> None:
-        pin = self.signed_nostr_pin(root)
+    def signed_nostr_runtime(self, root: Path, reviewed: bool = False) -> None:
+        pin = self.signed_nostr_reviewed_pin(root) if reviewed else self.signed_nostr_pin(root)
         parsed = VERIFIER.verify_signed_nostr_runtime_pin(pin)
         resources = VERIFIER.expected_signed_nostr_resources(parsed)
         signed_root = root / "reviewed-render/roebel-staging/signed-nostr"
@@ -187,6 +246,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             (component_root / "service.json").write_text(json.dumps(expected["service"], indent=2) + "\n")
             (component_root / "networkpolicy.json").write_text(json.dumps(expected["networkPolicy"], indent=2) + "\n")
             (component_root / "kustomization.yaml").write_text(expected["kustomization"])
+
+    def nested_dicts(self, value: object):
+        if isinstance(value, dict):
+            yield value
+            for child in value.values():
+                yield from self.nested_dicts(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from self.nested_dicts(child)
 
     def make_valid_transition(self, candidate: Path) -> None:
         render = candidate / "reviewed-render/roebel-staging"
@@ -522,7 +590,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.signed_nostr_runtime(candidate)
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
-            "activation blocked: Gnosis egress and Flux identity evidence require separate review",
+            "activation blocked: complete Gnosis, Flux, provenance, and anonymous-pull evidence require separate review",
         ):
             VERIFIER.verify_signed_nostr(candidate)
 
@@ -535,9 +603,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         deployment = json.loads(deployment_path.read_text())
         deployment["spec"]["template"]["spec"]["serviceAccountName"] = "default"
         deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
-        previous_gate = VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE
-        VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = {"reviewed": True}
-        self.addCleanup(lambda: setattr(VERIFIER, "SIGNED_NOSTR_ACTIVATION_EVIDENCE", previous_gate))
+        previous_gate = VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = {"reviewed": True}
+        self.addCleanup(lambda: setattr(VERIFIER, "SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE", previous_gate))
         with self.assertRaisesRegex(VERIFIER.VerificationError, "workbench Deployment drift"):
             VERIFIER.verify_signed_nostr(candidate)
 
@@ -587,13 +655,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 self.assertEqual(policy["spec"]["ingress"][0]["from"], [expected_workbench, expected_mecky])
                 policy["spec"]["ingress"][0]["from"][1]["namespaceSelector"] = {}
                 path.write_text(json.dumps(policy, indent=2) + "\n")
-                previous_gate = VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE
-                VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = {"reviewed": True}
+                previous_gate = VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE
+                VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = {"reviewed": True}
                 try:
                     with self.assertRaisesRegex(VERIFIER.VerificationError, f"{relay} NetworkPolicy drift"):
                         VERIFIER.verify_signed_nostr(candidate)
                 finally:
-                    VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = previous_gate
+                    VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = previous_gate
 
     def test_signed_nostr_ingress_rejects_suffix_admin_and_fixture_read_variants(self) -> None:
         for variant in (
@@ -651,6 +719,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         pin = self.signed_nostr_reviewed_pin(candidate)
         pin["publisherPin"]["components"].reverse()
         pin["publisherPinCanonicalSha256"] = VERIFIER.digest(pin["publisherPin"])
+        pin["activationEvidence"]["publisherPinCanonicalSha256"] = pin["publisherPinCanonicalSha256"]
+        for receipt in pin["activationEvidence"]["anonymousDigestPullReceipts"]:
+            receipt["publisherPinCanonicalSha256"] = pin["publisherPinCanonicalSha256"]
+            receipt["receiptDigest"] = VERIFIER.digest({key: item for key, item in receipt.items() if key != "receiptDigest"})
         with self.assertRaisesRegex(VERIFIER.VerificationError, "publisher component order invalid"):
             VERIFIER.verify_signed_nostr_runtime_pin(pin)
 
@@ -658,6 +730,105 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["schemaVersion"] = "roebel_signed_nostr_anonymous_digest_pull_receipt_v0"
         with self.assertRaisesRegex(VERIFIER.VerificationError, "schema invalid"):
             VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["publisherPinCanonicalSha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "publisher checksum binding invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+    def test_signed_nostr_activation_evidence_is_closed_for_every_field_and_requires_exact_policy(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+        publisher = pin["publisherPin"]
+        publisher_sha = pin["publisherPinCanonicalSha256"]
+        self.assertEqual(
+            VERIFIER.verify_signed_nostr_activation_evidence(evidence, publisher, publisher_sha),
+            evidence,
+        )
+
+        changed = copy.deepcopy(evidence)
+        changed["fluxBindings"][2]["kustomization"]["name"] = changed["fluxBindings"][1]["kustomization"]["name"]
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Kustomization identity reused"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        changed = copy.deepcopy(evidence)
+        changed["components"][0]["sbomAttestation"] = copy.deepcopy(changed["components"][0]["provenance"])
+        changed_publisher = copy.deepcopy(publisher)
+        changed_publisher["components"][0]["sbomAttestation"] = copy.deepcopy(changed_publisher["components"][0]["provenance"])
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "receipt id reused"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, changed_publisher, publisher_sha)
+
+        changed = copy.deepcopy(evidence)
+        changed["components"][1]["sbomAttestation"]["attestationDigest"] = changed["components"][0]["provenance"]["attestationDigest"]
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "attestation digest reused"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["privateProxy"]["object"]["spec"]["type"] = "LoadBalancer"
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "private proxy object invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["workbenchNetworkPolicy"]["object"]["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]})
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy object invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["workbenchNetworkPolicy"]["objectDigest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy digest binding invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        # Every closed record rejects an unknown key and every required field
+        # rejects deletion or a nonconforming mutation.  This deliberately
+        # exercises nested component attestations, Flux/RBAC, Gnosis evidence,
+        # and both anonymous receipts without relying on a live value.
+        for record in self.nested_dicts(evidence):
+            for key in tuple(record):
+                with self.subTest(kind="missing", key=key):
+                    changed = copy.deepcopy(evidence)
+                    target = next(item for item in self.nested_dicts(changed) if set(item) == set(record))
+                    # Structural equality is ambiguous for some test fixtures;
+                    # mutate the first matching closed record through a stable
+                    # unique marker by applying the operation to all matches.
+                    for candidate_record in self.nested_dicts(changed):
+                        if candidate_record == record:
+                            candidate_record.pop(key)
+                            break
+                    with self.assertRaises(VERIFIER.VerificationError):
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+                with self.subTest(kind="unknown", key=key):
+                    changed = copy.deepcopy(evidence)
+                    for candidate_record in self.nested_dicts(changed):
+                        if candidate_record == record:
+                            candidate_record["unexpected"] = True
+                            break
+                    with self.assertRaises(VERIFIER.VerificationError):
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+                with self.subTest(kind="mutation", key=key):
+                    changed = copy.deepcopy(evidence)
+                    for candidate_record in self.nested_dicts(changed):
+                        if candidate_record == record:
+                            candidate_record[key] = None
+                            break
+                    with self.assertRaises(VERIFIER.VerificationError):
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+
+        self.make_reviewed_knowledge_render(candidate)
+        self.signed_nostr_runtime(candidate, reviewed=True)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "activation blocked"):
+            VERIFIER.verify_signed_nostr(candidate)
+
+        previous = VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = copy.deepcopy(evidence)
+        self.addCleanup(lambda: setattr(VERIFIER, "SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE", previous))
+        self.assertIn("components", VERIFIER.verify_signed_nostr(candidate))
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = copy.deepcopy(evidence)
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE["gnosisRpcEgress"]["chainId"] = 1
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "does not equal the exact approved policy record"):
+            VERIFIER.verify_signed_nostr(candidate)
 
     def test_complete_reviewed_public_knowledge_render_set_is_accepted(self) -> None:
         temp, candidate = self.candidate()

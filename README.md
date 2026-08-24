@@ -317,19 +317,43 @@ its provenance/SBOM attestations themselves.
 
 The activation evidence is currently required to state
 `pending-separate-review` with null Gnosis-egress, Flux-identity, and anonymous
-digest-pull evidence, which makes any otherwise well-formed signed-Nostr render
-fail closed. A later evidence review must bind the two immutable images from
-`roebel-e2e-runtime-publish.yml`, their OIDC/SBOM receipts, the exact Gnosis
-egress destination, and the existing Flux ownership before activation can be
-admitted. It must also supply exactly two canonical anonymous digest receipts:
+digest-pull evidence. The protected approved-policy constant is `None`, so even
+an otherwise complete signed-Nostr render fails closed. No Gnosis private
+proxy/service or endpoint evidence is present in this repository, and the
+existing reconcilers remain unchanged. A later evidence review must first add
+one exact, closed `roebel_signed_nostr_activation_evidence_v1` record to the
+protected policy and bind it byte-for-byte to the candidate runtime pin. That
+record binds the publisher-pin canonical SHA-256, source revision and workflow;
+both immutable images and their provenance/SBOM receipt IDs, URLs, attestation
+digests and subjects; chain ID 100, the private Gnosis proxy Service
+object digest, the workbench NetworkPolicy digest, and only the Gnosis Secret
+name/key (never its value).
+
+The current schema constrains that future Gnosis hop to one materialized,
+tokenless ClusterIP Service in the workbench namespace and a canonical
+workbench NetworkPolicy. Its only additional egress peer is the proxy Pod
+selector on its one declared TCP port; public CIDRs, external names, load
+balancers, wildcard peers, and arbitrary digest claims are rejected. Both
+objects are canonical-JSON digested inside the future record, then the entire
+record must equal the separately protected approved-policy constant.
+
+That separate private/live review must also create and verify three new narrow,
+separate Flux identities: workbench in `stadtstack-roebel-web-preview`, and
+citizen-relay plus agent-relay in `stadtstack-roebel-staging-lab`. Each record
+must pin its Kustomization namespace/path/sourceRef/object digest and its own
+ServiceAccount, Role, RoleBinding and RBAC scope. This policy change neither
+creates those identities nor changes any existing reconciler.
+
+The future record must also supply exactly two canonical anonymous digest receipts:
 one each for `roebel-e2e-workbench` and `roebel-staging-relay`, bound to the
 nested publisher pin's image, manifest digest, and source revision, with
 `clean-empty-auth-config`, its fixed canonical SHA-256,
 `sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a`,
 `oras-resolve-anonymous`, and the same resolved digest. Each receipt uses the
 closed `roebel_signed_nostr_anonymous_digest_pull_receipt_v1` schema and
-`canonical-json` encoding; its receipt digest is recomputed from every other
-field. The receipt order is the publisher order (workbench, then relay). This
+`canonical-json` encoding, includes the parent publisher-pin canonical SHA-256,
+and recomputes its receipt digest from every other field. The receipt order is
+the publisher order (workbench, then relay). This
 repository does not invent either an external IP or a new Flux identity.
 
 When that gate is separately opened, the verifier permits only one topology:

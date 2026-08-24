@@ -211,12 +211,26 @@ SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA = (
 SIGNED_NOSTR_CLEAN_EMPTY_AUTH_CONFIG_SHA256 = (
     "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a"
 )
+SIGNED_NOSTR_ACTIVATION_EVIDENCE_SCHEMA = "roebel_signed_nostr_activation_evidence_v1"
+SIGNED_NOSTR_ACTIVATION_COMPONENT_ORDER = SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER
+SIGNED_NOSTR_FLUX_BINDING_ORDER = ("workbench", "citizen-relay", "agent-relay")
+SIGNED_NOSTR_FLUX_PATHS = {
+    "workbench": f"./{SIGNED_NOSTR_ROOT}/workbench",
+    "citizen-relay": f"./{SIGNED_NOSTR_ROOT}/citizen-relay",
+    "agent-relay": f"./{SIGNED_NOSTR_ROOT}/agent-relay",
+}
+SIGNED_NOSTR_FLUX_NAMESPACES = {
+    "workbench": SIGNED_NOSTR_WEB_NAMESPACE,
+    "citizen-relay": SIGNED_NOSTR_NAMESPACE,
+    "agent-relay": SIGNED_NOSTR_NAMESPACE,
+}
 
 # This bootstrap deliberately contains no asserted Gnosis egress address,
-# inference address, or Flux service-account identity.  A later, separately
-# reviewed evidence policy must replace this gate with verified values before
-# any signed-Nostr render can be admitted.
-SIGNED_NOSTR_ACTIVATION_EVIDENCE: None = None
+# inference address, Flux identity, or live object evidence.  A later,
+# separately reviewed policy may set this constant to exactly one complete
+# closed record.  It is intentionally None in this commit, which blocks every
+# signed-Nostr render even if the candidate contains a well-formed record.
+SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE: None | dict[str, Any] = None
 
 ALLOWED_PATCH_PATHS = {
     "/metadata/annotations/stadtstack.io~1source-revision",
@@ -282,6 +296,10 @@ def repository_files(root: Path) -> set[str]:
     for path in root.rglob("*"):
         relative = path.relative_to(root)
         if relative.parts and relative.parts[0] == ".git":
+            continue
+        # The verifier is itself imported by the test suite.  Interpreter
+        # bytecode is neither reviewed render input nor a repository artifact.
+        if "__pycache__" in relative.parts or relative.suffix == ".pyc":
             continue
         require(not path.is_symlink(), f"symlink forbidden: {relative}")
         if path.is_file():
@@ -808,6 +826,66 @@ def signed_nostr_container_security_context() -> dict[str, Any]:
     }
 
 
+def signed_nostr_gnosis_private_proxy_labels(name: str) -> dict[str, str]:
+    return {
+        "app.kubernetes.io/component": "gnosis-rpc-private-proxy",
+        "app.kubernetes.io/name": name,
+        "app.kubernetes.io/part-of": "roebel-signed-nostr-staging",
+        "stadtstack.io/authority": "none",
+    }
+
+
+def expected_signed_nostr_gnosis_private_proxy_object(proxy: dict[str, Any]) -> dict[str, Any]:
+    """The only proxy shape a future activation record may claim.
+
+    This is a ClusterIP service in the workbench namespace.  It deliberately
+    contains no public address, external name, load balancer, IP block, or
+    secret value.  The later protected exact-record constant selects the one
+    real object; this function constrains its materialized shape first.
+    """
+    labels = signed_nostr_gnosis_private_proxy_labels(proxy["name"])
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {"labels": labels, "name": proxy["name"], "namespace": proxy["namespace"]},
+        "spec": {
+            "ports": [{"name": "https", "port": proxy["port"], "protocol": "TCP", "targetPort": "https"}],
+            "selector": labels,
+            "type": "ClusterIP",
+        },
+    }
+
+
+def expected_signed_nostr_workbench_network_policy(
+    gnosis_private_proxy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Canonical workbench policy, optionally with one private Gnosis hop."""
+    workbench_labels = signed_nostr_labels("workbench")
+    dns_egress = {
+        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
+        "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
+    }
+    relay_egress = [{
+        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}}, "podSelector": {"matchLabels": signed_nostr_labels(relay)}}],
+        "ports": [{"port": 18081, "protocol": "TCP"}],
+    } for relay in ("citizen-relay", "agent-relay")]
+    egress = [dns_egress, *relay_egress]
+    if gnosis_private_proxy is not None:
+        egress.append({
+            "to": [{"podSelector": {"matchLabels": signed_nostr_gnosis_private_proxy_labels(gnosis_private_proxy["name"])}}],
+            "ports": [{"port": gnosis_private_proxy["port"], "protocol": "TCP"}],
+        })
+    return {
+        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+        "metadata": {"labels": workbench_labels, "name": SIGNED_NOSTR_NAMES["workbench"], "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
+        "spec": {
+            "egress": egress,
+            "ingress": [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}}], "ports": [{"port": 18083, "protocol": "TCP"}]}],
+            "podSelector": {"matchLabels": workbench_labels}, "policyTypes": ["Ingress", "Egress"],
+        },
+    }
+
+
 def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
     pin = closed(
         value,
@@ -833,25 +911,23 @@ def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
         pin["publisherPinCanonicalSha256"] == digest(publisher),
         "signed-Nostr publisher pin canonical checksum invalid",
     )
-    evidence = closed(
-        pin["activationEvidence"],
-        {"status", "gnosisRpcEgress", "fluxIdentity", "anonymousDigestPullReceipts"},
-        "signed-Nostr activation evidence",
-    )
-    if evidence["status"] == "pending-separate-review":
-        require(evidence == {
-            "status": "pending-separate-review",
-            "gnosisRpcEgress": None,
-            "fluxIdentity": None,
-            "anonymousDigestPullReceipts": None,
-        }, "signed-Nostr activation evidence must remain an unasserted placeholder")
+    evidence = pin["activationEvidence"]
+    if evidence == {
+        "status": "pending-separate-review",
+        "gnosisRpcEgress": None,
+        "fluxIdentity": None,
+        "anonymousDigestPullReceipts": None,
+    }:
+        # A temporary, explicitly closed placeholder is the only activation
+        # evidence accepted by this bootstrap.  A later full record is parsed
+        # below, but still cannot activate until it equals the protected
+        # approved-policy constant.
+        pass
     else:
-        require(evidence["status"] == "reviewed", "signed-Nostr activation evidence status invalid")
-        require(evidence["gnosisRpcEgress"] is not None, "signed-Nostr Gnosis egress evidence absent")
-        require(evidence["fluxIdentity"] is not None, "signed-Nostr Flux identity evidence absent")
-        verify_signed_nostr_anonymous_digest_pull_receipts(
-            evidence["anonymousDigestPullReceipts"],
+        verify_signed_nostr_activation_evidence(
+            evidence,
             publisher,
+            pin["publisherPinCanonicalSha256"],
         )
     rollback = closed(
         pin["rollback"],
@@ -879,7 +955,163 @@ def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
     return {"pin": pin, "publisherPin": publisher, "images": parsed}
 
 
-def verify_signed_nostr_anonymous_digest_pull_receipts(value: Any, publisher_pin: dict[str, Any]) -> None:
+def _nonempty_string(value: Any, label: str) -> str:
+    require(isinstance(value, str) and value, f"{label} invalid")
+    return value
+
+
+def verify_signed_nostr_attestation_receipt(
+    value: Any,
+    publisher_receipt: dict[str, Any],
+    manifest_digest: str,
+    label: str,
+) -> dict[str, str]:
+    receipt = closed(
+        value,
+        {"receiptId", "receiptUrl", "attestationDigest", "subjectDigest"},
+        label,
+    )
+    require(receipt["receiptId"] == publisher_receipt["id"], f"{label} id binding invalid")
+    require(receipt["receiptUrl"] == publisher_receipt["url"], f"{label} URL binding invalid")
+    require(isinstance(receipt["attestationDigest"], str) and SHA256.fullmatch(receipt["attestationDigest"]), f"{label} digest invalid")
+    require(receipt["subjectDigest"] == manifest_digest, f"{label} subject binding invalid")
+    return receipt
+
+
+def verify_signed_nostr_activation_evidence(
+    value: Any,
+    publisher_pin: dict[str, Any],
+    publisher_pin_canonical_sha256: str,
+) -> dict[str, Any]:
+    """Validate the complete future activation record without authorizing it.
+
+    The shape is deliberately closed.  The policy constant below performs the
+    separate approval step: validation alone never turns a candidate record
+    into authority to materialise the runtime.
+    """
+    evidence = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "status",
+            "publisherPinCanonicalSha256",
+            "publisherSourceRevision",
+            "publisherWorkflowIdentity",
+            "components",
+            "fluxBindings",
+            "gnosisRpcEgress",
+            "anonymousDigestPullReceipts",
+        },
+        "signed-Nostr activation evidence",
+    )
+    require(evidence["schemaVersion"] == SIGNED_NOSTR_ACTIVATION_EVIDENCE_SCHEMA, "signed-Nostr activation evidence schema invalid")
+    require(evidence["canonicalEncoding"] == "canonical-json", "signed-Nostr activation evidence canonical encoding invalid")
+    require(evidence["status"] == "reviewed", "signed-Nostr activation evidence status invalid")
+    require(evidence["publisherPinCanonicalSha256"] == publisher_pin_canonical_sha256, "signed-Nostr activation evidence publisher checksum binding invalid")
+    require(evidence["publisherSourceRevision"] == publisher_pin["sourceRevision"], "signed-Nostr activation evidence source binding invalid")
+    require(evidence["publisherWorkflowIdentity"] == SIGNED_NOSTR_WORKFLOW, "signed-Nostr activation evidence workflow binding invalid")
+
+    require(isinstance(evidence["components"], list) and len(evidence["components"]) == 2, "signed-Nostr activation evidence component count invalid")
+    publisher_components = {entry["component"]: entry for entry in publisher_pin["components"]}
+    attestation_digests: set[str] = set()
+    attestation_ids: set[str] = set()
+    for index, item in enumerate(evidence["components"]):
+        component = closed(
+            item,
+            {"component", "imageRepository", "manifestDigest", "provenance", "sbomAttestation"},
+            f"signed-Nostr activation component[{index}]",
+        )
+        expected_name = SIGNED_NOSTR_ACTIVATION_COMPONENT_ORDER[index]
+        require(component["component"] == expected_name, "signed-Nostr activation component order invalid")
+        publisher_component = publisher_components[expected_name]
+        require(component["imageRepository"] == publisher_component["image"], "signed-Nostr activation component image binding invalid")
+        require(component["manifestDigest"] == publisher_component["manifestDigest"], "signed-Nostr activation component manifest binding invalid")
+        provenance = verify_signed_nostr_attestation_receipt(component["provenance"], publisher_component["provenance"], publisher_component["manifestDigest"], f"signed-Nostr activation component[{index}] provenance")
+        sbom = verify_signed_nostr_attestation_receipt(component["sbomAttestation"], publisher_component["sbomAttestation"], publisher_component["manifestDigest"], f"signed-Nostr activation component[{index}] SBOM")
+        require(provenance["receiptId"] != sbom["receiptId"], "signed-Nostr activation component provenance/SBOM receipt id reused")
+        require(provenance["attestationDigest"] != sbom["attestationDigest"], "signed-Nostr activation component provenance/SBOM digest reused")
+        for receipt in (provenance, sbom):
+            require(receipt["attestationDigest"] not in attestation_digests, "signed-Nostr activation attestation digest reused")
+            require(receipt["receiptId"] not in attestation_ids, "signed-Nostr activation attestation receipt id reused")
+            attestation_digests.add(receipt["attestationDigest"])
+            attestation_ids.add(receipt["receiptId"])
+
+    require(isinstance(evidence["fluxBindings"], list) and len(evidence["fluxBindings"]) == 3, "signed-Nostr Flux binding count invalid")
+    seen_identity_values: set[tuple[str, str]] = set()
+    for index, item in enumerate(evidence["fluxBindings"]):
+        binding = closed(
+            item,
+            {"component", "kustomization", "serviceAccount", "role", "roleBinding", "rbacScope"},
+            f"signed-Nostr Flux binding[{index}]",
+        )
+        expected_component = SIGNED_NOSTR_FLUX_BINDING_ORDER[index]
+        expected_namespace = SIGNED_NOSTR_FLUX_NAMESPACES[expected_component]
+        require(binding["component"] == expected_component, "signed-Nostr Flux binding component order invalid")
+        kustomization = closed(binding["kustomization"], {"name", "namespace", "path", "sourceRef", "objectDigest"}, f"signed-Nostr Flux binding[{index}] Kustomization")
+        require(kustomization["namespace"] == expected_namespace, "signed-Nostr Flux binding namespace invalid")
+        require(kustomization["path"] == SIGNED_NOSTR_FLUX_PATHS[expected_component], "signed-Nostr Flux binding path invalid")
+        source_ref = closed(kustomization["sourceRef"], {"kind", "name", "namespace"}, f"signed-Nostr Flux binding[{index}] sourceRef")
+        require(source_ref["kind"] == "GitRepository", "signed-Nostr Flux binding source kind invalid")
+        for field in ("name", "namespace"):
+            _nonempty_string(source_ref[field], f"signed-Nostr Flux binding sourceRef {field}")
+        _nonempty_string(kustomization["name"], f"signed-Nostr Flux binding[{index}] Kustomization name")
+        require(isinstance(kustomization["objectDigest"], str) and SHA256.fullmatch(kustomization["objectDigest"]), "signed-Nostr Flux binding Kustomization digest invalid")
+        kustomization_identity = ("Kustomization", kustomization["namespace"] + "/" + kustomization["name"])
+        require(kustomization_identity not in seen_identity_values, "signed-Nostr Flux binding Kustomization identity reused")
+        seen_identity_values.add(kustomization_identity)
+
+        identities: dict[str, dict[str, Any]] = {}
+        for kind in ("serviceAccount", "role", "roleBinding"):
+            identity = closed(binding[kind], {"name", "namespace", "objectDigest"}, f"signed-Nostr Flux binding[{index}] {kind}")
+            require(identity["namespace"] == expected_namespace, f"signed-Nostr Flux binding {kind} namespace invalid")
+            _nonempty_string(identity["name"], f"signed-Nostr Flux binding {kind} name")
+            require(isinstance(identity["objectDigest"], str) and SHA256.fullmatch(identity["objectDigest"]), f"signed-Nostr Flux binding {kind} digest invalid")
+            identity_pair = (kind, identity["namespace"] + "/" + identity["name"])
+            require(identity_pair not in seen_identity_values, f"signed-Nostr Flux binding {kind} identity reused")
+            seen_identity_values.add(identity_pair)
+            identities[kind] = identity
+        scope = closed(binding["rbacScope"], {"apiGroups", "resources", "verbs", "resourceNames"}, f"signed-Nostr Flux binding[{index}] RBAC scope")
+        for field in ("apiGroups", "resources", "verbs", "resourceNames"):
+            require(isinstance(scope[field], list) and scope[field] == sorted(set(scope[field])) and all(isinstance(entry, str) for entry in scope[field]), f"signed-Nostr Flux binding RBAC {field} invalid")
+        for field in ("resources", "verbs", "resourceNames"):
+            require(all(scope[field]), f"signed-Nostr Flux binding RBAC {field} contains an empty value")
+        require(scope["resources"] and scope["verbs"], "signed-Nostr Flux binding RBAC scope empty")
+
+    gnosis = closed(
+        evidence["gnosisRpcEgress"],
+        {"chainId", "privateProxy", "workbenchNetworkPolicy", "secretReference"},
+        "signed-Nostr Gnosis RPC egress evidence",
+    )
+    require(gnosis["chainId"] == 100, "signed-Nostr Gnosis chain id invalid")
+    private_proxy = closed(gnosis["privateProxy"], {"kind", "name", "namespace", "port", "object", "objectDigest"}, "signed-Nostr Gnosis private proxy evidence")
+    require(private_proxy["kind"] == "Service", "signed-Nostr Gnosis private proxy kind invalid")
+    _nonempty_string(private_proxy["name"], "signed-Nostr Gnosis private proxy name")
+    require(private_proxy["namespace"] == SIGNED_NOSTR_WEB_NAMESPACE, "signed-Nostr Gnosis private proxy namespace invalid")
+    require(isinstance(private_proxy["port"], int) and 1 <= private_proxy["port"] <= 65535, "signed-Nostr Gnosis private proxy port invalid")
+    require(private_proxy["object"] == expected_signed_nostr_gnosis_private_proxy_object(private_proxy), "signed-Nostr Gnosis private proxy object invalid")
+    require(isinstance(private_proxy["objectDigest"], str) and SHA256.fullmatch(private_proxy["objectDigest"]), "signed-Nostr Gnosis private proxy digest invalid")
+    require(private_proxy["objectDigest"] == digest(private_proxy["object"]), "signed-Nostr Gnosis private proxy digest binding invalid")
+    workbench_policy = closed(gnosis["workbenchNetworkPolicy"], {"object", "objectDigest"}, "signed-Nostr workbench NetworkPolicy evidence")
+    require(workbench_policy["object"] == expected_signed_nostr_workbench_network_policy(private_proxy), "signed-Nostr workbench NetworkPolicy object invalid")
+    require(isinstance(workbench_policy["objectDigest"], str) and SHA256.fullmatch(workbench_policy["objectDigest"]), "signed-Nostr workbench NetworkPolicy digest invalid")
+    require(workbench_policy["objectDigest"] == digest(workbench_policy["object"]), "signed-Nostr workbench NetworkPolicy digest binding invalid")
+    secret_reference = closed(gnosis["secretReference"], {"namespace", "name", "key"}, "signed-Nostr Gnosis secret reference")
+    require(secret_reference == {"namespace": SIGNED_NOSTR_WEB_NAMESPACE, "name": "roebel-signed-nostr-runtime", "key": "GNOSIS_RPC_URL"}, "signed-Nostr Gnosis secret reference invalid")
+
+    verify_signed_nostr_anonymous_digest_pull_receipts(
+        evidence["anonymousDigestPullReceipts"],
+        publisher_pin,
+        publisher_pin_canonical_sha256,
+    )
+    return evidence
+
+
+def verify_signed_nostr_anonymous_digest_pull_receipts(
+    value: Any,
+    publisher_pin: dict[str, Any],
+    publisher_pin_canonical_sha256: str,
+) -> None:
     require(isinstance(value, list) and len(value) == 2, "signed-Nostr anonymous digest receipt count invalid")
     require(
         [entry["component"] for entry in publisher_pin["components"]] == list(SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER),
@@ -897,6 +1129,7 @@ def verify_signed_nostr_anonymous_digest_pull_receipts(value: Any, publisher_pin
             {
                 "schemaVersion",
                 "canonicalEncoding",
+                "publisherPinCanonicalSha256",
                 "component",
                 "imageRepository",
                 "manifestDigest",
@@ -916,6 +1149,10 @@ def verify_signed_nostr_anonymous_digest_pull_receipts(value: Any, publisher_pin
         require(
             receipt["canonicalEncoding"] == "canonical-json",
             "signed-Nostr anonymous digest receipt canonical encoding invalid",
+        )
+        require(
+            receipt["publisherPinCanonicalSha256"] == publisher_pin_canonical_sha256,
+            "signed-Nostr anonymous digest receipt publisher checksum binding invalid",
         )
         component = receipt["component"]
         require(
@@ -1055,23 +1292,11 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
             "podSelector": {"matchLabels": PUBLIC_MECKY_LABELS},
         },
     ]
-    dns_egress = {
-        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
-        "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
-    }
-    relay_egress = [{
-        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}}, "podSelector": {"matchLabels": signed_nostr_labels(relay)}}],
-        "ports": [{"port": 18081, "protocol": "TCP"}],
-    } for relay in ("citizen-relay", "agent-relay")]
-    resources["workbench"]["networkPolicy"] = {
-        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
-        "metadata": {"labels": workbench_labels, "name": SIGNED_NOSTR_NAMES["workbench"], "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
-        "spec": {
-            "egress": [dns_egress, *relay_egress],
-            "ingress": [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}}], "ports": [{"port": 18083, "protocol": "TCP"}]}],
-            "podSelector": {"matchLabels": workbench_labels}, "policyTypes": ["Ingress", "Egress"],
-        },
-    }
+    activation_evidence = runtime_pin["pin"]["activationEvidence"]
+    gnosis_private_proxy = None
+    if isinstance(activation_evidence, dict) and activation_evidence.get("status") == "reviewed":
+        gnosis_private_proxy = activation_evidence["gnosisRpcEgress"]["privateProxy"]
+    resources["workbench"]["networkPolicy"] = expected_signed_nostr_workbench_network_policy(gnosis_private_proxy)
     for relay in ("citizen-relay", "agent-relay"):
         labels = signed_nostr_labels(relay)
         resources[relay]["networkPolicy"] = {
@@ -1168,9 +1393,19 @@ def verify_signed_nostr(root: Path) -> dict[str, Any]:
     citizen_image = actual["citizen-relay"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
     agent_image = actual["agent-relay"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
     require(citizen_image == agent_image, "signed-Nostr relays must share one immutable digest")
+    approved = SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE
     require(
-        SIGNED_NOSTR_ACTIVATION_EVIDENCE is not None,
-        "signed-Nostr activation blocked: Gnosis egress and Flux identity evidence require separate review",
+        approved is not None,
+        "signed-Nostr activation blocked: complete Gnosis, Flux, provenance, and anonymous-pull evidence require separate review",
+    )
+    require(
+        runtime_pin["pin"]["activationEvidence"] == approved,
+        "signed-Nostr activation evidence does not equal the exact approved policy record",
+    )
+    verify_signed_nostr_activation_evidence(
+        approved,
+        runtime_pin["publisherPin"],
+        runtime_pin["pin"]["publisherPinCanonicalSha256"],
     )
     return {"runtimePin": runtime_pin["pin"], "components": actual}
 
