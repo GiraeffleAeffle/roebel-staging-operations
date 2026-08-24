@@ -53,6 +53,20 @@
     "imagePullPolicy": "IfNotPresent",
     "noOpPromotionAllowed": false
   },
+  "signedNostrBoundary": {
+    "activationEvidence": "pending-separate-review",
+    "components": [
+      "workbench",
+      "citizen-relay",
+      "agent-relay"
+    ],
+    "normalReleaseSetPromotionMayChange": false,
+    "publisherPinCanonicalChecksumRequired": true,
+    "publisherPinSchema": "roebel_e2e_runtime_pin_v1",
+    "renderRoot": "reviewed-render/roebel-staging/signed-nostr",
+    "runtimePin": "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
+    "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
+  },
   "requiredBranchProtection": {
     "requiredStatusChecks": [
       "reviewed-render-admission"

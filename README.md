@@ -288,6 +288,82 @@ only establishes this admission policy; the actual runtime image publication,
 reviewed render values, and one separately reviewed Flux activation remain
 future work.
 
+## Signed-Nostr staging runtime policy (blocked future activation)
+
+The normal Röbel Web + Public Mecky Release Set stays two components. A
+separate signed-Nostr tracer is deliberately outside that release set and its
+automatic promotion. The protected verifier reserves exactly this future,
+all-or-nothing render subtree:
+
+```text
+reviewed-render/roebel-staging/signed-nostr/
+  runtime-pin.json
+  workbench/{deployment,service,networkpolicy}.json + kustomization.yaml
+  citizen-relay/{deployment,service,networkpolicy}.json + kustomization.yaml
+  agent-relay/{deployment,service,networkpolicy}.json + kustomization.yaml
+```
+
+There are no such manifests in this policy PR and no Flux source, namespace,
+secret, RBAC, ServiceAccount, or live object is changed. The runtime pin is
+is a distinct `roebel_signed_nostr_activation_render_pin_v1`. It embeds the
+publisher's complete, unchanged `roebel_e2e_runtime_pin_v1` and binds its
+canonical JSON SHA-256, so the Operations-specific activation record cannot
+collide with or weaken the publisher schema. Per-component immutable image,
+source revision, provenance, SBOM, and workflow identity are read only from
+that nested publisher pin. That nested self-checksum establishes record
+integrity only; it is not evidence that the publisher artifacts are genuine.
+A separate activation review must verify the publisher runtime-pin artifact and
+its provenance/SBOM attestations themselves.
+
+The activation evidence is currently required to state
+`pending-separate-review` with null Gnosis-egress, Flux-identity, and anonymous
+digest-pull evidence, which makes any otherwise well-formed signed-Nostr render
+fail closed. A later evidence review must bind the two immutable images from
+`roebel-e2e-runtime-publish.yml`, their OIDC/SBOM receipts, the exact Gnosis
+egress destination, and the existing Flux ownership before activation can be
+admitted. It must also supply exactly two canonical anonymous digest receipts:
+one each for `roebel-e2e-workbench` and `roebel-staging-relay`, bound to the
+nested publisher pin's image, manifest digest, and source revision, with
+`clean-empty-auth-config`, its fixed canonical SHA-256,
+`sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a`,
+`oras-resolve-anonymous`, and the same resolved digest. Each receipt uses the
+closed `roebel_signed_nostr_anonymous_digest_pull_receipt_v1` schema and
+`canonical-json` encoding; its receipt digest is recomputed from every other
+field. The receipt order is the publisher order (workbench, then relay). This
+repository does not invent either an external IP or a new Flux identity.
+
+When that gate is separately opened, the verifier permits only one topology:
+the workbench is a ClusterIP-only Deployment in
+`stadtstack-roebel-web-preview` on port 18083; the citizen and agent relays
+are ClusterIP-only Deployments in `stadtstack-roebel-staging-lab` on port
+18081. Both relay Deployments must use the same immutable relay digest. Every
+Pod is non-root, tokenless, read-only-root-filesystem, seccomp-default,
+capability-free, and has no ServiceAccount, RBAC, PVC, image pull secret, or
+Ingress. Relay state is the only writable volume: one 128 MiB `emptyDir` per
+relay with 80 MiB of combined persisted-file budgets, leaving explicit
+headroom below the 112 MiB aggregate application limit.
+
+The public Ingress may add only `/stadtstack-test`, with GET/HEAD reads and
+exactly `POST /stadtstack-test/api/session/admit` and
+`POST /stadtstack-test/api/signed-event`; the existing
+`POST /api/chat/mecky` remains unchanged. No other signed-Nostr write or
+administrative/fixture route is admitted. Each of the five permitted staging
+reads is exact-path only: `/stadtstack-test/healthz`, `/api/config`,
+`/api/feed`, `/api/thread`, and `/api/conversation` beneath that prefix;
+suffixes are rejected. The relays have no Ingress. Each relay permits TCP/18081
+only from the exact workbench Pod and exact Public Mecky Pod selectors. Public
+Mecky may gain egress only to the two exact relay Pods on TCP 18081; the
+workbench may reach DNS and those exact relays. Gnosis egress remains blocked
+until the separate evidence policy review.
+
+Activation is head- and live-precondition-preserving. Apart from the thirteen
+new files, it may change only `integrity.json`, the Web Ingress, the Public
+Mecky NetworkPolicy, and the boundary receipt. The runtime pin records the raw
+byte digests of those four prior files. The only permitted deactivation removes
+all thirteen files, preserves the Release Set head and every other existing
+file, and restores those four exact byte digests. Routine Web/Mecky promotions
+must preserve every signed-Nostr file and boundary byte-for-byte.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component

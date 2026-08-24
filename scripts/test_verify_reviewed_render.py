@@ -19,6 +19,9 @@ SPEC.loader.exec_module(VERIFIER)
 
 class ReviewedRenderVerifierTests(unittest.TestCase):
     def repository_shape(self, root: Path) -> str:
+        signed_nostr = root / "reviewed-render/roebel-staging/signed-nostr"
+        if signed_nostr.is_dir():
+            return "signed-nostr"
         future = root / "reviewed-render/roebel-staging/reviewed-public-knowledge"
         return "reviewed-public-knowledge" if future.is_dir() else "current"
 
@@ -97,6 +100,93 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp, base = self.candidate()
         self.addCleanup(temp.cleanup)
         return base
+
+    def signed_nostr_pin(self, root: Path) -> dict[str, object]:
+        render = root / "reviewed-render/roebel-staging"
+        publisher_pin = {
+            "schemaVersion": "roebel_e2e_runtime_pin_v1",
+            "sourceRevision": "b" * 40,
+            "civicAuthority": "none",
+            "deploymentEffect": False,
+            "components": [
+                {
+                    "component": "roebel-e2e-workbench",
+                    "image": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench",
+                    "manifestDigest": "sha256:" + "c" * 64,
+                    "provenance": {"id": "workbench-provenance", "url": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/1"},
+                    "sbomAttestation": {"id": "workbench-sbom", "url": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/1"},
+                    "workflowIdentity": VERIFIER.SIGNED_NOSTR_WORKFLOW,
+                },
+                {
+                    "component": "roebel-staging-relay",
+                    "image": "ghcr.io/giraeffleaeffle/roebel-staging-relay",
+                    "manifestDigest": "sha256:" + "d" * 64,
+                    "provenance": {"id": "relay-provenance", "url": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/1"},
+                    "sbomAttestation": {"id": "relay-sbom", "url": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/1"},
+                    "workflowIdentity": VERIFIER.SIGNED_NOSTR_WORKFLOW,
+                },
+            ],
+        }
+        return {
+            "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
+            "publisherPin": publisher_pin,
+            "publisherPinCanonicalSha256": VERIFIER.digest(publisher_pin),
+            "activationEvidence": {
+                "status": "pending-separate-review",
+                "gnosisRpcEgress": None,
+                "fluxIdentity": None,
+                "anonymousDigestPullReceipts": None,
+            },
+            "rollback": {
+                "fromRender": "reviewed-public-knowledge",
+                "integritySha256": VERIFIER.bytes_digest((render / "integrity.json").read_bytes()),
+                "webIngressSha256": VERIFIER.bytes_digest((render / "web/ingress.json").read_bytes()),
+                "publicMeckyNetworkPolicySha256": VERIFIER.bytes_digest((render / "public-mecky/networkpolicy.json").read_bytes()),
+                "boundaryReceiptSha256": VERIFIER.bytes_digest((render / "network-boundary-migration.json").read_bytes()),
+            },
+        }
+
+    def signed_nostr_reviewed_pin(self, root: Path) -> dict[str, object]:
+        pin = self.signed_nostr_pin(root)
+        publisher = pin["publisherPin"]
+        receipts: list[dict[str, object]] = []
+        for component in publisher["components"]:
+            receipt: dict[str, object] = {
+                "schemaVersion": VERIFIER.SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA,
+                "canonicalEncoding": "canonical-json",
+                "component": component["component"],
+                "imageRepository": component["image"],
+                "manifestDigest": component["manifestDigest"],
+                "sourceRevision": publisher["sourceRevision"],
+                "authContext": "clean-empty-auth-config",
+                "authConfigCanonicalSha256": VERIFIER.SIGNED_NOSTR_CLEAN_EMPTY_AUTH_CONFIG_SHA256,
+                "resolverIdentity": "oras-resolve-anonymous",
+                "resolvedManifestDigest": component["manifestDigest"],
+            }
+            receipt["receiptDigest"] = VERIFIER.digest(receipt)
+            receipts.append(receipt)
+        pin["activationEvidence"] = {
+            "status": "reviewed",
+            "gnosisRpcEgress": {"reviewed": True},
+            "fluxIdentity": {"reviewed": True},
+            "anonymousDigestPullReceipts": receipts,
+        }
+        return pin
+
+    def signed_nostr_runtime(self, root: Path) -> None:
+        pin = self.signed_nostr_pin(root)
+        parsed = VERIFIER.verify_signed_nostr_runtime_pin(pin)
+        resources = VERIFIER.expected_signed_nostr_resources(parsed)
+        signed_root = root / "reviewed-render/roebel-staging/signed-nostr"
+        signed_root.mkdir()
+        (signed_root / "runtime-pin.json").write_text(json.dumps(pin, indent=2) + "\n")
+        for component, expected in resources.items():
+            component_root = signed_root / component
+            component_root.mkdir()
+            (component_root / "deployment.json").write_text(json.dumps(expected["deployment"], indent=2) + "\n")
+            (component_root / "service.json").write_text(json.dumps(expected["service"], indent=2) + "\n")
+            (component_root / "networkpolicy.json").write_text(json.dumps(expected["networkPolicy"], indent=2) + "\n")
+            (component_root / "kustomization.yaml").write_text(expected["kustomization"])
 
     def make_valid_transition(self, candidate: Path) -> None:
         render = candidate / "reviewed-render/roebel-staging"
@@ -416,6 +506,158 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         fixture = VERIFIER.verify(candidate)
         self.assertEqual(fixture["status"], "passed")
         self.assertEqual(fixture["renderFileSet"], "current")
+
+    def test_signed_nostr_policy_reserves_exactly_thirteen_files(self) -> None:
+        self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 13)
+        self.assertNotIn(
+            "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
+            VERIFIER.repository_files(ROOT),
+        )
+        self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.SIGNED_NOSTR_EXPECTED_FILES)
+
+    def test_signed_nostr_runtime_is_exact_but_blocked_pending_external_evidence(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        self.signed_nostr_runtime(candidate)
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "activation blocked: Gnosis egress and Flux identity evidence require separate review",
+        ):
+            VERIFIER.verify_signed_nostr(candidate)
+
+    def test_signed_nostr_runtime_rejects_service_account_or_relay_budget_widening(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        self.signed_nostr_runtime(candidate)
+        deployment_path = candidate / "reviewed-render/roebel-staging/signed-nostr/workbench/deployment.json"
+        deployment = json.loads(deployment_path.read_text())
+        deployment["spec"]["template"]["spec"]["serviceAccountName"] = "default"
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+        previous_gate = VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE
+        VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = {"reviewed": True}
+        self.addCleanup(lambda: setattr(VERIFIER, "SIGNED_NOSTR_ACTIVATION_EVIDENCE", previous_gate))
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "workbench Deployment drift"):
+            VERIFIER.verify_signed_nostr(candidate)
+
+    def test_signed_nostr_ingress_and_mecky_policy_allow_only_exact_new_surface(self) -> None:
+        ingress = VERIFIER.expected_web_ingress(True)
+        early = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"]
+        self.assertIn("/stadtstack-test/api/session/admit", early)
+        self.assertIn("/stadtstack-test/api/signed-event", early)
+        for path in (
+            "/stadtstack-test/healthz",
+            "/stadtstack-test/api/config",
+            "/stadtstack-test/api/feed",
+            "/stadtstack-test/api/thread",
+            "/stadtstack-test/api/conversation",
+        ):
+            self.assertIn(f"!{{ path {path} }}", early)
+            self.assertNotIn(f"!{{ path_beg {path} }}", early)
+        self.assertEqual(
+            [entry["path"] for entry in ingress["spec"]["rules"][0]["http"]["paths"]],
+            ["/supabase-read", "/stadtstack-test", "/"],
+        )
+        policy = VERIFIER.expected_public_mecky_network_policy(True, True)
+        egress = policy["spec"]["egress"]
+        self.assertEqual(len(egress), 3)
+        self.assertEqual(
+            [item["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"] for item in egress[1:]],
+            ["citizen-relay", "agent-relay"],
+        )
+
+    def test_signed_nostr_relay_network_policies_require_both_exact_peers(self) -> None:
+        expected_workbench = {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VERIFIER.SIGNED_NOSTR_WEB_NAMESPACE}},
+            "podSelector": {"matchLabels": VERIFIER.signed_nostr_labels("workbench")},
+        }
+        expected_mecky = {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VERIFIER.SIGNED_NOSTR_NAMESPACE}},
+            "podSelector": {"matchLabels": VERIFIER.PUBLIC_MECKY_LABELS},
+        }
+        for relay in ("citizen-relay", "agent-relay"):
+            with self.subTest(relay=relay):
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                self.make_reviewed_knowledge_render(candidate)
+                self.signed_nostr_runtime(candidate)
+                path = candidate / f"reviewed-render/roebel-staging/signed-nostr/{relay}/networkpolicy.json"
+                policy = json.loads(path.read_text())
+                self.assertEqual(policy["spec"]["ingress"][0]["from"], [expected_workbench, expected_mecky])
+                policy["spec"]["ingress"][0]["from"][1]["namespaceSelector"] = {}
+                path.write_text(json.dumps(policy, indent=2) + "\n")
+                previous_gate = VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE
+                VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = {"reviewed": True}
+                try:
+                    with self.assertRaisesRegex(VERIFIER.VerificationError, f"{relay} NetworkPolicy drift"):
+                        VERIFIER.verify_signed_nostr(candidate)
+                finally:
+                    VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE = previous_gate
+
+    def test_signed_nostr_ingress_rejects_suffix_admin_and_fixture_read_variants(self) -> None:
+        for variant in (
+            "/stadtstack-test/api/config/fixture",
+            "/stadtstack-test/api/administration",
+            "/stadtstack-test/api/feed/extra",
+        ):
+            with self.subTest(variant=variant):
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                ingress_path = candidate / "reviewed-render/roebel-staging/web/ingress.json"
+                ingress = VERIFIER.expected_web_ingress(True)
+                early_key = "haproxy-ingress.github.io/config-backend-early"
+                ingress["metadata"]["annotations"][early_key] += f" !{{ path {variant} }}"
+                ingress_path.write_text(json.dumps(ingress, indent=2) + "\n")
+                with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Ingress drift"):
+                    VERIFIER.verify_web_ingress(candidate, True)
+
+    def test_signed_nostr_publisher_pin_checksum_and_anonymous_receipts_are_bound(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_pin(candidate)
+        publisher = pin["publisherPin"]
+        pin["publisherPinCanonicalSha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "canonical checksum invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        publisher = pin["publisherPin"]
+        self.assertEqual(
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)["publisherPin"],
+            publisher,
+        )
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["resolvedManifestDigest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "resolved digest invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["authConfigCanonicalSha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "auth hash invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["receiptDigest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "checksum invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"].reverse()
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "component order invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["publisherPin"]["components"].reverse()
+        pin["publisherPinCanonicalSha256"] = VERIFIER.digest(pin["publisherPin"])
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "publisher component order invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
+
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        pin["activationEvidence"]["anonymousDigestPullReceipts"][0]["schemaVersion"] = "roebel_signed_nostr_anonymous_digest_pull_receipt_v0"
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "schema invalid"):
+            VERIFIER.verify_signed_nostr_runtime_pin(pin)
 
     def test_complete_reviewed_public_knowledge_render_set_is_accepted(self) -> None:
         temp, candidate = self.candidate()
