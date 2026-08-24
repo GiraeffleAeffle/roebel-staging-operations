@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "stadtstack_reviewed_public_knowledge_runtime_pin_v1",
+  "component": "reviewed-public-knowledge-runtime",
+  "sourceRevision": "642e2741d2fd3cb867c0e1c315f04ef8e29d787b",
+  "sourceTag": "source-642e2741d2fd3cb867c0e1c315f04ef8e29d787b",
+  "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-reviewed-public-knowledge-runtime",
+  "manifestDigest": "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc",
+  "workflowIdentity": "https://github.com/GiraeffleAeffle/stadtstack/.github/workflows/reviewed-knowledge-runtime-publish.yml@refs/heads/main",
+  "slsaProvenance": {
+    "issuer": "https://token.actions.githubusercontent.com",
+    "publisherIdentity": "https://github.com/GiraeffleAeffle/stadtstack/.github/workflows/reviewed-knowledge-runtime-publish.yml@refs/heads/main",
+    "predicateType": "https://slsa.dev/provenance/v1",
+    "repository": "GiraeffleAeffle/stadtstack",
+    "gitRef": "refs/heads/main",
+    "sourceRevision": "642e2741d2fd3cb867c0e1c315f04ef8e29d787b",
+    "subjectDigest": "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc",
+    "attestationDigest": "sha256:5d7f4a80f77bc0b1c7e036303325bf68f4bbb6e8a4dbeaaa839abf7abd330aab"
+  },
+  "spdxSbom": {
+    "format": "SPDX-2.3",
+    "predicateType": "https://spdx.dev/Document/v2.3",
+    "repository": "GiraeffleAeffle/stadtstack",
+    "gitRef": "refs/heads/main",
+    "sourceRevision": "642e2741d2fd3cb867c0e1c315f04ef8e29d787b",
+    "subjectDigest": "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc",
+    "attestationDigest": "sha256:052b53e71548f978fd00d22eb9dd20089dd58b05f6b9cc39590f3d8f25740bc4"
+  },
+  "anonymousPublicPullReceipt": {
+    "schemaVersion": "stadtstack_reviewed_public_knowledge_anonymous_digest_pull_receipt_v1",
+    "canonicalEncoding": "canonical-json",
+    "component": "reviewed-public-knowledge-runtime",
+    "imageRepository": "ghcr.io/giraeffleaeffle/stadtstack-reviewed-public-knowledge-runtime",
+    "manifestDigest": "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc",
+    "sourceRevision": "642e2741d2fd3cb867c0e1c315f04ef8e29d787b",
+    "packageVisibility": "public",
+    "authContext": "clean-empty-auth-config",
+    "authConfigCanonicalSha256": "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a",
+    "resolverIdentity": "oras-resolve-anonymous",
+    "resolvedManifestDigest": "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc",
+    "receiptDigest": "sha256:21a4c33b36db0831fa65375f6e7af812b87502986d97d5a45e7eb8b19108b04f"
+  },
+  "authorityBinding": "none",
+  "deploymentEffect": false
+}
