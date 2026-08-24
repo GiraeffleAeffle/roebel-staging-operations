@@ -101,6 +101,20 @@ LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES = {
     "STADTSTACK_E2E_REVIEWED_EVIDENCE",
     "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
 }
+PUBLIC_MECKY_LABELS = {
+    "app.kubernetes.io/component": "public-mecky",
+    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+}
+PUBLIC_MECKY_NETWORK_POLICY_LABELS = {
+    **PUBLIC_MECKY_LABELS,
+    "stadtstack.io/authority": "none",
+}
+PUBLIC_MECKY_REVIEWED_EGRESS_DESTINATION_LABELS = {
+    "app.kubernetes.io/component": "reviewed-public-knowledge",
+    "app.kubernetes.io/name": "reviewed-public-knowledge",
+    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+    "stadtstack.io/authority": "none",
+}
 
 EXPECTED_FILES = {
     ".github/CODEOWNERS",
@@ -695,36 +709,58 @@ def verify_public_mecky_service(root: Path) -> dict[str, Any]:
     return service
 
 
-def verify_public_mecky_network_policy(root: Path) -> dict[str, Any]:
-    policy = load_json(root / RENDER_ROOT / "public-mecky/networkpolicy.json")
-    require(policy == {
+def expected_public_mecky_network_policy(reviewed_egress: bool) -> dict[str, Any]:
+    spec: dict[str, Any] = {
+        "ingress": [{
+            "from": [{
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"}},
+                "podSelector": {"matchLabels": {"app.kubernetes.io/name": "roebel-web-presentation"}},
+            }],
+            "ports": [{"port": 18084, "protocol": "TCP"}],
+        }],
+        "podSelector": {"matchLabels": PUBLIC_MECKY_LABELS},
+        "policyTypes": ["Ingress"],
+    }
+    if reviewed_egress:
+        spec = {
+            "egress": [{
+                "to": [{
+                    "namespaceSelector": {"matchLabels": {
+                        "kubernetes.io/metadata.name": REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE,
+                    }},
+                    "podSelector": {"matchLabels": PUBLIC_MECKY_REVIEWED_EGRESS_DESTINATION_LABELS},
+                }],
+                "ports": [{"port": 8080, "protocol": "TCP"}],
+            }],
+            **spec,
+            "policyTypes": ["Ingress", "Egress"],
+        }
+    return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
         "metadata": {
-            "labels": {
-                "app.kubernetes.io/component": "public-mecky",
-                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
-                "stadtstack.io/authority": "none",
-            },
+            "labels": PUBLIC_MECKY_NETWORK_POLICY_LABELS,
             "name": "public-mecky-chat-from-web",
             "namespace": "stadtstack-roebel-staging-lab",
         },
-        "spec": {
-            "ingress": [{
-                "from": [{
-                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"}},
-                    "podSelector": {"matchLabels": {"app.kubernetes.io/name": "roebel-web-presentation"}},
-                }],
-                "ports": [{"port": 18084, "protocol": "TCP"}],
-            }],
-            "podSelector": {"matchLabels": {
-                "app.kubernetes.io/component": "public-mecky",
-                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
-            }},
-            "policyTypes": ["Ingress"],
-        },
-    }, "Public Mecky NetworkPolicy drift")
-    return policy
+        "spec": spec,
+    }
+
+
+def verify_public_mecky_network_policy(
+    root: Path,
+    reviewed_knowledge: bool,
+) -> tuple[dict[str, Any], bool]:
+    policy = load_json(root / RENDER_ROOT / "public-mecky/networkpolicy.json")
+    legacy = expected_public_mecky_network_policy(False)
+    reviewed = expected_public_mecky_network_policy(True)
+    require(policy in (legacy, reviewed), "Public Mecky NetworkPolicy drift")
+    reviewed_egress = policy == reviewed
+    require(
+        not reviewed_egress or reviewed_knowledge,
+        "Public Mecky reviewed-runtime egress requires the complete reviewed runtime render",
+    )
+    return policy, reviewed_egress
 
 
 def verify_web_network_policy(root: Path) -> dict[str, Any]:
@@ -1032,7 +1068,10 @@ def verify_tree(root: Path) -> dict[str, Any]:
     reviewed_knowledge = render_file_set == "reviewed-public-knowledge"
     deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
-    network_policy = verify_public_mecky_network_policy(root)
+    network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
+        root,
+        reviewed_knowledge,
+    )
     web_network_policy = verify_web_network_policy(root)
     web_ingress = verify_web_ingress(root)
     migration = verify_network_boundary_migration(root, web_network_policy, web_ingress)
@@ -1062,6 +1101,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "migration": migration,
         "live": live,
         "renderFileSet": render_file_set,
+        "publicMeckyReviewedEgress": public_mecky_reviewed_egress,
         "reviewedPublicKnowledge": reviewed_objects,
     }
 
@@ -1072,6 +1112,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     require(
         not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
         "reviewed-public-knowledge render set cannot regress to the legacy set",
+    )
+    require(
+        not (base["publicMeckyReviewedEgress"] and not candidate["publicMeckyReviewedEgress"]),
+        "Public Mecky reviewed-runtime egress cannot regress",
     )
 
     if base["renderFileSet"] == "current" and candidate["renderFileSet"] == "reviewed-public-knowledge":
@@ -1111,6 +1155,34 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
             "reviewed-public-knowledge activation Public Mecky transformation drift",
         )
         return
+
+    if (
+        base["renderFileSet"] == "reviewed-public-knowledge"
+        and candidate["renderFileSet"] == "reviewed-public-knowledge"
+        and candidate["head"] == base["head"]
+        and not base["publicMeckyReviewedEgress"]
+        and candidate["publicMeckyReviewedEgress"]
+    ):
+        allowed_changes = {
+            f"{RENDER_ROOT}/integrity.json",
+            f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
+            "scripts/render-release-set-promotion.py",
+            "scripts/test_verify_reviewed_render.py",
+            "scripts/verify-reviewed-render.py",
+        }
+        for relative in FUTURE_EXPECTED_FILES:
+            if relative in allowed_changes:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"reviewed-runtime egress activation changed unrelated file: {relative}",
+            )
+        return
+
+    require(
+        candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+        "Public Mecky reviewed-runtime egress must be a standalone exact transition",
+    )
 
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):

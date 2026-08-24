@@ -62,6 +62,12 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ]
         public_path.write_text(json.dumps(public, indent=2) + "\n")
 
+        public_policy_path = render / "public-mecky/networkpolicy.json"
+        public_policy_path.write_text(json.dumps(
+            VERIFIER.expected_public_mecky_network_policy(False),
+            indent=2,
+        ) + "\n")
+
         integrity_path = render / "integrity.json"
         integrity = json.loads(integrity_path.read_text())
         integrity["desiredRenderSha256"] = VERIFIER.digest(
@@ -390,6 +396,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         })
         integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
+    def enable_reviewed_mecky_egress(self, candidate: Path) -> None:
+        render = candidate / "reviewed-render/roebel-staging"
+        path = render / "public-mecky/networkpolicy.json"
+        path.write_text(json.dumps(
+            VERIFIER.expected_public_mecky_network_policy(True),
+            indent=2,
+        ) + "\n")
+        self.refresh_reviewed_integrity(candidate)
+
     def test_seed_is_valid(self) -> None:
         result = VERIFIER.verify(ROOT)
         self.assertEqual(result["status"], "passed")
@@ -488,6 +503,70 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         live_path.write_text(json.dumps(live, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "no-op promotion"):
             VERIFIER.verify(candidate, base)
+
+    def test_future_public_mecky_reviewed_runtime_egress_transition_is_accepted(self) -> None:
+        base_temp, base = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(base)
+        candidate_temp, candidate = self.candidate()
+        self.addCleanup(candidate_temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        self.enable_reviewed_mecky_egress(candidate)
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+
+    def test_combined_policy_bootstrap_and_exact_egress_transition_is_accepted(self) -> None:
+        base_temp, base = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(base)
+        (base / "scripts/verify-reviewed-render.py").write_text(
+            "# protected predecessor verifier bytes\n"
+        )
+        (base / "scripts/test_verify_reviewed_render.py").write_text(
+            "# protected predecessor tests bytes\n"
+        )
+        (base / "scripts/render-release-set-promotion.py").write_text(
+            "# protected predecessor promotion renderer bytes\n"
+        )
+        candidate_temp, candidate = self.candidate()
+        self.addCleanup(candidate_temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        self.enable_reviewed_mecky_egress(candidate)
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+
+    def test_future_public_mecky_reviewed_runtime_egress_cannot_regress(self) -> None:
+        base_temp, base = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(base)
+        self.enable_reviewed_mecky_egress(base)
+        candidate_temp, candidate = self.candidate()
+        self.addCleanup(candidate_temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "egress cannot regress"):
+            VERIFIER.verify(candidate, base)
+
+    def test_future_public_mecky_reviewed_runtime_egress_rejects_every_widening(self) -> None:
+        mutations = (
+            lambda policy: policy["spec"]["egress"][0]["to"][0]["namespaceSelector"].update({"matchLabels": {}}),
+            lambda policy: policy["spec"]["egress"][0]["to"][0]["podSelector"].update({"matchLabels": {}}),
+            lambda policy: policy["spec"]["egress"][0]["ports"].__setitem__(0, {"port": 18080, "protocol": "TCP"}),
+            lambda policy: policy["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]}),
+            lambda policy: policy["spec"].__setitem__("policyTypes", ["Ingress"]),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                self.make_reviewed_knowledge_render(candidate)
+                self.enable_reviewed_mecky_egress(candidate)
+                path = candidate / "reviewed-render/roebel-staging/public-mecky/networkpolicy.json"
+                policy = json.loads(path.read_text())
+                mutation(policy)
+                path.write_text(json.dumps(policy, indent=2) + "\n")
+                self.refresh_reviewed_integrity(candidate)
+                with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy drift"):
+                    VERIFIER.verify(candidate)
 
     def test_future_to_current_regression_is_rejected(self) -> None:
         base_temp, base = self.candidate()
