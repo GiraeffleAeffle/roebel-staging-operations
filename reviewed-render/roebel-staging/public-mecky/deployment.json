@@ -74,35 +74,7 @@
               },
               {
                 "name": "STADTSTACK_PUBLIC_BASE_URL",
-                "value": "http://stadtstack-public.stadtstack-roebel-staging-lab.svc.cluster.local:18080"
-              },
-              {
-                "name": "STADTSTACK_E2E_MODE",
-                "value": "synthetic-reviewed"
-              },
-              {
-                "name": "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED",
-                "value": "true"
-              },
-              {
-                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE",
-                "valueFrom": {
-                  "configMapKeyRef": {
-                    "key": "evidence.json",
-                    "name": "reviewed-evidence",
-                    "optional": false
-                  }
-                }
-              },
-              {
-                "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
-                "valueFrom": {
-                  "configMapKeyRef": {
-                    "key": "evidence.sha256",
-                    "name": "reviewed-evidence",
-                    "optional": false
-                  }
-                }
+                "value": "http://reviewed-public-knowledge.stadtstack-roebel-staging-lab.svc.cluster.local:18080"
               },
               {
                 "name": "MECKY_MUNICIPALITY_ID",
@@ -175,6 +147,10 @@
                     "optional": false
                   }
                 }
+              },
+              {
+                "name": "MECKY_REVIEWED_SOURCE_KINDS",
+                "value": "local_news,ratsinformation"
               }
             ],
             "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:b4c023da10ed2a36bde5eb4a09fa72e41ae6e282f44ce956386f9147e2666ba9",
