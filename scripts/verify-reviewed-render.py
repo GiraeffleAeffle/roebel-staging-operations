@@ -167,6 +167,57 @@ EXPECTED_FILES = {
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
 
+# Signed Nostr is a third, closed render shape layered on the already-admitted
+# reviewed-public-knowledge render.  The files are deliberately not present in
+# this policy/bootstrap change: a later activation must add all thirteen in one
+# reviewed transaction, never stage one workload or relay independently.
+SIGNED_NOSTR_ROOT = f"{RENDER_ROOT}/signed-nostr"
+SIGNED_NOSTR_RUNTIME_PIN = f"{SIGNED_NOSTR_ROOT}/runtime-pin.json"
+SIGNED_NOSTR_COMPONENTS = ("workbench", "citizen-relay", "agent-relay")
+SIGNED_NOSTR_COMPONENT_FILES = {
+    f"{SIGNED_NOSTR_ROOT}/{component}/{kind}"
+    for component in SIGNED_NOSTR_COMPONENTS
+    for kind in ("deployment.json", "service.json", "networkpolicy.json", "kustomization.yaml")
+}
+SIGNED_NOSTR_FILES = SIGNED_NOSTR_COMPONENT_FILES | {SIGNED_NOSTR_RUNTIME_PIN}
+SIGNED_NOSTR_EXPECTED_FILES = FUTURE_EXPECTED_FILES | SIGNED_NOSTR_FILES
+SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/web/ingress.json",
+    f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+}
+SIGNED_NOSTR_NAMESPACE = "stadtstack-roebel-staging-lab"
+SIGNED_NOSTR_WEB_NAMESPACE = "stadtstack-roebel-web-preview"
+SIGNED_NOSTR_WORKFLOW = (
+    "https://github.com/GiraeffleAeffle/Roebel-App/"
+    ".github/workflows/roebel-e2e-runtime-publish.yml@refs/heads/main"
+)
+SIGNED_NOSTR_IMAGES = {
+    "workbench": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench",
+    "citizen-relay": "ghcr.io/giraeffleaeffle/roebel-staging-relay",
+    "agent-relay": "ghcr.io/giraeffleaeffle/roebel-staging-relay",
+}
+SIGNED_NOSTR_NAMES = {
+    "workbench": "roebel-staging-workbench",
+    "citizen-relay": "citizen-relay",
+    "agent-relay": "agent-relay",
+}
+SIGNED_NOSTR_PORTS = {"workbench": 18083, "citizen-relay": 18081, "agent-relay": 18081}
+SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER = ("roebel-e2e-workbench", "roebel-staging-relay")
+SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA = (
+    "roebel_signed_nostr_anonymous_digest_pull_receipt_v1"
+)
+SIGNED_NOSTR_CLEAN_EMPTY_AUTH_CONFIG_SHA256 = (
+    "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a"
+)
+
+# This bootstrap deliberately contains no asserted Gnosis egress address,
+# inference address, or Flux service-account identity.  A later, separately
+# reviewed evidence policy must replace this gate with verified values before
+# any signed-Nostr render can be admitted.
+SIGNED_NOSTR_ACTIVATION_EVIDENCE: None = None
+
 ALLOWED_PATCH_PATHS = {
     "/metadata/annotations/stadtstack.io~1source-revision",
     "/metadata/annotations/stadtstack.io~1release-set-sha256",
@@ -212,6 +263,10 @@ def digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_json(value)).hexdigest()
 
 
+def bytes_digest(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
 def iter_keys(value: Any):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -242,6 +297,8 @@ def verify_repository_file_set(root: Path) -> str:
         return "current"
     if actual == FUTURE_EXPECTED_FILES:
         return "reviewed-public-knowledge"
+    if actual == SIGNED_NOSTR_EXPECTED_FILES:
+        return "signed-nostr"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -332,6 +389,16 @@ def verify_contract(root: Path) -> dict[str, Any]:
             "immutableDigestRequired": True,
             "imagePullPolicy": "IfNotPresent",
             "noOpPromotionAllowed": False,
+        },
+        "signedNostrBoundary": {
+            "activationEvidence": "pending-separate-review",
+            "components": ["workbench", "citizen-relay", "agent-relay"],
+            "normalReleaseSetPromotionMayChange": False,
+            "publisherPinCanonicalChecksumRequired": True,
+            "publisherPinSchema": "roebel_e2e_runtime_pin_v1",
+            "renderRoot": SIGNED_NOSTR_ROOT,
+            "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
+            "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
         },
         "requiredBranchProtection": {
             "requiredStatusChecks": ["reviewed-render-admission"],
@@ -709,7 +776,318 @@ def verify_public_mecky_service(root: Path) -> dict[str, Any]:
     return service
 
 
-def expected_public_mecky_network_policy(reviewed_egress: bool) -> dict[str, Any]:
+def signed_nostr_labels(component: str) -> dict[str, str]:
+    require(component in SIGNED_NOSTR_COMPONENTS, "signed-Nostr component invalid")
+    return {
+        "app.kubernetes.io/component": f"signed-nostr-{component}",
+        "app.kubernetes.io/name": SIGNED_NOSTR_NAMES[component],
+        "app.kubernetes.io/part-of": "roebel-signed-nostr-staging",
+        "stadtstack.io/authority": "none",
+    }
+
+
+def signed_nostr_namespace(component: str) -> str:
+    return SIGNED_NOSTR_WEB_NAMESPACE if component == "workbench" else SIGNED_NOSTR_NAMESPACE
+
+
+def signed_nostr_pod_security_context() -> dict[str, Any]:
+    return {
+        "fsGroup": 65532,
+        "runAsGroup": 65532,
+        "runAsNonRoot": True,
+        "runAsUser": 65532,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+
+
+def signed_nostr_container_security_context() -> dict[str, Any]:
+    return {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "readOnlyRootFilesystem": True,
+    }
+
+
+def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
+    pin = closed(
+        value,
+        {
+            "schemaVersion",
+            "publisherPin",
+            "publisherPinCanonicalSha256",
+            "activationEvidence",
+            "rollback",
+        },
+        "signed-Nostr runtime-pin",
+    )
+    require(pin["schemaVersion"] == "roebel_signed_nostr_activation_render_pin_v1", "signed-Nostr runtime-pin schema invalid")
+    publisher = closed(
+        pin["publisherPin"],
+        {"schemaVersion", "sourceRevision", "components", "civicAuthority", "deploymentEffect"},
+        "signed-Nostr publisher pin",
+    )
+    require(publisher["schemaVersion"] == "roebel_e2e_runtime_pin_v1", "signed-Nostr publisher pin schema invalid")
+    require(isinstance(publisher["sourceRevision"], str) and REVISION.fullmatch(publisher["sourceRevision"]), "signed-Nostr source revision invalid")
+    require(publisher["civicAuthority"] == "none" and publisher["deploymentEffect"] is False, "signed-Nostr authority binding invalid")
+    require(
+        pin["publisherPinCanonicalSha256"] == digest(publisher),
+        "signed-Nostr publisher pin canonical checksum invalid",
+    )
+    evidence = closed(
+        pin["activationEvidence"],
+        {"status", "gnosisRpcEgress", "fluxIdentity", "anonymousDigestPullReceipts"},
+        "signed-Nostr activation evidence",
+    )
+    if evidence["status"] == "pending-separate-review":
+        require(evidence == {
+            "status": "pending-separate-review",
+            "gnosisRpcEgress": None,
+            "fluxIdentity": None,
+            "anonymousDigestPullReceipts": None,
+        }, "signed-Nostr activation evidence must remain an unasserted placeholder")
+    else:
+        require(evidence["status"] == "reviewed", "signed-Nostr activation evidence status invalid")
+        require(evidence["gnosisRpcEgress"] is not None, "signed-Nostr Gnosis egress evidence absent")
+        require(evidence["fluxIdentity"] is not None, "signed-Nostr Flux identity evidence absent")
+        verify_signed_nostr_anonymous_digest_pull_receipts(
+            evidence["anonymousDigestPullReceipts"],
+            publisher,
+        )
+    rollback = closed(
+        pin["rollback"],
+        {"fromRender", "integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"},
+        "signed-Nostr rollback record",
+    )
+    require(rollback["fromRender"] == "reviewed-public-knowledge", "signed-Nostr rollback base invalid")
+    for field in ("integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"):
+        require(isinstance(rollback[field], str) and SHA256.fullmatch(rollback[field]), f"signed-Nostr rollback {field} invalid")
+    require(isinstance(publisher["components"], list) and len(publisher["components"]) == 2, "signed-Nostr runtime pin component count invalid")
+    parsed: dict[str, dict[str, str]] = {}
+    for index, entry in enumerate(publisher["components"]):
+        component = closed(entry, {"component", "image", "manifestDigest", "provenance", "sbomAttestation", "workflowIdentity"}, f"signed-Nostr pin component[{index}]")
+        expected = SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER[index]
+        require(component["component"] == expected, "signed-Nostr runtime pin component order invalid")
+        expected_image = SIGNED_NOSTR_IMAGES["workbench" if expected == "roebel-e2e-workbench" else "citizen-relay"]
+        require(component["image"] == expected_image, "signed-Nostr runtime pin image repository invalid")
+        require(isinstance(component["manifestDigest"], str) and SHA256.fullmatch(component["manifestDigest"]), "signed-Nostr runtime pin digest invalid")
+        require(component["workflowIdentity"] == SIGNED_NOSTR_WORKFLOW, "signed-Nostr component workflow identity invalid")
+        for key in ("provenance", "sbomAttestation"):
+            proof = closed(component[key], {"id", "url"}, f"signed-Nostr {key}")
+            require(isinstance(proof["id"], str) and proof["id"], f"signed-Nostr {key} id invalid")
+            require(isinstance(proof["url"], str) and proof["url"].startswith("https://github.com/GiraeffleAeffle/Roebel-App/"), f"signed-Nostr {key} URL invalid")
+        parsed[expected] = component
+    return {"pin": pin, "publisherPin": publisher, "images": parsed}
+
+
+def verify_signed_nostr_anonymous_digest_pull_receipts(value: Any, publisher_pin: dict[str, Any]) -> None:
+    require(isinstance(value, list) and len(value) == 2, "signed-Nostr anonymous digest receipt count invalid")
+    require(
+        [entry["component"] for entry in publisher_pin["components"]] == list(SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER),
+        "signed-Nostr publisher component order invalid",
+    )
+    publisher_components = {entry["component"]: entry for entry in publisher_pin["components"]}
+    expected = {
+        "roebel-e2e-workbench": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench",
+        "roebel-staging-relay": "ghcr.io/giraeffleaeffle/roebel-staging-relay",
+    }
+    seen: set[str] = set()
+    for index, value_item in enumerate(value):
+        receipt = closed(
+            value_item,
+            {
+                "schemaVersion",
+                "canonicalEncoding",
+                "component",
+                "imageRepository",
+                "manifestDigest",
+                "sourceRevision",
+                "authContext",
+                "authConfigCanonicalSha256",
+                "resolverIdentity",
+                "resolvedManifestDigest",
+                "receiptDigest",
+            },
+            f"signed-Nostr anonymous digest receipt[{index}]",
+        )
+        require(
+            receipt["schemaVersion"] == SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA,
+            "signed-Nostr anonymous digest receipt schema invalid",
+        )
+        require(
+            receipt["canonicalEncoding"] == "canonical-json",
+            "signed-Nostr anonymous digest receipt canonical encoding invalid",
+        )
+        component = receipt["component"]
+        require(
+            component == SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER[index],
+            "signed-Nostr anonymous digest receipt component order invalid",
+        )
+        require(component in expected and component not in seen, "signed-Nostr anonymous digest receipt component invalid")
+        seen.add(component)
+        publisher = publisher_components[component]
+        require(receipt["imageRepository"] == expected[component] == publisher["image"], "signed-Nostr anonymous digest receipt image invalid")
+        require(receipt["manifestDigest"] == publisher["manifestDigest"], "signed-Nostr anonymous digest receipt manifest binding invalid")
+        require(receipt["sourceRevision"] == publisher_pin["sourceRevision"], "signed-Nostr anonymous digest receipt source binding invalid")
+        require(receipt["authContext"] == "clean-empty-auth-config", "signed-Nostr anonymous digest receipt auth context invalid")
+        require(
+            receipt["authConfigCanonicalSha256"] == SIGNED_NOSTR_CLEAN_EMPTY_AUTH_CONFIG_SHA256,
+            "signed-Nostr anonymous digest receipt auth hash invalid",
+        )
+        require(receipt["resolverIdentity"] == "oras-resolve-anonymous", "signed-Nostr anonymous digest receipt resolver invalid")
+        require(receipt["resolvedManifestDigest"] == publisher["manifestDigest"], "signed-Nostr anonymous digest receipt resolved digest invalid")
+        require(
+            receipt["receiptDigest"] == digest({key: item for key, item in receipt.items() if key != "receiptDigest"}),
+            "signed-Nostr anonymous digest receipt checksum invalid",
+        )
+    require(seen == set(expected), "signed-Nostr anonymous digest receipt component set invalid")
+
+
+def signed_nostr_runtime_image(component: str, runtime_pin: dict[str, Any]) -> str:
+    source_component = "roebel-e2e-workbench" if component == "workbench" else "roebel-staging-relay"
+    record = runtime_pin["images"][source_component]
+    return f"{record['image']}@{record['manifestDigest']}"
+
+
+def signed_nostr_relay_environment(component: str) -> list[dict[str, Any]]:
+    base = [
+        {"name": "RELAY_NAME", "value": component},
+        {"name": "RELAY_PORT", "value": "18081"},
+        {"name": "RELAY_BIND_HOST", "value": "0.0.0.0"},
+        {"name": "RELAY_WEBSOCKET_PATH", "value": f"/{component}"},
+        {"name": "RELAY_EVENT_STORE", "value": "/relay/events.ndjson"},
+        {"name": "RELAY_MAX_EVENT_STORE_BYTES", "value": "67108864"},
+        {"name": "RELAY_MAX_EVENT_COUNT", "value": "50000"},
+        {
+            "name": "RELAY_ALLOWED_PUBKEYS",
+            "valueFrom": {"secretKeyRef": {"key": "MECKY_PUBKEY", "name": "roebel-signed-nostr-runtime", "optional": False}},
+        },
+    ]
+    if component == "citizen-relay":
+        base.extend([
+            {"name": "RELAY_ADMISSION_STORE", "value": "/relay/admissions.ndjson"},
+            {"name": "RELAY_MAX_ADMISSION_STORE_BYTES", "value": "16777216"},
+            {"name": "RELAY_MAX_ADMISSION_COUNT", "value": "10000"},
+            {
+                "name": "RELAY_ADMISSION_TOKEN",
+                "valueFrom": {"secretKeyRef": {"key": "CITIZEN_RELAY_ADMISSION_TOKEN", "name": "roebel-signed-nostr-runtime", "optional": False}},
+            },
+        ])
+    return base
+
+
+def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    """Return the whole future runtime shape without materialising manifests.
+
+    The renderer remains unavailable while the evidence gate below is pending;
+    this function exists so the protected verifier can constrain that later
+    review to one exact topology rather than accepting arbitrary YAML.
+    """
+    resources: dict[str, Any] = {}
+    for component in SIGNED_NOSTR_COMPONENTS:
+        labels = signed_nostr_labels(component)
+        namespace = signed_nostr_namespace(component)
+        port = SIGNED_NOSTR_PORTS[component]
+        if component == "workbench":
+            environment = [
+                {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+                {"name": "WORKBENCH_PORT", "value": "18083"},
+                {"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"},
+                {"name": "CITIZEN_RELAY_URL", "value": "ws://citizen-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"},
+                {"name": "AGENT_RELAY_URL", "value": "ws://agent-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"},
+                {"name": "GNOSIS_RPC_URL", "valueFrom": {"secretKeyRef": {"key": "GNOSIS_RPC_URL", "name": "roebel-signed-nostr-runtime", "optional": False}}},
+                {"name": "MECKY_PUBKEY", "valueFrom": {"secretKeyRef": {"key": "MECKY_PUBKEY", "name": "roebel-signed-nostr-runtime", "optional": False}}},
+                {"name": "CITIZEN_RELAY_ADMISSION_TOKEN", "valueFrom": {"secretKeyRef": {"key": "CITIZEN_RELAY_ADMISSION_TOKEN", "name": "roebel-signed-nostr-runtime", "optional": False}}},
+            ]
+            pod_extra: dict[str, Any] = {}
+            container_extra: dict[str, Any] = {}
+        else:
+            environment = signed_nostr_relay_environment(component)
+            pod_extra = {"volumes": [{"emptyDir": {"sizeLimit": "128Mi"}, "name": "relay-store"}]}
+            container_extra = {"volumeMounts": [{"mountPath": "/relay", "name": "relay-store"}]}
+        container = {
+            "env": environment,
+            "image": signed_nostr_runtime_image(component, runtime_pin),
+            "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {"failureThreshold": 3, "periodSeconds": 20, "successThreshold": 1, "tcpSocket": {"port": "http"}, "timeoutSeconds": 3},
+            "name": SIGNED_NOSTR_NAMES[component],
+            "ports": [{"containerPort": port, "name": "http", "protocol": "TCP"}],
+            "readinessProbe": {"failureThreshold": 3, "periodSeconds": 10, "successThreshold": 1, "tcpSocket": {"port": "http"}, "timeoutSeconds": 3},
+            "resources": {"limits": {"cpu": "250m", "ephemeral-storage": "128Mi", "memory": "112Mi"}, "requests": {"cpu": "10m", "ephemeral-storage": "64Mi", "memory": "32Mi"}},
+            "securityContext": signed_nostr_container_security_context(),
+            "startupProbe": {"failureThreshold": 30, "periodSeconds": 2, "successThreshold": 1, "tcpSocket": {"port": "http"}, "timeoutSeconds": 3},
+            **container_extra,
+        }
+        deployment = {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"labels": labels, "name": SIGNED_NOSTR_NAMES[component], "namespace": namespace},
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": labels},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "automountServiceAccountToken": False,
+                        "containers": [container],
+                        "restartPolicy": "Always",
+                        "securityContext": signed_nostr_pod_security_context(),
+                        **pod_extra,
+                    },
+                },
+            },
+        }
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"labels": labels, "name": SIGNED_NOSTR_NAMES[component], "namespace": namespace},
+            "spec": {"ports": [{"name": "http", "port": port, "protocol": "TCP", "targetPort": "http"}], "selector": labels, "type": "ClusterIP"},
+        }
+        resources[component] = {"deployment": deployment, "service": service}
+
+    workbench_labels = signed_nostr_labels("workbench")
+    relay_from = [
+        {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_WEB_NAMESPACE}},
+            "podSelector": {"matchLabels": workbench_labels},
+        },
+        {
+            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}},
+            "podSelector": {"matchLabels": PUBLIC_MECKY_LABELS},
+        },
+    ]
+    dns_egress = {
+        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
+        "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
+    }
+    relay_egress = [{
+        "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}}, "podSelector": {"matchLabels": signed_nostr_labels(relay)}}],
+        "ports": [{"port": 18081, "protocol": "TCP"}],
+    } for relay in ("citizen-relay", "agent-relay")]
+    resources["workbench"]["networkPolicy"] = {
+        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+        "metadata": {"labels": workbench_labels, "name": SIGNED_NOSTR_NAMES["workbench"], "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
+        "spec": {
+            "egress": [dns_egress, *relay_egress],
+            "ingress": [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}}], "ports": [{"port": 18083, "protocol": "TCP"}]}],
+            "podSelector": {"matchLabels": workbench_labels}, "policyTypes": ["Ingress", "Egress"],
+        },
+    }
+    for relay in ("citizen-relay", "agent-relay"):
+        labels = signed_nostr_labels(relay)
+        resources[relay]["networkPolicy"] = {
+            "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+            "metadata": {"labels": labels, "name": SIGNED_NOSTR_NAMES[relay], "namespace": SIGNED_NOSTR_NAMESPACE},
+            "spec": {"egress": [], "ingress": [{"from": relay_from, "ports": [{"port": 18081, "protocol": "TCP"}]}], "podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"]},
+        }
+    for component in SIGNED_NOSTR_COMPONENTS:
+        resources[component]["kustomization"] = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+            "  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+        )
+    return resources
+
+
+def expected_public_mecky_network_policy(reviewed_egress: bool, signed_nostr: bool = False) -> dict[str, Any]:
     spec: dict[str, Any] = {
         "ingress": [{
             "from": [{
@@ -735,6 +1113,24 @@ def expected_public_mecky_network_policy(reviewed_egress: bool) -> dict[str, Any
             **spec,
             "policyTypes": ["Ingress", "Egress"],
         }
+    if signed_nostr:
+        require(reviewed_egress, "signed-Nostr Public Mecky policy requires reviewed knowledge egress")
+        spec = {
+            **spec,
+            "egress": [
+                *spec["egress"],
+                *[
+                    {
+                        "to": [{
+                            "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}},
+                            "podSelector": {"matchLabels": signed_nostr_labels(relay)},
+                        }],
+                        "ports": [{"port": 18081, "protocol": "TCP"}],
+                    }
+                    for relay in ("citizen-relay", "agent-relay")
+                ],
+            ],
+        }
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -747,20 +1143,57 @@ def expected_public_mecky_network_policy(reviewed_egress: bool) -> dict[str, Any
     }
 
 
+def verify_signed_nostr(root: Path) -> dict[str, Any]:
+    runtime_pin = verify_signed_nostr_runtime_pin(load_json(root / SIGNED_NOSTR_RUNTIME_PIN))
+    expected = expected_signed_nostr_resources(runtime_pin)
+    actual: dict[str, Any] = {}
+    for component in SIGNED_NOSTR_COMPONENTS:
+        component_root = root / SIGNED_NOSTR_ROOT / component
+        deployment = load_json(component_root / "deployment.json")
+        service = load_json(component_root / "service.json")
+        network_policy = load_json(component_root / "networkpolicy.json")
+        kustomization = (component_root / "kustomization.yaml").read_text()
+        require(deployment == expected[component]["deployment"], f"signed-Nostr {component} Deployment drift")
+        require(service == expected[component]["service"], f"signed-Nostr {component} Service drift")
+        require(network_policy == expected[component]["networkPolicy"], f"signed-Nostr {component} NetworkPolicy drift")
+        require(kustomization == expected[component]["kustomization"], f"signed-Nostr {component} Flux path widened")
+        actual[component] = {
+            "deployment": deployment,
+            "service": service,
+            "networkPolicy": network_policy,
+            "kustomization": kustomization,
+        }
+    # Both relay Deployment images bind to the one relay digest from the pin;
+    # this prevents a citizen/agent mixed build from entering staging.
+    citizen_image = actual["citizen-relay"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
+    agent_image = actual["agent-relay"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
+    require(citizen_image == agent_image, "signed-Nostr relays must share one immutable digest")
+    require(
+        SIGNED_NOSTR_ACTIVATION_EVIDENCE is not None,
+        "signed-Nostr activation blocked: Gnosis egress and Flux identity evidence require separate review",
+    )
+    return {"runtimePin": runtime_pin["pin"], "components": actual}
+
+
 def verify_public_mecky_network_policy(
     root: Path,
     reviewed_knowledge: bool,
+    signed_nostr: bool,
 ) -> tuple[dict[str, Any], bool]:
     policy = load_json(root / RENDER_ROOT / "public-mecky/networkpolicy.json")
     legacy = expected_public_mecky_network_policy(False)
     reviewed = expected_public_mecky_network_policy(True)
-    require(policy in (legacy, reviewed), "Public Mecky NetworkPolicy drift")
+    signed = expected_public_mecky_network_policy(True, True)
+    require(policy in (legacy, reviewed, signed), "Public Mecky NetworkPolicy drift")
     reviewed_egress = policy == reviewed
+    signed_egress = policy == signed
     require(
         not reviewed_egress or reviewed_knowledge,
         "Public Mecky reviewed-runtime egress requires the complete reviewed runtime render",
     )
-    return policy, reviewed_egress
+    require(not signed_egress or signed_nostr, "Public Mecky relay egress requires the complete signed-Nostr render")
+    require(not signed_nostr or signed_egress, "signed-Nostr render requires exact Public Mecky relay egress")
+    return policy, reviewed_egress or signed_egress
 
 
 def verify_web_network_policy(root: Path) -> dict[str, Any]:
@@ -845,9 +1278,46 @@ def verify_web_network_policy(root: Path) -> dict[str, Any]:
     return policy
 
 
-def verify_web_ingress(root: Path) -> dict[str, Any]:
-    ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
-    require(ingress == {
+def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
+    early = (
+        "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
+        "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+        "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }"
+    )
+    paths = [
+        {
+            "backend": {"service": {
+                "name": "roebel-supabase-read-gateway",
+                "port": {"name": "http"},
+            }},
+            "path": "/supabase-read",
+            "pathType": "Prefix",
+        },
+    ]
+    if signed_nostr:
+        early = (
+            "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky } !{ path /stadtstack-test/api/session/admit } !{ path /stadtstack-test/api/signed-event }\n"
+            "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }\n"
+            "http-request deny deny_status 404 if { path_beg /stadtstack-test } !{ path /stadtstack-test/healthz } !{ path /stadtstack-test/api/config } !{ path /stadtstack-test/api/feed } !{ path /stadtstack-test/api/thread } !{ path /stadtstack-test/api/conversation } !{ path /stadtstack-test/api/session/admit } !{ path /stadtstack-test/api/signed-event }"
+        )
+        paths.append({
+            "backend": {"service": {
+                "name": "roebel-staging-workbench",
+                "port": {"name": "http"},
+            }},
+            "path": "/stadtstack-test",
+            "pathType": "Prefix",
+        })
+    paths.append({
+        "backend": {"service": {
+            "name": "roebel-web-presentation",
+            "port": {"name": "http"},
+        }},
+        "path": "/",
+        "pathType": "Prefix",
+    })
+    return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "Ingress",
         "metadata": {
@@ -860,11 +1330,7 @@ def verify_web_ingress(root: Path) -> dict[str, Any]:
                     "http-response set-header Referrer-Policy no-referrer\n"
                     "http-response set-header Content-Security-Policy \"default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com; frame-src https://embedded-wallet.thirdweb.com; worker-src 'self' blob:;\""
                 ),
-                "haproxy-ingress.github.io/config-backend-early": (
-                    "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
-                    "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
-                    "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }"
-                ),
+                "haproxy-ingress.github.io/config-backend-early": early,
             },
             "labels": {
                 "app.kubernetes.io/component": "readonly-presentation",
@@ -880,24 +1346,7 @@ def verify_web_ingress(root: Path) -> dict[str, Any]:
             "rules": [{
                 "host": "roebel-web.staging.agentcart.eu",
                 "http": {
-                    "paths": [
-                        {
-                            "backend": {"service": {
-                                "name": "roebel-supabase-read-gateway",
-                                "port": {"name": "http"},
-                            }},
-                            "path": "/supabase-read",
-                            "pathType": "Prefix",
-                        },
-                        {
-                            "backend": {"service": {
-                                "name": "roebel-web-presentation",
-                                "port": {"name": "http"},
-                            }},
-                            "path": "/",
-                            "pathType": "Prefix",
-                        },
-                    ]
+                    "paths": paths
                 },
             }],
             "tls": [{
@@ -905,7 +1354,12 @@ def verify_web_ingress(root: Path) -> dict[str, Any]:
                 "secretName": "roebel-web-presentation-tls",
             }],
         },
-    }, "Web Ingress drift")
+    }
+
+
+def verify_web_ingress(root: Path, signed_nostr: bool) -> dict[str, Any]:
+    ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
+    require(ingress == expected_web_ingress(signed_nostr), "Web Ingress drift")
     return ingress
 
 
@@ -913,8 +1367,68 @@ def verify_network_boundary_migration(
     root: Path,
     web_network_policy: dict[str, Any],
     web_ingress: dict[str, Any],
+    public_mecky_network_policy: dict[str, Any],
+    signed_nostr: bool,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
+    if signed_nostr:
+        expected_signed_nostr = {
+            "authority": "none",
+            "boundary": {
+                "ingress": {
+                    "allowedMethods": ["GET", "HEAD", "POST"],
+                    "exactPostPaths": [
+                        "/api/chat/mecky",
+                        "/stadtstack-test/api/session/admit",
+                        "/stadtstack-test/api/signed-event",
+                    ],
+                    "readOnlyPrefix": "/stadtstack-test",
+                    "resource": {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
+                },
+                "publicMeckyRelayEgress": {
+                    "destinationNamespace": SIGNED_NOSTR_NAMESPACE,
+                    "destinationPorts": [18081],
+                    "relays": ["citizen-relay", "agent-relay"],
+                    "resource": {"kind": "NetworkPolicy", "name": "public-mecky-chat-from-web", "namespace": SIGNED_NOSTR_NAMESPACE},
+                },
+                "relays": {
+                    "ingress": "workbench-only",
+                    "ingressClass": "none",
+                    "namespace": SIGNED_NOSTR_NAMESPACE,
+                    "persistentVolume": False,
+                    "emptyDirSizeLimit": "128Mi",
+                    "combinedPersistedBudgetBytes": 83886080,
+                },
+            },
+            "evidence": {
+                "gnosisRpcEgress": None,
+                "fluxIdentity": None,
+                "status": "pending-separate-review",
+            },
+            "effects": {"civicMutation": False, "clusterMutation": False, "secretRead": False, "secretWrite": False},
+            "objects": [
+                {"kind": "NetworkPolicy", "name": "public-mecky-chat-from-web", "namespace": SIGNED_NOSTR_NAMESPACE, "sha256": digest(public_mecky_network_policy)},
+                {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": SIGNED_NOSTR_WEB_NAMESPACE, "sha256": digest(web_ingress)},
+            ],
+            "rbacBootstrap": {
+                "createAllowed": False,
+                "deleteAllowed": False,
+                "listAllowed": False,
+                "required": True,
+                "roleNamespace": SIGNED_NOSTR_WEB_NAMESPACE,
+                "serviceAccount": {"name": "roebel-web-reconciler", "namespace": "flux-roebel-staging"},
+                "watchAllowed": False,
+                "rules": [
+                    {"apiGroups": ["networking.k8s.io"], "resourceNames": ["roebel-web-presentation"], "resources": ["networkpolicies"], "verbs": ["get", "patch", "update"]},
+                    {"apiGroups": ["networking.k8s.io"], "resourceNames": ["roebel-web-presentation"], "resources": ["ingresses"], "verbs": ["get", "patch", "update"]},
+                ],
+                "liveMutationPerformed": False,
+            },
+            "schemaVersion": "roebel_staging_signed_nostr_boundary_v1",
+            "status": "blocked_pending_separately_reviewed_signed_nostr_evidence",
+        }
+        require(migration == expected_signed_nostr, "signed-Nostr network-boundary receipt drift")
+        return migration
     expected = {
         "authority": "none",
         "boundary": {
@@ -999,11 +1513,18 @@ def verify_network_boundary_migration(
     return migration
 
 
-def verify_kustomizations(root: Path) -> None:
+def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
     public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
     web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - networkpolicy.json\n  - ingress.json\n"
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
     require((root / RENDER_ROOT / "web/kustomization.yaml").read_text() == web_expected, "roebel-web-staging Flux path widened")
+    if signed_nostr:
+        expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+        for component in SIGNED_NOSTR_COMPONENTS:
+            require(
+                (root / SIGNED_NOSTR_ROOT / component / "kustomization.yaml").read_text() == expected,
+                f"signed-Nostr {component} Flux path widened",
+            )
 
 
 def expected_patch_value(component: str, path: str, head: dict[str, Any]) -> str:
@@ -1065,16 +1586,18 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
-    reviewed_knowledge = render_file_set == "reviewed-public-knowledge"
+    reviewed_knowledge = render_file_set in {"reviewed-public-knowledge", "signed-nostr"}
+    signed_nostr = render_file_set == "signed-nostr"
     deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
     network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
         root,
         reviewed_knowledge,
+        signed_nostr,
     )
     web_network_policy = verify_web_network_policy(root)
-    web_ingress = verify_web_ingress(root)
-    migration = verify_network_boundary_migration(root, web_network_policy, web_ingress)
+    web_ingress = verify_web_ingress(root, signed_nostr)
+    migration = verify_network_boundary_migration(root, web_network_policy, web_ingress, network_policy, signed_nostr)
     objects = [
         deployments["public-mecky"],
         service,
@@ -1088,9 +1611,13 @@ def verify_tree(root: Path) -> dict[str, Any]:
     if reviewed_knowledge:
         reviewed_objects = verify_reviewed_public_knowledge(root)
         checksum_payload["reviewedPublicKnowledge"] = reviewed_objects
+    signed_nostr_objects = None
+    if signed_nostr:
+        signed_nostr_objects = verify_signed_nostr(root)
+        checksum_payload["signedNostr"] = signed_nostr_objects
     require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
-    verify_kustomizations(root)
+    verify_kustomizations(root, signed_nostr)
     live = verify_live_preconditions(root, head)
     return {
         "root": root,
@@ -1103,6 +1630,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "renderFileSet": render_file_set,
         "publicMeckyReviewedEgress": public_mecky_reviewed_egress,
         "reviewedPublicKnowledge": reviewed_objects,
+        "signedNostr": signed_nostr_objects,
     }
 
 
@@ -1114,9 +1642,57 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         "reviewed-public-knowledge render set cannot regress to the legacy set",
     )
     require(
+        not (base["renderFileSet"] == "signed-nostr" and candidate["renderFileSet"] == "current"),
+        "signed-Nostr rollback must retain the reviewed-public-knowledge render",
+    )
+    require(
         not (base["publicMeckyReviewedEgress"] and not candidate["publicMeckyReviewedEgress"]),
         "Public Mecky reviewed-runtime egress cannot regress",
     )
+
+    if base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "signed-nostr":
+        require(candidate["head"] == base["head"], "signed-Nostr activation must preserve the Release Set head")
+        for relative in FUTURE_EXPECTED_FILES:
+            if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"signed-Nostr activation changed existing file: {relative}",
+            )
+        rollback = candidate["signedNostr"]["runtimePin"]["rollback"]
+        expected_rollback = {
+            "integritySha256": bytes_digest((base_root / f"{RENDER_ROOT}/integrity.json").read_bytes()),
+            "webIngressSha256": bytes_digest((base_root / f"{RENDER_ROOT}/web/ingress.json").read_bytes()),
+            "publicMeckyNetworkPolicySha256": bytes_digest((base_root / f"{RENDER_ROOT}/public-mecky/networkpolicy.json").read_bytes()),
+            "boundaryReceiptSha256": bytes_digest((base_root / f"{RENDER_ROOT}/network-boundary-migration.json").read_bytes()),
+        }
+        require(
+            {field: rollback[field] for field in expected_rollback} == expected_rollback,
+            "signed-Nostr activation rollback baseline drift",
+        )
+        return
+
+    if base["renderFileSet"] == "signed-nostr" and candidate["renderFileSet"] == "reviewed-public-knowledge":
+        require(candidate["head"] == base["head"], "signed-Nostr rollback must preserve the Release Set head")
+        for relative in FUTURE_EXPECTED_FILES:
+            if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"signed-Nostr rollback changed existing file: {relative}",
+            )
+        rollback = base["signedNostr"]["runtimePin"]["rollback"]
+        expected_rollback = {
+            "integritySha256": bytes_digest((candidate_root / f"{RENDER_ROOT}/integrity.json").read_bytes()),
+            "webIngressSha256": bytes_digest((candidate_root / f"{RENDER_ROOT}/web/ingress.json").read_bytes()),
+            "publicMeckyNetworkPolicySha256": bytes_digest((candidate_root / f"{RENDER_ROOT}/public-mecky/networkpolicy.json").read_bytes()),
+            "boundaryReceiptSha256": bytes_digest((candidate_root / f"{RENDER_ROOT}/network-boundary-migration.json").read_bytes()),
+        }
+        require(
+            {field: rollback[field] for field in expected_rollback} == expected_rollback,
+            "signed-Nostr rollback did not restore the exact prior boundary",
+        )
+        return
 
     if base["renderFileSet"] == "current" and candidate["renderFileSet"] == "reviewed-public-knowledge":
         require(candidate["head"] == base["head"], "reviewed-public-knowledge activation must preserve the Release Set head")
@@ -1187,6 +1763,12 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):
             require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
+    if base["renderFileSet"] == "signed-nostr":
+        for relative in SIGNED_NOSTR_FILES:
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"routine promotion changed signed-Nostr runtime file: {relative}",
+            )
     for relative in (
         f"{RENDER_ROOT}/network-boundary-migration.json",
         f"{RENDER_ROOT}/web/ingress.json",
