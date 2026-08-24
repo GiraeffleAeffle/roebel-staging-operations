@@ -66,6 +66,11 @@ def load(path: Path) -> Any:
     return json.loads(path.read_text(), object_pairs_hook=pairs)
 
 
+def read_text(path: Path) -> str:
+    require(path.is_file() and not path.is_symlink(), f"input is not a regular file: {path}")
+    return path.read_text()
+
+
 def closed(value: Any, expected: set[str], label: str) -> dict[str, Any]:
     require(isinstance(value, dict) and set(value) == expected, f"{label} shape invalid")
     return value
@@ -273,8 +278,21 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
     network_boundary_migration = load(
         render_root / "network-boundary-migration.json"
     )
+    checksum_payload: dict[str, Any] = {
+        "nextEnvironmentHead": next_head,
+        "objects": desired_objects,
+    }
+    reviewed_knowledge_root = render_root / "reviewed-public-knowledge"
+    if reviewed_knowledge_root.is_dir() and not reviewed_knowledge_root.is_symlink():
+        checksum_payload["reviewedPublicKnowledge"] = {
+            "deployment": load(reviewed_knowledge_root / "deployment.json"),
+            "service": load(reviewed_knowledge_root / "service.json"),
+            "networkPolicy": load(reviewed_knowledge_root / "networkpolicy.json"),
+            "kustomization": read_text(reviewed_knowledge_root / "kustomization.yaml"),
+            "runtimePin": load(reviewed_knowledge_root / "runtime-pin.json"),
+        }
     integrity = {
-        "desiredRenderSha256": digest_bytes(canonical_render({"nextEnvironmentHead": next_head, "objects": desired_objects})),
+        "desiredRenderSha256": digest_bytes(canonical_render(checksum_payload)),
         "networkBoundaryMigrationSha256": digest_bytes(
             canonical_render(network_boundary_migration)
         ),
