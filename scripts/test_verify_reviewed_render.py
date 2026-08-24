@@ -8,6 +8,7 @@ import copy
 import shutil
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -19,6 +20,20 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 class ReviewedRenderVerifierTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Protected admission uses the real UTC clock. Tests pin one explicit
+        # instant so freshness assertions remain deterministic.
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = None
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = None
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 4, 0, tzinfo=timezone.utc,
+        )
+
+    def tearDown(self) -> None:
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = None
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = None
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = None
+
     def repository_shape(self, root: Path) -> str:
         signed_nostr = root / "reviewed-render/roebel-staging/signed-nostr"
         if signed_nostr.is_dir():
@@ -188,31 +203,159 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 },
             })
         flux_bindings: list[dict[str, object]] = []
-        for index, component in enumerate(VERIFIER.SIGNED_NOSTR_FLUX_BINDING_ORDER):
-            namespace = VERIFIER.SIGNED_NOSTR_FLUX_NAMESPACES[component]
+        for component in VERIFIER.SIGNED_NOSTR_FLUX_BINDING_ORDER:
+            objects = VERIFIER.expected_signed_nostr_flux_objects(component)
             flux_bindings.append({
                 "component": component,
-                "kustomization": {
-                    "name": f"signed-nostr-{component}",
-                    "namespace": namespace,
-                    "path": VERIFIER.SIGNED_NOSTR_FLUX_PATHS[component],
-                    "sourceRef": {"kind": "GitRepository", "name": "roebel-staging-operations", "namespace": "flux-system"},
-                    "objectDigest": "sha256:" + chr(ord("a") + index) * 64,
+                **{
+                    name: {"object": value, "objectDigest": VERIFIER.digest(value)}
+                    for name, value in objects.items()
                 },
-                "serviceAccount": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("d") + index) * 64},
-                "role": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("a") + index) * 64},
-                "roleBinding": {"name": f"signed-nostr-{component}", "namespace": namespace, "objectDigest": "sha256:" + chr(ord("d") + index) * 64},
-                "rbacScope": {"apiGroups": ["", "apps"], "resources": ["deployments", "networkpolicies", "services"], "verbs": ["get", "list", "patch"], "resourceNames": [f"signed-nostr-{component}"]},
             })
-        private_proxy: dict[str, object] = {
-            "kind": "Service",
-            "name": "gnosis-private-rpc",
-            "namespace": "stadtstack-roebel-web-preview",
-            "port": 8545,
+        workbench_component = next(
+            component for component in publisher["components"]
+            if component["component"] == "roebel-e2e-workbench"
+        )
+        workbench_image = f"{workbench_component['image']}@{workbench_component['manifestDigest']}"
+        proxy_deployment = VERIFIER.expected_signed_nostr_gnosis_private_proxy_deployment(workbench_image)
+        proxy_service = VERIFIER.expected_signed_nostr_gnosis_private_proxy_service()
+        proxy_policy = VERIFIER.expected_signed_nostr_gnosis_private_proxy_network_policy()
+        workbench_policy = VERIFIER.expected_signed_nostr_workbench_network_policy()
+        dns_tls = {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_DNS_TLS_EVIDENCE_SCHEMA,
+            "canonicalEncoding": "canonical-json",
+            "resolverIdentity": "reviewed-doh-resolver",
+            "resolutionMethod": "dns-over-https-a-and-aaaa",
+            "queriedHost": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST,
+            "queriedPort": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT,
+            "observedAt": "2026-08-24T12:00:00Z",
+            "validUntil": "2026-08-24T12:05:00Z",
+            "maxAgeSeconds": 300,
+            "addresses": {"a": ["34.111.230.52"], "aaaa": []},
+            "tlsCertificate": {
+                "serverName": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST,
+                "issuer": "reviewed-test-ca",
+                "certificateSha256": "sha256:" + "e" * 64,
+                "notBefore": "2026-08-01T00:00:00Z",
+                "notAfter": "2026-11-01T00:00:00Z",
+            },
         }
-        private_proxy["object"] = VERIFIER.expected_signed_nostr_gnosis_private_proxy_object(private_proxy)
-        private_proxy["objectDigest"] = VERIFIER.digest(private_proxy["object"])
-        workbench_policy = VERIFIER.expected_signed_nostr_workbench_network_policy(private_proxy)
+        managed_suspended = VERIFIER.expected_signed_nostr_managed_objects(
+            publisher,
+            suspended_flux=True,
+        )
+        managed_active = VERIFIER.expected_signed_nostr_managed_objects(
+            publisher,
+            suspended_flux=False,
+        )
+        preconditions: list[dict[str, object]] = []
+        postconditions: list[dict[str, object]] = []
+        for index, entry in enumerate(managed_suspended):
+            target = VERIFIER.signed_nostr_object_target(entry["object"])
+            preconditions.append({
+                "objectId": entry["objectId"],
+                "target": target,
+                "desiredObjectDigest": VERIFIER.digest(entry["object"]),
+                "state": "absent",
+                "uid": None,
+                "resourceVersion": None,
+                "currentObjectDigest": None,
+            })
+            postconditions.append({
+                "objectId": entry["objectId"],
+                "target": target,
+                "uid": f"00000000-0000-4000-8000-{index + 1:012d}",
+                "resourceVersion": str(100 + index),
+                "objectDigest": VERIFIER.digest(entry["object"]),
+                "action": "created-by-atomic-post-after-verified-absence",
+                "apiOperation": "POST-create",
+                "requiredUid": None,
+                "requiredResourceVersion": None,
+                "conflictPolicy": "fail-on-http-409-no-adopt",
+                "apiOutcome": "http-201-created",
+            })
+        bootstrap = {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_BOOTSTRAP_RECEIPT_SCHEMA,
+            "canonicalEncoding": "canonical-json",
+            "status": "completed-exact-cas",
+            "operationId": "10000000-0000-4000-8000-000000000001",
+            "observedAt": "2026-08-24T12:01:00Z",
+            "validUntil": "2026-08-24T12:06:00Z",
+            "maxAgeSeconds": 300,
+            "preconditionsCanonicalSha256": VERIFIER.digest(preconditions),
+            "postconditions": postconditions,
+            "postconditionsCanonicalSha256": VERIFIER.digest(postconditions),
+            "kustomizationsInitiallySuspended": True,
+            "authority": "one-time-cluster-admin-exact-targets",
+            "effects": {
+                "clusterMutation": True,
+                "civicMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+                "wildcardAuthority": False,
+                "ssaPatchUsedForAbsentTargets": False,
+                "absenceGuardSource": "atomic-post-create-http-409-no-adopt",
+                "presentGuardSource": "uid-resourceVersion-bound-no-op",
+            },
+        }
+        dns_tls_recheck = copy.deepcopy(dns_tls)
+        dns_tls_recheck["observedAt"] = "2026-08-24T12:02:00Z"
+        dns_tls_recheck["validUntil"] = "2026-08-24T12:07:00Z"
+        live_recheck = {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_LIVE_RECHECK_SCHEMA,
+            "canonicalEncoding": "canonical-json",
+            "status": "passed-no-drift",
+            "checkedAt": "2026-08-24T12:02:00Z",
+            "validUntil": "2026-08-24T12:07:00Z",
+            "maxAgeSeconds": 300,
+            "bootstrapReceiptCanonicalSha256": VERIFIER.digest(bootstrap),
+            "objectStates": copy.deepcopy(postconditions),
+            "objectStatesCanonicalSha256": VERIFIER.digest(postconditions),
+            "boundaryState": VERIFIER.rollback_boundary_digest_record(pin["rollback"]),
+            "dnsTlsRecheck": dns_tls_recheck,
+        }
+        suspended_by_id = {entry["objectId"]: entry for entry in managed_suspended}
+        active_by_id = {entry["objectId"]: entry for entry in managed_active}
+        post_by_id = {entry["objectId"]: entry for entry in postconditions}
+        unsuspensions: list[dict[str, object]] = []
+        for index, component in enumerate(VERIFIER.SIGNED_NOSTR_FLUX_BINDING_ORDER):
+            object_id = f"flux/{component}/kustomization"
+            before = suspended_by_id[object_id]["object"]
+            after = active_by_id[object_id]["object"]
+            live = post_by_id[object_id]
+            unsuspensions.append({
+                "objectId": object_id,
+                "target": VERIFIER.signed_nostr_object_target(before),
+                "requiredUid": live["uid"],
+                "requiredResourceVersion": live["resourceVersion"],
+                "beforeObjectDigest": VERIFIER.digest(before),
+                "patch": {"op": "replace", "path": "/spec/suspend", "expected": True, "value": False},
+                "postResourceVersion": str(1000 + index),
+                "afterObjectDigest": VERIFIER.digest(after),
+            })
+        reconcile = {
+            "schemaVersion": "roebel_signed_nostr_reconcile_activation_receipt_v1",
+            "canonicalEncoding": "canonical-json",
+            "status": "completed-after-live-recheck",
+            "operationId": "20000000-0000-4000-8000-000000000001",
+            "completedAt": "2026-08-24T12:03:00Z",
+            "liveRecheckCanonicalSha256": VERIFIER.digest(live_recheck),
+            "unsuspensions": unsuspensions,
+            "unsuspensionsCanonicalSha256": VERIFIER.digest(unsuspensions),
+            "effects": {
+                "clusterMutation": True,
+                "civicMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+                "onlySuspendFieldChanged": True,
+            },
+        }
+        rollback_contract = VERIFIER.expected_signed_nostr_rollback_contract(
+            managed_suspended,
+            bootstrap,
+            reconcile,
+            pin["rollback"],
+        )
         pin["activationEvidence"] = {
             "schemaVersion": VERIFIER.SIGNED_NOSTR_ACTIVATION_EVIDENCE_SCHEMA,
             "canonicalEncoding": "canonical-json",
@@ -224,11 +367,33 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "fluxBindings": flux_bindings,
             "gnosisRpcEgress": {
                 "chainId": 100,
-                "privateProxy": private_proxy,
+                "upstream": {
+                    "scheme": "https",
+                    "host": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST,
+                    "port": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT,
+                    "pinnedIpv4Cidr": VERIFIER.SIGNED_NOSTR_GNOSIS_UPSTREAM_IPV4_CIDR,
+                    "allowedMethods": list(VERIFIER.SIGNED_NOSTR_GNOSIS_ALLOWED_METHODS),
+                    "dnsTlsEvidence": dns_tls,
+                },
+                "privateProxy": {
+                    "name": VERIFIER.SIGNED_NOSTR_GNOSIS_PROXY_NAME,
+                    "namespace": VERIFIER.SIGNED_NOSTR_WEB_NAMESPACE,
+                    "port": VERIFIER.SIGNED_NOSTR_GNOSIS_PROXY_PORT,
+                    "runtimeRole": "gnosis-rpc-proxy",
+                    "deployment": {"object": proxy_deployment, "objectDigest": VERIFIER.digest(proxy_deployment)},
+                    "service": {"object": proxy_service, "objectDigest": VERIFIER.digest(proxy_service)},
+                    "networkPolicy": {"object": proxy_policy, "objectDigest": VERIFIER.digest(proxy_policy)},
+                },
                 "workbenchNetworkPolicy": {"object": workbench_policy, "objectDigest": VERIFIER.digest(workbench_policy)},
-                "secretReference": {"namespace": "stadtstack-roebel-web-preview", "name": "roebel-signed-nostr-runtime", "key": "GNOSIS_RPC_URL"},
             },
             "anonymousDigestPullReceipts": receipts,
+            "lifecycle": {
+                "livePreconditions": preconditions,
+                "bootstrapReceipt": bootstrap,
+                "activationLiveRecheck": live_recheck,
+                "reconcileActivationReceipt": reconcile,
+                "rollbackContract": rollback_contract,
+            },
         }
         return pin
 
@@ -245,7 +410,183 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             (component_root / "deployment.json").write_text(json.dumps(expected["deployment"], indent=2) + "\n")
             (component_root / "service.json").write_text(json.dumps(expected["service"], indent=2) + "\n")
             (component_root / "networkpolicy.json").write_text(json.dumps(expected["networkPolicy"], indent=2) + "\n")
+            if component == "workbench":
+                (component_root / "gnosis-proxy-deployment.json").write_text(json.dumps(expected["gnosisProxyDeployment"], indent=2) + "\n")
+                (component_root / "gnosis-proxy-service.json").write_text(json.dumps(expected["gnosisProxyService"], indent=2) + "\n")
+                (component_root / "gnosis-proxy-networkpolicy.json").write_text(json.dumps(expected["gnosisProxyNetworkPolicy"], indent=2) + "\n")
             (component_root / "kustomization.yaml").write_text(expected["kustomization"])
+
+    def signed_nostr_boundary_receipt(
+        self,
+        public_mecky_network_policy: dict[str, object],
+        web_ingress: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "authority": "none",
+            "boundary": {
+                "ingress": {
+                    "allowedMethods": ["GET", "HEAD", "POST"],
+                    "exactPostPaths": [
+                        "/api/chat/mecky",
+                        "/stadtstack-test/api/session/admit",
+                        "/stadtstack-test/api/signed-event",
+                    ],
+                    "readOnlyPrefix": "/stadtstack-test",
+                    "resource": {
+                        "kind": "Ingress",
+                        "name": "roebel-web-presentation",
+                        "namespace": VERIFIER.SIGNED_NOSTR_WEB_NAMESPACE,
+                    },
+                },
+                "publicMeckyRelayEgress": {
+                    "destinationNamespace": VERIFIER.SIGNED_NOSTR_NAMESPACE,
+                    "destinationPorts": [18081],
+                    "relays": ["citizen-relay", "agent-relay"],
+                    "resource": {
+                        "kind": "NetworkPolicy",
+                        "name": "public-mecky-chat-from-web",
+                        "namespace": VERIFIER.SIGNED_NOSTR_NAMESPACE,
+                    },
+                },
+                "relays": {
+                    "ingress": "workbench-only",
+                    "ingressClass": "none",
+                    "namespace": VERIFIER.SIGNED_NOSTR_NAMESPACE,
+                    "persistentVolume": False,
+                    "emptyDirSizeLimit": "128Mi",
+                    "combinedPersistedBudgetBytes": 83886080,
+                },
+            },
+            "evidence": {
+                "gnosisRpcEgress": None,
+                "fluxIdentity": None,
+                "status": "pending-separate-review",
+            },
+            "effects": {
+                "civicMutation": False,
+                "clusterMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+            },
+            "objects": [
+                {
+                    "kind": "NetworkPolicy",
+                    "name": "public-mecky-chat-from-web",
+                    "namespace": VERIFIER.SIGNED_NOSTR_NAMESPACE,
+                    "sha256": VERIFIER.digest(public_mecky_network_policy),
+                },
+                {
+                    "kind": "Ingress",
+                    "name": "roebel-web-presentation",
+                    "namespace": VERIFIER.SIGNED_NOSTR_WEB_NAMESPACE,
+                    "sha256": VERIFIER.digest(web_ingress),
+                },
+            ],
+            "rbacBootstrap": {
+                "createAllowed": False,
+                "deleteAllowed": False,
+                "listAllowed": False,
+                "required": True,
+                "roleNamespace": VERIFIER.SIGNED_NOSTR_WEB_NAMESPACE,
+                "serviceAccount": {
+                    "name": "roebel-web-reconciler",
+                    "namespace": "flux-roebel-staging",
+                },
+                "watchAllowed": False,
+                "rules": [
+                    {
+                        "apiGroups": ["networking.k8s.io"],
+                        "resourceNames": ["roebel-web-presentation"],
+                        "resources": ["networkpolicies"],
+                        "verbs": ["get", "patch", "update"],
+                    },
+                    {
+                        "apiGroups": ["networking.k8s.io"],
+                        "resourceNames": ["roebel-web-presentation"],
+                        "resources": ["ingresses"],
+                        "verbs": ["get", "patch", "update"],
+                    },
+                ],
+                "liveMutationPerformed": False,
+            },
+            "schemaVersion": "roebel_staging_signed_nostr_boundary_v1",
+            "status": "blocked_pending_separately_reviewed_signed_nostr_evidence",
+        }
+
+    def make_signed_nostr_render(self, root: Path) -> dict[str, object]:
+        render = root / "reviewed-render/roebel-staging"
+        self.signed_nostr_runtime(root, reviewed=True)
+        runtime_pin = json.loads((render / "signed-nostr/runtime-pin.json").read_text())
+        evidence = runtime_pin["activationEvidence"]
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = copy.deepcopy(evidence)
+
+        web_ingress = VERIFIER.expected_web_ingress(True)
+        public_policy = VERIFIER.expected_public_mecky_network_policy(True, True)
+        (render / "web/ingress.json").write_text(json.dumps(web_ingress, indent=2) + "\n")
+        (render / "public-mecky/networkpolicy.json").write_text(
+            json.dumps(public_policy, indent=2) + "\n"
+        )
+        boundary = self.signed_nostr_boundary_receipt(public_policy, web_ingress)
+        (render / "network-boundary-migration.json").write_text(
+            json.dumps(boundary, indent=2) + "\n"
+        )
+
+        signed = VERIFIER.verify_signed_nostr(root)
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest({
+            "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+            "objects": [
+                json.loads((render / "public-mecky/deployment.json").read_text()),
+                json.loads((render / "public-mecky/service.json").read_text()),
+                public_policy,
+                json.loads((render / "web/deployment.json").read_text()),
+                json.loads((render / "web/networkpolicy.json").read_text()),
+                web_ingress,
+            ],
+            "reviewedPublicKnowledge": VERIFIER.verify_reviewed_public_knowledge(root),
+            "signedNostr": signed,
+        })
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(boundary)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+        return evidence
+
+    def deactivation_receipt(
+        self,
+        activation_evidence: dict[str, object],
+    ) -> dict[str, object]:
+        contract = activation_evidence["lifecycle"]["rollbackContract"]
+        completed = "2026-08-24T12:15:00Z"
+        return {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_DEACTIVATION_EVIDENCE_SCHEMA,
+            "canonicalEncoding": "canonical-json",
+            "status": "completed-and-verified",
+            "startedAt": "2026-08-24T12:05:00Z",
+            "completedAt": completed,
+            "validUntil": "2026-08-24T12:20:00Z",
+            "maxAgeSeconds": 300,
+            "activationEvidenceCanonicalSha256": VERIFIER.digest(activation_evidence),
+            "rollbackContractCanonicalSha256": VERIFIER.digest(contract),
+            "stepReceipts": VERIFIER.expected_signed_nostr_deactivation_steps(contract),
+            "boundaryVerification": {
+                "verifiedAt": completed,
+                "status": "exact-baseline-restored",
+                **contract["boundaryBaseline"],
+            },
+            "absenceVerification": {
+                "verifiedAt": completed,
+                "status": "all-exact-targets-absent",
+                "targets": contract["absenceVerificationTargets"],
+            },
+            "effects": {
+                "clusterMutation": True,
+                "civicMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+                "uidMismatchObserved": False,
+                "unrelatedObjectMutation": False,
+            },
+        }
 
     def nested_dicts(self, value: object):
         if isinstance(value, dict):
@@ -575,8 +916,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(fixture["status"], "passed")
         self.assertEqual(fixture["renderFileSet"], "current")
 
-    def test_signed_nostr_policy_reserves_exactly_thirteen_files(self) -> None:
-        self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 13)
+    def test_signed_nostr_policy_reserves_exactly_sixteen_files(self) -> None:
+        self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 16)
         self.assertNotIn(
             "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
             VERIFIER.repository_files(ROOT),
@@ -739,46 +1080,47 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_signed_nostr_activation_evidence_is_closed_for_every_field_and_requires_exact_policy(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
         pin = self.signed_nostr_reviewed_pin(candidate)
         evidence = pin["activationEvidence"]
         publisher = pin["publisherPin"]
         publisher_sha = pin["publisherPinCanonicalSha256"]
         self.assertEqual(
-            VERIFIER.verify_signed_nostr_activation_evidence(evidence, publisher, publisher_sha),
+            VERIFIER.verify_signed_nostr_activation_evidence(evidence, publisher, publisher_sha, pin["rollback"]),
             evidence,
         )
 
         changed = copy.deepcopy(evidence)
-        changed["fluxBindings"][2]["kustomization"]["name"] = changed["fluxBindings"][1]["kustomization"]["name"]
-        with self.assertRaisesRegex(VERIFIER.VerificationError, "Kustomization identity reused"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+        changed["fluxBindings"][2]["kustomization"]["object"]["metadata"]["name"] = changed["fluxBindings"][1]["kustomization"]["object"]["metadata"]["name"]
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Kustomization object invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
         changed = copy.deepcopy(evidence)
         changed["components"][0]["sbomAttestation"] = copy.deepcopy(changed["components"][0]["provenance"])
         changed_publisher = copy.deepcopy(publisher)
         changed_publisher["components"][0]["sbomAttestation"] = copy.deepcopy(changed_publisher["components"][0]["provenance"])
         with self.assertRaisesRegex(VERIFIER.VerificationError, "receipt id reused"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, changed_publisher, publisher_sha)
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, changed_publisher, publisher_sha, pin["rollback"])
 
         changed = copy.deepcopy(evidence)
         changed["components"][1]["sbomAttestation"]["attestationDigest"] = changed["components"][0]["provenance"]["attestationDigest"]
         with self.assertRaisesRegex(VERIFIER.VerificationError, "attestation digest reused"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
         changed = copy.deepcopy(evidence)
-        changed["gnosisRpcEgress"]["privateProxy"]["object"]["spec"]["type"] = "LoadBalancer"
-        with self.assertRaisesRegex(VERIFIER.VerificationError, "private proxy object invalid"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+        changed["gnosisRpcEgress"]["privateProxy"]["service"]["object"]["spec"]["type"] = "LoadBalancer"
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "private proxy Service object invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
         changed = copy.deepcopy(evidence)
         changed["gnosisRpcEgress"]["workbenchNetworkPolicy"]["object"]["spec"]["egress"].append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}]})
         with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy object invalid"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
         changed = copy.deepcopy(evidence)
         changed["gnosisRpcEgress"]["workbenchNetworkPolicy"]["objectDigest"] = "sha256:" + "0" * 64
         with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy digest binding invalid"):
-            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+            VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
         # Every closed record rejects an unknown key and every required field
         # rejects deletion or a nonconforming mutation.  This deliberately
@@ -797,7 +1139,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                             candidate_record.pop(key)
                             break
                     with self.assertRaises(VERIFIER.VerificationError):
-                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
                 with self.subTest(kind="unknown", key=key):
                     changed = copy.deepcopy(evidence)
                     for candidate_record in self.nested_dicts(changed):
@@ -805,17 +1147,22 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                             candidate_record["unexpected"] = True
                             break
                     with self.assertRaises(VERIFIER.VerificationError):
-                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
                 with self.subTest(kind="mutation", key=key):
+                    if record[key] is None:
+                        # Null is the intentional closed representation for an
+                        # observed-absent object and for non-Kustomization
+                        # post-suspend state. Missing/unknown-key checks above
+                        # still prove that the field itself is mandatory.
+                        continue
                     changed = copy.deepcopy(evidence)
                     for candidate_record in self.nested_dicts(changed):
                         if candidate_record == record:
                             candidate_record[key] = None
                             break
                     with self.assertRaises(VERIFIER.VerificationError):
-                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha)
+                        VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
 
-        self.make_reviewed_knowledge_render(candidate)
         self.signed_nostr_runtime(candidate, reviewed=True)
         with self.assertRaisesRegex(VERIFIER.VerificationError, "activation blocked"):
             VERIFIER.verify_signed_nostr(candidate)
@@ -829,6 +1176,433 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE["gnosisRpcEgress"]["chainId"] = 1
         with self.assertRaisesRegex(VERIFIER.VerificationError, "does not equal the exact approved policy record"):
             VERIFIER.verify_signed_nostr(candidate)
+
+    def test_signed_nostr_gnosis_proxy_and_flux_objects_are_exact_and_credential_free(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+        publisher = pin["publisherPin"]
+        publisher_sha = pin["publisherPinCanonicalSha256"]
+        proxy = evidence["gnosisRpcEgress"]["privateProxy"]
+        environment = proxy["deployment"]["object"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertEqual(
+            {item["name"] for item in environment},
+            {
+                "ROEBEL_RUNTIME_ROLE",
+                "GNOSIS_PROXY_BIND_HOST",
+                "GNOSIS_PROXY_PORT",
+                "GNOSIS_PROXY_UPSTREAM_URL",
+                "GNOSIS_PROXY_EXPECTED_CHAIN_ID",
+                "GNOSIS_PROXY_ALLOWED_METHODS",
+                "GNOSIS_PROXY_MAX_BODY_BYTES",
+                "GNOSIS_PROXY_UPSTREAM_TIMEOUT_MS",
+                "GNOSIS_PROXY_MAX_CONCURRENT",
+            },
+        )
+        self.assertTrue(all("valueFrom" not in item for item in environment))
+        workbench = VERIFIER.verify_signed_nostr_runtime_pin(pin)
+        resources = VERIFIER.expected_signed_nostr_resources(workbench)
+        workbench_env = resources["workbench"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertIn(
+            {
+                "name": "GNOSIS_RPC_URL",
+                "value": "http://gnosis-private-rpc.stadtstack-roebel-web-preview.svc.cluster.local:8545",
+            },
+            workbench_env,
+        )
+
+        mutations = []
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["upstream"]["pinnedIpv4Cidr"] = "0.0.0.0/0"
+        mutations.append(changed)
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["privateProxy"]["deployment"]["object"]["spec"]["template"]["spec"]["containers"][0]["env"][5]["value"] += ",eth_sendRawTransaction"
+        mutations.append(changed)
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["privateProxy"]["networkPolicy"]["object"]["spec"]["egress"][1]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+        mutations.append(changed)
+        changed = copy.deepcopy(evidence)
+        changed["fluxBindings"][0]["serviceAccount"]["object"]["metadata"]["namespace"] = "stadtstack-roebel-web-preview"
+        mutations.append(changed)
+        changed = copy.deepcopy(evidence)
+        changed["fluxBindings"][0]["role"]["object"]["rules"][0]["verbs"].append("create")
+        mutations.append(changed)
+        changed = copy.deepcopy(evidence)
+        changed["fluxBindings"][0]["kustomization"]["object"]["spec"]["prune"] = True
+        mutations.append(changed)
+        for changed in mutations:
+            with self.assertRaises(VERIFIER.VerificationError):
+                VERIFIER.verify_signed_nostr_activation_evidence(changed, publisher, publisher_sha, pin["rollback"])
+
+    def test_signed_nostr_live_ownership_preconditions_reject_absence_or_uid_drift(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+
+        changed = copy.deepcopy(evidence)
+        precondition = changed["lifecycle"]["livePreconditions"][0]
+        precondition.update({
+            "state": "present-exact",
+            "uid": "30000000-0000-4000-8000-000000000001",
+            "resourceVersion": "77",
+            "currentObjectDigest": "sha256:" + "0" * 64,
+        })
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "not exact"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+        changed = copy.deepcopy(evidence)
+        changed["lifecycle"]["bootstrapReceipt"]["postconditions"][0]["uid"] = (
+            "30000000-0000-4000-8000-000000000002"
+        )
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+    def test_signed_nostr_bootstrap_uses_atomic_create_and_exact_present_no_op(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+        lifecycle = evidence["lifecycle"]
+        precondition = lifecycle["livePreconditions"][0]
+        postcondition = lifecycle["bootstrapReceipt"]["postconditions"][0]
+
+        # Convert one valid absent/create receipt into one valid
+        # present-exact/no-op receipt while keeping its exact identity.
+        precondition.update({
+            "state": "present-exact",
+            "uid": postcondition["uid"],
+            "resourceVersion": postcondition["resourceVersion"],
+            "currentObjectDigest": precondition["desiredObjectDigest"],
+        })
+        postcondition.update({
+            "action": "retained-exact-owned-object-no-op",
+            "apiOperation": "none",
+            "requiredUid": precondition["uid"],
+            "requiredResourceVersion": precondition["resourceVersion"],
+            "conflictPolicy": "fail-on-uid-or-resourceVersion-mismatch-no-adopt",
+            "apiOutcome": "unchanged-after-atomic-precondition-recheck",
+        })
+        bootstrap = lifecycle["bootstrapReceipt"]
+        bootstrap["preconditionsCanonicalSha256"] = VERIFIER.digest(lifecycle["livePreconditions"])
+        bootstrap["postconditionsCanonicalSha256"] = VERIFIER.digest(bootstrap["postconditions"])
+        live = lifecycle["activationLiveRecheck"]
+        live["bootstrapReceiptCanonicalSha256"] = VERIFIER.digest(bootstrap)
+        live["objectStates"] = copy.deepcopy(bootstrap["postconditions"])
+        live["objectStatesCanonicalSha256"] = VERIFIER.digest(live["objectStates"])
+        lifecycle["reconcileActivationReceipt"]["liveRecheckCanonicalSha256"] = VERIFIER.digest(live)
+        self.assertEqual(
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                evidence,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            ),
+            evidence,
+        )
+
+        present_mutations = (
+            ("requiredUid", "90000000-0000-4000-8000-000000000001"),
+            ("requiredResourceVersion", "999"),
+            ("uid", "90000000-0000-4000-8000-000000000002"),
+            ("resourceVersion", "998"),
+        )
+        for field, value in present_mutations:
+            with self.subTest(field=field):
+                changed = copy.deepcopy(evidence)
+                changed["lifecycle"]["bootstrapReceipt"]["postconditions"][0][field] = value
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify_signed_nostr_activation_evidence(
+                        changed,
+                        pin["publisherPin"],
+                        pin["publisherPinCanonicalSha256"],
+                        pin["rollback"],
+                    )
+
+        absent = self.signed_nostr_reviewed_pin(candidate)
+        absent_post = absent["activationEvidence"]["lifecycle"]["bootstrapReceipt"]["postconditions"][0]
+        absent_post["apiOperation"] = "PATCH-apply"
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "not atomic create-only"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                absent["activationEvidence"],
+                absent["publisherPin"],
+                absent["publisherPinCanonicalSha256"],
+                absent["rollback"],
+            )
+
+    def test_signed_nostr_activation_transition_requires_current_exact_preflight(self) -> None:
+        base_temp, reviewed = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(reviewed)
+        self.enable_reviewed_mecky_egress(reviewed)
+
+        signed_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(signed_temp.cleanup)
+        signed = Path(signed_temp.name) / "signed"
+        shutil.copytree(reviewed, signed)
+        evidence = self.make_signed_nostr_render(signed)
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = None
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "activation blocked"):
+            VERIFIER.verify(signed, reviewed)
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = copy.deepcopy(evidence)
+        self.assertTrue(VERIFIER.verify(signed, reviewed)["baseTransitionVerified"])
+
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 8, 0, tzinfo=timezone.utc,
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "outside the current five-minute preflight"):
+            VERIFIER.verify(signed, reviewed)
+        # Freshness grants the transition once; it must not make an already
+        # active exact render unverifiable after the original preflight.
+        self.assertFalse(VERIFIER.verify(signed)["baseTransitionVerified"])
+
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 1, 0, tzinfo=timezone.utc,
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "future-dated"):
+            VERIFIER.verify(signed, reviewed)
+
+    def test_signed_nostr_deactivation_transition_requires_fresh_exact_total_absence(self) -> None:
+        reviewed_temp, reviewed = self.candidate()
+        self.addCleanup(reviewed_temp.cleanup)
+        self.make_reviewed_knowledge_render(reviewed)
+        self.enable_reviewed_mecky_egress(reviewed)
+
+        signed_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(signed_temp.cleanup)
+        signed = Path(signed_temp.name) / "signed"
+        shutil.copytree(reviewed, signed)
+        evidence = self.make_signed_nostr_render(signed)
+        VERIFIER.SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE = copy.deepcopy(evidence)
+        deactivation = self.deactivation_receipt(evidence)
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 16, 0, tzinfo=timezone.utc,
+        )
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = None
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "deactivation blocked"):
+            VERIFIER.verify(reviewed, signed)
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = copy.deepcopy(deactivation)
+        self.assertTrue(VERIFIER.verify(reviewed, signed)["baseTransitionVerified"])
+
+        mutations = [
+            ("UID", lambda value: value["stepReceipts"][0].update({"requiredUid": "90000000-0000-4000-8000-000000000001"})),
+            ("digest", lambda value: value["stepReceipts"][4].update({"beforeObjectDigest": "sha256:" + "0" * 64})),
+            ("boundary", lambda value: value["boundaryVerification"].update({"integritySha256": "sha256:" + "0" * 64})),
+            ("absence", lambda value: value["absenceVerification"].update({"status": "target-recreated"})),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                changed = copy.deepcopy(deactivation)
+                mutate(changed)
+                VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = changed
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(reviewed, signed)
+
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = copy.deepcopy(deactivation)
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 21, 0, tzinfo=timezone.utc,
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "expired, or replayed"):
+            VERIFIER.verify(reviewed, signed)
+
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 14, 0, tzinfo=timezone.utc,
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "future-dated"):
+            VERIFIER.verify(reviewed, signed)
+
+        invalid_window = copy.deepcopy(deactivation)
+        invalid_window["validUntil"] = "2026-08-24T12:20:01Z"
+        VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = invalid_window
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 16, 0, tzinfo=timezone.utc,
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "validity window invalid"):
+            VERIFIER.verify(reviewed, signed)
+
+    def test_signed_nostr_rollback_inventory_covers_every_exact_target(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+        contract = evidence["lifecycle"]["rollbackContract"]
+        targets = contract["absenceVerificationTargets"]
+        self.assertEqual(len(targets), 24)
+        self.assertEqual(len({tuple(target.values()) for target in targets}), 24)
+        self.assertEqual(len(contract["runtimeTargets"]), 12)
+        self.assertEqual(len(contract["identityTargets"]), 12)
+        steps = VERIFIER.expected_signed_nostr_deactivation_steps(contract)
+        self.assertEqual(len(steps), 28)
+        self.assertEqual(
+            [step["sequence"] for step in steps],
+            list(range(1, 29)),
+        )
+        self.assertEqual(
+            [step["action"] for step in steps[:4]],
+            ["suspend-exact-reconciler"] * 3 + ["restore-four-public-boundary-bytes"],
+        )
+        for collection in ("runtimeTargets", "identityTargets"):
+            for index in range(len(contract[collection])):
+                with self.subTest(collection=collection, index=index):
+                    changed = copy.deepcopy(evidence)
+                    changed["lifecycle"]["rollbackContract"][collection].pop(index)
+                    with self.assertRaisesRegex(VERIFIER.VerificationError, "rollback contract incomplete"):
+                        VERIFIER.verify_signed_nostr_activation_evidence(
+                            changed,
+                            pin["publisherPin"],
+                            pin["publisherPinCanonicalSha256"],
+                            pin["rollback"],
+                        )
+
+    def test_signed_nostr_dns_tls_evidence_must_be_complete_fresh_and_equal_at_activation(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+
+        changed = copy.deepcopy(evidence)
+        changed["gnosisRpcEgress"]["upstream"]["dnsTlsEvidence"]["validUntil"] = (
+            "2026-08-24T12:05:01Z"
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "stale"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+        changed = copy.deepcopy(evidence)
+        changed["lifecycle"]["activationLiveRecheck"]["dnsTlsRecheck"]["tlsCertificate"]["certificateSha256"] = (
+            "sha256:" + "f" * 64
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "changed resolution or certificate"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+    def test_signed_nostr_bootstrap_stays_suspended_and_activation_cannot_outlive_preflight(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+
+        changed = copy.deepcopy(evidence)
+        changed["lifecycle"]["bootstrapReceipt"]["kustomizationsInitiallySuspended"] = False
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "must start suspended"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+        changed = copy.deepcopy(evidence)
+        kustomization = changed["fluxBindings"][0]["kustomization"]
+        kustomization["object"]["spec"]["suspend"] = False
+        kustomization["objectDigest"] = VERIFIER.digest(kustomization["object"])
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Kustomization object invalid"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+        changed = copy.deepcopy(evidence)
+        changed["lifecycle"]["reconcileActivationReceipt"]["completedAt"] = "2026-08-24T12:07:01Z"
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "outside the live-preflight window"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+    def test_signed_nostr_rollback_contract_and_completed_receipt_are_all_or_nothing(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        pin = self.signed_nostr_reviewed_pin(candidate)
+        evidence = pin["activationEvidence"]
+        contract = evidence["lifecycle"]["rollbackContract"]
+
+        changed = copy.deepcopy(evidence)
+        changed["lifecycle"]["rollbackContract"]["runtimeTargets"].pop()
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "rollback contract incomplete"):
+            VERIFIER.verify_signed_nostr_activation_evidence(
+                changed,
+                pin["publisherPin"],
+                pin["publisherPinCanonicalSha256"],
+                pin["rollback"],
+            )
+
+        completed = "2026-08-24T12:15:00Z"
+        deactivation = {
+            "schemaVersion": VERIFIER.SIGNED_NOSTR_DEACTIVATION_EVIDENCE_SCHEMA,
+            "canonicalEncoding": "canonical-json",
+            "status": "completed-and-verified",
+            "startedAt": "2026-08-24T12:05:00Z",
+            "completedAt": completed,
+            "validUntil": "2026-08-24T12:20:00Z",
+            "maxAgeSeconds": 300,
+            "activationEvidenceCanonicalSha256": VERIFIER.digest(evidence),
+            "rollbackContractCanonicalSha256": VERIFIER.digest(contract),
+            "stepReceipts": VERIFIER.expected_signed_nostr_deactivation_steps(contract),
+            "boundaryVerification": {
+                "verifiedAt": completed,
+                "status": "exact-baseline-restored",
+                **contract["boundaryBaseline"],
+            },
+            "absenceVerification": {
+                "verifiedAt": completed,
+                "status": "all-exact-targets-absent",
+                "targets": contract["absenceVerificationTargets"],
+            },
+            "effects": {
+                "clusterMutation": True,
+                "civicMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+                "uidMismatchObserved": False,
+                "unrelatedObjectMutation": False,
+            },
+        }
+        VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = datetime(
+            2026, 8, 24, 12, 16, 0, tzinfo=timezone.utc,
+        )
+        self.assertEqual(
+            VERIFIER.verify_signed_nostr_deactivation_evidence(
+                deactivation,
+                evidence,
+                contract,
+            ),
+            deactivation,
+        )
+        deactivation["stepReceipts"].pop()
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "step receipt set incomplete"):
+            VERIFIER.verify_signed_nostr_deactivation_evidence(
+                deactivation,
+                evidence,
+                contract,
+            )
 
     def test_complete_reviewed_public_knowledge_render_set_is_accepted(self) -> None:
         temp, candidate = self.candidate()

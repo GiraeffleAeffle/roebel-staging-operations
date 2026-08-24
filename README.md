@@ -299,13 +299,14 @@ all-or-nothing render subtree:
 reviewed-render/roebel-staging/signed-nostr/
   runtime-pin.json
   workbench/{deployment,service,networkpolicy}.json + kustomization.yaml
+  workbench/gnosis-proxy-{deployment,service,networkpolicy}.json
   citizen-relay/{deployment,service,networkpolicy}.json + kustomization.yaml
   agent-relay/{deployment,service,networkpolicy}.json + kustomization.yaml
 ```
 
 There are no such manifests in this policy PR and no Flux source, namespace,
 secret, RBAC, ServiceAccount, or live object is changed. The runtime pin is
-is a distinct `roebel_signed_nostr_activation_render_pin_v1`. It embeds the
+a distinct `roebel_signed_nostr_activation_render_pin_v1`. It embeds the
 publisher's complete, unchanged `roebel_e2e_runtime_pin_v1` and binds its
 canonical JSON SHA-256, so the Operations-specific activation record cannot
 collide with or weaken the publisher schema. Per-component immutable image,
@@ -319,29 +320,75 @@ The activation evidence is currently required to state
 `pending-separate-review` with null Gnosis-egress, Flux-identity, and anonymous
 digest-pull evidence. The protected approved-policy constant is `None`, so even
 an otherwise complete signed-Nostr render fails closed. No Gnosis private
-proxy/service or endpoint evidence is present in this repository, and the
+proxy/resource or endpoint evidence is present in the current render, and the
 existing reconcilers remain unchanged. A later evidence review must first add
 one exact, closed `roebel_signed_nostr_activation_evidence_v1` record to the
 protected policy and bind it byte-for-byte to the candidate runtime pin. That
 record binds the publisher-pin canonical SHA-256, source revision and workflow;
 both immutable images and their provenance/SBOM receipt IDs, URLs, attestation
-digests and subjects; chain ID 100, the private Gnosis proxy Service
-object digest, the workbench NetworkPolicy digest, and only the Gnosis Secret
-name/key (never its value).
+digests and subjects; chain ID 100; the exact upstream host, port and `/32`;
+the four read-only JSON-RPC methods; the private Gnosis proxy Deployment,
+Service and NetworkPolicy digests; and the workbench NetworkPolicy digest. The
+public upstream requires no Secret and none is admitted to the proxy.
+
+The same closed record must include all live ownership and lifecycle evidence.
+Every one of the twelve runtime/proxy objects and twelve Flux/RBAC identity
+objects has an ordered precondition that says either `absent` with null live
+identity or `present-exact` with its UID, resourceVersion and current canonical
+object digest. A present object is adoptable only when that digest already
+equals the reviewed desired object. The one-time administrator bootstrap uses
+atomic API `POST` create for every absent target and fails on HTTP 409; it never
+uses server-side apply as create-if-absent. A present-exact target is an
+explicit no-op whose UID and resourceVersion must still equal the live
+precondition. The bootstrap then records the resulting exact
+UID/resourceVersion/digest for all 24 objects, with the three Kustomizations
+still suspended. A second bounded live recheck
+must observe the same objects, the same four public-boundary byte digests, and
+fresh DNS/TLS evidence before three UID/resourceVersion-CAS patches may change
+only `/spec/suspend` from true to false. The activation receipt must complete
+inside the five-minute preflight window, and protected admission must itself
+run after completion and before that window expires. Missing the routine RBAC
+`create` verb is still not an absence guard: once bootstrap has established
+exact ownership, Flux server-side-apply PATCH can rematerialize a deleted exact
+named target. The atomic administrator create/no-op receipts, not that verb
+list, are the initial absence/adoption boundary.
 
 The current schema constrains that future Gnosis hop to one materialized,
-tokenless ClusterIP Service in the workbench namespace and a canonical
-workbench NetworkPolicy. Its only additional egress peer is the proxy Pod
-selector on its one declared TCP port; public CIDRs, external names, load
-balancers, wildcard peers, and arbitrary digest claims are rejected. Both
-objects are canonical-JSON digested inside the future record, then the entire
-record must equal the separately protected approved-policy constant.
+tokenless proxy Deployment and ClusterIP Service in the workbench namespace.
+It reuses the exact attested workbench digest with runtime role
+`gnosis-rpc-proxy`, accepts only `eth_chainId`, `eth_blockNumber`,
+`eth_getCode`, and bounded `eth_call`, and requires chain `0x64`. The proxy
+NetworkPolicy permits DNS and TCP/443 only to
+`rpc.gnosischain.com`'s separately reviewed `34.111.230.52/32`; the workbench
+policy adds only the proxy Pod selector on TCP/8545. Public CIDR wildcards,
+external names, load balancers, credentials, transaction methods, alternate
+providers and arbitrary digest claims are rejected. Every object is
+canonical-JSON digested inside the future record, then the entire record must
+equal the separately protected approved-policy constant.
+
+The host-to-address assertion is not a bare string. Initial review and the
+activation-time recheck each bind a canonical five-minute receipt containing
+the resolver identity and A+AAAA-over-HTTPS method, the complete sorted A and
+AAAA result sets, observation and expiry timestamps, plus TLS server name,
+issuer, certificate SHA-256, and certificate validity interval. Both receipts
+must resolve to exactly `34.111.230.52` with no AAAA result and must carry the
+same certificate identity; any rotation fails closed and requires a new
+reviewed policy record.
 
 That separate private/live review must also create and verify three new narrow,
-separate Flux identities: workbench in `stadtstack-roebel-web-preview`, and
-citizen-relay plus agent-relay in `stadtstack-roebel-staging-lab`. Each record
-must pin its Kustomization namespace/path/sourceRef/object digest and its own
-ServiceAccount, Role, RoleBinding and RBAC scope. This policy change neither
+separate Flux identities: workbench targets `stadtstack-roebel-web-preview`,
+and citizen-relay plus agent-relay target `stadtstack-roebel-staging-lab`.
+Their Kustomizations and impersonated ServiceAccounts live in the actual
+`flux-roebel-staging` namespace; their exact named-resource Roles and
+RoleBindings live in the target namespaces. Each record contains the complete
+canonical suspended Kustomization, ServiceAccount, Role and RoleBinding object
+plus its digest. Prune and force are false, deletion is orphaning, the routine
+Roles contain only exact-name get/patch/update and no wildcard, delete, list,
+watch, Secret, or ConfigMap verb, and workbench waits for both relays. Because
+server-side-apply PATCH is create-capable for an absent exact name, the
+one-time administrator bootstrap establishes initial ownership with atomic
+POST-create/no-op receipts before those routine identities are unsuspended.
+This policy change neither
 creates those identities nor changes any existing reconciler.
 
 The future record must also supply exactly two canonical anonymous digest receipts:
@@ -354,7 +401,8 @@ closed `roebel_signed_nostr_anonymous_digest_pull_receipt_v1` schema and
 `canonical-json` encoding, includes the parent publisher-pin canonical SHA-256,
 and recomputes its receipt digest from every other field. The receipt order is
 the publisher order (workbench, then relay). This
-repository does not invent either an external IP or a new Flux identity.
+repository pins the reviewed upstream IP and complete prospective Flux
+identities but does not create or activate them.
 
 When that gate is separately opened, the verifier permits only one topology:
 the workbench is a ClusterIP-only Deployment in
@@ -377,16 +425,28 @@ reads is exact-path only: `/stadtstack-test/healthz`, `/api/config`,
 suffixes are rejected. The relays have no Ingress. Each relay permits TCP/18081
 only from the exact workbench Pod and exact Public Mecky Pod selectors. Public
 Mecky may gain egress only to the two exact relay Pods on TCP 18081; the
-workbench may reach DNS and those exact relays. Gnosis egress remains blocked
-until the separate evidence policy review.
+workbench may reach DNS, those exact relays and only the private proxy. The
+proxy alone may reach the reviewed Gnosis `/32`; Gnosis egress remains blocked
+until the separate exact activation record is approved.
 
-Activation is head- and live-precondition-preserving. Apart from the thirteen
+Activation is head- and live-precondition-preserving. Apart from the sixteen
 new files, it may change only `integrity.json`, the Web Ingress, the Public
 Mecky NetworkPolicy, and the boundary receipt. The runtime pin records the raw
-byte digests of those four prior files. The only permitted deactivation removes
-all thirteen files, preserves the Release Set head and every other existing
-file, and restores those four exact byte digests. Routine Web/Mecky promotions
-must preserve every signed-Nostr file and boundary byte-for-byte.
+byte digests of those four prior files. It also binds the exact live rollback
+contract: suspend the three exact-UID reconcilers, restore those four boundary
+bytes, scale each exact-UID Deployment to zero before deletion, delete only the
+remaining exact runtime/proxy UIDs, remove only the exact Flux/RBAC identity
+UIDs, and finally prove both boundary restoration and total target absence. A
+UID mismatch stops with no delete and no adoption. `prune: false` and
+`deletionPolicy: Orphan` therefore cannot turn a Git rollback into an implicit
+teardown. Deactivation remains blocked until a separately reviewed protected
+constant contains the complete ordered live step receipts, boundary receipt,
+and absence receipt. That receipt has a five-minute post-completion validity
+window; protected admission rejects future-dated, expired, or replayed absence
+evidence. Only then may Git remove all sixteen files while
+preserving the Release Set head and every other existing file. Routine
+Web/Mecky promotions must preserve every signed-Nostr file and boundary
+byte-for-byte.
 
 ## Promotion flow
 

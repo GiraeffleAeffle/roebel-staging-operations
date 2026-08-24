@@ -12,9 +12,11 @@ import argparse
 import copy
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 IMMUTABLE_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+RFC3339_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
@@ -169,7 +172,7 @@ FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
 
 # Signed Nostr is a third, closed render shape layered on the already-admitted
 # reviewed-public-knowledge render.  The files are deliberately not present in
-# this policy/bootstrap change: a later activation must add all thirteen in one
+# this policy/bootstrap change: a later activation must add all sixteen in one
 # reviewed transaction, never stage one workload or relay independently.
 SIGNED_NOSTR_ROOT = f"{RENDER_ROOT}/signed-nostr"
 SIGNED_NOSTR_RUNTIME_PIN = f"{SIGNED_NOSTR_ROOT}/runtime-pin.json"
@@ -179,7 +182,16 @@ SIGNED_NOSTR_COMPONENT_FILES = {
     for component in SIGNED_NOSTR_COMPONENTS
     for kind in ("deployment.json", "service.json", "networkpolicy.json", "kustomization.yaml")
 }
-SIGNED_NOSTR_FILES = SIGNED_NOSTR_COMPONENT_FILES | {SIGNED_NOSTR_RUNTIME_PIN}
+SIGNED_NOSTR_GNOSIS_PROXY_FILES = {
+    f"{SIGNED_NOSTR_ROOT}/workbench/gnosis-proxy-deployment.json",
+    f"{SIGNED_NOSTR_ROOT}/workbench/gnosis-proxy-service.json",
+    f"{SIGNED_NOSTR_ROOT}/workbench/gnosis-proxy-networkpolicy.json",
+}
+SIGNED_NOSTR_FILES = (
+    SIGNED_NOSTR_COMPONENT_FILES
+    | SIGNED_NOSTR_GNOSIS_PROXY_FILES
+    | {SIGNED_NOSTR_RUNTIME_PIN}
+)
 SIGNED_NOSTR_EXPECTED_FILES = FUTURE_EXPECTED_FILES | SIGNED_NOSTR_FILES
 SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
     f"{RENDER_ROOT}/integrity.json",
@@ -204,6 +216,19 @@ SIGNED_NOSTR_NAMES = {
     "agent-relay": "agent-relay",
 }
 SIGNED_NOSTR_PORTS = {"workbench": 18083, "citizen-relay": 18081, "agent-relay": 18081}
+SIGNED_NOSTR_GNOSIS_PROXY_NAME = "gnosis-private-rpc"
+SIGNED_NOSTR_GNOSIS_PROXY_PORT = 8545
+SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST = "rpc.gnosischain.com"
+SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT = 443
+SIGNED_NOSTR_GNOSIS_UPSTREAM_IPV4_CIDR = "34.111.230.52/32"
+SIGNED_NOSTR_GNOSIS_ALLOWED_METHODS = (
+    "eth_blockNumber",
+    "eth_call",
+    "eth_chainId",
+    "eth_getCode",
+)
+SIGNED_NOSTR_FLUX_NAMESPACE = "flux-roebel-staging"
+SIGNED_NOSTR_FLUX_SOURCE_NAME = "roebel-staging-operations"
 SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER = ("roebel-e2e-workbench", "roebel-staging-relay")
 SIGNED_NOSTR_ANONYMOUS_DIGEST_PULL_RECEIPT_SCHEMA = (
     "roebel_signed_nostr_anonymous_digest_pull_receipt_v1"
@@ -212,6 +237,11 @@ SIGNED_NOSTR_CLEAN_EMPTY_AUTH_CONFIG_SHA256 = (
     "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a"
 )
 SIGNED_NOSTR_ACTIVATION_EVIDENCE_SCHEMA = "roebel_signed_nostr_activation_evidence_v1"
+SIGNED_NOSTR_BOOTSTRAP_RECEIPT_SCHEMA = "roebel_signed_nostr_bootstrap_cas_receipt_v1"
+SIGNED_NOSTR_LIVE_RECHECK_SCHEMA = "roebel_signed_nostr_activation_live_recheck_v1"
+SIGNED_NOSTR_ROLLBACK_CONTRACT_SCHEMA = "roebel_signed_nostr_live_rollback_contract_v1"
+SIGNED_NOSTR_DEACTIVATION_EVIDENCE_SCHEMA = "roebel_signed_nostr_deactivation_evidence_v1"
+SIGNED_NOSTR_DNS_TLS_EVIDENCE_SCHEMA = "roebel_signed_nostr_dns_tls_evidence_v1"
 SIGNED_NOSTR_ACTIVATION_COMPONENT_ORDER = SIGNED_NOSTR_PUBLISHER_COMPONENT_ORDER
 SIGNED_NOSTR_FLUX_BINDING_ORDER = ("workbench", "citizen-relay", "agent-relay")
 SIGNED_NOSTR_FLUX_PATHS = {
@@ -224,13 +254,32 @@ SIGNED_NOSTR_FLUX_NAMESPACES = {
     "citizen-relay": SIGNED_NOSTR_NAMESPACE,
     "agent-relay": SIGNED_NOSTR_NAMESPACE,
 }
+SIGNED_NOSTR_FLUX_KUSTOMIZATION_NAMES = {
+    component: f"roebel-staging-signed-nostr-{component}"
+    for component in SIGNED_NOSTR_FLUX_BINDING_ORDER
+}
+SIGNED_NOSTR_FLUX_SERVICE_ACCOUNT_NAMES = {
+    component: f"roebel-signed-nostr-{component}-reconciler"
+    for component in SIGNED_NOSTR_FLUX_BINDING_ORDER
+}
 
-# This bootstrap deliberately contains no asserted Gnosis egress address,
-# inference address, Flux identity, or live object evidence.  A later,
-# separately reviewed policy may set this constant to exactly one complete
-# closed record.  It is intentionally None in this commit, which blocks every
-# signed-Nostr render even if the candidate contains a well-formed record.
+# This policy constrains the prospective Gnosis address and Flux identities but
+# deliberately contains no actual live receipt. A later, separately reviewed
+# policy may set this constant to exactly one complete closed evidence record.
+# It is intentionally None in this commit, which blocks every signed-Nostr
+# render even if the candidate contains a well-formed record.
 SIGNED_NOSTR_APPROVED_ACTIVATION_EVIDENCE: None | dict[str, Any] = None
+
+# Deactivation is an independently reviewed live operation.  A future policy
+# change must pin one completed teardown receipt here before a signed-Nostr
+# render may be removed.  Keeping this closed prevents a Git-only rollback from
+# silently orphaning active workloads or Flux identities.
+SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE: None | dict[str, Any] = None
+
+# Tests may replace this protected-module value with one explicit UTC instant.
+# Candidate data has no way to select the clock.  Production admission always
+# uses the verifier host's current UTC time.
+SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE: datetime | None = None
 
 ALLOWED_PATCH_PATHS = {
     "/metadata/annotations/stadtstack.io~1source-revision",
@@ -279,6 +328,31 @@ def digest(value: Any) -> str:
 
 def bytes_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def utc_timestamp(value: Any, label: str) -> datetime:
+    require(isinstance(value, str) and RFC3339_UTC.fullmatch(value), f"{label} timestamp invalid")
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise VerificationError(f"{label} timestamp invalid") from error
+
+
+def duration_seconds(start: datetime, end: datetime) -> int:
+    return int((end - start).total_seconds())
+
+
+def signed_nostr_verification_time() -> datetime:
+    value = SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE
+    if value is None:
+        return datetime.now(timezone.utc).replace(microsecond=0)
+    require(
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() == timezone.utc.utcoffset(value),
+        "signed-Nostr verification clock override must be UTC",
+    )
+    return value.replace(microsecond=0)
 
 
 def iter_keys(value: Any):
@@ -826,7 +900,7 @@ def signed_nostr_container_security_context() -> dict[str, Any]:
     }
 
 
-def signed_nostr_gnosis_private_proxy_labels(name: str) -> dict[str, str]:
+def signed_nostr_gnosis_private_proxy_labels(name: str = SIGNED_NOSTR_GNOSIS_PROXY_NAME) -> dict[str, str]:
     return {
         "app.kubernetes.io/component": "gnosis-rpc-private-proxy",
         "app.kubernetes.io/name": name,
@@ -835,7 +909,7 @@ def signed_nostr_gnosis_private_proxy_labels(name: str) -> dict[str, str]:
     }
 
 
-def expected_signed_nostr_gnosis_private_proxy_object(proxy: dict[str, Any]) -> dict[str, Any]:
+def expected_signed_nostr_gnosis_private_proxy_service() -> dict[str, Any]:
     """The only proxy shape a future activation record may claim.
 
     This is a ClusterIP service in the workbench namespace.  It deliberately
@@ -843,23 +917,93 @@ def expected_signed_nostr_gnosis_private_proxy_object(proxy: dict[str, Any]) -> 
     secret value.  The later protected exact-record constant selects the one
     real object; this function constrains its materialized shape first.
     """
-    labels = signed_nostr_gnosis_private_proxy_labels(proxy["name"])
+    labels = signed_nostr_gnosis_private_proxy_labels()
     return {
         "apiVersion": "v1",
         "kind": "Service",
-        "metadata": {"labels": labels, "name": proxy["name"], "namespace": proxy["namespace"]},
+        "metadata": {"labels": labels, "name": SIGNED_NOSTR_GNOSIS_PROXY_NAME, "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
         "spec": {
-            "ports": [{"name": "https", "port": proxy["port"], "protocol": "TCP", "targetPort": "https"}],
+            "ports": [{"name": "http", "port": SIGNED_NOSTR_GNOSIS_PROXY_PORT, "protocol": "TCP", "targetPort": "http"}],
             "selector": labels,
             "type": "ClusterIP",
         },
     }
 
 
-def expected_signed_nostr_workbench_network_policy(
-    gnosis_private_proxy: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Canonical workbench policy, optionally with one private Gnosis hop."""
+def expected_signed_nostr_gnosis_private_proxy_deployment(image: str) -> dict[str, Any]:
+    labels = signed_nostr_gnosis_private_proxy_labels()
+    environment = [
+        {"name": "ROEBEL_RUNTIME_ROLE", "value": "gnosis-rpc-proxy"},
+        {"name": "GNOSIS_PROXY_BIND_HOST", "value": "0.0.0.0"},
+        {"name": "GNOSIS_PROXY_PORT", "value": str(SIGNED_NOSTR_GNOSIS_PROXY_PORT)},
+        {"name": "GNOSIS_PROXY_UPSTREAM_URL", "value": f"https://{SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST}"},
+        {"name": "GNOSIS_PROXY_EXPECTED_CHAIN_ID", "value": "0x64"},
+        {"name": "GNOSIS_PROXY_ALLOWED_METHODS", "value": ",".join(SIGNED_NOSTR_GNOSIS_ALLOWED_METHODS)},
+        {"name": "GNOSIS_PROXY_MAX_BODY_BYTES", "value": "131072"},
+        {"name": "GNOSIS_PROXY_UPSTREAM_TIMEOUT_MS", "value": "5000"},
+        {"name": "GNOSIS_PROXY_MAX_CONCURRENT", "value": "16"},
+    ]
+    container = {
+        "env": environment,
+        "image": image,
+        "imagePullPolicy": "IfNotPresent",
+        "livenessProbe": {"failureThreshold": 3, "httpGet": {"path": "/healthz", "port": "http", "scheme": "HTTP"}, "periodSeconds": 20, "successThreshold": 1, "timeoutSeconds": 3},
+        "name": SIGNED_NOSTR_GNOSIS_PROXY_NAME,
+        "ports": [{"containerPort": SIGNED_NOSTR_GNOSIS_PROXY_PORT, "name": "http", "protocol": "TCP"}],
+        "readinessProbe": {"failureThreshold": 3, "httpGet": {"path": "/readyz", "port": "http", "scheme": "HTTP"}, "periodSeconds": 10, "successThreshold": 1, "timeoutSeconds": 6},
+        "resources": {"limits": {"cpu": "150m", "ephemeral-storage": "64Mi", "memory": "96Mi"}, "requests": {"cpu": "10m", "ephemeral-storage": "32Mi", "memory": "32Mi"}},
+        "securityContext": signed_nostr_container_security_context(),
+        "startupProbe": {"failureThreshold": 30, "httpGet": {"path": "/readyz", "port": "http", "scheme": "HTTP"}, "periodSeconds": 2, "successThreshold": 1, "timeoutSeconds": 6},
+    }
+    return {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {"labels": labels, "name": SIGNED_NOSTR_GNOSIS_PROXY_NAME, "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": labels},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "automountServiceAccountToken": False,
+                    "containers": [container],
+                    "restartPolicy": "Always",
+                    "securityContext": signed_nostr_pod_security_context(),
+                },
+            },
+        },
+    }
+
+
+def expected_signed_nostr_gnosis_private_proxy_network_policy() -> dict[str, Any]:
+    labels = signed_nostr_gnosis_private_proxy_labels()
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"labels": labels, "name": SIGNED_NOSTR_GNOSIS_PROXY_NAME, "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
+        "spec": {
+            "egress": [
+                {
+                    "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
+                    "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
+                },
+                {
+                    "to": [{"ipBlock": {"cidr": SIGNED_NOSTR_GNOSIS_UPSTREAM_IPV4_CIDR}}],
+                    "ports": [{"port": SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT, "protocol": "TCP"}],
+                },
+            ],
+            "ingress": [{
+                "from": [{"podSelector": {"matchLabels": signed_nostr_labels("workbench")}}],
+                "ports": [{"port": SIGNED_NOSTR_GNOSIS_PROXY_PORT, "protocol": "TCP"}],
+            }],
+            "podSelector": {"matchLabels": labels},
+            "policyTypes": ["Ingress", "Egress"],
+        },
+    }
+
+
+def expected_signed_nostr_workbench_network_policy() -> dict[str, Any]:
+    """Canonical workbench policy with one private Gnosis hop."""
     workbench_labels = signed_nostr_labels("workbench")
     dns_egress = {
         "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}],
@@ -869,12 +1013,14 @@ def expected_signed_nostr_workbench_network_policy(
         "to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": SIGNED_NOSTR_NAMESPACE}}, "podSelector": {"matchLabels": signed_nostr_labels(relay)}}],
         "ports": [{"port": 18081, "protocol": "TCP"}],
     } for relay in ("citizen-relay", "agent-relay")]
-    egress = [dns_egress, *relay_egress]
-    if gnosis_private_proxy is not None:
-        egress.append({
-            "to": [{"podSelector": {"matchLabels": signed_nostr_gnosis_private_proxy_labels(gnosis_private_proxy["name"])}}],
-            "ports": [{"port": gnosis_private_proxy["port"], "protocol": "TCP"}],
-        })
+    egress = [
+        dns_egress,
+        *relay_egress,
+        {
+            "to": [{"podSelector": {"matchLabels": signed_nostr_gnosis_private_proxy_labels()}}],
+            "ports": [{"port": SIGNED_NOSTR_GNOSIS_PROXY_PORT, "protocol": "TCP"}],
+        },
+    ]
     return {
         "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
         "metadata": {"labels": workbench_labels, "name": SIGNED_NOSTR_NAMES["workbench"], "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
@@ -884,6 +1030,769 @@ def expected_signed_nostr_workbench_network_policy(
             "podSelector": {"matchLabels": workbench_labels}, "policyTypes": ["Ingress", "Egress"],
         },
     }
+
+
+def signed_nostr_flux_labels(component: str) -> dict[str, str]:
+    require(component in SIGNED_NOSTR_FLUX_BINDING_ORDER, "signed-Nostr Flux component invalid")
+    return {
+        "app.kubernetes.io/component": f"signed-nostr-{component}-reconciler",
+        "app.kubernetes.io/part-of": "roebel-signed-nostr-staging",
+        "stadtstack.io/authority": "none",
+    }
+
+
+def signed_nostr_flux_resource_names(component: str) -> list[str]:
+    names = [SIGNED_NOSTR_NAMES[component]]
+    if component == "workbench":
+        names.append(SIGNED_NOSTR_GNOSIS_PROXY_NAME)
+    return sorted(names)
+
+
+def expected_signed_nostr_flux_objects(
+    component: str,
+    *,
+    suspended: bool = True,
+) -> dict[str, dict[str, Any]]:
+    target_namespace = SIGNED_NOSTR_FLUX_NAMESPACES[component]
+    labels = signed_nostr_flux_labels(component)
+    kustomization_name = SIGNED_NOSTR_FLUX_KUSTOMIZATION_NAMES[component]
+    service_account_name = SIGNED_NOSTR_FLUX_SERVICE_ACCOUNT_NAMES[component]
+    resource_names = signed_nostr_flux_resource_names(component)
+    health_checks = [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": name,
+            "namespace": target_namespace,
+        }
+        for name in resource_names
+    ]
+    kustomization_spec: dict[str, Any] = {
+        "deletionPolicy": "Orphan",
+        "force": False,
+        "healthChecks": health_checks,
+        "interval": "1m",
+        "path": SIGNED_NOSTR_FLUX_PATHS[component],
+        "prune": False,
+        "retryInterval": "30s",
+        "serviceAccountName": service_account_name,
+        "sourceRef": {
+            "kind": "GitRepository",
+            "name": SIGNED_NOSTR_FLUX_SOURCE_NAME,
+            "namespace": SIGNED_NOSTR_FLUX_NAMESPACE,
+        },
+        # The one-time administrator bootstrap may create only this suspended
+        # object.  A separately bound CAS/live recheck is required before the
+        # exact same object may be unsuspended.
+        "suspend": suspended,
+        "targetNamespace": target_namespace,
+        "timeout": "2m",
+        "wait": True,
+    }
+    if component == "workbench":
+        kustomization_spec["dependsOn"] = [
+            {"name": SIGNED_NOSTR_FLUX_KUSTOMIZATION_NAMES[relay]}
+            for relay in ("citizen-relay", "agent-relay")
+        ]
+    kustomization = {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+        "kind": "Kustomization",
+        "metadata": {
+            "labels": labels,
+            "name": kustomization_name,
+            "namespace": SIGNED_NOSTR_FLUX_NAMESPACE,
+        },
+        "spec": kustomization_spec,
+    }
+    service_account = {
+        "apiVersion": "v1",
+        "automountServiceAccountToken": False,
+        "kind": "ServiceAccount",
+        "metadata": {
+            "labels": labels,
+            "name": service_account_name,
+            "namespace": SIGNED_NOSTR_FLUX_NAMESPACE,
+        },
+    }
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {
+            "labels": labels,
+            "name": service_account_name,
+            "namespace": target_namespace,
+        },
+        "rules": [
+            {
+                "apiGroups": ["apps"],
+                "resourceNames": resource_names,
+                "resources": ["deployments"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": [""],
+                "resourceNames": resource_names,
+                "resources": ["services"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": ["networking.k8s.io"],
+                "resourceNames": resource_names,
+                "resources": ["networkpolicies"],
+                "verbs": ["get", "patch", "update"],
+            },
+        ],
+    }
+    role_binding = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "labels": labels,
+            "name": service_account_name,
+            "namespace": target_namespace,
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": service_account_name,
+        },
+        "subjects": [{
+            "kind": "ServiceAccount",
+            "name": service_account_name,
+            "namespace": SIGNED_NOSTR_FLUX_NAMESPACE,
+        }],
+    }
+    return {
+        "kustomization": kustomization,
+        "serviceAccount": service_account,
+        "role": role,
+        "roleBinding": role_binding,
+    }
+
+
+def signed_nostr_object_target(value: dict[str, Any]) -> dict[str, str]:
+    metadata = value["metadata"]
+    return {
+        "apiVersion": value["apiVersion"],
+        "kind": value["kind"],
+        "name": metadata["name"],
+        "namespace": metadata["namespace"],
+    }
+
+
+def expected_signed_nostr_managed_objects(
+    publisher_pin: dict[str, Any],
+    *,
+    suspended_flux: bool,
+) -> list[dict[str, Any]]:
+    """Return every exact live object owned by the signed-Nostr tracer.
+
+    The ordering is part of the evidence contract.  Runtime and Flux identity
+    objects share this one inventory so bootstrap, activation and teardown can
+    never silently disagree about ownership.
+    """
+    images = {entry["component"]: entry for entry in publisher_pin["components"]}
+    resources = expected_signed_nostr_resources({"images": images})
+    managed: list[dict[str, Any]] = []
+
+    runtime_keys = (
+        ("deployment", "deployment"),
+        ("service", "service"),
+        ("networkpolicy", "networkPolicy"),
+    )
+    for component in SIGNED_NOSTR_COMPONENTS:
+        for object_id, key in runtime_keys:
+            value = resources[component][key]
+            managed.append({
+                "objectId": f"runtime/{component}/{object_id}",
+                "class": "runtime",
+                "object": value,
+            })
+        if component == "workbench":
+            for object_id, key in (
+                ("gnosis-proxy-deployment", "gnosisProxyDeployment"),
+                ("gnosis-proxy-service", "gnosisProxyService"),
+                ("gnosis-proxy-networkpolicy", "gnosisProxyNetworkPolicy"),
+            ):
+                value = resources[component][key]
+                managed.append({
+                    "objectId": f"runtime/{component}/{object_id}",
+                    "class": "runtime",
+                    "object": value,
+                })
+
+    for component in SIGNED_NOSTR_FLUX_BINDING_ORDER:
+        flux = expected_signed_nostr_flux_objects(component, suspended=suspended_flux)
+        for key in ("kustomization", "serviceAccount", "role", "roleBinding"):
+            managed.append({
+                "objectId": f"flux/{component}/{key}",
+                "class": "flux-identity",
+                "object": flux[key],
+            })
+    return managed
+
+
+def verify_signed_nostr_live_preconditions(
+    value: Any,
+    managed: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    require(isinstance(value, list) and len(value) == len(managed), "signed-Nostr live precondition count invalid")
+    parsed: list[dict[str, Any]] = []
+    for index, (item, expected) in enumerate(zip(value, managed, strict=True)):
+        precondition = closed(
+            item,
+            {
+                "objectId",
+                "target",
+                "desiredObjectDigest",
+                "state",
+                "uid",
+                "resourceVersion",
+                "currentObjectDigest",
+            },
+            f"signed-Nostr live precondition[{index}]",
+        )
+        require(precondition["objectId"] == expected["objectId"], "signed-Nostr live precondition object order invalid")
+        require(precondition["target"] == signed_nostr_object_target(expected["object"]), "signed-Nostr live precondition target invalid")
+        desired_digest = digest(expected["object"])
+        require(precondition["desiredObjectDigest"] == desired_digest, "signed-Nostr live precondition desired digest invalid")
+        if precondition["state"] == "absent":
+            require(
+                precondition["uid"] is None
+                and precondition["resourceVersion"] is None
+                and precondition["currentObjectDigest"] is None,
+                "signed-Nostr absent precondition must not claim live identity",
+            )
+        else:
+            require(precondition["state"] == "present-exact", "signed-Nostr live precondition state invalid")
+            require(isinstance(precondition["uid"], str) and UUID.fullmatch(precondition["uid"]), "signed-Nostr live precondition UID invalid")
+            require(isinstance(precondition["resourceVersion"], str) and precondition["resourceVersion"].isdigit(), "signed-Nostr live precondition resourceVersion invalid")
+            require(precondition["currentObjectDigest"] == desired_digest, "signed-Nostr present object is not exact and may not be adopted")
+        parsed.append(precondition)
+    return parsed
+
+
+def verify_signed_nostr_bootstrap_receipt(
+    value: Any,
+    preconditions: list[dict[str, Any]],
+    managed: list[dict[str, Any]],
+) -> dict[str, Any]:
+    receipt = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "status",
+            "operationId",
+            "observedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "preconditionsCanonicalSha256",
+            "postconditions",
+            "postconditionsCanonicalSha256",
+            "kustomizationsInitiallySuspended",
+            "authority",
+            "effects",
+        },
+        "signed-Nostr one-time bootstrap receipt",
+    )
+    require(receipt["schemaVersion"] == SIGNED_NOSTR_BOOTSTRAP_RECEIPT_SCHEMA, "signed-Nostr bootstrap receipt schema invalid")
+    require(receipt["canonicalEncoding"] == "canonical-json", "signed-Nostr bootstrap receipt encoding invalid")
+    require(receipt["status"] == "completed-exact-cas", "signed-Nostr bootstrap receipt status invalid")
+    require(isinstance(receipt["operationId"], str) and UUID.fullmatch(receipt["operationId"]), "signed-Nostr bootstrap operation id invalid")
+    observed = utc_timestamp(receipt["observedAt"], "signed-Nostr bootstrap observedAt")
+    valid_until = utc_timestamp(receipt["validUntil"], "signed-Nostr bootstrap validUntil")
+    require(receipt["maxAgeSeconds"] == 300, "signed-Nostr bootstrap freshness budget invalid")
+    require(0 < duration_seconds(observed, valid_until) <= receipt["maxAgeSeconds"], "signed-Nostr bootstrap receipt stale")
+    require(receipt["preconditionsCanonicalSha256"] == digest(preconditions), "signed-Nostr bootstrap precondition checksum invalid")
+    require(receipt["kustomizationsInitiallySuspended"] is True, "signed-Nostr bootstrap Kustomizations must start suspended")
+    require(receipt["authority"] == "one-time-cluster-admin-exact-targets", "signed-Nostr bootstrap authority invalid")
+    require(receipt["effects"] == {
+        "clusterMutation": True,
+        "civicMutation": False,
+        "secretRead": False,
+        "secretWrite": False,
+        "wildcardAuthority": False,
+        "ssaPatchUsedForAbsentTargets": False,
+        "absenceGuardSource": "atomic-post-create-http-409-no-adopt",
+        "presentGuardSource": "uid-resourceVersion-bound-no-op",
+    }, "signed-Nostr bootstrap effects invalid")
+
+    postconditions = receipt["postconditions"]
+    require(isinstance(postconditions, list) and len(postconditions) == len(managed), "signed-Nostr bootstrap postcondition count invalid")
+    for index, (postcondition_value, precondition, expected) in enumerate(zip(postconditions, preconditions, managed, strict=True)):
+        postcondition = closed(
+            postcondition_value,
+            {
+                "objectId",
+                "target",
+                "uid",
+                "resourceVersion",
+                "objectDigest",
+                "action",
+                "apiOperation",
+                "requiredUid",
+                "requiredResourceVersion",
+                "conflictPolicy",
+                "apiOutcome",
+            },
+            f"signed-Nostr bootstrap postcondition[{index}]",
+        )
+        require(postcondition["objectId"] == expected["objectId"], "signed-Nostr bootstrap postcondition object order invalid")
+        require(postcondition["target"] == signed_nostr_object_target(expected["object"]), "signed-Nostr bootstrap postcondition target invalid")
+        require(isinstance(postcondition["uid"], str) and UUID.fullmatch(postcondition["uid"]), "signed-Nostr bootstrap postcondition UID invalid")
+        require(isinstance(postcondition["resourceVersion"], str) and postcondition["resourceVersion"].isdigit(), "signed-Nostr bootstrap postcondition resourceVersion invalid")
+        require(postcondition["objectDigest"] == digest(expected["object"]), "signed-Nostr bootstrap postcondition object drift")
+        if precondition["state"] == "absent":
+            require(
+                postcondition["action"] == "created-by-atomic-post-after-verified-absence"
+                and postcondition["apiOperation"] == "POST-create"
+                and postcondition["requiredUid"] is None
+                and postcondition["requiredResourceVersion"] is None
+                and postcondition["conflictPolicy"] == "fail-on-http-409-no-adopt"
+                and postcondition["apiOutcome"] == "http-201-created",
+                "signed-Nostr absent bootstrap is not atomic create-only",
+            )
+        else:
+            require(
+                postcondition["action"] == "retained-exact-owned-object-no-op"
+                and postcondition["apiOperation"] == "none"
+                and postcondition["requiredUid"] == precondition["uid"]
+                and postcondition["requiredResourceVersion"] == precondition["resourceVersion"]
+                and postcondition["conflictPolicy"] == "fail-on-uid-or-resourceVersion-mismatch-no-adopt"
+                and postcondition["apiOutcome"] == "unchanged-after-atomic-precondition-recheck",
+                "signed-Nostr present bootstrap CAS receipt invalid",
+            )
+            require(postcondition["uid"] == precondition["uid"], "signed-Nostr bootstrap adopted a different UID")
+            require(
+                postcondition["resourceVersion"] == precondition["resourceVersion"],
+                "signed-Nostr bootstrap retained object resourceVersion drift",
+            )
+    require(receipt["postconditionsCanonicalSha256"] == digest(postconditions), "signed-Nostr bootstrap postcondition checksum invalid")
+    return receipt
+
+
+def verify_signed_nostr_dns_tls_evidence(value: Any, label: str) -> dict[str, Any]:
+    evidence = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "resolverIdentity",
+            "resolutionMethod",
+            "queriedHost",
+            "queriedPort",
+            "observedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "addresses",
+            "tlsCertificate",
+        },
+        label,
+    )
+    require(evidence["schemaVersion"] == SIGNED_NOSTR_DNS_TLS_EVIDENCE_SCHEMA, f"{label} schema invalid")
+    require(evidence["canonicalEncoding"] == "canonical-json", f"{label} encoding invalid")
+    require(evidence["resolverIdentity"] == "reviewed-doh-resolver", f"{label} resolver invalid")
+    require(evidence["resolutionMethod"] == "dns-over-https-a-and-aaaa", f"{label} method invalid")
+    require(evidence["queriedHost"] == SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST, f"{label} host invalid")
+    require(evidence["queriedPort"] == SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT, f"{label} port invalid")
+    observed = utc_timestamp(evidence["observedAt"], f"{label} observedAt")
+    valid_until = utc_timestamp(evidence["validUntil"], f"{label} validUntil")
+    require(evidence["maxAgeSeconds"] == 300, f"{label} freshness budget invalid")
+    require(0 < duration_seconds(observed, valid_until) <= evidence["maxAgeSeconds"], f"{label} stale")
+
+    addresses = closed(evidence["addresses"], {"a", "aaaa"}, f"{label} addresses")
+    require(isinstance(addresses["a"], list) and isinstance(addresses["aaaa"], list), f"{label} address sets invalid")
+    for family, address_set in ((4, addresses["a"]), (6, addresses["aaaa"])):
+        require(all(isinstance(address, str) for address in address_set), f"{label} address set contains a non-string")
+        require(address_set == sorted(set(address_set)), f"{label} {'A' if family == 4 else 'AAAA'} set must be sorted and unique")
+        for address in address_set:
+            try:
+                valid = isinstance(address, str) and ipaddress.ip_address(address).version == family
+            except ValueError:
+                valid = False
+            require(valid, f"{label} {'A' if family == 4 else 'AAAA'} address invalid")
+    pinned = str(ipaddress.ip_network(SIGNED_NOSTR_GNOSIS_UPSTREAM_IPV4_CIDR, strict=True).network_address)
+    require(addresses == {"a": [pinned], "aaaa": []}, f"{label} full resolution set does not equal the fail-closed /32")
+
+    certificate = closed(
+        evidence["tlsCertificate"],
+        {"serverName", "issuer", "certificateSha256", "notBefore", "notAfter"},
+        f"{label} TLS certificate",
+    )
+    require(certificate["serverName"] == SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST, f"{label} TLS server name invalid")
+    require(isinstance(certificate["issuer"], str) and certificate["issuer"].strip() == certificate["issuer"] and certificate["issuer"], f"{label} TLS issuer invalid")
+    require(isinstance(certificate["certificateSha256"], str) and SHA256.fullmatch(certificate["certificateSha256"]), f"{label} TLS fingerprint invalid")
+    not_before = utc_timestamp(certificate["notBefore"], f"{label} certificate notBefore")
+    not_after = utc_timestamp(certificate["notAfter"], f"{label} certificate notAfter")
+    require(not_before <= observed <= valid_until < not_after, f"{label} certificate is not valid for the complete evidence window")
+    return evidence
+
+
+def dns_tls_binding(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resolverIdentity": value["resolverIdentity"],
+        "resolutionMethod": value["resolutionMethod"],
+        "queriedHost": value["queriedHost"],
+        "queriedPort": value["queriedPort"],
+        "addresses": value["addresses"],
+        "tlsCertificate": value["tlsCertificate"],
+    }
+
+
+def rollback_boundary_digest_record(rollback: dict[str, Any]) -> dict[str, str]:
+    return {
+        "integritySha256": rollback["integritySha256"],
+        "webIngressSha256": rollback["webIngressSha256"],
+        "publicMeckyNetworkPolicySha256": rollback["publicMeckyNetworkPolicySha256"],
+        "boundaryReceiptSha256": rollback["boundaryReceiptSha256"],
+    }
+
+
+def verify_signed_nostr_activation_live_recheck(
+    value: Any,
+    bootstrap: dict[str, Any],
+    rollback: dict[str, Any],
+    initial_dns_tls: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "status",
+            "checkedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "bootstrapReceiptCanonicalSha256",
+            "objectStates",
+            "objectStatesCanonicalSha256",
+            "boundaryState",
+            "dnsTlsRecheck",
+        },
+        "signed-Nostr activation live recheck",
+    )
+    require(receipt["schemaVersion"] == SIGNED_NOSTR_LIVE_RECHECK_SCHEMA, "signed-Nostr activation live recheck schema invalid")
+    require(receipt["canonicalEncoding"] == "canonical-json", "signed-Nostr activation live recheck encoding invalid")
+    require(receipt["status"] == "passed-no-drift", "signed-Nostr activation live recheck status invalid")
+    checked = utc_timestamp(receipt["checkedAt"], "signed-Nostr activation live recheck checkedAt")
+    valid_until = utc_timestamp(receipt["validUntil"], "signed-Nostr activation live recheck validUntil")
+    require(receipt["maxAgeSeconds"] == 300, "signed-Nostr activation live recheck freshness budget invalid")
+    require(0 < duration_seconds(checked, valid_until) <= receipt["maxAgeSeconds"], "signed-Nostr activation live recheck stale")
+    require(receipt["bootstrapReceiptCanonicalSha256"] == digest(bootstrap), "signed-Nostr activation live recheck bootstrap binding invalid")
+    require(receipt["objectStates"] == bootstrap["postconditions"], "signed-Nostr activation live object ownership drift")
+    require(receipt["objectStatesCanonicalSha256"] == digest(receipt["objectStates"]), "signed-Nostr activation live state checksum invalid")
+    require(receipt["boundaryState"] == rollback_boundary_digest_record(rollback), "signed-Nostr activation boundary live recheck drift")
+    dns_recheck = verify_signed_nostr_dns_tls_evidence(receipt["dnsTlsRecheck"], "signed-Nostr activation DNS/TLS recheck")
+    require(utc_timestamp(dns_recheck["observedAt"], "signed-Nostr activation DNS/TLS observedAt") == checked, "signed-Nostr DNS/TLS recheck is not activation-time evidence")
+    require(utc_timestamp(dns_recheck["validUntil"], "signed-Nostr activation DNS/TLS validUntil") >= valid_until, "signed-Nostr DNS/TLS recheck expires before activation receipt")
+    require(dns_tls_binding(dns_recheck) == dns_tls_binding(initial_dns_tls), "signed-Nostr activation DNS/TLS recheck changed resolution or certificate")
+    return receipt
+
+
+def verify_signed_nostr_reconcile_activation(
+    value: Any,
+    live_recheck: dict[str, Any],
+    bootstrap: dict[str, Any],
+    managed_suspended: list[dict[str, Any]],
+    managed_active: list[dict[str, Any]],
+) -> dict[str, Any]:
+    receipt = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "status",
+            "operationId",
+            "completedAt",
+            "liveRecheckCanonicalSha256",
+            "unsuspensions",
+            "unsuspensionsCanonicalSha256",
+            "effects",
+        },
+        "signed-Nostr reconcile activation receipt",
+    )
+    require(receipt["schemaVersion"] == "roebel_signed_nostr_reconcile_activation_receipt_v1", "signed-Nostr reconcile activation schema invalid")
+    require(receipt["canonicalEncoding"] == "canonical-json", "signed-Nostr reconcile activation encoding invalid")
+    require(receipt["status"] == "completed-after-live-recheck", "signed-Nostr reconcile activation status invalid")
+    require(isinstance(receipt["operationId"], str) and UUID.fullmatch(receipt["operationId"]), "signed-Nostr reconcile activation operation id invalid")
+    completed = utc_timestamp(receipt["completedAt"], "signed-Nostr reconcile activation completedAt")
+    checked = utc_timestamp(live_recheck["checkedAt"], "signed-Nostr activation live recheck checkedAt")
+    valid_until = utc_timestamp(live_recheck["validUntil"], "signed-Nostr activation live recheck validUntil")
+    require(checked <= completed <= valid_until, "signed-Nostr reconcile activation occurred outside the live-preflight window")
+    require(receipt["liveRecheckCanonicalSha256"] == digest(live_recheck), "signed-Nostr reconcile activation live-recheck binding invalid")
+    require(receipt["effects"] == {
+        "clusterMutation": True,
+        "civicMutation": False,
+        "secretRead": False,
+        "secretWrite": False,
+        "onlySuspendFieldChanged": True,
+    }, "signed-Nostr reconcile activation effects invalid")
+
+    suspended_by_id = {entry["objectId"]: entry for entry in managed_suspended}
+    active_by_id = {entry["objectId"]: entry for entry in managed_active}
+    post_by_id = {entry["objectId"]: entry for entry in bootstrap["postconditions"]}
+    expected_ids = [f"flux/{component}/kustomization" for component in SIGNED_NOSTR_FLUX_BINDING_ORDER]
+    unsuspensions = receipt["unsuspensions"]
+    require(isinstance(unsuspensions, list) and len(unsuspensions) == len(expected_ids), "signed-Nostr reconcile activation count invalid")
+    for index, (item, object_id) in enumerate(zip(unsuspensions, expected_ids, strict=True)):
+        change = closed(
+            item,
+            {
+                "objectId",
+                "target",
+                "requiredUid",
+                "requiredResourceVersion",
+                "beforeObjectDigest",
+                "patch",
+                "postResourceVersion",
+                "afterObjectDigest",
+            },
+            f"signed-Nostr reconcile activation[{index}]",
+        )
+        before = suspended_by_id[object_id]["object"]
+        after = active_by_id[object_id]["object"]
+        live = post_by_id[object_id]
+        require(change["objectId"] == object_id, "signed-Nostr reconcile activation object order invalid")
+        require(change["target"] == signed_nostr_object_target(before), "signed-Nostr reconcile activation target invalid")
+        require(change["requiredUid"] == live["uid"], "signed-Nostr reconcile activation UID drift")
+        require(change["requiredResourceVersion"] == live["resourceVersion"], "signed-Nostr reconcile activation resourceVersion drift")
+        require(change["beforeObjectDigest"] == digest(before) == live["objectDigest"], "signed-Nostr reconcile activation before digest invalid")
+        require(change["patch"] == {"op": "replace", "path": "/spec/suspend", "expected": True, "value": False}, "signed-Nostr reconcile activation patch widened")
+        require(isinstance(change["postResourceVersion"], str) and change["postResourceVersion"].isdigit(), "signed-Nostr reconcile activation post resourceVersion invalid")
+        require(int(change["postResourceVersion"]) > int(change["requiredResourceVersion"]), "signed-Nostr reconcile activation resourceVersion did not advance")
+        require(change["afterObjectDigest"] == digest(after), "signed-Nostr reconcile activation after digest invalid")
+    require(receipt["unsuspensionsCanonicalSha256"] == digest(unsuspensions), "signed-Nostr reconcile activation checksum invalid")
+    return receipt
+
+
+def verify_signed_nostr_activation_admission_freshness(
+    activation_evidence: dict[str, Any],
+) -> None:
+    """Require one current, coherently ordered activation preflight.
+
+    Shape validation remains timeless so an already-active render can still be
+    verified by later routine promotions.  This current-time check is invoked
+    only for the reviewed-public-knowledge -> signed-Nostr transition that
+    grants deployment authority.
+    """
+    lifecycle = activation_evidence["lifecycle"]
+    bootstrap = lifecycle["bootstrapReceipt"]
+    live_recheck = lifecycle["activationLiveRecheck"]
+    reconcile = lifecycle["reconcileActivationReceipt"]
+    initial_dns = activation_evidence["gnosisRpcEgress"]["upstream"]["dnsTlsEvidence"]
+    now = signed_nostr_verification_time()
+    bootstrap_observed = utc_timestamp(bootstrap["observedAt"], "signed-Nostr bootstrap observedAt")
+    initial_dns_observed = utc_timestamp(initial_dns["observedAt"], "signed-Nostr reviewed DNS/TLS observedAt")
+    checked = utc_timestamp(live_recheck["checkedAt"], "signed-Nostr activation live recheck checkedAt")
+    completed = utc_timestamp(reconcile["completedAt"], "signed-Nostr reconcile activation completedAt")
+    valid_until = utc_timestamp(live_recheck["validUntil"], "signed-Nostr activation live recheck validUntil")
+    require(bootstrap_observed <= checked, "signed-Nostr activation live recheck predates bootstrap")
+    require(initial_dns_observed <= checked, "signed-Nostr activation live recheck predates reviewed DNS/TLS evidence")
+    require(
+        checked <= completed <= now <= valid_until,
+        "signed-Nostr activation evidence is future-dated or outside the current five-minute preflight",
+    )
+
+
+def expected_signed_nostr_rollback_contract(
+    managed_suspended: list[dict[str, Any]],
+    bootstrap: dict[str, Any],
+    reconcile: dict[str, Any],
+    rollback: dict[str, Any],
+) -> dict[str, Any]:
+    post_by_id = {entry["objectId"]: entry for entry in bootstrap["postconditions"]}
+    active_kustomizations = {entry["objectId"]: entry for entry in reconcile["unsuspensions"]}
+    runtime_targets: list[dict[str, Any]] = []
+    identity_targets: list[dict[str, Any]] = []
+    for entry in managed_suspended:
+        object_id = entry["objectId"]
+        post = post_by_id[object_id]
+        target = signed_nostr_object_target(entry["object"])
+        if entry["class"] == "runtime":
+            runtime_targets.append({
+                "objectId": object_id,
+                "target": target,
+                "requiredUid": post["uid"],
+                "requiredObjectDigest": post["objectDigest"],
+                "action": "scale-zero-then-delete" if target["kind"] == "Deployment" else "delete",
+                "onUidMismatch": "stop-for-adoption-review",
+            })
+        else:
+            current_digest = (
+                active_kustomizations[object_id]["afterObjectDigest"]
+                if object_id in active_kustomizations
+                else post["objectDigest"]
+            )
+            identity_targets.append({
+                "objectId": object_id,
+                "target": target,
+                "requiredUid": post["uid"],
+                "requiredObjectDigest": current_digest,
+                "postSuspendObjectDigest": post["objectDigest"] if target["kind"] == "Kustomization" else None,
+                "action": "suspend-then-delete" if target["kind"] == "Kustomization" else "delete",
+                "onUidMismatch": "stop-for-adoption-review",
+            })
+    return {
+        "schemaVersion": SIGNED_NOSTR_ROLLBACK_CONTRACT_SCHEMA,
+        "canonicalEncoding": "canonical-json",
+        "sequence": [
+            "suspend-exact-reconcilers",
+            "restore-four-public-boundary-bytes",
+            "scale-and-delete-exact-runtime-uids",
+            "delete-exact-flux-rbac-uids",
+            "verify-boundary-and-total-absence",
+        ],
+        "deleteAuthority": "one-time-cluster-admin-exact-targets",
+        "routineReconcilerDeleteAllowed": False,
+        "boundaryBaseline": rollback_boundary_digest_record(rollback),
+        "runtimeTargets": runtime_targets,
+        "identityTargets": identity_targets,
+        "absenceVerificationTargets": [signed_nostr_object_target(entry["object"]) for entry in managed_suspended],
+        "uidMismatchPolicy": "fail-closed-no-delete-no-adopt",
+        "completionReceiptSchema": SIGNED_NOSTR_DEACTIVATION_EVIDENCE_SCHEMA,
+        "civicAuthority": "none",
+    }
+
+
+def deactivation_step_payload(
+    sequence: int,
+    action: str,
+    target: dict[str, Any] | None,
+    required_uid: str | None,
+    before_digest: str | None,
+    result: str,
+) -> dict[str, Any]:
+    return {
+        "sequence": sequence,
+        "action": action,
+        "target": target,
+        "requiredUid": required_uid,
+        "beforeObjectDigest": before_digest,
+        "result": result,
+    }
+
+
+def expected_signed_nostr_deactivation_steps(contract: dict[str, Any]) -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    sequence = 1
+    for target in contract["identityTargets"]:
+        if target["target"]["kind"] != "Kustomization":
+            continue
+        payload = deactivation_step_payload(
+            sequence,
+            "suspend-exact-reconciler",
+            target["target"],
+            target["requiredUid"],
+            target["requiredObjectDigest"],
+            "suspended-and-verified",
+        )
+        steps.append({**payload, "receiptDigest": digest(payload)})
+        sequence += 1
+    payload = deactivation_step_payload(
+        sequence,
+        "restore-four-public-boundary-bytes",
+        None,
+        None,
+        digest(contract["boundaryBaseline"]),
+        "restored-and-verified",
+    )
+    steps.append({**payload, "receiptDigest": digest(payload)})
+    sequence += 1
+    for target in contract["runtimeTargets"]:
+        payload = deactivation_step_payload(
+            sequence,
+            target["action"],
+            target["target"],
+            target["requiredUid"],
+            target["requiredObjectDigest"],
+            "absent-and-verified",
+        )
+        steps.append({**payload, "receiptDigest": digest(payload)})
+        sequence += 1
+    # Kustomizations are removed first after workloads are gone; RoleBindings,
+    # Roles and ServiceAccounts then lose authority in deterministic order.
+    identity_order = {"Kustomization": 0, "RoleBinding": 1, "Role": 2, "ServiceAccount": 3}
+    for target in sorted(
+        contract["identityTargets"],
+        key=lambda item: (identity_order[item["target"]["kind"]], item["objectId"]),
+    ):
+        payload = deactivation_step_payload(
+            sequence,
+            "delete-exact-flux-identity",
+            target["target"],
+            target["requiredUid"],
+            target["postSuspendObjectDigest"] or target["requiredObjectDigest"],
+            "absent-and-verified",
+        )
+        steps.append({**payload, "receiptDigest": digest(payload)})
+        sequence += 1
+    return steps
+
+
+def verify_signed_nostr_deactivation_evidence(
+    value: Any,
+    activation_evidence: dict[str, Any],
+    rollback_contract: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = closed(
+        value,
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "status",
+            "startedAt",
+            "completedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "activationEvidenceCanonicalSha256",
+            "rollbackContractCanonicalSha256",
+            "stepReceipts",
+            "boundaryVerification",
+            "absenceVerification",
+            "effects",
+        },
+        "signed-Nostr deactivation evidence",
+    )
+    require(receipt["schemaVersion"] == SIGNED_NOSTR_DEACTIVATION_EVIDENCE_SCHEMA, "signed-Nostr deactivation evidence schema invalid")
+    require(receipt["canonicalEncoding"] == "canonical-json", "signed-Nostr deactivation encoding invalid")
+    require(receipt["status"] == "completed-and-verified", "signed-Nostr deactivation status invalid")
+    started = utc_timestamp(receipt["startedAt"], "signed-Nostr deactivation startedAt")
+    completed = utc_timestamp(receipt["completedAt"], "signed-Nostr deactivation completedAt")
+    valid_until = utc_timestamp(receipt["validUntil"], "signed-Nostr deactivation validUntil")
+    now = signed_nostr_verification_time()
+    require(0 <= duration_seconds(started, completed) <= 900, "signed-Nostr deactivation duration invalid")
+    require(receipt["maxAgeSeconds"] == 300, "signed-Nostr deactivation freshness budget invalid")
+    require(
+        0 < duration_seconds(completed, valid_until) <= receipt["maxAgeSeconds"],
+        "signed-Nostr deactivation validity window invalid",
+    )
+    require(
+        started <= completed <= now <= valid_until,
+        "signed-Nostr deactivation evidence is future-dated, expired, or replayed",
+    )
+    require(receipt["activationEvidenceCanonicalSha256"] == digest(activation_evidence), "signed-Nostr deactivation activation binding invalid")
+    require(receipt["rollbackContractCanonicalSha256"] == digest(rollback_contract), "signed-Nostr deactivation contract binding invalid")
+    require(receipt["stepReceipts"] == expected_signed_nostr_deactivation_steps(rollback_contract), "signed-Nostr deactivation step receipt set incomplete or drifted")
+    require(receipt["boundaryVerification"] == {
+        "verifiedAt": receipt["completedAt"],
+        "status": "exact-baseline-restored",
+        **rollback_contract["boundaryBaseline"],
+    }, "signed-Nostr deactivation boundary verification invalid")
+    require(receipt["absenceVerification"] == {
+        "verifiedAt": receipt["completedAt"],
+        "status": "all-exact-targets-absent",
+        "targets": rollback_contract["absenceVerificationTargets"],
+    }, "signed-Nostr deactivation absence verification invalid")
+    require(receipt["effects"] == {
+        "clusterMutation": True,
+        "civicMutation": False,
+        "secretRead": False,
+        "secretWrite": False,
+        "uidMismatchObserved": False,
+        "unrelatedObjectMutation": False,
+    }, "signed-Nostr deactivation effects invalid")
+    return receipt
 
 
 def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
@@ -911,6 +1820,14 @@ def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
         pin["publisherPinCanonicalSha256"] == digest(publisher),
         "signed-Nostr publisher pin canonical checksum invalid",
     )
+    rollback = closed(
+        pin["rollback"],
+        {"fromRender", "integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"},
+        "signed-Nostr rollback record",
+    )
+    require(rollback["fromRender"] == "reviewed-public-knowledge", "signed-Nostr rollback base invalid")
+    for field in ("integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"):
+        require(isinstance(rollback[field], str) and SHA256.fullmatch(rollback[field]), f"signed-Nostr rollback {field} invalid")
     evidence = pin["activationEvidence"]
     if evidence == {
         "status": "pending-separate-review",
@@ -928,15 +1845,8 @@ def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
             evidence,
             publisher,
             pin["publisherPinCanonicalSha256"],
+            rollback,
         )
-    rollback = closed(
-        pin["rollback"],
-        {"fromRender", "integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"},
-        "signed-Nostr rollback record",
-    )
-    require(rollback["fromRender"] == "reviewed-public-knowledge", "signed-Nostr rollback base invalid")
-    for field in ("integritySha256", "webIngressSha256", "publicMeckyNetworkPolicySha256", "boundaryReceiptSha256"):
-        require(isinstance(rollback[field], str) and SHA256.fullmatch(rollback[field]), f"signed-Nostr rollback {field} invalid")
     require(isinstance(publisher["components"], list) and len(publisher["components"]) == 2, "signed-Nostr runtime pin component count invalid")
     parsed: dict[str, dict[str, str]] = {}
     for index, entry in enumerate(publisher["components"]):
@@ -953,11 +1863,6 @@ def verify_signed_nostr_runtime_pin(value: Any) -> dict[str, Any]:
             require(isinstance(proof["url"], str) and proof["url"].startswith("https://github.com/GiraeffleAeffle/Roebel-App/"), f"signed-Nostr {key} URL invalid")
         parsed[expected] = component
     return {"pin": pin, "publisherPin": publisher, "images": parsed}
-
-
-def _nonempty_string(value: Any, label: str) -> str:
-    require(isinstance(value, str) and value, f"{label} invalid")
-    return value
 
 
 def verify_signed_nostr_attestation_receipt(
@@ -978,10 +1883,26 @@ def verify_signed_nostr_attestation_receipt(
     return receipt
 
 
+def verify_signed_nostr_object_receipt(
+    value: Any,
+    expected_object: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    receipt = closed(value, {"object", "objectDigest"}, label)
+    require(receipt["object"] == expected_object, f"{label} object invalid")
+    require(
+        isinstance(receipt["objectDigest"], str) and SHA256.fullmatch(receipt["objectDigest"]),
+        f"{label} digest invalid",
+    )
+    require(receipt["objectDigest"] == digest(expected_object), f"{label} digest binding invalid")
+    return receipt
+
+
 def verify_signed_nostr_activation_evidence(
     value: Any,
     publisher_pin: dict[str, Any],
     publisher_pin_canonical_sha256: str,
+    rollback_record: dict[str, Any],
 ) -> dict[str, Any]:
     """Validate the complete future activation record without authorizing it.
 
@@ -1002,6 +1923,7 @@ def verify_signed_nostr_activation_evidence(
             "fluxBindings",
             "gnosisRpcEgress",
             "anonymousDigestPullReceipts",
+            "lifecycle",
         },
         "signed-Nostr activation evidence",
     )
@@ -1038,71 +1960,117 @@ def verify_signed_nostr_activation_evidence(
             attestation_ids.add(receipt["receiptId"])
 
     require(isinstance(evidence["fluxBindings"], list) and len(evidence["fluxBindings"]) == 3, "signed-Nostr Flux binding count invalid")
-    seen_identity_values: set[tuple[str, str]] = set()
     for index, item in enumerate(evidence["fluxBindings"]):
         binding = closed(
             item,
-            {"component", "kustomization", "serviceAccount", "role", "roleBinding", "rbacScope"},
+            {"component", "kustomization", "serviceAccount", "role", "roleBinding"},
             f"signed-Nostr Flux binding[{index}]",
         )
         expected_component = SIGNED_NOSTR_FLUX_BINDING_ORDER[index]
-        expected_namespace = SIGNED_NOSTR_FLUX_NAMESPACES[expected_component]
         require(binding["component"] == expected_component, "signed-Nostr Flux binding component order invalid")
-        kustomization = closed(binding["kustomization"], {"name", "namespace", "path", "sourceRef", "objectDigest"}, f"signed-Nostr Flux binding[{index}] Kustomization")
-        require(kustomization["namespace"] == expected_namespace, "signed-Nostr Flux binding namespace invalid")
-        require(kustomization["path"] == SIGNED_NOSTR_FLUX_PATHS[expected_component], "signed-Nostr Flux binding path invalid")
-        source_ref = closed(kustomization["sourceRef"], {"kind", "name", "namespace"}, f"signed-Nostr Flux binding[{index}] sourceRef")
-        require(source_ref["kind"] == "GitRepository", "signed-Nostr Flux binding source kind invalid")
-        for field in ("name", "namespace"):
-            _nonempty_string(source_ref[field], f"signed-Nostr Flux binding sourceRef {field}")
-        _nonempty_string(kustomization["name"], f"signed-Nostr Flux binding[{index}] Kustomization name")
-        require(isinstance(kustomization["objectDigest"], str) and SHA256.fullmatch(kustomization["objectDigest"]), "signed-Nostr Flux binding Kustomization digest invalid")
-        kustomization_identity = ("Kustomization", kustomization["namespace"] + "/" + kustomization["name"])
-        require(kustomization_identity not in seen_identity_values, "signed-Nostr Flux binding Kustomization identity reused")
-        seen_identity_values.add(kustomization_identity)
-
-        identities: dict[str, dict[str, Any]] = {}
+        expected_flux = expected_signed_nostr_flux_objects(expected_component)
         for kind in ("serviceAccount", "role", "roleBinding"):
-            identity = closed(binding[kind], {"name", "namespace", "objectDigest"}, f"signed-Nostr Flux binding[{index}] {kind}")
-            require(identity["namespace"] == expected_namespace, f"signed-Nostr Flux binding {kind} namespace invalid")
-            _nonempty_string(identity["name"], f"signed-Nostr Flux binding {kind} name")
-            require(isinstance(identity["objectDigest"], str) and SHA256.fullmatch(identity["objectDigest"]), f"signed-Nostr Flux binding {kind} digest invalid")
-            identity_pair = (kind, identity["namespace"] + "/" + identity["name"])
-            require(identity_pair not in seen_identity_values, f"signed-Nostr Flux binding {kind} identity reused")
-            seen_identity_values.add(identity_pair)
-            identities[kind] = identity
-        scope = closed(binding["rbacScope"], {"apiGroups", "resources", "verbs", "resourceNames"}, f"signed-Nostr Flux binding[{index}] RBAC scope")
-        for field in ("apiGroups", "resources", "verbs", "resourceNames"):
-            require(isinstance(scope[field], list) and scope[field] == sorted(set(scope[field])) and all(isinstance(entry, str) for entry in scope[field]), f"signed-Nostr Flux binding RBAC {field} invalid")
-        for field in ("resources", "verbs", "resourceNames"):
-            require(all(scope[field]), f"signed-Nostr Flux binding RBAC {field} contains an empty value")
-        require(scope["resources"] and scope["verbs"], "signed-Nostr Flux binding RBAC scope empty")
+            verify_signed_nostr_object_receipt(
+                binding[kind],
+                expected_flux[kind],
+                f"signed-Nostr Flux binding[{index}] {kind}",
+            )
+        verify_signed_nostr_object_receipt(
+            binding["kustomization"],
+            expected_flux["kustomization"],
+            f"signed-Nostr Flux binding[{index}] Kustomization",
+        )
 
     gnosis = closed(
         evidence["gnosisRpcEgress"],
-        {"chainId", "privateProxy", "workbenchNetworkPolicy", "secretReference"},
+        {"chainId", "upstream", "privateProxy", "workbenchNetworkPolicy"},
         "signed-Nostr Gnosis RPC egress evidence",
     )
     require(gnosis["chainId"] == 100, "signed-Nostr Gnosis chain id invalid")
-    private_proxy = closed(gnosis["privateProxy"], {"kind", "name", "namespace", "port", "object", "objectDigest"}, "signed-Nostr Gnosis private proxy evidence")
-    require(private_proxy["kind"] == "Service", "signed-Nostr Gnosis private proxy kind invalid")
-    _nonempty_string(private_proxy["name"], "signed-Nostr Gnosis private proxy name")
+    upstream = closed(gnosis["upstream"], {"scheme", "host", "port", "pinnedIpv4Cidr", "allowedMethods", "dnsTlsEvidence"}, "signed-Nostr Gnosis upstream evidence")
+    require({key: upstream[key] for key in ("scheme", "host", "port", "pinnedIpv4Cidr", "allowedMethods")} == {
+        "scheme": "https",
+        "host": SIGNED_NOSTR_GNOSIS_UPSTREAM_HOST,
+        "port": SIGNED_NOSTR_GNOSIS_UPSTREAM_PORT,
+        "pinnedIpv4Cidr": SIGNED_NOSTR_GNOSIS_UPSTREAM_IPV4_CIDR,
+        "allowedMethods": list(SIGNED_NOSTR_GNOSIS_ALLOWED_METHODS),
+    }, "signed-Nostr Gnosis upstream invalid")
+    initial_dns_tls = verify_signed_nostr_dns_tls_evidence(
+        upstream["dnsTlsEvidence"],
+        "signed-Nostr reviewed DNS/TLS evidence",
+    )
+    private_proxy = closed(
+        gnosis["privateProxy"],
+        {"name", "namespace", "port", "runtimeRole", "deployment", "service", "networkPolicy"},
+        "signed-Nostr Gnosis private proxy evidence",
+    )
+    require(private_proxy["name"] == SIGNED_NOSTR_GNOSIS_PROXY_NAME, "signed-Nostr Gnosis private proxy name invalid")
     require(private_proxy["namespace"] == SIGNED_NOSTR_WEB_NAMESPACE, "signed-Nostr Gnosis private proxy namespace invalid")
-    require(isinstance(private_proxy["port"], int) and 1 <= private_proxy["port"] <= 65535, "signed-Nostr Gnosis private proxy port invalid")
-    require(private_proxy["object"] == expected_signed_nostr_gnosis_private_proxy_object(private_proxy), "signed-Nostr Gnosis private proxy object invalid")
-    require(isinstance(private_proxy["objectDigest"], str) and SHA256.fullmatch(private_proxy["objectDigest"]), "signed-Nostr Gnosis private proxy digest invalid")
-    require(private_proxy["objectDigest"] == digest(private_proxy["object"]), "signed-Nostr Gnosis private proxy digest binding invalid")
-    workbench_policy = closed(gnosis["workbenchNetworkPolicy"], {"object", "objectDigest"}, "signed-Nostr workbench NetworkPolicy evidence")
-    require(workbench_policy["object"] == expected_signed_nostr_workbench_network_policy(private_proxy), "signed-Nostr workbench NetworkPolicy object invalid")
-    require(isinstance(workbench_policy["objectDigest"], str) and SHA256.fullmatch(workbench_policy["objectDigest"]), "signed-Nostr workbench NetworkPolicy digest invalid")
-    require(workbench_policy["objectDigest"] == digest(workbench_policy["object"]), "signed-Nostr workbench NetworkPolicy digest binding invalid")
-    secret_reference = closed(gnosis["secretReference"], {"namespace", "name", "key"}, "signed-Nostr Gnosis secret reference")
-    require(secret_reference == {"namespace": SIGNED_NOSTR_WEB_NAMESPACE, "name": "roebel-signed-nostr-runtime", "key": "GNOSIS_RPC_URL"}, "signed-Nostr Gnosis secret reference invalid")
+    require(private_proxy["port"] == SIGNED_NOSTR_GNOSIS_PROXY_PORT, "signed-Nostr Gnosis private proxy port invalid")
+    require(private_proxy["runtimeRole"] == "gnosis-rpc-proxy", "signed-Nostr Gnosis private proxy runtime role invalid")
+    workbench_publisher = publisher_components["roebel-e2e-workbench"]
+    workbench_image = f"{workbench_publisher['image']}@{workbench_publisher['manifestDigest']}"
+    verify_signed_nostr_object_receipt(private_proxy["deployment"], expected_signed_nostr_gnosis_private_proxy_deployment(workbench_image), "signed-Nostr Gnosis private proxy Deployment")
+    verify_signed_nostr_object_receipt(private_proxy["service"], expected_signed_nostr_gnosis_private_proxy_service(), "signed-Nostr Gnosis private proxy Service")
+    verify_signed_nostr_object_receipt(private_proxy["networkPolicy"], expected_signed_nostr_gnosis_private_proxy_network_policy(), "signed-Nostr Gnosis private proxy NetworkPolicy")
+    verify_signed_nostr_object_receipt(gnosis["workbenchNetworkPolicy"], expected_signed_nostr_workbench_network_policy(), "signed-Nostr workbench NetworkPolicy")
 
     verify_signed_nostr_anonymous_digest_pull_receipts(
         evidence["anonymousDigestPullReceipts"],
         publisher_pin,
         publisher_pin_canonical_sha256,
+    )
+
+    managed_suspended = expected_signed_nostr_managed_objects(
+        publisher_pin,
+        suspended_flux=True,
+    )
+    managed_active = expected_signed_nostr_managed_objects(
+        publisher_pin,
+        suspended_flux=False,
+    )
+    lifecycle = closed(
+        evidence["lifecycle"],
+        {
+            "livePreconditions",
+            "bootstrapReceipt",
+            "activationLiveRecheck",
+            "reconcileActivationReceipt",
+            "rollbackContract",
+        },
+        "signed-Nostr lifecycle evidence",
+    )
+    preconditions = verify_signed_nostr_live_preconditions(
+        lifecycle["livePreconditions"],
+        managed_suspended,
+    )
+    bootstrap = verify_signed_nostr_bootstrap_receipt(
+        lifecycle["bootstrapReceipt"],
+        preconditions,
+        managed_suspended,
+    )
+    live_recheck = verify_signed_nostr_activation_live_recheck(
+        lifecycle["activationLiveRecheck"],
+        bootstrap,
+        rollback_record,
+        initial_dns_tls,
+    )
+    reconcile = verify_signed_nostr_reconcile_activation(
+        lifecycle["reconcileActivationReceipt"],
+        live_recheck,
+        bootstrap,
+        managed_suspended,
+        managed_active,
+    )
+    require(
+        lifecycle["rollbackContract"]
+        == expected_signed_nostr_rollback_contract(
+            managed_suspended,
+            bootstrap,
+            reconcile,
+            rollback_record,
+        ),
+        "signed-Nostr rollback contract incomplete or drifted",
     )
     return evidence
 
@@ -1231,7 +2199,7 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
                 {"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"},
                 {"name": "CITIZEN_RELAY_URL", "value": "ws://citizen-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"},
                 {"name": "AGENT_RELAY_URL", "value": "ws://agent-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"},
-                {"name": "GNOSIS_RPC_URL", "valueFrom": {"secretKeyRef": {"key": "GNOSIS_RPC_URL", "name": "roebel-signed-nostr-runtime", "optional": False}}},
+                {"name": "GNOSIS_RPC_URL", "value": f"http://{SIGNED_NOSTR_GNOSIS_PROXY_NAME}.{SIGNED_NOSTR_WEB_NAMESPACE}.svc.cluster.local:{SIGNED_NOSTR_GNOSIS_PROXY_PORT}"},
                 {"name": "MECKY_PUBKEY", "valueFrom": {"secretKeyRef": {"key": "MECKY_PUBKEY", "name": "roebel-signed-nostr-runtime", "optional": False}}},
                 {"name": "CITIZEN_RELAY_ADMISSION_TOKEN", "valueFrom": {"secretKeyRef": {"key": "CITIZEN_RELAY_ADMISSION_TOKEN", "name": "roebel-signed-nostr-runtime", "optional": False}}},
             ]
@@ -1292,11 +2260,11 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
             "podSelector": {"matchLabels": PUBLIC_MECKY_LABELS},
         },
     ]
-    activation_evidence = runtime_pin["pin"]["activationEvidence"]
-    gnosis_private_proxy = None
-    if isinstance(activation_evidence, dict) and activation_evidence.get("status") == "reviewed":
-        gnosis_private_proxy = activation_evidence["gnosisRpcEgress"]["privateProxy"]
-    resources["workbench"]["networkPolicy"] = expected_signed_nostr_workbench_network_policy(gnosis_private_proxy)
+    workbench_image = signed_nostr_runtime_image("workbench", runtime_pin)
+    resources["workbench"]["networkPolicy"] = expected_signed_nostr_workbench_network_policy()
+    resources["workbench"]["gnosisProxyDeployment"] = expected_signed_nostr_gnosis_private_proxy_deployment(workbench_image)
+    resources["workbench"]["gnosisProxyService"] = expected_signed_nostr_gnosis_private_proxy_service()
+    resources["workbench"]["gnosisProxyNetworkPolicy"] = expected_signed_nostr_gnosis_private_proxy_network_policy()
     for relay in ("citizen-relay", "agent-relay"):
         labels = signed_nostr_labels(relay)
         resources[relay]["networkPolicy"] = {
@@ -1305,9 +2273,17 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
             "spec": {"egress": [], "ingress": [{"from": relay_from, "ports": [{"port": 18081, "protocol": "TCP"}]}], "podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress", "Egress"]},
         }
     for component in SIGNED_NOSTR_COMPONENTS:
+        extra = ""
+        if component == "workbench":
+            extra = (
+                "  - gnosis-proxy-deployment.json\n"
+                "  - gnosis-proxy-service.json\n"
+                "  - gnosis-proxy-networkpolicy.json\n"
+            )
         resources[component]["kustomization"] = (
             "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
             "  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+            + extra
         )
     return resources
 
@@ -1388,6 +2364,16 @@ def verify_signed_nostr(root: Path) -> dict[str, Any]:
             "networkPolicy": network_policy,
             "kustomization": kustomization,
         }
+        if component == "workbench":
+            proxy_deployment = load_json(component_root / "gnosis-proxy-deployment.json")
+            proxy_service = load_json(component_root / "gnosis-proxy-service.json")
+            proxy_policy = load_json(component_root / "gnosis-proxy-networkpolicy.json")
+            require(proxy_deployment == expected[component]["gnosisProxyDeployment"], "signed-Nostr Gnosis proxy Deployment drift")
+            require(proxy_service == expected[component]["gnosisProxyService"], "signed-Nostr Gnosis proxy Service drift")
+            require(proxy_policy == expected[component]["gnosisProxyNetworkPolicy"], "signed-Nostr Gnosis proxy NetworkPolicy drift")
+            actual[component]["gnosisProxyDeployment"] = proxy_deployment
+            actual[component]["gnosisProxyService"] = proxy_service
+            actual[component]["gnosisProxyNetworkPolicy"] = proxy_policy
     # Both relay Deployment images bind to the one relay digest from the pin;
     # this prevents a citizen/agent mixed build from entering staging.
     citizen_image = actual["citizen-relay"]["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"]
@@ -1406,6 +2392,7 @@ def verify_signed_nostr(root: Path) -> dict[str, Any]:
         approved,
         runtime_pin["publisherPin"],
         runtime_pin["pin"]["publisherPinCanonicalSha256"],
+        runtime_pin["pin"]["rollback"],
     )
     return {"runtimePin": runtime_pin["pin"], "components": actual}
 
@@ -1754,8 +2741,15 @@ def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
     require((root / RENDER_ROOT / "web/kustomization.yaml").read_text() == web_expected, "roebel-web-staging Flux path widened")
     if signed_nostr:
-        expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
         for component in SIGNED_NOSTR_COMPONENTS:
+            extra = ""
+            if component == "workbench":
+                extra = "  - gnosis-proxy-deployment.json\n  - gnosis-proxy-service.json\n  - gnosis-proxy-networkpolicy.json\n"
+            expected = (
+                "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+                "  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+                + extra
+            )
             require(
                 (root / SIGNED_NOSTR_ROOT / component / "kustomization.yaml").read_text() == expected,
                 f"signed-Nostr {component} Flux path widened",
@@ -1887,6 +2881,9 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
 
     if base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "signed-nostr":
         require(candidate["head"] == base["head"], "signed-Nostr activation must preserve the Release Set head")
+        verify_signed_nostr_activation_admission_freshness(
+            candidate["signedNostr"]["runtimePin"]["activationEvidence"],
+        )
         for relative in FUTURE_EXPECTED_FILES:
             if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
                 continue
@@ -1909,6 +2906,18 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
 
     if base["renderFileSet"] == "signed-nostr" and candidate["renderFileSet"] == "reviewed-public-knowledge":
         require(candidate["head"] == base["head"], "signed-Nostr rollback must preserve the Release Set head")
+        activation_evidence = base["signedNostr"]["runtimePin"]["activationEvidence"]
+        rollback_contract = activation_evidence["lifecycle"]["rollbackContract"]
+        approved_deactivation = SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE
+        require(
+            approved_deactivation is not None,
+            "signed-Nostr deactivation blocked: completed exact-UID live teardown evidence requires separate review",
+        )
+        verify_signed_nostr_deactivation_evidence(
+            approved_deactivation,
+            activation_evidence,
+            rollback_contract,
+        )
         for relative in FUTURE_EXPECTED_FILES:
             if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
                 continue
