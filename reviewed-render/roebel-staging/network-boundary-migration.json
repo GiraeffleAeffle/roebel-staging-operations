@@ -49,7 +49,7 @@
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:b14e655bd96e8d4e676d16727bc6b4668065041d1016e7babbcc1072e222f80d"
+      "sha256": "sha256:279c4d4930e902923d7b85ccaf613f15e852cebc2b1e01288e5095ac81a05b27"
     }
   ],
   "rbacBootstrap": {

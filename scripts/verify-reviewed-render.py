@@ -858,7 +858,7 @@ def verify_web_ingress(root: Path) -> dict[str, Any]:
                     "http-response set-header X-Frame-Options DENY\n"
                     "http-response set-header X-Content-Type-Options nosniff\n"
                     "http-response set-header Referrer-Policy no-referrer\n"
-                    "http-response set-header Content-Security-Policy \"default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://roebel-stadtstack.agentcart.eu; worker-src 'self' blob:;\""
+                    "http-response set-header Content-Security-Policy \"default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; frame-src https://embedded-wallet.thirdweb.com; worker-src 'self' blob:;\""
                 ),
                 "haproxy-ingress.github.io/config-backend-early": (
                     "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
