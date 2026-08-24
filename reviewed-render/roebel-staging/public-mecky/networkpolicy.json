@@ -11,6 +11,33 @@
     "namespace": "stadtstack-roebel-staging-lab"
   },
   "spec": {
+    "egress": [
+      {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "reviewed-public-knowledge",
+                "app.kubernetes.io/name": "reviewed-public-knowledge",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 8080,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ],
     "ingress": [
       {
         "from": [
@@ -42,7 +69,8 @@
       }
     },
     "policyTypes": [
-      "Ingress"
+      "Ingress",
+      "Egress"
     ]
   }
 }
