@@ -856,19 +856,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Ingress drift"):
                 VERIFIER.verify(candidate)
 
-    def test_web_ingress_csp_allows_only_the_exact_thirdweb_wallet_origin(self) -> None:
+    def test_web_ingress_csp_allows_only_the_exact_thirdweb_wallet_and_gnosis_origins(self) -> None:
         replacements = (
-            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://*.thirdweb.com; "
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://*.thirdweb.com; "
             "frame-src https://embedded-wallet.thirdweb.com;",
-            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://thirdweb.com; "
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://*.rpc.thirdweb.com; "
             "frame-src https://embedded-wallet.thirdweb.com;",
-            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com https://thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com;",
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com https://137.rpc.thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com;",
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com; "
             "frame-src https://embedded-wallet.thirdweb.com https://thirdweb.com;",
-            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com; "
             "frame-src https://*.thirdweb.com;",
         )
         expected = (
-            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://api.thirdweb.com https://100.rpc.thirdweb.com; "
             "frame-src https://embedded-wallet.thirdweb.com;"
         )
         for replacement in replacements:
