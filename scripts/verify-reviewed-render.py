@@ -9,6 +9,7 @@ cannot weaken its own admission policy.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -42,6 +43,63 @@ COMPONENTS = {
         "name": "roebel-web-presentation",
         "container": "web",
     },
+}
+
+# The current render remains the default admission shape.  The reviewed
+# knowledge runtime is deliberately a second, closed shape: a promotion may
+# either contain the complete current render or the complete future render,
+# never a mixture of the two.  The future values below are policy-level
+# identities; the source revision and image digest are bound by runtime-pin in
+# the later render PR.
+REVIEWED_PUBLIC_KNOWLEDGE_FILES = {
+    f"{RENDER_ROOT}/reviewed-public-knowledge/deployment.json",
+    f"{RENDER_ROOT}/reviewed-public-knowledge/service.json",
+    f"{RENDER_ROOT}/reviewed-public-knowledge/networkpolicy.json",
+    f"{RENDER_ROOT}/reviewed-public-knowledge/kustomization.yaml",
+    f"{RENDER_ROOT}/reviewed-public-knowledge/runtime-pin.json",
+}
+REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE = "stadtstack-roebel-staging-lab"
+REVIEWED_PUBLIC_KNOWLEDGE_NAME = "reviewed-public-knowledge"
+REVIEWED_PUBLIC_KNOWLEDGE_IMAGE = "ghcr.io/giraeffleaeffle/stadtstack-reviewed-public-knowledge-runtime"
+REVIEWED_PUBLIC_KNOWLEDGE_WORKFLOW = (
+    "https://github.com/GiraeffleAeffle/stadtstack/"
+    ".github/workflows/reviewed-knowledge-runtime-publish.yml@refs/heads/main"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_BASE_URL = (
+    "http://reviewed-public-knowledge.stadtstack-roebel-staging-lab."
+    "svc.cluster.local:18080"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS = "local_news,ratsinformation"
+REVIEWED_PUBLIC_KNOWLEDGE_LABELS = {
+    "app.kubernetes.io/component": "reviewed-public-knowledge",
+    "app.kubernetes.io/name": "reviewed-public-knowledge",
+    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+    "stadtstack.io/authority": "none",
+}
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_REVISION = "642e2741d2fd3cb867c0e1c315f04ef8e29d787b"
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_TAG = (
+    "source-642e2741d2fd3cb867c0e1c315f04ef8e29d787b"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_IMAGE_DIGEST = (
+    "sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SLSA_DIGEST = (
+    "sha256:5d7f4a80f77bc0b1c7e036303325bf68f4bbb6e8a4dbeaaa839abf7abd330aab"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SPDX_DIGEST = (
+    "sha256:052b53e71548f978fd00d22eb9dd20089dd58b05f6b9cc39590f3d8f25740bc4"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_AUTH_DIGEST = (
+    "sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a"
+)
+REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_RECEIPT_DIGEST = (
+    "sha256:21a4c33b36db0831fa65375f6e7af812b87502986d97d5a45e7eb8b19108b04f"
+)
+LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES = {
+    "STADTSTACK_E2E_MODE",
+    "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED",
+    "STADTSTACK_E2E_REVIEWED_EVIDENCE",
+    "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
 }
 
 EXPECTED_FILES = {
@@ -92,6 +150,8 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/web/kustomization.yaml",
     f"{RENDER_ROOT}/web/networkpolicy.json",
 }
+
+FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
 
 ALLOWED_PATCH_PATHS = {
     "/metadata/annotations/stadtstack.io~1source-revision",
@@ -159,6 +219,21 @@ def repository_files(root: Path) -> set[str]:
             require(path.is_file(), f"non-regular file forbidden: {relative}")
             files.add(str(relative))
     return files
+
+
+def verify_repository_file_set(root: Path) -> str:
+    """Admit exactly one whole render shape and report which shape it is."""
+    actual = repository_files(root)
+    if actual == EXPECTED_FILES:
+        return "current"
+    if actual == FUTURE_EXPECTED_FILES:
+        return "reviewed-public-knowledge"
+    missing_current = sorted(EXPECTED_FILES - actual)
+    unexpected = sorted(actual - EXPECTED_FILES)
+    raise VerificationError(
+        "repository file set drift "
+        f"(missing={missing_current!r}, unexpected={unexpected!r})"
+    )
 
 
 def verify_case_staging_topology_with_protected_policy(root: Path) -> None:
@@ -278,7 +353,226 @@ def component_map(head: dict[str, Any]) -> dict[str, dict[str, str]]:
     return {item["component"]: item for item in head["components"]}
 
 
-def verify_deployment(root: Path, component: str, head: dict[str, Any]) -> dict[str, Any]:
+def verify_reviewed_public_knowledge_runtime_pin(value: Any) -> dict[str, Any]:
+    pin = closed(
+        value,
+        {
+            "schemaVersion",
+            "component",
+            "sourceRevision",
+            "sourceTag",
+            "imageRepository",
+            "manifestDigest",
+            "workflowIdentity",
+            "slsaProvenance",
+            "spdxSbom",
+            "anonymousPublicPullReceipt",
+            "authorityBinding",
+            "deploymentEffect",
+        },
+        "reviewed-public-knowledge runtime-pin",
+    )
+    require(pin["schemaVersion"] == "stadtstack_reviewed_public_knowledge_runtime_pin_v1", "reviewed runtime-pin schema drift")
+    require(pin["component"] == "reviewed-public-knowledge-runtime", "reviewed runtime-pin component invalid")
+    require(isinstance(pin["sourceRevision"], str) and REVISION.fullmatch(pin["sourceRevision"]), "reviewed runtime source revision invalid")
+    require(pin["sourceTag"] == f"source-{pin['sourceRevision']}", "reviewed runtime source tag invalid")
+    require(pin["imageRepository"] == REVIEWED_PUBLIC_KNOWLEDGE_IMAGE, "reviewed runtime image repository invalid")
+    require(isinstance(pin["manifestDigest"], str) and SHA256.fullmatch(pin["manifestDigest"]), "reviewed runtime manifest digest invalid")
+    require(pin["workflowIdentity"] == REVIEWED_PUBLIC_KNOWLEDGE_WORKFLOW, "reviewed runtime workflow identity invalid")
+    require(pin["sourceRevision"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_REVISION, "reviewed runtime first-tracer source revision drift")
+    require(pin["sourceTag"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_TAG, "reviewed runtime first-tracer source tag drift")
+    require(pin["manifestDigest"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_IMAGE_DIGEST, "reviewed runtime first-tracer image digest drift")
+
+    provenance = closed(
+        pin["slsaProvenance"],
+        {"issuer", "publisherIdentity", "predicateType", "repository", "gitRef", "sourceRevision", "subjectDigest", "attestationDigest"},
+        "reviewed runtime SLSA provenance",
+    )
+    require(provenance["issuer"] == "https://token.actions.githubusercontent.com", "reviewed runtime provenance issuer invalid")
+    require(provenance["publisherIdentity"] == REVIEWED_PUBLIC_KNOWLEDGE_WORKFLOW, "reviewed runtime provenance publisher invalid")
+    require(provenance["predicateType"] == "https://slsa.dev/provenance/v1", "reviewed runtime provenance predicate invalid")
+    require(provenance["repository"] == "GiraeffleAeffle/stadtstack", "reviewed runtime provenance repository invalid")
+    require(provenance["gitRef"] == "refs/heads/main", "reviewed runtime provenance ref invalid")
+    require(provenance["sourceRevision"] == pin["sourceRevision"], "reviewed runtime provenance revision invalid")
+    require(provenance["subjectDigest"] == pin["manifestDigest"], "reviewed runtime provenance subject invalid")
+    require(provenance["attestationDigest"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SLSA_DIGEST, "reviewed runtime first-tracer SLSA attestation drift")
+
+    sbom = closed(
+        pin["spdxSbom"],
+        {"format", "predicateType", "repository", "gitRef", "sourceRevision", "subjectDigest", "attestationDigest"},
+        "reviewed runtime SPDX SBOM",
+    )
+    require(sbom["format"] == "SPDX-2.3", "reviewed runtime SBOM format invalid")
+    require(sbom["predicateType"] == "https://spdx.dev/Document/v2.3", "reviewed runtime SBOM predicate invalid")
+    require(sbom["repository"] == "GiraeffleAeffle/stadtstack", "reviewed runtime SBOM repository invalid")
+    require(sbom["gitRef"] == "refs/heads/main", "reviewed runtime SBOM ref invalid")
+    require(sbom["sourceRevision"] == pin["sourceRevision"], "reviewed runtime SBOM revision invalid")
+    require(sbom["subjectDigest"] == pin["manifestDigest"], "reviewed runtime SBOM subject invalid")
+    require(sbom["attestationDigest"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SPDX_DIGEST, "reviewed runtime first-tracer SPDX attestation drift")
+
+    receipt = closed(
+        pin["anonymousPublicPullReceipt"],
+        {
+            "schemaVersion",
+            "canonicalEncoding",
+            "component",
+            "imageRepository",
+            "manifestDigest",
+            "sourceRevision",
+            "packageVisibility",
+            "authContext",
+            "authConfigCanonicalSha256",
+            "resolverIdentity",
+            "resolvedManifestDigest",
+            "receiptDigest",
+        },
+        "reviewed runtime anonymous-public receipt",
+    )
+    require(receipt["schemaVersion"] == "stadtstack_reviewed_public_knowledge_anonymous_digest_pull_receipt_v1", "reviewed runtime receipt schema drift")
+    require(receipt["canonicalEncoding"] == "canonical-json", "reviewed runtime receipt encoding invalid")
+    require(receipt["component"] == pin["component"], "reviewed runtime receipt component invalid")
+    require(receipt["imageRepository"] == pin["imageRepository"], "reviewed runtime receipt image invalid")
+    require(receipt["manifestDigest"] == pin["manifestDigest"], "reviewed runtime receipt manifest invalid")
+    require(receipt["sourceRevision"] == pin["sourceRevision"], "reviewed runtime receipt revision invalid")
+    require(receipt["packageVisibility"] == "public", "reviewed runtime package visibility invalid")
+    require(receipt["authContext"] == "clean-empty-auth-config", "reviewed runtime anonymous auth context invalid")
+    require(receipt["authConfigCanonicalSha256"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_AUTH_DIGEST, "reviewed runtime first-tracer anonymous auth drift")
+    require(receipt["resolverIdentity"] == "oras-resolve-anonymous", "reviewed runtime resolver identity invalid")
+    require(receipt["resolvedManifestDigest"] == pin["manifestDigest"], "reviewed runtime resolved digest invalid")
+    require(receipt["receiptDigest"] == REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_RECEIPT_DIGEST, "reviewed runtime first-tracer receipt digest drift")
+    require(pin["authorityBinding"] == "none", "reviewed runtime authority binding invalid")
+    require(pin["deploymentEffect"] is False, "reviewed runtime deployment effect invalid")
+    return pin
+
+
+def verify_reviewed_public_knowledge_deployment(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    deployment = closed(value, {"apiVersion", "kind", "metadata", "spec"}, "reviewed-public-knowledge Deployment")
+    require(deployment["apiVersion"] == "apps/v1" and deployment["kind"] == "Deployment", "reviewed runtime Deployment kind invalid")
+    metadata = closed(deployment["metadata"], {"labels", "name", "namespace"}, "reviewed runtime Deployment metadata")
+    require(metadata["name"] == REVIEWED_PUBLIC_KNOWLEDGE_NAME and metadata["namespace"] == REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE, "reviewed runtime Deployment identity invalid")
+    require(metadata["labels"] == REVIEWED_PUBLIC_KNOWLEDGE_LABELS, "reviewed runtime Deployment labels invalid")
+    spec = closed(
+        deployment["spec"],
+        {"replicas", "selector", "template"},
+        "reviewed runtime Deployment spec",
+    )
+    require(spec["replicas"] == 1, "reviewed runtime replicas invalid")
+    require(spec["selector"] == {"matchLabels": REVIEWED_PUBLIC_KNOWLEDGE_LABELS}, "reviewed runtime selector invalid")
+    template = closed(spec["template"], {"metadata", "spec"}, "reviewed runtime Pod template")
+    template_metadata = closed(template["metadata"], {"labels"}, "reviewed runtime Pod metadata")
+    require(template_metadata["labels"] == REVIEWED_PUBLIC_KNOWLEDGE_LABELS, "reviewed runtime Pod labels invalid")
+    pod = closed(
+        template["spec"],
+        {"automountServiceAccountToken", "containers", "restartPolicy", "securityContext"},
+        "reviewed runtime Pod spec",
+    )
+    require(pod["automountServiceAccountToken"] is False, "reviewed runtime ServiceAccount token must be disabled")
+    require(pod["restartPolicy"] == "Always", "reviewed runtime restart policy invalid")
+    require(pod["securityContext"] == {
+        "fsGroup": 65532,
+        "runAsGroup": 65532,
+        "runAsNonRoot": True,
+        "runAsUser": 65532,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }, "reviewed runtime Pod security context invalid")
+    containers = pod["containers"]
+    require(isinstance(containers, list) and len(containers) == 1 and isinstance(containers[0], dict), "reviewed runtime container set invalid")
+    container = containers[0]
+    require(set(container) <= {"env", "image", "imagePullPolicy", "livenessProbe", "name", "ports", "readinessProbe", "securityContext", "startupProbe"}, "reviewed runtime container fields widened")
+    require(container.get("name") == "reviewed-public-knowledge", "reviewed runtime container name invalid")
+    require(container.get("image") == f"{runtime_pin['imageRepository']}@{runtime_pin['manifestDigest']}", "reviewed runtime immutable image binding invalid")
+    require(container.get("imagePullPolicy") == "IfNotPresent", "reviewed runtime pull policy invalid")
+    require(container.get("env") == [], "reviewed runtime must not accept mutable environment configuration")
+    require(container.get("ports") == [{"containerPort": 8080, "name": "http", "protocol": "TCP"}], "reviewed runtime port invalid")
+    require(container.get("securityContext") == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "readOnlyRootFilesystem": True,
+    }, "reviewed runtime container security context invalid")
+
+    def tcp_probe(failure_threshold: int, period_seconds: int) -> dict[str, Any]:
+        return {
+            "failureThreshold": failure_threshold,
+            "periodSeconds": period_seconds,
+            "successThreshold": 1,
+            "tcpSocket": {"port": "http"},
+            "timeoutSeconds": 3,
+        }
+
+    require(container.get("readinessProbe") == tcp_probe(3, 10), "reviewed runtime readiness probe must be non-HTTP")
+    require(container.get("livenessProbe") == tcp_probe(3, 20), "reviewed runtime liveness probe must be non-HTTP")
+    require(container.get("startupProbe") == tcp_probe(30, 2), "reviewed runtime startup probe must be non-HTTP")
+    return deployment
+
+
+def verify_reviewed_public_knowledge_service(value: Any) -> dict[str, Any]:
+    service = closed(value, {"apiVersion", "kind", "metadata", "spec"}, "reviewed-public-knowledge Service")
+    require(service["apiVersion"] == "v1" and service["kind"] == "Service", "reviewed runtime Service kind invalid")
+    metadata = closed(service["metadata"], {"labels", "name", "namespace"}, "reviewed runtime Service metadata")
+    require(metadata["name"] == REVIEWED_PUBLIC_KNOWLEDGE_NAME and metadata["namespace"] == REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE, "reviewed runtime Service identity invalid")
+    require(metadata["labels"] == REVIEWED_PUBLIC_KNOWLEDGE_LABELS, "reviewed runtime Service labels invalid")
+    require(service["spec"] == {
+        "ports": [{"name": "http", "port": 18080, "protocol": "TCP", "targetPort": "http"}],
+        "selector": REVIEWED_PUBLIC_KNOWLEDGE_LABELS,
+        "type": "ClusterIP",
+    }, "reviewed runtime Service boundary invalid")
+    return service
+
+
+def verify_reviewed_public_knowledge_network_policy(value: Any) -> dict[str, Any]:
+    policy = closed(value, {"apiVersion", "kind", "metadata", "spec"}, "reviewed-public-knowledge NetworkPolicy")
+    require(policy["apiVersion"] == "networking.k8s.io/v1" and policy["kind"] == "NetworkPolicy", "reviewed runtime NetworkPolicy kind invalid")
+    metadata = closed(policy["metadata"], {"labels", "name", "namespace"}, "reviewed runtime NetworkPolicy metadata")
+    require(metadata["name"] == REVIEWED_PUBLIC_KNOWLEDGE_NAME and metadata["namespace"] == REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE, "reviewed runtime NetworkPolicy identity invalid")
+    require(metadata["labels"] == REVIEWED_PUBLIC_KNOWLEDGE_LABELS, "reviewed runtime NetworkPolicy labels invalid")
+    require(policy["spec"] == {
+        "egress": [],
+        "ingress": [{
+            "from": [{
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE}},
+                "podSelector": {"matchLabels": {
+                    "app.kubernetes.io/component": "public-mecky",
+                    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                }},
+            }],
+            "ports": [{"port": 8080, "protocol": "TCP"}],
+        }],
+        "podSelector": {"matchLabels": REVIEWED_PUBLIC_KNOWLEDGE_LABELS},
+        "policyTypes": ["Ingress", "Egress"],
+    }, "reviewed runtime NetworkPolicy boundary invalid")
+    return policy
+
+
+def verify_reviewed_public_knowledge_kustomization(root: Path) -> str:
+    expected = (
+        "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+        "kind: Kustomization\n"
+        "resources:\n"
+        "  - deployment.json\n"
+        "  - service.json\n"
+        "  - networkpolicy.json\n"
+    )
+    value = (root / f"{RENDER_ROOT}/reviewed-public-knowledge/kustomization.yaml").read_text()
+    require(value == expected, "reviewed runtime Flux path widened or ingress added")
+    return value
+
+
+def verify_reviewed_public_knowledge(root: Path) -> dict[str, Any]:
+    runtime_pin = verify_reviewed_public_knowledge_runtime_pin(load_json(root / f"{RENDER_ROOT}/reviewed-public-knowledge/runtime-pin.json"))
+    deployment = verify_reviewed_public_knowledge_deployment(load_json(root / f"{RENDER_ROOT}/reviewed-public-knowledge/deployment.json"), runtime_pin)
+    service = verify_reviewed_public_knowledge_service(load_json(root / f"{RENDER_ROOT}/reviewed-public-knowledge/service.json"))
+    network_policy = verify_reviewed_public_knowledge_network_policy(load_json(root / f"{RENDER_ROOT}/reviewed-public-knowledge/networkpolicy.json"))
+    kustomization = verify_reviewed_public_knowledge_kustomization(root)
+    return {
+        "deployment": deployment,
+        "service": service,
+        "networkPolicy": network_policy,
+        "kustomization": kustomization,
+        "runtimePin": runtime_pin,
+    }
+
+
+def verify_deployment(root: Path, component: str, head: dict[str, Any], reviewed_knowledge: bool = False) -> dict[str, Any]:
     policy = COMPONENTS[component]
     path = root / RENDER_ROOT / policy["directory"] / "deployment.json"
     deployment = load_json(path)
@@ -329,13 +623,31 @@ def verify_deployment(root: Path, component: str, head: dict[str, Any]) -> dict[
     by_name = {item["name"]: item for item in env}
     if component == "public-mecky":
         expected_chat = {
-            "STADTSTACK_E2E_MODE": "synthetic-reviewed",
-            "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED": "true",
             "MECKY_CHAT_PORT": "18084",
             "MECKY_CHAT_BIND_HOST": "0.0.0.0",
             "MECKY_CHAT_PER_MINUTE": "10",
             "MECKY_CHAT_PER_DAY": "100",
         }
+        if not reviewed_knowledge:
+            expected_chat.update({
+                "STADTSTACK_E2E_MODE": "synthetic-reviewed",
+                "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED": "true",
+            })
+        else:
+            for forbidden in LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES:
+                require(forbidden not in by_name, f"public-mecky legacy synthetic evidence field present: {forbidden}")
+            require(by_name.get("STADTSTACK_PUBLIC_BASE_URL") == {
+                "name": "STADTSTACK_PUBLIC_BASE_URL",
+                "value": REVIEWED_PUBLIC_KNOWLEDGE_BASE_URL,
+            }, "public-mecky reviewed knowledge base URL invalid")
+            require(by_name.get("MECKY_REVIEWED_SOURCE_KINDS") == {
+                "name": "MECKY_REVIEWED_SOURCE_KINDS",
+                "value": REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS,
+            }, "public-mecky reviewed source ordering invalid")
+            for item in env:
+                value_from = item.get("valueFrom", {}) if isinstance(item, dict) else {}
+                config_map = value_from.get("configMapKeyRef", {}) if isinstance(value_from, dict) else {}
+                require(config_map.get("name") != "reviewed-evidence", "public-mecky legacy synthetic evidence ConfigMap present")
         for name, value in expected_chat.items():
             require(by_name.get(name) == {"name": name, "value": value}, f"public-mecky {name} binding invalid")
         require(primary[0].get("ports") == [{"containerPort": 18084, "name": "mecky-chat", "protocol": "TCP"}], "public-mecky chat port invalid")
@@ -706,7 +1018,7 @@ def verify_live_preconditions(root: Path, head: dict[str, Any]) -> dict[str, Any
 def verify_tree(root: Path) -> dict[str, Any]:
     root = root.resolve()
     require(root.is_dir(), "repository root missing")
-    require(repository_files(root) == EXPECTED_FILES, "repository file set drift")
+    render_file_set = verify_repository_file_set(root)
     verify_contract(root)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
@@ -717,7 +1029,8 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
-    deployments = {component: verify_deployment(root, component, head) for component in COMPONENT_ORDER}
+    reviewed_knowledge = render_file_set == "reviewed-public-knowledge"
+    deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
     network_policy = verify_public_mecky_network_policy(root)
     web_network_policy = verify_web_network_policy(root)
@@ -731,16 +1044,74 @@ def verify_tree(root: Path) -> dict[str, Any]:
         web_network_policy,
         web_ingress,
     ]
-    require(integrity["desiredRenderSha256"] == digest({"nextEnvironmentHead": head, "objects": objects}), "reviewed render checksum mismatch")
+    checksum_payload: dict[str, Any] = {"nextEnvironmentHead": head, "objects": objects}
+    reviewed_objects = None
+    if reviewed_knowledge:
+        reviewed_objects = verify_reviewed_public_knowledge(root)
+        checksum_payload["reviewedPublicKnowledge"] = reviewed_objects
+    require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
     verify_kustomizations(root)
     live = verify_live_preconditions(root, head)
-    return {"root": root, "head": head, "integrity": integrity, "objects": objects, "deployments": deployments, "migration": migration, "live": live}
+    return {
+        "root": root,
+        "head": head,
+        "integrity": integrity,
+        "objects": objects,
+        "deployments": deployments,
+        "migration": migration,
+        "live": live,
+        "renderFileSet": render_file_set,
+        "reviewedPublicKnowledge": reviewed_objects,
+    }
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
+    require(
+        not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
+        "reviewed-public-knowledge render set cannot regress to the legacy set",
+    )
+
+    if base["renderFileSet"] == "current" and candidate["renderFileSet"] == "reviewed-public-knowledge":
+        require(candidate["head"] == base["head"], "reviewed-public-knowledge activation must preserve the Release Set head")
+        allowed_existing_changes = {
+            f"{RENDER_ROOT}/integrity.json",
+            f"{RENDER_ROOT}/public-mecky/deployment.json",
+        }
+        for relative in EXPECTED_FILES:
+            if relative in allowed_existing_changes:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"reviewed-public-knowledge activation changed existing file: {relative}",
+            )
+
+        expected_public = copy.deepcopy(base["deployments"]["public-mecky"])
+        expected_env = []
+        base_env = expected_public["spec"]["template"]["spec"]["containers"][0]["env"]
+        base_names = [item["name"] for item in base_env]
+        require(LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES <= set(base_names), "protected base lacks the complete legacy synthetic environment")
+        require("MECKY_REVIEWED_SOURCE_KINDS" not in base_names, "protected base already contains reviewed source ordering")
+        for item in base_env:
+            if item["name"] in LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES:
+                continue
+            transformed = copy.deepcopy(item)
+            if transformed["name"] == "STADTSTACK_PUBLIC_BASE_URL":
+                transformed["value"] = REVIEWED_PUBLIC_KNOWLEDGE_BASE_URL
+            expected_env.append(transformed)
+        expected_env.append({
+            "name": "MECKY_REVIEWED_SOURCE_KINDS",
+            "value": REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS,
+        })
+        expected_public["spec"]["template"]["spec"]["containers"][0]["env"] = expected_env
+        require(
+            candidate["deployments"]["public-mecky"] == expected_public,
+            "reviewed-public-knowledge activation Public Mecky transformation drift",
+        )
+        return
+
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):
             require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
@@ -788,6 +1159,7 @@ def verify(root: Path, base_root: Path | None = None) -> dict[str, Any]:
         "environment": "roebel-staging",
         "releaseSetDigest": candidate["head"]["releaseSetDigest"],
         "desiredRenderSha256": candidate["integrity"]["desiredRenderSha256"],
+        "renderFileSet": candidate["renderFileSet"],
         "components": [
             {
                 "component": item["component"],

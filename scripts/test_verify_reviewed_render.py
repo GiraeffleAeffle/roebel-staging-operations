@@ -110,10 +110,406 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ]
         (render / "live-preconditions.json").write_text(json.dumps(live, indent=2) + "\n")
 
+    def make_reviewed_knowledge_render(self, candidate: Path) -> None:
+        render = candidate / "reviewed-render/roebel-staging"
+        runtime_digest = VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_IMAGE_DIGEST
+        revision = VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_REVISION
+        pin = {
+            "schemaVersion": "stadtstack_reviewed_public_knowledge_runtime_pin_v1",
+            "component": "reviewed-public-knowledge-runtime",
+            "sourceRevision": revision,
+            "sourceTag": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SOURCE_TAG,
+            "imageRepository": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_IMAGE,
+            "manifestDigest": runtime_digest,
+            "workflowIdentity": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_WORKFLOW,
+            "slsaProvenance": {
+                "issuer": "https://token.actions.githubusercontent.com",
+                "publisherIdentity": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_WORKFLOW,
+                "predicateType": "https://slsa.dev/provenance/v1",
+                "repository": "GiraeffleAeffle/stadtstack",
+                "gitRef": "refs/heads/main",
+                "sourceRevision": revision,
+                "subjectDigest": runtime_digest,
+                "attestationDigest": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SLSA_DIGEST,
+            },
+            "spdxSbom": {
+                "format": "SPDX-2.3",
+                "predicateType": "https://spdx.dev/Document/v2.3",
+                "repository": "GiraeffleAeffle/stadtstack",
+                "gitRef": "refs/heads/main",
+                "sourceRevision": revision,
+                "subjectDigest": runtime_digest,
+                "attestationDigest": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_SPDX_DIGEST,
+            },
+            "anonymousPublicPullReceipt": {
+                "schemaVersion": "stadtstack_reviewed_public_knowledge_anonymous_digest_pull_receipt_v1",
+                "canonicalEncoding": "canonical-json",
+                "component": "reviewed-public-knowledge-runtime",
+                "imageRepository": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_IMAGE,
+                "manifestDigest": runtime_digest,
+                "sourceRevision": revision,
+                "packageVisibility": "public",
+                "authContext": "clean-empty-auth-config",
+                "authConfigCanonicalSha256": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_AUTH_DIGEST,
+                "resolverIdentity": "oras-resolve-anonymous",
+                "resolvedManifestDigest": runtime_digest,
+                "receiptDigest": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FIRST_TRACER_RECEIPT_DIGEST,
+            },
+            "authorityBinding": "none",
+            "deploymentEffect": False,
+        }
+        deployment = {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {
+                "labels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS,
+                "name": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAME,
+                "namespace": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE,
+            },
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS},
+                "template": {
+                    "metadata": {"labels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS},
+                    "spec": {
+                        "automountServiceAccountToken": False,
+                        "containers": [{
+                            "env": [],
+                            "image": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_IMAGE + "@" + runtime_digest,
+                            "imagePullPolicy": "IfNotPresent",
+                            "livenessProbe": {
+                                "failureThreshold": 3, "periodSeconds": 20, "successThreshold": 1,
+                                "tcpSocket": {"port": "http"}, "timeoutSeconds": 3,
+                            },
+                            "name": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAME,
+                            "ports": [{"containerPort": 8080, "name": "http", "protocol": "TCP"}],
+                            "readinessProbe": {
+                                "failureThreshold": 3, "periodSeconds": 10, "successThreshold": 1,
+                                "tcpSocket": {"port": "http"}, "timeoutSeconds": 3,
+                            },
+                            "securityContext": {
+                                "allowPrivilegeEscalation": False,
+                                "capabilities": {"drop": ["ALL"]},
+                                "readOnlyRootFilesystem": True,
+                            },
+                            "startupProbe": {
+                                "failureThreshold": 30, "periodSeconds": 2, "successThreshold": 1,
+                                "tcpSocket": {"port": "http"}, "timeoutSeconds": 3,
+                            },
+                        }],
+                        "restartPolicy": "Always",
+                        "securityContext": {
+                            "fsGroup": 65532,
+                            "runAsGroup": 65532,
+                            "runAsNonRoot": True,
+                            "runAsUser": 65532,
+                            "seccompProfile": {"type": "RuntimeDefault"},
+                        },
+                    },
+                },
+            },
+        }
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {
+                "labels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS,
+                "name": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAME,
+                "namespace": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE,
+            },
+            "spec": {
+                "ports": [{"name": "http", "port": 18080, "protocol": "TCP", "targetPort": "http"}],
+                "selector": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS,
+                "type": "ClusterIP",
+            },
+        }
+        network_policy = {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "labels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS,
+                "name": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAME,
+                "namespace": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE,
+            },
+            "spec": {
+                "egress": [],
+                "ingress": [{
+                    "from": [{
+                        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_NAMESPACE}},
+                        "podSelector": {"matchLabels": {
+                            "app.kubernetes.io/component": "public-mecky",
+                            "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                        }},
+                    }],
+                    "ports": [{"port": 8080, "protocol": "TCP"}],
+                }],
+                "podSelector": {"matchLabels": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_LABELS},
+                "policyTypes": ["Ingress", "Egress"],
+            },
+        }
+        kustomization = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\n"
+            "kind: Kustomization\n"
+            "resources:\n"
+            "  - deployment.json\n"
+            "  - service.json\n"
+            "  - networkpolicy.json\n"
+        )
+        future = render / "reviewed-public-knowledge"
+        future.mkdir()
+        (future / "deployment.json").write_text(json.dumps(deployment, indent=2) + "\n")
+        (future / "service.json").write_text(json.dumps(service, indent=2) + "\n")
+        (future / "networkpolicy.json").write_text(json.dumps(network_policy, indent=2) + "\n")
+        (future / "kustomization.yaml").write_text(kustomization)
+        (future / "runtime-pin.json").write_text(json.dumps(pin, indent=2) + "\n")
+
+        public_path = render / "public-mecky/deployment.json"
+        public = json.loads(public_path.read_text())
+        env = public["spec"]["template"]["spec"]["containers"][0]["env"]
+        env[:] = [item for item in env if item["name"] not in {
+            "STADTSTACK_E2E_MODE",
+            "STADTSTACK_E2E_SYNTHETIC_EVIDENCE_ALLOWED",
+            "STADTSTACK_E2E_REVIEWED_EVIDENCE",
+            "STADTSTACK_E2E_REVIEWED_EVIDENCE_SHA256",
+        }]
+        next(item for item in env if item["name"] == "STADTSTACK_PUBLIC_BASE_URL")["value"] = VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_BASE_URL
+        env.append({"name": "MECKY_REVIEWED_SOURCE_KINDS", "value": VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS})
+        public_path.write_text(json.dumps(public, indent=2) + "\n")
+
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest({
+            "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+            "objects": [
+                public,
+                json.loads((render / "public-mecky/service.json").read_text()),
+                json.loads((render / "public-mecky/networkpolicy.json").read_text()),
+                json.loads((render / "web/deployment.json").read_text()),
+                json.loads((render / "web/networkpolicy.json").read_text()),
+                json.loads((render / "web/ingress.json").read_text()),
+            ],
+            "reviewedPublicKnowledge": {
+                "deployment": deployment,
+                "service": service,
+                "networkPolicy": network_policy,
+                "kustomization": kustomization,
+                "runtimePin": pin,
+            },
+        })
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+    def refresh_reviewed_integrity(self, candidate: Path) -> None:
+        render = candidate / "reviewed-render/roebel-staging"
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest({
+            "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+            "objects": [
+                json.loads((render / "public-mecky/deployment.json").read_text()),
+                json.loads((render / "public-mecky/service.json").read_text()),
+                json.loads((render / "public-mecky/networkpolicy.json").read_text()),
+                json.loads((render / "web/deployment.json").read_text()),
+                json.loads((render / "web/networkpolicy.json").read_text()),
+                json.loads((render / "web/ingress.json").read_text()),
+            ],
+            "reviewedPublicKnowledge": {
+                "deployment": json.loads((render / "reviewed-public-knowledge/deployment.json").read_text()),
+                "service": json.loads((render / "reviewed-public-knowledge/service.json").read_text()),
+                "networkPolicy": json.loads((render / "reviewed-public-knowledge/networkpolicy.json").read_text()),
+                "kustomization": (render / "reviewed-public-knowledge/kustomization.yaml").read_text(),
+                "runtimePin": json.loads((render / "reviewed-public-knowledge/runtime-pin.json").read_text()),
+            },
+        })
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
     def test_seed_is_valid(self) -> None:
         result = VERIFIER.verify(ROOT)
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
+        self.assertEqual(result["renderFileSet"], "current")
+
+    def test_complete_reviewed_public_knowledge_render_set_is_accepted(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        result = VERIFIER.verify(candidate)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["renderFileSet"], "reviewed-public-knowledge")
+
+    def test_current_to_future_reviewed_knowledge_activation_is_accepted(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        result = VERIFIER.verify(candidate, ROOT)
+        self.assertTrue(result["baseTransitionVerified"])
+
+    def test_activation_rejects_unrelated_public_mecky_drift(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        value = json.loads(path.read_text())
+        next(item for item in value["spec"]["template"]["spec"]["containers"][0]["env"] if item["name"] == "NODE_NAME")["value"] = "unrelated drift"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        self.refresh_reviewed_integrity(candidate)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Public Mecky transformation drift"):
+            VERIFIER.verify(candidate, ROOT)
+
+    def test_activation_rejects_public_mecky_environment_reordering(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        value = json.loads(path.read_text())
+        value["spec"]["template"]["spec"]["containers"][0]["env"] = list(reversed(value["spec"]["template"]["spec"]["containers"][0]["env"]))
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        self.refresh_reviewed_integrity(candidate)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Public Mecky transformation drift"):
+            VERIFIER.verify(candidate, ROOT)
+
+    def test_activation_rejects_unrelated_existing_render_drift(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/web/deployment.json"
+        value = json.loads(path.read_text())
+        value["spec"]["replicas"] = 2
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        self.refresh_reviewed_integrity(candidate)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "activation changed existing file"):
+            VERIFIER.verify(candidate, ROOT)
+
+    def test_first_tracer_runtime_pin_rejects_each_independent_evidence_drift(self) -> None:
+        mutations = (
+            ("sourceRevision", lambda pin: pin.__setitem__("sourceRevision", "f" * 40)),
+            ("sourceTag", lambda pin: pin.__setitem__("sourceTag", "source-" + "f" * 40)),
+            ("imageDigest", lambda pin: pin.__setitem__("manifestDigest", "sha256:" + "0" * 64)),
+            ("slsaDigest", lambda pin: pin["slsaProvenance"].__setitem__("attestationDigest", "sha256:" + "0" * 64)),
+            ("spdxDigest", lambda pin: pin["spdxSbom"].__setitem__("attestationDigest", "sha256:" + "0" * 64)),
+            ("anonymousAuthDigest", lambda pin: pin["anonymousPublicPullReceipt"].__setitem__("authConfigCanonicalSha256", "sha256:" + "0" * 64)),
+            ("receiptDigest", lambda pin: pin["anonymousPublicPullReceipt"].__setitem__("receiptDigest", "sha256:" + "0" * 64)),
+        )
+        for label, mutate in mutations:
+            with self.subTest(label=label):
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                self.make_reviewed_knowledge_render(candidate)
+                path = candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge/runtime-pin.json"
+                value = json.loads(path.read_text())
+                mutate(value)
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(candidate)
+
+    def test_future_to_future_no_op_promotion_is_rejected(self) -> None:
+        base_temp, base = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(base)
+        candidate_temp, candidate = self.candidate()
+        self.addCleanup(candidate_temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        live_path = candidate / "reviewed-render/roebel-staging/live-preconditions.json"
+        live = json.loads(live_path.read_text())
+        live["previousEnvironmentHead"] = json.loads((base / "reviewed-render/roebel-staging/head.json").read_text())
+        live_path.write_text(json.dumps(live, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "no-op promotion"):
+            VERIFIER.verify(candidate, base)
+
+    def test_future_to_current_regression_is_rejected(self) -> None:
+        base_temp, base = self.candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.make_reviewed_knowledge_render(base)
+        candidate_temp, candidate = self.candidate()
+        self.addCleanup(candidate_temp.cleanup)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "cannot regress"):
+            VERIFIER.verify(candidate, base)
+
+    def test_each_future_reviewed_knowledge_file_is_required(self) -> None:
+        for relative in sorted(VERIFIER.REVIEWED_PUBLIC_KNOWLEDGE_FILES):
+            temp, candidate = self.candidate()
+            self.addCleanup(temp.cleanup)
+            self.make_reviewed_knowledge_render(candidate)
+            (candidate / relative).unlink()
+            with self.assertRaisesRegex(VERIFIER.VerificationError, "file set drift"):
+                VERIFIER.verify(candidate)
+
+    def test_partial_future_reviewed_knowledge_set_is_rejected(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        future = candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge"
+        future.mkdir()
+        for relative in ("deployment.json", "service.json"):
+            (future / relative).write_text("{}\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "file set drift"):
+            VERIFIER.verify(candidate)
+
+    def test_unknown_file_is_rejected_even_with_complete_future_set(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        (candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge/unknown.json").write_text("{}\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "file set drift"):
+            VERIFIER.verify(candidate)
+
+    def test_future_public_mecky_cannot_keep_legacy_synthetic_evidence(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        value = json.loads(path.read_text())
+        value["spec"]["template"]["spec"]["containers"][0]["env"].append({
+            "name": "STADTSTACK_E2E_REVIEWED_EVIDENCE",
+            "value": "legacy",
+        })
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "legacy synthetic evidence field"):
+            VERIFIER.verify(candidate)
+
+    def test_future_runtime_requires_non_http_probes_and_no_egress(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge/deployment.json"
+        value = json.loads(path.read_text())
+        value["spec"]["template"]["spec"]["containers"][0]["readinessProbe"] = {
+            "httpGet": {"path": "/healthz", "port": "http"},
+        }
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "readiness probe must be non-HTTP"):
+            VERIFIER.verify(candidate)
+
+        temp2, candidate2 = self.candidate()
+        self.addCleanup(temp2.cleanup)
+        self.make_reviewed_knowledge_render(candidate2)
+        policy_path = candidate2 / "reviewed-render/roebel-staging/reviewed-public-knowledge/networkpolicy.json"
+        policy = json.loads(policy_path.read_text())
+        policy["spec"]["egress"] = [{"to": []}]
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "NetworkPolicy boundary invalid"):
+            VERIFIER.verify(candidate2)
+
+    def test_future_runtime_rejects_unreviewed_deployment_rollout_controls(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge/deployment.json"
+        value = json.loads(path.read_text())
+        value["spec"]["paused"] = True
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        self.refresh_reviewed_integrity(candidate)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Deployment spec keys mismatch"):
+            VERIFIER.verify(candidate, ROOT)
+
+    def test_future_runtime_proof_binds_source_tag_and_immutable_digest(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.make_reviewed_knowledge_render(candidate)
+        path = candidate / "reviewed-render/roebel-staging/reviewed-public-knowledge/runtime-pin.json"
+        value = json.loads(path.read_text())
+        value["sourceTag"] = "source-" + "f" * 40
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "source tag invalid"):
+            VERIFIER.verify(candidate)
 
     def test_protected_verifier_rejects_case_topology_semantic_drift(self) -> None:
         temp, candidate = self.candidate()

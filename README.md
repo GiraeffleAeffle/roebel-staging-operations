@@ -224,6 +224,70 @@ subject equals the immutable manifest digest. The recovery-bound inventory
 checksum also covers the empty forbidden-resource and forbidden-secret
 inventories, so later population cannot silently weaken that boundary.
 
+## Reviewed public knowledge render migration (future complete set)
+
+The verifier also defines one future, all-or-nothing render shape for the
+standalone reviewed-knowledge runtime. It is admitted only when all five files
+below exist together; a missing file, an unknown extra, or a mixed current and
+future set fails closed:
+
+```text
+reviewed-render/roebel-staging/reviewed-public-knowledge/
+  deployment.json
+  service.json
+  networkpolicy.json
+  kustomization.yaml
+  runtime-pin.json
+```
+
+The future runtime is a tokenless, non-root, read-only-root-filesystem
+Deployment named `reviewed-public-knowledge` in
+`stadtstack-roebel-staging-lab`. It uses one immutable digest of
+`ghcr.io/giraeffleaeffle/stadtstack-reviewed-public-knowledge-runtime`, named
+TCP port `http`/8080, non-HTTP TCP startup/readiness/liveness probes, no
+ServiceAccount token, no added capabilities, no writable volumes, no Ingress,
+and a ClusterIP Service on 18080 targeting the named container port. Its
+NetworkPolicy allows ingress only from the `public-mecky` Pod in the same
+namespace and denies all egress.
+
+`runtime-pin.json` is a closed proof record. It binds the exact 40-character
+source revision and `source-<revision>` tag to the protected
+`reviewed-knowledge-runtime-publish.yml` workflow, GitHub-OIDC SLSA provenance,
+SPDX-2.3 evidence, and a public-package ORAS pull receipt resolved with a
+clean-empty auth configuration. The manifest digest and all evidence subject
+digests must agree; authority binding is `none` and deployment effect is
+false. The render checksum covers these five files as well as the existing
+resources.
+
+The first tracer is pinned to the independently verified values below; a
+self-asserted but merely syntactically valid replacement is not admitted:
+
+```text
+sourceRevision:       642e2741d2fd3cb867c0e1c315f04ef8e29d787b
+sourceTag:            source-642e2741d2fd3cb867c0e1c315f04ef8e29d787b
+image manifest:       sha256:7846fee172cfdad286773fa56c939d716ae32604cd0e47833f72536aa6a5c1dc
+SLSA attestation:     sha256:5d7f4a80f77bc0b1c7e036303325bf68f4bbb6e8a4dbeaaa839abf7abd330aab
+SPDX attestation:     sha256:052b53e71548f978fd00d22eb9dd20089dd58b05f6b9cc39590f3d8f25740bc4
+anonymous auth hash:  sha256:ec21c035eccb78eb5ca20ec95628eb351633621e09a130ac8d7e663714d40c7a
+anonymous receipt:    sha256:21a4c33b36db0831fa65375f6e7af812b87502986d97d5a45e7eb8b19108b04f
+```
+
+Activating this future runtime is a distinct, head-preserving transition.
+From the current render, the Release Set head and every existing file remain
+byte-identical except `integrity.json` and the deterministic Public Mecky
+environment transformation: remove the four legacy synthetic-evidence
+entries, point `STADTSTACK_PUBLIC_BASE_URL` at the reviewed Service, and append
+`MECKY_REVIEWED_SOURCE_KINDS`. Later future-set promotions are ordinary
+head-changing promotions; regression to the current set is forbidden.
+
+When this future set is present, Public Mecky must use exactly the internal
+reviewed runtime URL on port 18080 and the ordered source kinds
+`local_news,ratsinformation`. Legacy synthetic-evidence environment variables
+and `reviewed-evidence` ConfigMap references are rejected. The verifier change
+only establishes this admission policy; the actual runtime image publication,
+reviewed render values, and one separately reviewed Flux activation remain
+future work.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
