@@ -856,6 +856,37 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Ingress drift"):
                 VERIFIER.verify(candidate)
 
+    def test_web_ingress_csp_allows_only_the_exact_thirdweb_wallet_origin(self) -> None:
+        replacements = (
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://*.thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com;",
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com https://thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com;",
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com https://thirdweb.com;",
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "frame-src https://*.thirdweb.com;",
+        )
+        expected = (
+            "connect-src 'self' https://roebel-stadtstack.agentcart.eu https://embedded-wallet.thirdweb.com; "
+            "frame-src https://embedded-wallet.thirdweb.com;"
+        )
+        for replacement in replacements:
+            with self.subTest(replacement=replacement):
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                path = candidate / "reviewed-render/roebel-staging/web/ingress.json"
+                value = json.loads(path.read_text())
+                current = value["metadata"]["annotations"][
+                    "haproxy-ingress.github.io/config-backend"
+                ]
+                value["metadata"]["annotations"][
+                    "haproxy-ingress.github.io/config-backend"
+                ] = current.replace(expected, replacement)
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaisesRegex(VERIFIER.VerificationError, "Web Ingress drift"):
+                    VERIFIER.verify(candidate)
+
     def test_web_cannot_point_public_mecky_at_an_external_url(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
