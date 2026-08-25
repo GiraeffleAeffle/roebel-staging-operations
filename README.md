@@ -448,6 +448,52 @@ preserving the Release Set head and every other existing file. Routine
 Web/Mecky promotions must preserve every signed-Nostr file and boundary
 byte-for-byte.
 
+### Signed-Nostr preparation-only preflight
+
+Before a separate activation review, use
+`scripts/prepare-signed-nostr-preflight.py` with one explicit JSON observation
+document. The document contains the publisher `roebel_e2e_runtime_pin_v1`,
+artifact/provenance/SBOM observations, two anonymous digest-resolution
+receipts, one or more reviewed DNS/TLS observations, the exact Gnosis policy
+observation, the four prior boundary byte digests, all 24 ordered live target
+observations, external Secret metadata, and an optional executor receipt. The
+Secret field is metadata only:
+
+```json
+[
+  {
+    "name": "roebel-signed-nostr-runtime",
+    "namespace": "stadtstack-roebel-web-preview",
+    "keyNames": ["CITIZEN_RELAY_ADMISSION_TOKEN", "MECKY_PUBKEY"]
+  },
+  {
+    "name": "roebel-signed-nostr-runtime",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "keyNames": ["CITIZEN_RELAY_ADMISSION_TOKEN", "MECKY_PUBKEY"]
+  }
+]
+```
+
+No Secret object or Secret value is accepted. The tool is local and
+preparation-only:
+
+```text
+python3 scripts/prepare-signed-nostr-preflight.py --input observations.json
+```
+
+It emits canonical JSON describing the exact 16-file candidate plan, the
+exact 24-object suspended inventory, Secret key-shape prerequisite, blockers,
+and a non-executable lifecycle plan. It has no network client and no
+mutation mode; `--execute` is rejected. An absent executor is reported as an
+executor-sequencing blocker, and the plan cannot authorize Flux or a cluster
+operation. The protected activation constant is currently `None`, so even a
+complete observation set remains preparation-only until a new separately
+reviewed policy record exists.
+
+This tracer is independent of ordinary Röbel participation. Normal Röbel
+feed acceptance does not depend on the signed-Nostr preflight, its relays,
+its workbench, or its external Secret metadata.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
