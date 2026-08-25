@@ -223,6 +223,15 @@ class StaticPolicyTests(unittest.TestCase):
             env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_PRIVATE_WORKBENCH_URL"]["value"],
             "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/",
         )
+        literal_pins = {
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION": value["productPins"]["sourceRevision"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": value["productPins"]["imageManifestDigest"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256": value["productPins"]["migration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256": value["productPins"]["databaseSchemaSha256"],
+        }
+        for name, expected in literal_pins.items():
+            self.assertEqual(env[name], {"name": name, "value": expected})
+            self.assertNotIn("valueFrom", env[name])
         self.assertNotIn("activationEvidence", resources["runtimePin"])
 
 

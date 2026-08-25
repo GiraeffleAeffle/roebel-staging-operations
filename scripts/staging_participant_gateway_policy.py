@@ -866,6 +866,22 @@ def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str
                 + endpoints["workbench"]["admissionHeader"]["value"]
             ),
         },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
+            "value": value["productPins"]["sourceRevision"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
+            "value": value["productPins"]["imageManifestDigest"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
+            "value": value["productPins"]["migration"]["sha256"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256",
+            "value": value["productPins"]["databaseSchemaSha256"],
+        },
     ]
     deployment = {
         "apiVersion": "apps/v1",
