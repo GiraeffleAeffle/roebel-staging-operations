@@ -53,7 +53,7 @@ def no_secret_material(value: Any, path: str = "evidence") -> None:
         for key, child in value.items():
             lowered = str(key).lower().replace("-", "").replace("_", "")
             if any(marker.replace("_", "") in lowered for marker in SECRET_MARKERS):
-                if key not in {"secretMaterialization", "secretRefs", "secretKeySet"} or isinstance(child, (str, bytes)):
+                if key not in {"secretMaterialization", "secretRefs", "secretKeySet", "secretsKeysetsMatch"} or isinstance(child, (str, bytes)):
                     raise ActivationError(f"{path}.{key} is not permitted in activation evidence")
             no_secret_material(child, f"{path}.{key}")
     elif isinstance(value, list):
@@ -75,17 +75,18 @@ def validate_evidence(evidence: dict[str, Any], protected_revision: str, now: dt
     required = {"schemaVersion", "status", "protectedRevision", "checkedAt", "validUntil", "maxAgeSeconds", "sharedFluxSource", "webIngress", "networkPolicyInventory", "render", "publication", "secretMaterialization", "databaseVaultPreflight", "gnosisChainCheck", "dnsTlsEvidence", "rollback", "routeExpectations"}
     require_keys(evidence, required, "activation evidence")
     if evidence["schemaVersion"] != SCHEMA or evidence["status"] != "approved-separate-review": raise ActivationError("activation evidence is not separately approved")
-    if evidence["protectedRevision"] != protected_revision or len(protected_revision) != 40: raise ActivationError("protected revision does not match separately approved evidence")
+    if len(protected_revision) != 40 or any(char not in "0123456789abcdef" for char in protected_revision): raise ActivationError("protected revision must be 40 lowercase hexadecimal characters")
+    if evidence["protectedRevision"] != protected_revision: raise ActivationError("protected revision does not match separately approved evidence")
     if evidence["maxAgeSeconds"] != FRESHNESS_SECONDS: raise ActivationError("activation evidence freshness budget must be 300 seconds")
     checked, valid_until = parse_time(evidence["checkedAt"], "checkedAt"), parse_time(evidence["validUntil"], "validUntil")
     if not checked <= now <= valid_until or (valid_until - checked).total_seconds() > FRESHNESS_SECONDS: raise ActivationError("activation evidence is stale or not yet valid")
     source = require_keys(evidence["sharedFluxSource"], {"uid", "specCanonicalSha256", "artifactRevision", "artifactDigest"}, "sharedFluxSource")
     require_sha(source["specCanonicalSha256"], "sharedFluxSource.specCanonicalSha256"); require_sha(source["artifactDigest"], "sharedFluxSource.artifactDigest")
-    if not isinstance(source["uid"], str) or not source["uid"] or not isinstance(source["artifactRevision"], str): raise ActivationError("sharedFluxSource identity invalid")
+    if not isinstance(source["uid"], str) or not source["uid"] or source["artifactRevision"] != f"main@sha1:{protected_revision}": raise ActivationError("sharedFluxSource artifact revision is not the exact protected revision")
     ingress = require_keys(evidence["webIngress"], {"uid", "canonicalSha256"}, "webIngress"); require_sha(ingress["canonicalSha256"], "webIngress.canonicalSha256")
     if not isinstance(ingress["uid"], str) or not ingress["uid"]: raise ActivationError("webIngress UID invalid")
     inventories = require_keys(evidence["networkPolicyInventory"], {"networkPolicyCanonicalSha256", "ciliumNetworkPolicyCanonicalSha256", "ciliumClusterwideNetworkPolicyCanonicalSha256"}, "networkPolicyInventory")
-    for key, value in inventories.items(): require_sha(value, f"networkPolicyInventory.{key}")
+    for key in ("networkPolicyCanonicalSha256", "ciliumNetworkPolicyCanonicalSha256", "ciliumClusterwideNetworkPolicyCanonicalSha256"): require_sha(inventories[key], f"networkPolicyInventory.{key}")
     render = require_keys(evidence["render"], {"manifestSha256", "expectedObjects"}, "render")
     if set(render["manifestSha256"]) != set(RENDER_FILES): raise ActivationError("render manifest inventory is not closed")
     for name, value in render["manifestSha256"].items(): require_sha(value, f"render.manifestSha256.{name}")
@@ -95,6 +96,9 @@ def validate_evidence(evidence: dict[str, Any], protected_revision: str, now: dt
         require_keys(entry, {"kind", "name", "namespace"}, "render expected object")
         if entry["kind"] != expected_kind or entry["name"] != GATEWAY_NAME or entry["namespace"] != TARGET_NAMESPACE: raise ActivationError("render expected object ownership invalid")
     if not isinstance(evidence["secretMaterialization"], dict): raise ActivationError("secret materialization evidence must be semantic metadata")
+    projection = require_keys(evidence.get("liveSemanticProjection"), {"command", "canonicalSha256"}, "liveSemanticProjection")
+    if not isinstance(projection["command"], list) or not projection["command"] or not all(isinstance(item, str) and item for item in projection["command"]): raise ActivationError("live semantic projection command invalid")
+    require_sha(projection["canonicalSha256"], "liveSemanticProjection.canonicalSha256")
 
 def json_object(raw: str, label: str) -> dict[str, Any]:
     try: value = json.loads(raw)
@@ -128,6 +132,59 @@ def artifact_fields(value: dict[str, Any]) -> tuple[str | None, str | None]:
     artifact = value.get("status", {}).get("artifact", {}); return artifact.get("revision"), artifact.get("digest")
 def inventory_digest(value: dict[str, Any]) -> str: return digest(value.get("items", []))
 
+def selector_matches(selector: dict[str, Any], labels: dict[str, str]) -> bool:
+    """Closed Kubernetes/Cilium label selector evaluator; empty means all pods."""
+    if not isinstance(selector, dict): raise ActivationError("policy selector is not an object")
+    allowed = {"matchLabels", "matchExpressions"}
+    if set(selector) - allowed: raise ActivationError("policy selector has unsupported fields")
+    match_labels = selector.get("matchLabels", {})
+    expressions = selector.get("matchExpressions", [])
+    if not isinstance(match_labels, dict) or not isinstance(expressions, list): raise ActivationError("policy selector shape invalid")
+    if any(not isinstance(key, str) or labels.get(key) != value for key, value in match_labels.items()): return False
+    for expression in expressions:
+        if not isinstance(expression, dict) or set(expression) - {"key", "operator", "values"}: raise ActivationError("policy match expression invalid")
+        key, operator, values = expression.get("key"), expression.get("operator"), expression.get("values", [])
+        if not isinstance(key, str) or operator not in {"In", "NotIn", "Exists", "DoesNotExist"} or not isinstance(values, list): raise ActivationError("policy match expression invalid")
+        value = labels.get(key)
+        if operator == "In" and (value is None or value not in values): return False
+        if operator == "NotIn" and value is not None and value in values: return False
+        if operator == "Exists" and value is None: return False
+        if operator == "DoesNotExist" and value is not None: return False
+    return True
+
+def assert_no_preexisting_policy_selects_gateway(inventories: dict[str, dict[str, Any]], evidence: dict[str, Any]) -> None:
+    allowlist = evidence["networkPolicyInventory"].get("preexistingSelectorAllowlist", [])
+    if not isinstance(allowlist, list): raise ActivationError("policy selector allowlist invalid")
+    allowed = {(entry.get("kind"), entry.get("namespace"), entry.get("name"), entry.get("canonicalSha256")) for entry in allowlist if isinstance(entry, dict)}
+    labels = {"app.kubernetes.io/component": "staging-participant-gateway", "app.kubernetes.io/name": GATEWAY_NAME, "app.kubernetes.io/part-of": "stadtstack", "stadtstack.io/authority": "none", "stadtstack.io/environment": "staging"}
+    for inventory_key, inventory in inventories.items():
+        for item in inventory.get("items", []):
+            kind, metadata = item.get("kind"), item.get("metadata", {})
+            namespace, name = metadata.get("namespace", ""), metadata.get("name", "")
+            if inventory_key == "networkPolicyCanonicalSha256":
+                if namespace != TARGET_NAMESPACE: continue
+                selectors = [item.get("spec", {}).get("podSelector", {})]
+            else:
+                if inventory_key == "ciliumNetworkPolicyCanonicalSha256" and namespace != TARGET_NAMESPACE: continue
+                specs = item.get("specs") if isinstance(item.get("specs"), list) else [item.get("spec", {})]
+                selectors = [spec.get("endpointSelector", {}) for spec in specs if isinstance(spec, dict)]
+            if any(selector_matches(selector, labels) for selector in selectors):
+                identity = (kind, namespace, name, digest(item))
+                if identity not in allowed: raise ActivationError(f"preexisting {kind}/{namespace}/{name} selects participant gateway labels")
+
+def assert_semantic_projection(runner: Runner, evidence: dict[str, Any]) -> dict[str, Any]:
+    """Run a protected-runner local preflight that emits only a secret-free projection."""
+    command = evidence["liveSemanticProjection"]["command"]
+    output = run_checked(runner, command, label="live semantic preflight")
+    projection = json_object(output, "live semantic preflight")
+    no_secret_material(projection, "live semantic preflight")
+    if digest(projection) != evidence["liveSemanticProjection"]["canonicalSha256"]: raise ActivationError("live semantic preflight drifted")
+    required = {"secretsKeysetsMatch", "databaseVaultPassed", "gnosisChainId", "dnsTlsPassed", "haproxyUid", "haproxyReplicas", "sourceIpRateLimitPerReplica"}
+    require_keys(projection, required, "live semantic preflight")
+    if projection["secretsKeysetsMatch"] is not True or projection["databaseVaultPassed"] is not True or projection["gnosisChainId"] != "0x64" or projection["dnsTlsPassed"] is not True: raise ActivationError("live semantic preflight failed")
+    if not isinstance(projection["haproxyUid"], str) or not projection["haproxyUid"] or projection["haproxyReplicas"] != 3 or projection["sourceIpRateLimitPerReplica"] != 30: raise ActivationError("HAProxy identity, replica, or per-source rate semantics drifted")
+    return projection
+
 def assert_live_preconditions(runner: Runner, kubeconfig: str, evidence: dict[str, Any]) -> dict[str, Any]:
     base = kube_base(kubeconfig)
     source = get_json(runner, base + ["-n", FLUX_NAMESPACE, "get", "gitrepository", SOURCE_NAME], "shared Flux GitRepository")
@@ -144,17 +201,19 @@ def assert_live_preconditions(runner: Runner, kubeconfig: str, evidence: dict[st
         item = get_json(runner, base + ["get", resource] + namespace_args, resource)
         if inventory_digest(item) != evidence["networkPolicyInventory"][key]: raise ActivationError(f"{resource} inventory or selector drifted")
         inventories[key] = item
+    assert_no_preexisting_policy_selects_gateway(inventories, evidence)
+    semantic = assert_semantic_projection(runner, evidence)
     kustomization = get_json(runner, base + ["-n", FLUX_NAMESPACE, "get", "kustomization", KUSTOMIZATION_NAME], "participant Kustomization")
     if kustomization.get("spec", {}).get("suspend") is not True: raise ActivationError("participant Kustomization must be dormant before activation")
     if kustomization.get("spec", {}).get("sourceRef", {}).get("name") != SOURCE_NAME: raise ActivationError("participant Kustomization references the wrong source")
     if kustomization.get("metadata", {}).get("labels", {}).get("stadtstack.io/flux-tenant") != "roebel-staging": raise ActivationError("participant Kustomization tenant label missing")
-    return {"source": source, "webIngress": web, "inventories": inventories, "kustomization": kustomization}
+    return {"source": source, "webIngress": web, "inventories": inventories, "semantic": semantic, "kustomization": kustomization}
 
 def load_render(render_root: Path, evidence: dict[str, Any]) -> dict[str, bytes]:
     rendered: dict[str, bytes] = {}
     for name in RENDER_FILES:
         path = render_root / name
-        if not path.is_file(): raise ActivationError(f"render file absent: {name}")
+        if not path.is_file() or path.is_symlink(): raise ActivationError(f"render file is absent or not a regular file: {name}")
         content = path.read_bytes()
         if bytes_digest(content) != evidence["render"]["manifestSha256"][name]: raise ActivationError(f"render file digest mismatch: {name}")
         rendered[name] = content
@@ -217,17 +276,23 @@ def rollback(runner: Runner, kubeconfig: str, kustomization: dict[str, Any], cre
         try:
             current = get_json(runner, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "get", "kustomization", KUSTOMIZATION_NAME], "rollback Kustomization")
             if current.get("metadata", {}).get("uid") != kustomization.get("metadata", {}).get("uid"): errors.append("rollback refuses participant Kustomization: UID changed")
-            else: cas_suspend(runner, kubeconfig, current["metadata"]["resourceVersion"], True)
+            else:
+                cas_suspend(runner, kubeconfig, current["metadata"]["resourceVersion"], True)
+                suspended = get_json(runner, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "get", "kustomization", KUSTOMIZATION_NAME], "rollback Kustomization suspension")
+                if suspended.get("metadata", {}).get("uid") != current.get("metadata", {}).get("uid") or suspended.get("spec", {}).get("suspend") is not True: errors.append("rollback Kustomization suspension could not be verified")
         except Exception as exc: errors.append(str(exc))
-    for item in sorted(created, key=lambda item: 0 if item["kind"] == "Ingress" else 1):
+    deletion_order = {"Ingress": 0, "Deployment": 1, "Service": 2, "ServiceAccount": 3, "NetworkPolicy": 4}
+    for item in sorted(created, key=lambda item: deletion_order[item["kind"]]):
         try: delete_exact(runner, kubeconfig, item["kind"].lower(), item["name"], item["uid"])
         except Exception as exc: errors.append(str(exc))
     return errors
 
-def receipt(evidence: dict[str, Any], protected_revision: str, *, status: str, live: dict[str, Any] | None = None, route_matrix: list[dict[str, Any]] | None = None, rollback_errors: list[str] | None = None) -> dict[str, Any]:
+def receipt(evidence: dict[str, Any], protected_revision: str, *, status: str, live: dict[str, Any] | None = None, created: list[dict[str, str]] | None = None, route_matrix: list[dict[str, Any]] | None = None, transaction: dict[str, Any] | None = None, rollback_errors: list[str] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {"schemaVersion": RECEIPT_SCHEMA, "status": status, "protectedRevision": protected_revision, "activationEvidenceCanonicalSha256": digest(evidence), "createOrder": list(CREATE_ORDER), "secretValuesCaptured": False, "at": utc_now().isoformat().replace("+00:00", "Z")}
     if live is not None: result["livePreconditionObjectUids"] = {"sharedFluxSource": live["source"]["metadata"]["uid"], "webIngress": live["webIngress"]["metadata"]["uid"], "participantKustomization": live["kustomization"]["metadata"]["uid"]}
+    if created is not None: result["createdObjects"] = created
     if route_matrix is not None: result["routeMatrix"] = route_matrix
+    if transaction is not None: result["transaction"] = transaction
     if rollback_errors: result["rollbackErrors"] = rollback_errors
     return result
 
@@ -243,26 +308,41 @@ def activate(evidence: dict[str, Any], protected_revision: str, render_root: Pat
     if not live_mode: return receipt(evidence, protected_revision, status="dry-run-passed") | {"plan": command_plan(render_root, evidence)}
     if not kubeconfig or not Path(kubeconfig).is_file() or not endpoint: raise ActivationError("live mode requires explicit existing --kubeconfig and --gateway-url")
     executor = runner or Runner(); live = assert_live_preconditions(executor, kubeconfig, evidence); rendered = load_render(render_root, evidence)
-    created: list[dict[str, str]] = []; flux_active = False
+    created: list[dict[str, str]] = []; flux_active = False; transaction: dict[str, Any] = {"startedAt": utc_now().isoformat().replace("+00:00", "Z"), "healthBeforeIngress": False, "ingressCreatedLast": False}
     try:
         for name, kind in zip(CREATE_FILES, CREATE_ORDER, strict=True):
             run_checked(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "create", "-f", "-"], input_text=rendered[name].decode(), label=f"create-only {kind}")
             created_object = get_json(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "get", kind.lower(), GATEWAY_NAME], f"created {kind}")
             uid = created_object.get("metadata", {}).get("uid")
             if not uid: raise ActivationError(f"created {kind} has no UID")
-            created.append({"kind": kind, "name": GATEWAY_NAME, "uid": uid})
-            if kind == "Deployment": run_checked(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "rollout", "status", f"deployment/{GATEWAY_NAME}", "--timeout=120s"], label="participant internal health")
+            created.append({"kind": kind, "name": GATEWAY_NAME, "uid": uid, "resourceVersion": created_object["metadata"].get("resourceVersion", ""), "canonicalSha256": digest(created_object)})
+            if kind == "Deployment":
+                run_checked(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "rollout", "status", f"deployment/{GATEWAY_NAME}", "--timeout=120s"], label="participant internal health")
+                transaction["healthBeforeIngress"] = True; transaction["healthVerifiedAt"] = utc_now().isoformat().replace("+00:00", "Z")
+            if kind == "Ingress":
+                if not transaction["healthBeforeIngress"]: raise ActivationError("Ingress cannot be created before internal health")
+                transaction["ingressCreatedLast"] = True; transaction["ingressCreatedAt"] = utc_now().isoformat().replace("+00:00", "Z")
         web_after = get_json(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "get", "ingress", WEB_INGRESS_NAME], "Web Ingress after creates")
         if digest(web_after) != evidence["webIngress"]["canonicalSha256"]: raise ActivationError("existing Web Ingress changed during activation")
         routes = run_route_matrix(executor, endpoint, evidence)
-        cas_suspend(executor, kubeconfig, live["kustomization"]["metadata"]["resourceVersion"], False); flux_active = True
+        transaction["casBeforeResourceVersion"] = live["kustomization"]["metadata"]["resourceVersion"]
+        cas_suspend(executor, kubeconfig, transaction["casBeforeResourceVersion"], False); flux_active = True
+        after_cas = get_json(executor, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "get", "kustomization", KUSTOMIZATION_NAME], "participant Kustomization CAS postcondition")
+        if after_cas.get("metadata", {}).get("uid") != live["kustomization"]["metadata"]["uid"] or after_cas.get("spec", {}).get("suspend") is not False: raise ActivationError("participant Kustomization CAS postcondition failed")
+        transaction["casAfterResourceVersion"] = after_cas["metadata"].get("resourceVersion", "")
         run_checked(executor, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "wait", "--for=condition=Ready", f"kustomization/{KUSTOMIZATION_NAME}", "--timeout=120s"], label="participant Flux readiness")
         ready = get_json(executor, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "get", "kustomization", KUSTOMIZATION_NAME], "participant Flux exact revision")
         if ready.get("status", {}).get("lastAppliedRevision") != evidence["sharedFluxSource"]["artifactRevision"]: raise ActivationError("participant Flux applied an unexpected revision")
-        return receipt(evidence, protected_revision, status="activated", live=live, route_matrix=routes)
+        # The source, existing Web ingress and all policy inventories are re-read
+        # after Flux activation; only the expected suspend transition may differ.
+        source_after = get_json(executor, kube_base(kubeconfig) + ["-n", FLUX_NAMESPACE, "get", "gitrepository", SOURCE_NAME], "shared Flux source postcondition")
+        web_after_flux = get_json(executor, kube_base(kubeconfig) + ["-n", TARGET_NAMESPACE, "get", "ingress", WEB_INGRESS_NAME], "Web Ingress postcondition")
+        if source_after.get("metadata", {}).get("uid") != live["source"]["metadata"]["uid"] or object_spec_digest(source_after) != evidence["sharedFluxSource"]["specCanonicalSha256"] or artifact_fields(source_after) != (evidence["sharedFluxSource"]["artifactRevision"], evidence["sharedFluxSource"]["artifactDigest"]) or digest(web_after_flux) != evidence["webIngress"]["canonicalSha256"]: raise ActivationError("shared source or existing Web Ingress changed during activation")
+        transaction["completedAt"] = utc_now().isoformat().replace("+00:00", "Z"); transaction["appliedRevision"] = ready["status"]["lastAppliedRevision"]; transaction["sourceArtifactDigest"] = evidence["sharedFluxSource"]["artifactDigest"]
+        return receipt(evidence, protected_revision, status="activated", live=live, created=created, route_matrix=routes, transaction=transaction)
     except Exception as exc:
         rollback_errors = rollback(executor, kubeconfig, live["kustomization"], created, flux_active)
-        failed = receipt(evidence, protected_revision, status="rolled-back", live=live, rollback_errors=rollback_errors)
+        failed = receipt(evidence, protected_revision, status="rolled-back", live=live, created=created, transaction=transaction, rollback_errors=rollback_errors)
         raise ActivationError(f"activation failed and rollback was attempted: {exc}; receipt={canonical(failed)}") from exc
 
 def main() -> int:

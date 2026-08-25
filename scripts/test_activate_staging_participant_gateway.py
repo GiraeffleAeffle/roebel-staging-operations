@@ -29,7 +29,8 @@ def render():
 def evidence(root):
     source = obj("GitRepository", MODULE.SOURCE_NAME, MODULE.FLUX_NAMESPACE, "source-uid", spec={"interval": "1m"}, status={"artifact": {"revision": "main@sha1:" + "a" * 40, "digest": sha("b")}})
     web = obj("Ingress", MODULE.WEB_INGRESS_NAME, uid="web-uid")
-    return {"schemaVersion": MODULE.SCHEMA, "status": "approved-separate-review", "protectedRevision": "a" * 40, "checkedAt": "2026-08-25T11:56:00Z", "validUntil": "2026-08-25T12:01:00Z", "maxAgeSeconds": 300, "sharedFluxSource": {"uid": "source-uid", "specCanonicalSha256": MODULE.object_spec_digest(source), "artifactRevision": "main@sha1:" + "a" * 40, "artifactDigest": sha("b")}, "webIngress": {"uid": "web-uid", "canonicalSha256": MODULE.digest(web)}, "networkPolicyInventory": {"networkPolicyCanonicalSha256": sha("c"), "ciliumNetworkPolicyCanonicalSha256": sha("d"), "ciliumClusterwideNetworkPolicyCanonicalSha256": sha("e")}, "render": {"manifestSha256": {name: MODULE.bytes_digest((root / name).read_bytes()) for name in MODULE.RENDER_FILES}, "expectedObjects": [{"kind": kind, "name": MODULE.GATEWAY_NAME, "namespace": MODULE.TARGET_NAMESPACE} for kind in MODULE.CREATE_ORDER]}, "publication": {"verified": True}, "secretMaterialization": {"secretRefs": ["config", "runtime"], "keysetPresent": True}, "databaseVaultPreflight": {"passed": True}, "gnosisChainCheck": {"chainId": "0x64"}, "dnsTlsEvidence": {"passed": True}, "rollback": {"ingressFirst": True}, "routeExpectations": routes()}
+    projection = {"secretsKeysetsMatch": True, "databaseVaultPassed": True, "gnosisChainId": "0x64", "dnsTlsPassed": True, "haproxyUid": "haproxy-uid", "haproxyReplicas": 3, "sourceIpRateLimitPerReplica": 30}
+    return {"schemaVersion": MODULE.SCHEMA, "status": "approved-separate-review", "protectedRevision": "a" * 40, "checkedAt": "2026-08-25T11:56:00Z", "validUntil": "2026-08-25T12:01:00Z", "maxAgeSeconds": 300, "sharedFluxSource": {"uid": "source-uid", "specCanonicalSha256": MODULE.object_spec_digest(source), "artifactRevision": "main@sha1:" + "a" * 40, "artifactDigest": sha("b")}, "webIngress": {"uid": "web-uid", "canonicalSha256": MODULE.digest(web)}, "networkPolicyInventory": {"networkPolicyCanonicalSha256": sha("c"), "ciliumNetworkPolicyCanonicalSha256": sha("d"), "ciliumClusterwideNetworkPolicyCanonicalSha256": sha("e"), "preexistingSelectorAllowlist": []}, "render": {"manifestSha256": {name: MODULE.bytes_digest((root / name).read_bytes()) for name in MODULE.RENDER_FILES}, "expectedObjects": [{"kind": kind, "name": MODULE.GATEWAY_NAME, "namespace": MODULE.TARGET_NAMESPACE} for kind in MODULE.CREATE_ORDER]}, "publication": {"verified": True}, "secretMaterialization": {"secretRefs": ["config", "runtime"], "keysetPresent": True}, "databaseVaultPreflight": {"passed": True}, "gnosisChainCheck": {"chainId": "0x64"}, "dnsTlsEvidence": {"passed": True}, "rollback": {"ingressFirst": True}, "liveSemanticProjection": {"command": ["protected-preflight", "--json"], "canonicalSha256": MODULE.digest(projection)}, "routeExpectations": routes()}
 
 class FakeRunner(MODULE.Runner):
     def __init__(self, mapping): self.mapping, self.calls = mapping, []
@@ -57,6 +58,15 @@ class Tests(unittest.TestCase):
     def test_negative_route_matrix_cannot_be_widened(self):
         root = render(); value = evidence(root); value["routeExpectations"]["HEAD " + MODULE.ALLOWED_PATHS[0]] = 200
         with self.assertRaisesRegex(MODULE.ActivationError, "widened"): MODULE.route_requests(value)
+    def test_existing_empty_or_matching_policy_is_a_fail_closed_blocker(self):
+        inventories = {"networkPolicyCanonicalSha256": {"items": [obj("NetworkPolicy", "broad", MODULE.TARGET_NAMESPACE, spec={"podSelector": {}})]}, "ciliumNetworkPolicyCanonicalSha256": {"items": []}, "ciliumClusterwideNetworkPolicyCanonicalSha256": {"items": []}}
+        root = render()
+        with self.assertRaisesRegex(MODULE.ActivationError, "selects participant"):
+            MODULE.assert_no_preexisting_policy_selects_gateway(inventories, evidence(root))
+    def test_render_symlink_is_rejected(self):
+        root = render(); target = root / "networkpolicy.real"; target.write_text((root / "networkpolicy.json").read_text()); (root / "networkpolicy.json").unlink(); (root / "networkpolicy.json").symlink_to(target.name)
+        with self.assertRaisesRegex(MODULE.ActivationError, "not a regular file"):
+            MODULE.activate(evidence(root), "a" * 40, root, kubeconfig=None, endpoint=None, live_mode=False, now=lambda: NOW)
     def test_route_probe_allows_expected_negative_http_statuses(self):
         root = render(); value = evidence(root)
         def response():
