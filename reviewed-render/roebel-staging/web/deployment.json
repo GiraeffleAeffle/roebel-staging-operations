@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:9a8fd671b483b413bfa21615c90e3ce3209f09927cb9f2f08bfd98177be070c7",
-      "stadtstack.io/source-revision": "aab118f00a283807b56c307fabda8197f9a84ef1"
+      "stadtstack.io/release-set-sha256": "sha256:29f6cb0fa81a12027f103112af17bfd856dd48211cf3d2f4e0c8108aa8424a08",
+      "stadtstack.io/source-revision": "7f691b4de76c15cf72c18dc12f86003399015be0"
     },
     "labels": {
       "app.kubernetes.io/component": "readonly-presentation",
@@ -38,7 +38,7 @@
           "stadtstack.io/public-config-sha256": "sha256:4c1e49cbcfbb6622551964eaeaae0089e745e0a6317855143502014d51b910df",
           "stadtstack.io/release": "roebel-mecky-conversation-v1",
           "stadtstack.io/release-contract-sha256": "sha256:11234f4fce5593c235b6a1684bba8af6a4d365f1518705daaf0035a3f992306c",
-          "stadtstack.io/source-revision": "aab118f00a283807b56c307fabda8197f9a84ef1",
+          "stadtstack.io/source-revision": "7f691b4de76c15cf72c18dc12f86003399015be0",
           "stadtstack.io/truth-state": "staging-synthetic-workflow",
           "stadtstack.io/update": "native-post-topic-mecky-flow"
         },
@@ -131,7 +131,7 @@
                 "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:4f0062aa1694a7f578b55cf7e30c8e0dc58a2798d840e8da58812e8aebe3b566",
+            "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:e6a8b2f26acc1f22c5f8e13ea78d5355331a2d584bb1547614c286407806fdef",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
