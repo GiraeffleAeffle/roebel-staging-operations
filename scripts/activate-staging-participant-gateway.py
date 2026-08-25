@@ -189,7 +189,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
     rendered = render(rev, p)
     if not live: return {"schemaVersion": RECEIPT_SCHEMA, "status": "dry-run-passed-policy-wired", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "at": now()}
     require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
-    started = now(); prior = verify_live(r, kube, p, dormant=True); created: list[tuple[str, dict[str, Any]]] = []
+    started = now(); prior = verify_live(r, kube, p, dormant=True); created: list[tuple[str, dict[str, Any]]] = []; timings: dict[str, str] = {"preflightVerifiedAt": now()}
     try:
         for file, kind in zip(CREATE_FILES, CREATE_KINDS, strict=True):
             # ``create -o json`` is the only creation record we trust: it binds
@@ -201,13 +201,17 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
             if kind == "Deployment":
                 checked(r, kb(kube) + ["-n", NAMESPACE, "rollout", "status", f"deployment/{NAME}", "--timeout=120s"], "deployment readiness")
                 checked(r, kb(kube) + ["-n", "ingress-system", "rollout", "status", "daemonset/haproxy-ingress", "--timeout=120s"], "HAProxy readiness")
+                timings["internalAndHaproxyReadyAt"] = now()
+            if kind == "Ingress": timings["ingressCreatedAt"] = now()
         routes = route_matrix(r, p)
         k = prior["dormantKustomization"]; patch = canonical({"metadata": {"resourceVersion": k["metadata"]["resourceVersion"]}, "spec": {"suspend": False}})
         checked(r, kb(kube) + ["-n", FLUX_NAMESPACE, "patch", "kustomization", NAME, "--type=merge", "-p", patch], "CAS unsuspend")
         after = live_obj(r, kube, "kustomization", NAME, FLUX_NAMESPACE); require(after.get("spec", {}).get("suspend") is False, "CAS unsuspend ambiguous")
         checked(r, kb(kube) + ["-n", FLUX_NAMESPACE, "wait", "--for=condition=Ready", f"kustomization/{NAME}", "--timeout=120s"], "Flux readiness")
         inventory(r, kube, p); final = verify_live(r, kube, p, dormant=False)
-        return {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "completedAt": now(), "routeMatrix": routes, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"], "canonicalSha256": digest(x)} for kind, x in created], "liveProjectionDigests": {key: digest(value) for key, value in final.items()}}
+        timings["completedAt"] = now()
+        require(timings.get("internalAndHaproxyReadyAt", "") <= timings.get("ingressCreatedAt", ""), "Ingress was not created last after health")
+        return {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "timings": timings, "routeMatrix": routes, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"], "canonicalSha256": digest(x)} for kind, x in created], "preProjectionDigests": {key: digest(value) for key, value in prior.items()}, "postProjectionDigests": {key: digest(value) for key, value in final.items()}}
     except Exception as exc:
         complete, errors = rollback(r, kube, created, prior["dormantKustomization"])
         status = "rolled-back" if complete else "rollback-incomplete"

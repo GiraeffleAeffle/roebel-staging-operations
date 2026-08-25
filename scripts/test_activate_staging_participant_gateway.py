@@ -78,7 +78,7 @@ class ExecutorTests(unittest.TestCase):
             if " patch " in " " + " ".join(args) + " ": state["active"] = True
             return original_run(args, input_text=input_text)
         runner.run = run
-        with patch.object(MODULE, "render", return_value=blobs), patch.object(MODULE, "verify_live", side_effect=verify), patch.object(MODULE, "live_obj", side_effect=live), patch.object(MODULE, "inventory", return_value=None), patch.object(MODULE, "route_matrix", return_value=[{"method": "GET", "path": "/api/staging-participant/v1/status", "status": 200}]), patch.object(MODULE, "now", side_effect=["start", "health", "ingress", "done"]):
+        with patch.object(MODULE, "render", return_value=blobs), patch.object(MODULE, "verify_live", side_effect=verify), patch.object(MODULE, "live_obj", side_effect=live), patch.object(MODULE, "inventory", return_value=None), patch.object(MODULE, "route_matrix", return_value=[{"method": "GET", "path": "/api/staging-participant/v1/status", "status": 200}]), patch.object(MODULE, "now", side_effect=["2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z", "2026-01-01T00:00:03Z", "2026-01-01T00:00:04Z"]):
             result = MODULE.activate(value, REV, str(kube), runner, True, Path(tempfile.mkstemp()[1]))
         self.assertEqual(result["status"], "activated"); self.assertEqual([x["kind"] for x in result["created"]], list(MODULE.CREATE_KINDS)); self.assertTrue(all("canonicalSha256" in x for x in result["created"]))
     def test_uncertain_create_rolls_back_incomplete_and_persists(self):
