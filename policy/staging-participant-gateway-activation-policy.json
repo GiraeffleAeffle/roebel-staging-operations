@@ -336,6 +336,7 @@
     "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
     "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
     "deploymentDeletion": "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets",
+    "exposureBreaker": "delete-exact-owned-service-before-flux-and-reprove-after-flux-on-every-rollback",
     "firstStep": "delete-exact-owned-participant-ingress-uid",
     "networkPolicyDeletion": "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
     "preserve": [
@@ -354,6 +355,7 @@
     ],
     "secondStep": "cas-suspend-both-participant-kustomizations",
     "termination": "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt",
+    "unboundDeploymentIsolation": "retain-gateway-networkpolicy-until-exact-name-pod-replicaset-absence",
     "uncertainCreateRediscovery": "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback"
   },
   "runtime": {

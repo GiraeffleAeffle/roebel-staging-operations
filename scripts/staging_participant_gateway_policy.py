@@ -414,6 +414,8 @@ def _static_descriptor() -> dict[str, Any]:
             "secondStep": "cas-suspend-both-participant-kustomizations",
             "termination": "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt",
             "uncertainCreateRediscovery": "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback",
+            "exposureBreaker": "delete-exact-owned-service-before-flux-and-reprove-after-flux-on-every-rollback",
+            "unboundDeploymentIsolation": "retain-gateway-networkpolicy-until-exact-name-pod-replicaset-absence",
             "deploymentDeletion": "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets",
             "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
             "networkPolicyDeletion": "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
@@ -731,6 +733,10 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         == "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt"
         and value["rollback"]["uncertainCreateRediscovery"]
         == "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback"
+        and value["rollback"]["exposureBreaker"]
+        == "delete-exact-owned-service-before-flux-and-reprove-after-flux-on-every-rollback"
+        and value["rollback"]["unboundDeploymentIsolation"]
+        == "retain-gateway-networkpolicy-until-exact-name-pod-replicaset-absence"
         and value["rollback"]["deploymentDeletion"]
         == "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets"
         and value["rollback"]["networkPolicyDeletion"]
@@ -886,7 +892,7 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
         # Reject unknown/trailing/query-normalized paths before evaluating the
         # method matrix.  Otherwise an unknown GET/OPTIONS would be mislabeled
         # 405 and the protected 404 route contract could never pass.
-        "http-request deny deny_status 404 "
+        "http-request deny deny_status 404 if "
         + " ".join(f"!{{ path {path} }}" for path in paths),
         "http-request deny deny_status 405 if { method POST } "
         + " ".join(f"!{{ path {path} }}" for path in post_paths),

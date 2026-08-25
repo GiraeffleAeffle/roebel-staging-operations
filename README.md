@@ -548,6 +548,15 @@ transaction abort; further termination is deferred through bounded rollback
 and durable receipt persistence. Secrets, unrelated policies and
 civic-authority systems are never rollback targets.
 
+Rollback always deletes and proves absence of the exact transaction-owned
+Service before waiting on Flux, because even an initially deleted Ingress can
+be recreated with a new UID before a failing reconciler becomes quiescent. It
+re-proves Service absence after the Flux/reappearance phase even when that
+phase fails, and never adopts or deletes an unknown Ingress. If no
+transaction-owned Deployment was bound, gateway isolation is retained until
+the exact Deployment name and matching Pods and ReplicaSets are all proved
+absent.
+
 The product/database preflight is the container-internal exact `GET /status`
 contract, not the public `/api/staging-participant/v1/status` session-UI route.
 The runner first verifies the complete ready Pod set and immutable runtime

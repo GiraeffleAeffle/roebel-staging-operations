@@ -896,6 +896,11 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
                 if family == "cilium-clusterwide" or namespace == NAMESPACE: candidates.extend(label_sets["gateway"]["cilium"])
                 if family == "cilium-clusterwide" or namespace == WORKBENCH_NAMESPACE: candidates.extend(label_sets["workbench"]["cilium"])
                 if candidates and any(_selector_could_match_with_additional_labels_v4(spec.get("endpointSelector", {}), labels) for spec in specs for labels in candidates): raise ActivationError(f"pre-existing {resource} overlaps participant selectors: {namespace}/{name}")
+    validated_keys = {(item["namespace"], item["name"]) for item in owned_validated}
+    require(
+        validated_keys == set(owned) and len(owned_validated) == len(owned),
+        "owned NetworkPolicy set absent or incomplete during additive-policy scan",
+    )
     return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1250,6 +1255,8 @@ def rollback_v4(
 ) -> dict[str, Any]:
     errors: list[str] = []; deleted: list[dict[str, Any]] = []; flux: dict[str, Any] = {}; final_checks: dict[str, Any] = {}
     ingress = next((item for item in created if item.logical_name == "gateway.ingress"), None)
+    exposure_service = next((item for item in created if item.logical_name == "gateway.service"), None)
+    exposure_service_deleted = False
     settings = p["httpBoundary"]["timeoutsSeconds"]; timeout = settings["rollback"]; deadline = time.monotonic() + timeout
     # Re-bind the protected cluster before the first rollback mutation. A
     # changed API origin/CA/SPKI/cluster UID is not authority to delete objects
@@ -1262,8 +1269,28 @@ def rollback_v4(
         except Exception as exc: errors.append(str(exc))
     rollback_authorized = not errors
     # Exposure closes first, before either reconciler is touched.
+    ingress_absence_proved = False
     if ingress and rollback_authorized:
-        try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
+        try:
+            ingress_result = delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic())))
+            deleted.append(ingress_result); ingress_absence_proved = ingress_result.get("absent") is True
+        except Exception as exc: errors.append(str(exc))
+    # A 409 or unbindable create response is never authority to touch an
+    # unknown Ingress. Always sever the exact transaction-owned backend before
+    # waiting on Flux: even an initially deleted owned Ingress can be recreated
+    # with a new UID before a failing reconciler becomes quiescent.
+    if rollback_authorized and exposure_service is not None:
+        try:
+            service_result = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())))
+            deleted.append(service_result); exposure_service_deleted = service_result.get("absent") is True
+            require(exposure_service_deleted, "participant Service exposure-break absence was not proved")
+            final_checks["exposureBreak"] = {
+                "reason": "always-remove-owned-service-before-flux",
+                "initialIngressAbsenceProved": ingress_absence_proved,
+                "serviceUid": exposure_service.observed.get("metadata", {}).get("uid"),
+                "serviceAbsent": True,
+                "unknownIngressUntouched": ingress is None,
+            }
         except Exception as exc: errors.append(str(exc))
     if bootstrap and rollback_authorized:
         for owner in ("gateway", "workbenchIngress"):
@@ -1285,8 +1312,45 @@ def rollback_v4(
                 require(current.get("metadata", {}).get("uid") == ingress.observed.get("metadata", {}).get("uid"), "participant Ingress reappeared with unowned UID")
                 deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
         except Exception as exc: errors.append(str(exc))
+    # Re-prove the exposure breaker after the Flux/reappearance phase even
+    # when that phase produced an error. A controller may have recreated the
+    # Service alongside an unknown Ingress; only the original exact UID and
+    # protected semantics remain deletable by this transaction.
+    if rollback_authorized and exposure_service is not None and bootstrap is not None:
+        try:
+            service_after_flux = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())))
+            deleted.append(service_after_flux)
+            require(service_after_flux.get("absent") is True, "participant Service exposure-break post-Flux absence was not proved")
+            final_checks["exposureBreakAfterFlux"] = {
+                "serviceUid": exposure_service.observed.get("metadata", {}).get("uid"),
+                "serviceAbsent": True,
+                "sameOwnedUidOnly": True,
+            }
+        except Exception as exc: errors.append(str(exc))
+    # An uncertain or definite-conflict Deployment create may race admission
+    # without ever becoming transaction-owned. Never remove gateway isolation
+    # merely because that unowned outcome is absent from `created`.
+    # Exact name and runtime-dependent absence must both be proved first; the
+    # later all-target quiet interval supplies a second bounded absence proof.
+    bound_deployment = next((item for item in created if item.logical_name == "gateway.deployment"), None)
+    gateway_isolation = next((item for item in created if item.logical_name == "gateway.networkPolicy"), None)
+    if bound_deployment is None and gateway_isolation is not None and not errors:
+        try:
+            require(rendered is not None and "gateway.deployment" in rendered, "unbound Deployment render binding absent")
+            desired = rendered["gateway.deployment"]["desired"]; metadata = desired["metadata"]
+            current = get_optional(r, kubeconfig, "deployment", metadata["name"], metadata["namespace"])
+            require(current is None, "unbound participant Deployment may still exist; gateway isolation retained")
+            final_checks["unboundDeploymentRuntime"] = {
+                "deploymentNameAbsent": True,
+                "dependents": deployment_dependents_absent_v4(r, kubeconfig),
+                "gatewayIsolationRetainedUntilProof": True,
+            }
+        except Exception as exc: errors.append(str(exc))
     if not errors and (bootstrap is None or len(flux) == 2):
-        remaining = [entry for entry in created if entry is not ingress]
+        remaining = [
+            entry for entry in created
+            if entry is not ingress and not (exposure_service_deleted and entry is exposure_service)
+        ]
         deployment = next((entry for entry in remaining if entry.logical_name == "gateway.deployment"), None)
         if deployment is not None:
             try:

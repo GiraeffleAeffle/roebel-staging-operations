@@ -377,6 +377,30 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(dependents["status"], "deployment-foreground-dependents-absent")
         self.assertEqual(query.call_count, 2)
 
+    def test_v4_unresolved_deployment_retains_gateway_isolation_until_runtime_absence(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        network_policy = MODULE.CreatedV4(
+            "gateway.networkPolicy",
+            resources["networkPolicy"],
+            admitted(resources["networkPolicy"], "network-policy-uid", "20"),
+            {"uid": "network-policy-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True},
+        )
+        unresolved_live = admitted(resources["deployment"], "unbound-deployment-uid", "30")
+        rendered = {"gateway.deployment": {"desired": resources["deployment"]}}
+        # `None` models the definite-409 path, where no-adopt deliberately
+        # clears `uncertain` but the racing Deployment is still not ours.
+        for uncertain in ("gateway.deployment", None):
+            with self.subTest(uncertain=uncertain), patch.object(MODULE, "get_optional", return_value=unresolved_live), patch.object(MODULE, "delete_with_preconditions_v4") as delete:
+                result = MODULE.rollback_v4(
+                    Fake(), "/tmp/kube", value, [network_policy], None, None,
+                    uncertain, rendered=rendered,
+                )
+            self.assertEqual(result["status"], "incomplete")
+            self.assertTrue(any("isolation retained" in error for error in result["errors"]))
+            delete.assert_not_called()
+
     def test_v4_flux_ready_requires_generation_and_exact_revision(self):
         desired = MODULE.POLICY.gateway_flux_objects(suspended=False)["kustomization"]
         live = admitted(desired, "g", "11"); live["metadata"]["generation"] = 7
@@ -627,6 +651,9 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": [widened]})):
             with self.assertRaisesRegex(MODULE.ActivationError, "semantics"):
                 MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": []})):
+            with self.assertRaisesRegex(MODULE.ActivationError, "set absent or incomplete"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
 
     def test_v4_rollback_rechecks_ingress_absence_after_dual_suspend(self):
         desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
@@ -640,6 +667,44 @@ class ExecutorTests(unittest.TestCase):
             result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [ingress], bootstrap, None, None)
         self.assertEqual(result["status"], "incomplete")
         self.assertTrue(result["bothKustomizationsSuspended"])
+        self.assertIn("unowned UID", result["errors"][0])
+
+    def test_v4_unproved_ingress_absence_breaks_exposure_through_exact_owned_service(self):
+        service_desired = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
+        service = MODULE.CreatedV4("gateway.service", service_desired, admitted(service_desired, "service-uid", "21"), {"operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        service_deleted = {"logicalName": "gateway.service", "uid": "service-uid", "absent": True}
+        with patch.object(MODULE, "delete_with_preconditions_v4", return_value=service_deleted) as delete:
+            result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [service], None, None, None)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["finalChecks"]["exposureBreak"]["serviceUid"], "service-uid")
+        self.assertTrue(result["finalChecks"]["exposureBreak"]["unknownIngressUntouched"])
+        self.assertEqual(delete.call_count, 1); self.assertIs(delete.call_args.args[2], service)
+
+        ingress_desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
+        ingress = MODULE.CreatedV4("gateway.ingress", ingress_desired, admitted(ingress_desired, "ingress-uid", "31"), {"operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        with patch.object(MODULE, "delete_with_preconditions_v4", side_effect=[MODULE.ActivationError("Ingress removal unproved"), service_deleted]) as delete:
+            result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [service, ingress], None, None, None)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(delete.call_args_list[1].args[2], service)
+        self.assertFalse(result["finalChecks"]["exposureBreak"]["unknownIngressUntouched"])
+
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "40")
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "50")
+        bootstrap = {
+            "owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}},
+            "source": {"metadata": {"uid": "source"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}},
+        }
+        ingress_deleted = {"logicalName": "gateway.ingress", "uid": "ingress-uid", "absent": True}
+        replacement = {"metadata": {"uid": "replacement-ingress-uid", "resourceVersion": "99"}}
+        quiescent = {"gateway": {"uid": "g", "suspended": True}, "workbenchIngress": {"uid": "w", "suspended": True}}
+        with patch.object(MODULE, "delete_with_preconditions_v4", side_effect=[ingress_deleted, service_deleted, service_deleted]) as delete, patch.object(MODULE, "_target_live", side_effect=[gateway, workbench]), patch.object(MODULE, "wait_both_suspended_v4", return_value=quiescent), patch.object(MODULE, "get_optional", return_value=replacement):
+            result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [service, ingress], bootstrap, None, None)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIs(delete.call_args_list[0].args[2], ingress)
+        self.assertIs(delete.call_args_list[1].args[2], service)
+        self.assertIs(delete.call_args_list[2].args[2], service)
+        self.assertTrue(result["finalChecks"]["exposureBreak"]["initialIngressAbsenceProved"])
+        self.assertTrue(result["finalChecks"]["exposureBreakAfterFlux"]["serviceAbsent"])
         self.assertIn("unowned UID", result["errors"][0])
 
     def test_v4_rollback_refuses_mutation_if_protected_cluster_identity_changes(self):

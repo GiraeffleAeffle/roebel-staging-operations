@@ -983,7 +983,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ):
             ingress = VERIFIER.expected_participant_gateway_ingress()
         lines = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"].split("\n")
-        self.assertEqual(lines[0], "http-request deny deny_status 404 " + " ".join(f"!{{ path {path} }}" for path in expected))
+        self.assertEqual(lines[0], "http-request deny deny_status 404 if " + " ".join(f"!{{ path {path} }}" for path in expected))
         self.assertEqual(lines[1], "http-request deny deny_status 405 if { method POST } " + " ".join(f"!{{ path {path} }}" for path in expected[1:]))
         self.assertEqual(lines[2], "http-request deny deny_status 405 if { method OPTIONS } " + " ".join(f"!{{ path {path} }}" for path in expected))
         self.assertEqual(lines[3], "http-request deny deny_status 405 if { method HEAD }")
