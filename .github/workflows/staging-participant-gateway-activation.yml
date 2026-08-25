@@ -1,0 +1,11 @@
+name: staging-participant-gateway-activation
+on:
+  workflow_dispatch:
+jobs:
+  verify-plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest -v scripts/test_activate_staging_participant_gateway.py
