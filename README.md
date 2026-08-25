@@ -518,7 +518,7 @@ by rollback. Raw full-object hashes, live status and caller-supplied evidence
 never become static authority.
 
 The protected local runner must freshly verify the protected operations
-revision, immutable publication and anonymous pull, database/Vault state,
+revision, immutable publication and anonymous pull, database/schema state,
 Secret materialization, endpoints, policy union, exact object semantics,
 Deployment health, HAProxy replica truth, the full route matrix and both Flux
 CAS transitions. Rollback removes the exact owned participant Ingress first,
@@ -526,6 +526,18 @@ suspends both participant Kustomizations, deletes only transaction-owned UIDs
 in reverse order, and proves that the Web Ingress and existing workbench policy
 are byte-identical. Secrets, unrelated policies and civic-authority systems
 are never rollback targets.
+
+The product/database preflight is the container-internal exact `GET /status`
+contract, not the public `/api/staging-participant/v1/status` session-UI route.
+The runner first verifies the complete ready Pod set and immutable runtime
+digest, then checks `get`/`list pods` and `create pods/portforward` authorization
+and opens an ephemeral, loopback-only port-forward to one exact Pod UID. This
+API-server/kubelet stream avoids assuming that control-plane Service-proxy
+traffic has a portable Cilium/NetworkPolicy source identity. Redirects and
+ambient proxies are disabled, the response is size- and time-bounded, the Pod
+UID is rechecked after the probe, and the whole subprocess group is terminated
+on every exit. `/status` is not added to the participant Ingress and no cluster
+namespace receives a new NetworkPolicy allowance.
 
 The runner/verifier integration seam is
 `scripts/staging_participant_gateway_policy.py`:

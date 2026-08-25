@@ -157,6 +157,14 @@ class StaticPolicyTests(unittest.TestCase):
         widened["spec"]["ingress"][0]["from"].append({"namespaceSelector": {}})
         self.assertFalse(POLICY.semantically_equal(widened, desired))
 
+    def test_normalizer_accepts_only_the_known_flux_controller_finalizer(self):
+        desired = POLICY.gateway_flux_objects(suspended=True)["kustomization"]
+        live = copy.deepcopy(desired)
+        live["metadata"]["finalizers"] = ["finalizers.fluxcd.io"]
+        self.assertTrue(POLICY.semantically_equal(live, desired))
+        live["metadata"]["finalizers"].append("example.test/unreviewed")
+        self.assertFalse(POLICY.semantically_equal(live, desired))
+
     def test_create_result_binding_rejects_409_and_owns_only_exact_observed_object(self):
         desired = POLICY.expected_workbench_ingress_network_policy()
         observed = copy.deepcopy(desired)

@@ -1047,6 +1047,12 @@ def normalize_kubernetes_object(value: Any) -> dict[str, Any]:
     result.pop("status", None)
 
     kind = result.get("kind")
+    # Flux adds this one controller finalizer even to suspended source and
+    # Kustomization objects. It is not caller intent and neither participant
+    # rollback nor teardown owns these bootstrap identities. Unknown or extra
+    # finalizers remain security-relevant and therefore remain in semantics.
+    if kind in {"GitRepository", "Kustomization"} and metadata.get("finalizers") == ["finalizers.fluxcd.io"]:
+        metadata.pop("finalizers")
     spec = result.get("spec")
     if isinstance(spec, dict) and kind == "Service":
         for key in (
