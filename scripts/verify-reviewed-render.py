@@ -2899,7 +2899,7 @@ def verify_participant_gateway_ingress_cas(value: Any, rollback: dict[str, Any],
 def verify_participant_gateway_secret_materialization(value: Any, label: str) -> dict[str, Any]:
     materialization = closed(value, {"config", "runtime"}, label)
     expected = {
-        "config": (PARTICIPANT_GATEWAY_CONFIG_SECRET, ["allowed-wallets", "invite-sha256"]),
+        "config": (PARTICIPANT_GATEWAY_CONFIG_SECRET, ["allowed-wallets", "invite-sha256", "mecky-pubkey"]),
         "runtime": (PARTICIPANT_GATEWAY_RUNTIME_SECRET, ["session-key", "supabase-anon-key", "supabase-rpc-secret"]),
     }
     for name, (secret_name, keys) in expected.items():
@@ -2913,7 +2913,7 @@ def verify_participant_gateway_secret_materialization(value: Any, label: str) ->
         require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"{label} {name} Secret resourceVersion invalid")
         require(record["keySet"] == keys and record["state"] == "present-exact-keyset", f"{label} {name} Secret key set invalid")
         expected_semantics = (
-            {"inviteSha256Is64LowerHex": True, "walletAllowListNonEmptyNormalized": True}
+            {"inviteSha256Is64LowerHex": True, "meckyPubkeyIs64LowerHex": True, "walletAllowListNonEmptyNormalized": True}
             if name == "config" else
             {"sessionHmacKeyAtLeast32Bytes": True, "sessionHmacKeyHighEntropy": True, "stagingSupabaseAnonCredentialValid": True, "stagingRpcSecretAccepted": True}
         )

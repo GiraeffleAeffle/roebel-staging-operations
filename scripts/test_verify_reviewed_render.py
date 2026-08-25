@@ -1054,16 +1054,18 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertNotIn("verify", source["spec"])
 
     def test_participant_gateway_origins_are_literal_while_secrets_contain_only_secret_material(self) -> None:
+        protected = participant_ready_policy()
         with mock.patch.object(
             VERIFIER.PARTICIPANT_POLICY,
             "STATIC_ACTIVATION_POLICY",
-            participant_ready_policy(),
+            protected,
         ):
             pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin()
             resources = VERIFIER.expected_participant_gateway_resources(pin)
+        container = resources["deployment"]["spec"]["template"]["spec"]["containers"][0]
         env = {
             item["name"]: item
-            for item in resources["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
+            for item in container["env"]
         }
         self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": "https://rpc.gnosischain.com"})
         self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": "https://vdlksxpihmoumebjpeix.supabase.co"})
@@ -1073,6 +1075,52 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             if "valueFrom" in item
         }
         self.assertEqual(secret_keys, {"allowed-wallets", "invite-sha256", "mecky-pubkey", "session-key", "supabase-anon-key", "supabase-rpc-secret"})
+        expected_literals = {
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION": protected["productPins"]["sourceRevision"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": protected["productPins"]["imageManifestDigest"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256": protected["productPins"]["migration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256": protected["productPins"]["databaseSchemaSha256"],
+        }
+        for name, value in expected_literals.items():
+            self.assertEqual(env[name], {"name": name, "value": value})
+        self.assertTrue(container["securityContext"]["readOnlyRootFilesystem"])
+        self.assertNotIn("command", container)
+        self.assertNotIn("args", container)
+        self.assertNotIn("/app", [mount["mountPath"] for mount in container.get("volumeMounts", [])])
+
+    def test_legacy_participant_secret_verifier_matches_static_three_key_contract(self) -> None:
+        def record(target_name: str, key_set: list[str], semantic_checks: dict[str, bool]) -> dict:
+            value = {
+                "target": VERIFIER.participant_gateway_target("Secret", target_name, VERIFIER.PARTICIPANT_GATEWAY_NAMESPACE),
+                "uid": "00000000-0000-4000-8000-000000000001",
+                "resourceVersion": "123",
+                "keySet": key_set,
+                "state": "present-exact-keyset",
+                "semanticChecks": semantic_checks,
+                "materializedAt": "2026-08-25T10:00:00Z",
+                "validUntil": "2026-08-25T10:05:00Z",
+                "maxAgeSeconds": 300,
+                "vaultArm": "roebel_staging_participant_environment_arm=staging-only",
+            }
+            value["receiptCanonicalSha256"] = VERIFIER.digest(value)
+            return value
+
+        config = record(
+            VERIFIER.PARTICIPANT_GATEWAY_CONFIG_SECRET,
+            ["allowed-wallets", "invite-sha256", "mecky-pubkey"],
+            {"inviteSha256Is64LowerHex": True, "meckyPubkeyIs64LowerHex": True, "walletAllowListNonEmptyNormalized": True},
+        )
+        runtime = record(
+            VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_SECRET,
+            ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
+            {"sessionHmacKeyAtLeast32Bytes": True, "sessionHmacKeyHighEntropy": True, "stagingSupabaseAnonCredentialValid": True, "stagingRpcSecretAccepted": True},
+        )
+        VERIFIER.verify_participant_gateway_secret_materialization({"config": config, "runtime": runtime}, "participant Secrets")
+        config_without_mecky = copy.deepcopy(config)
+        config_without_mecky["keySet"] = ["allowed-wallets", "invite-sha256"]
+        config_without_mecky["receiptCanonicalSha256"] = VERIFIER.digest({key: value for key, value in config_without_mecky.items() if key != "receiptCanonicalSha256"})
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "key set invalid"):
+            VERIFIER.verify_participant_gateway_secret_materialization({"config": config_without_mecky, "runtime": runtime}, "participant Secrets")
 
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
         self.assertFalse(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
