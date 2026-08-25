@@ -469,6 +469,14 @@ from that protected policy and cannot approve itself. Its runtime pin contains
 only those immutable policy values and the policy digest; live facts remain an
 out-of-band, five-minute runner receipt.
 
+The product source pins have one reproducible meaning. `sourceTreeSha256` is
+SHA-256 over the exact raw NUL-delimited bytes from
+`git ls-tree -r -z --full-tree <sourceRevision>`; `workflowSha256` is SHA-256
+over the raw workflow Git blob at that same revision. They are protected,
+reviewed static bindings. The anonymous registry check does not relabel them as
+runtime provenance; a separate verified attestation receipt is the publication
+provenance boundary.
+
 The complete future render has two separately owned paths:
 
 ```text
@@ -506,8 +514,11 @@ policy-pinned Gnosis and staging Supabase HTTPS `/32`s, and the exact
 cluster-local workbench on TCP 18083. The reciprocal policy permits only the
 gateway selector to that workbench port. Kubernetes and Cilium policy allows
 are additive, so the trusted runner performs a fresh selector-overlap scan of
-all three policy families before creation. The existing manually owned
-workbench NetworkPolicy remains byte-identical and outside both Flux tenants.
+all three policy families before creation, before Ingress, and after Flux. It
+uses the complete fresh Pod labels plus Cilium namespace/service-account
+identity labels; an owned policy is exempt only after exact UID and protected
+semantic comparison. The existing manually owned workbench NetworkPolicy
+remains byte-identical and outside both Flux tenants.
 
 Create outcomes are fail-closed. A definite HTTP 409 is a hard failure and is
 never discovered or adopted. Every other non-success after a sent create—and
@@ -515,6 +526,9 @@ even a successful exit with an unparseable or unbindable response—is uncertain
 Discovery owns an object only when the exact per-run CSPRNG nonce, protected
 semantics, UID and resource version all bind. That temporary nonce is removed
 by CAS before Flux. An absent or mismatched nonce is never adopted or deleted.
+If the first discovery read is lost, rollback boundedly retries that same
+nonce/semantics/UID/resource-version proof before deciding the outcome remains
+incomplete. A definite 409 without the nonce is never rediscovered.
 Raw full-object hashes, live status and caller-supplied evidence never become
 static authority.
 
@@ -524,11 +538,15 @@ Secret materialization, endpoints, policy union, exact object semantics,
 Deployment health, HAProxy replica truth, the full route matrix and both Flux
 CAS transitions. Rollback removes the exact owned participant Ingress first,
 suspends both participant Kustomizations, waits for each exact UID to observe
-its suspended generation with no current reconciliation, deletes only
-transaction-owned UIDs in reverse order, and proves all six names stay absent
-for a bounded quiet interval. It also rechecks the shared source, protected
-cluster identity, Web Ingress and existing workbench policy. Secrets, unrelated
-policies and civic-authority systems are never rollback targets.
+its suspended generation with no current reconciliation, foreground-deletes
+the exact Deployment, proves matching Pods and ReplicaSets absent while the
+gateway NetworkPolicy still isolates them, then deletes only the remaining
+transaction-owned UIDs in reverse order. It proves all six names stay absent
+for a bounded quiet interval and rechecks the shared source, protected cluster
+identity, Web Ingress and existing workbench policy. SIGINT/SIGTERM become a
+transaction abort; further termination is deferred through bounded rollback
+and durable receipt persistence. Secrets, unrelated policies and
+civic-authority systems are never rollback targets.
 
 The product/database preflight is the container-internal exact `GET /status`
 contract, not the public `/api/staging-participant/v1/status` session-UI route.
@@ -544,6 +562,13 @@ namespace receives a new NetworkPolicy allowance.
 
 The runner/verifier integration seam is
 `scripts/staging_participant_gateway_policy.py`:
+
+The command-line runner must be invoked with `python3 -I`. It verifies the
+exact protected checkout before compiling the policy module directly from the
+Git blob, so neither a modified worktree module nor an untracked local module
+shadow can execute before admission. Its one-use flattened kubeconfig is
+removed on every construction failure, and the short-lived rollback proxy
+accepts only the exact escaped resource path.
 
 - `activation_policy_descriptor()` and `activation_policy_sha256()` expose
   immutable intent; `assert_activation_ready()` is the render/activation gate.
@@ -663,8 +688,10 @@ Once those pins exist, the separate protected local runner is designed to:
   contract, and the full public route/CORS boundary; and
 - treat durable success-receipt persistence as the commit point. Failure first
   removes the exact owned Ingress, suspends and observes both Flux
-  Kustomizations quiescent, deletes only exact transaction UIDs, and proves all
-  six names absent for a bounded quiet interval.
+  Kustomizations quiescent, foreground-deletes the Deployment, proves its Pods
+  and ReplicaSets absent before removing isolation, deletes only exact
+  transaction UIDs, and proves all six names absent for a bounded quiet
+  interval. Operator termination follows the same rollback and receipt path.
 
 An anonymous registry digest check proves only the bytes fetched at the
 reviewed digest; its receipt does not claim cryptographic publisher provenance,

@@ -7,7 +7,17 @@ fixed descriptor named below.  Until then *both* modes stop before contacting
 Kubernetes.  The live mode is consequently safe to ship before its policy.
 """
 from __future__ import annotations
-import argparse, base64, datetime as dt, hashlib, importlib.util, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+
+# The command-line executor must start in Python isolated/safe-path mode before
+# importing anything except the built-in ``sys`` module.  This prevents an
+# untracked ``scripts/secrets.py`` (or a PYTHONPATH entry) from shadowing a
+# standard-library dependency before protected Git blobs are checked.
+import sys as _bootstrap_sys
+if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_sys.flags.safe_path):
+    print("activation blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
+    raise SystemExit(2)
+
+import argparse, base64, datetime as dt, hashlib, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, types, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,24 +25,85 @@ from typing import Any
 POLICY_PATH = "policy/staging-participant-gateway-activation-policy.json"
 NAMESPACE, FLUX_NAMESPACE = "stadtstack-roebel-web-preview", "flux-roebel-staging"
 NAME, SOURCE = "roebel-staging-participant-gateway", "roebel-staging-operations"
+WORKBENCH_NAMESPACE, WORKBENCH_POLICY_NAME = "stadtstack-roebel-staging-lab", "roebel-staging-participant-workbench-ingress"
 RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 
-def _load_policy_module() -> Any:
-    path = ROOT / POLICY_MODULE_PATH
-    spec = importlib.util.spec_from_file_location("staging_participant_gateway_policy", path)
-    if spec is None or spec.loader is None: raise RuntimeError("protected participant policy module cannot be loaded")
-    module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
+POLICY: Any = None
+
+def compile_verified_policy_module_v4(source: bytes, rev: str) -> Any:
+    """Compile only policy bytes already read from the exact protected blob."""
+    revision(rev)
+    require(isinstance(source, bytes) and source, "protected policy blob is empty")
+    name = f"staging_participant_gateway_policy_{rev}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{rev}:{POLICY_MODULE_PATH}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        code = compile(source, module.__file__, "exec", dont_inherit=True)
+        exec(code, module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
     return module
 
-POLICY = _load_policy_module()
+def bind_verified_policy_identity_v4(module: Any) -> None:
+    """Fail closed if runner constants drift from the protected policy blob."""
+    expected = (
+        module.GATEWAY_NAMESPACE,
+        module.FLUX_NAMESPACE,
+        module.GATEWAY_NAME,
+        module.FLUX_SOURCE_NAME,
+        module.WORKBENCH_NAMESPACE,
+        module.WORKBENCH_INGRESS_POLICY_NAME,
+        module.POLICY_PATH,
+    )
+    actual = (
+        NAMESPACE,
+        FLUX_NAMESPACE,
+        NAME,
+        SOURCE,
+        WORKBENCH_NAMESPACE,
+        WORKBENCH_POLICY_NAME,
+        POLICY_PATH,
+    )
+    require(actual == expected, "protected runner/policy identity drift")
 PLAN_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_plan_v4"
 
 class ActivationError(RuntimeError): pass
 class CreateConflictError(ActivationError): pass
 class TransportUncertainError(ActivationError): pass
+class ActivationInterrupted(ActivationError):
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(f"activation interrupted by signal {signum}")
+
+TRANSACTION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+def install_transaction_signal_handlers_v4() -> dict[int, Any]:
+    """Convert operator termination into a rollback-visible exception."""
+    previous: dict[int, Any] = {}
+    def interrupt(received: int, _frame: Any) -> None:
+        raise ActivationInterrupted(received)
+    try:
+        for signum in TRANSACTION_SIGNALS:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+    except (OSError, ValueError) as exc:
+        for signum, handler in previous.items(): signal.signal(signum, handler)
+        raise ActivationError("live activation requires controllable main-thread signal handlers") from exc
+    return previous
+
+def defer_transaction_signals_v4() -> None:
+    """Ignore further termination while rollback/receipt durability completes."""
+    for signum in TRANSACTION_SIGNALS: signal.signal(signum, signal.SIG_IGN)
+
+def restore_transaction_signal_handlers_v4(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items(): signal.signal(signum, handler)
+
 def canonical(v: Any) -> str: return json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 def digest(v: Any) -> str: return "sha256:" + hashlib.sha256(canonical(v).encode()).hexdigest()
 def bytes_digest(v: bytes) -> str: return "sha256:" + hashlib.sha256(v).hexdigest()
@@ -235,21 +306,30 @@ def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
     user = users[0].get("user", {}); require(isinstance(user, dict) and user, "flattened kubeconfig user absent")
     forbidden_user_fields = {"exec", "auth-provider", "client-certificate", "client-key", "tokenFile"}
     require(not (forbidden_user_fields & set(user)), "flattened kubeconfig still depends on external credential execution or files")
-    directory = Path(tempfile.mkdtemp(prefix="participant-kubeconfig-")); os.chmod(directory, 0o700)
-    path = directory / "config"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
+    directory = Path(tempfile.mkdtemp(prefix="participant-kubeconfig-")); path = directory / "config"; fd = -1
     try:
+        os.chmod(directory, 0o700)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
         os.fchmod(fd, 0o600)
         raw = canonical(config).encode() + b"\n"
-        with os.fdopen(fd, "wb", closefd=True) as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-        fd = -1
+        stream = os.fdopen(fd, "wb", closefd=True); fd = -1
+        with stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
         parent = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try: os.fsync(parent)
         finally: os.close(parent)
-    finally:
-        if fd >= 0: os.close(fd)
+    except BaseException:
+        if fd >= 0:
+            try: os.close(fd)
+            except OSError: pass
+        try: path.unlink()
+        except FileNotFoundError: pass
+        try: directory.rmdir()
+        except FileNotFoundError: pass
+        except OSError as cleanup_error:
+            raise ActivationError("failed to remove incomplete kubeconfig snapshot") from cleanup_error
+        raise
     return KubeconfigSnapshot(path, directory, origin, hostname, port, tls_name, ca_pem, bytes_digest(ca_pem))
 
 def _api_server_spki_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> str:
@@ -271,8 +351,29 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
     DELETE body unchanged and Kubernetes enforces its preconditions.
     """
     # Let kubectl choose the port atomically; parsing its loopback-only startup
-    # line avoids reserving and releasing a raceable port in this process.
-    process = subprocess.Popen(kb(kube) + ["proxy", "--port=0", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # line avoids reserving and releasing a raceable port in this process.  The
+    # proxy is credentialed, so expose only this exact escaped resource path to
+    # other loopback processes during its bounded lifetime.
+    allowed = re.fullmatch(
+        r"/(?:api/v1|apis/(?:apps|networking\.k8s\.io)/v1)/namespaces/"
+        r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?/(?:ingresses|networkpolicies|deployments|services|serviceaccounts)/"
+        r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?",
+        resource_path,
+    )
+    require(allowed is not None, "raw rollback delete resource path outside closed policy")
+    # The closed path grammar above contains no regexp metacharacters except
+    # dots. Avoid Python's ``re.escape`` because its ``\-`` escape is not
+    # portable to kubectl proxy's Go/RE2 regexp parser.
+    accept_paths = "^" + resource_path.replace(".", r"\.") + "$"
+    process = subprocess.Popen(
+        kb(kube) + [
+            "proxy", "--port=0", "--address=127.0.0.1",
+            "--accept-hosts=^127\\.0\\.0\\.1$",
+            f"--accept-paths={accept_paths}",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
     selector = selectors.DefaultSelector()
     try:
         require(process.stdout is not None, "kubectl proxy output pipe unavailable")
@@ -303,6 +404,7 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
         process.terminate()
         try: process.wait(timeout=5)
         except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+        if process.stdout is not None: process.stdout.close()
 
 
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
@@ -330,8 +432,6 @@ class PreservedV4:
     value: dict[str, Any]
     canonical_sha256: str
 
-WORKBENCH_NAMESPACE = POLICY.WORKBENCH_NAMESPACE
-WORKBENCH_POLICY_NAME = POLICY.WORKBENCH_INGRESS_POLICY_NAME
 HAPROXY_NAMESPACE = "ingress-system"
 HAPROXY_DAEMONSET = "haproxy-ingress"
 
@@ -438,6 +538,21 @@ def create_v4(r: Runner, kubeconfig: str, logical_name: str, rendered: dict[str,
     receipt = _policy_call(POLICY.bind_create_result, outcome=outcome, observed=observed, desired=desired, label=logical_name, operation_nonce=operation_nonce)
     receipt |= {"protectedRenderPath": rendered["path"], "protectedRenderBlobSha256": rendered["blobSha256"], "temporaryNonceRemoved": False}
     return CreatedV4(logical_name, static_desired, observed, receipt)
+
+def rediscover_uncertain_create_v4(r: Runner, kubeconfig: str, logical_name: str, rendered: dict[str, Any], operation_nonce: str, timeout: int | float) -> CreatedV4 | None:
+    """Boundedly recover only this run's exact nonce-marked uncertain create."""
+    static_desired = rendered["desired"]; desired = _policy_call(POLICY.with_operation_nonce, static_desired, operation_nonce); metadata = desired["metadata"]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try: observed = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
+        except ActivationError:
+            time.sleep(0.25); continue
+        if observed is None:
+            time.sleep(0.25); continue
+        receipt = _policy_call(POLICY.bind_create_result, outcome="post-send-uncertain-discovered", observed=observed, desired=desired, label=logical_name, operation_nonce=operation_nonce)
+        receipt |= {"protectedRenderPath": rendered["path"], "protectedRenderBlobSha256": rendered["blobSha256"], "temporaryNonceRemoved": False, "recoveredDuringRollbackEntry": True}
+        return CreatedV4(logical_name, static_desired, observed, receipt)
+    return None
 
 def remove_operation_nonce_v4(r: Runner, kubeconfig: str, created: CreatedV4, operation_nonce: str) -> dict[str, Any]:
     metadata = created.observed.get("metadata", {}); uid, rv = metadata.get("uid"), metadata.get("resourceVersion")
@@ -642,8 +757,10 @@ def anonymous_publication_v4(p: dict[str, Any]) -> dict[str, Any]:
         "reviewedStaticPins": {
             "sourceRevision": pins["sourceRevision"],
             "sourceTreeSha256": pins["sourceTreeSha256"],
+            "sourceTreeHashSemantics": pins["sourceTreeHashSemantics"],
             "workflowIdentity": pins["workflowIdentity"],
             "workflowSha256": pins["workflowSha256"],
+            "workflowHashSemantics": pins["workflowHashSemantics"],
         },
     }
 
@@ -684,6 +801,59 @@ def _selector_matches_v4(selector: Any, labels: dict[str, str]) -> bool:
         if operator == "DoesNotExist" and current is not None: return False
     return True
 
+def _selector_could_match_with_additional_labels_v4(selector: Any, labels: dict[str, str]) -> bool:
+    """Conservatively match a selector against fixed plus future labels."""
+    def key(value: Any) -> Any:
+        if not isinstance(value, str): return value
+        for prefix in ("k8s:", "any:"):
+            if value.startswith(prefix): return value.removeprefix(prefix)
+        return value
+    require(isinstance(selector, dict) and set(selector) <= {"matchLabels", "matchExpressions"}, "unrecognized policy selector")
+    match_labels, expressions = selector.get("matchLabels", {}), selector.get("matchExpressions", [])
+    require(isinstance(match_labels, dict) and isinstance(expressions, list), "invalid policy selector")
+    for raw_key, expected in match_labels.items():
+        current = labels.get(key(raw_key))
+        if current is not None and current != expected: return False
+    for expression in expressions:
+        require(isinstance(expression, dict) and set(expression) <= {"key", "operator", "values"}, "invalid policy expression")
+        current = labels.get(key(expression.get("key", ""))); operator, values = expression.get("operator"), expression.get("values", [])
+        require(operator in {"In", "NotIn", "Exists", "DoesNotExist"} and isinstance(values, list), "invalid policy expression")
+        if operator == "In" and current is not None and current not in values: return False
+        if operator == "NotIn" and current is not None and current in values: return False
+        if operator == "DoesNotExist" and current is not None: return False
+        # Unknown In/Exists/NotIn/DoesNotExist keys can all be satisfied by a
+        # future controller label choice (or continued absence), so they stay
+        # conservatively overlapping.
+    return True
+
+def _target_policy_label_sets_v4(r: Runner, kubeconfig: str) -> dict[str, dict[str, Any]]:
+    targets = {
+        "gateway": (NAMESPACE, POLICY.GATEWAY_LABELS, NAME),
+        "workbench": (WORKBENCH_NAMESPACE, POLICY.WORKBENCH_SELECTOR, None),
+    }
+    result: dict[str, dict[str, Any]] = {}
+    for label, (namespace, fixed, expected_service_account) in targets.items():
+        selector = ",".join(f"{key}={value}" for key, value in sorted(fixed.items()))
+        listing = obj(checked(r, kb(kubeconfig) + ["-n", namespace, "get", "pods", "-l", selector, "-o", "json"], f"fresh {label} Pod-label scan"), f"{label} Pod-label scan")
+        items = listing.get("items", []); require(isinstance(items, list), f"{label} Pod-label items absent")
+        kubernetes_sets: list[dict[str, str]] = []; cilium_sets: list[dict[str, str]] = []
+        for pod in items:
+            labels = pod.get("metadata", {}).get("labels", {}); service_account = pod.get("spec", {}).get("serviceAccountName")
+            require(isinstance(labels, dict) and all(isinstance(key, str) and isinstance(value, str) for key, value in labels.items()), f"{label} Pod labels invalid")
+            require(all(labels.get(key) == value for key, value in fixed.items()), f"{label} Pod fixed labels drift")
+            require(isinstance(service_account, str) and service_account, f"{label} Pod service account absent")
+            if expected_service_account is not None: require(service_account == expected_service_account, f"{label} Pod service account drift")
+            kubernetes_sets.append(dict(labels))
+            cilium_sets.append(dict(labels) | {"io.kubernetes.pod.namespace": namespace, "io.cilium.k8s.policy.serviceaccount": service_account})
+        # Before creation there is no gateway Pod. Fixed labels plus the exact
+        # expected service-account identity are still a conservative seed;
+        # unknown selector keys remain possible in the matcher above.
+        if not kubernetes_sets:
+            kubernetes_sets = [dict(fixed)]
+            cilium_sets = [dict(fixed) | {"io.kubernetes.pod.namespace": namespace} | ({"io.cilium.k8s.policy.serviceaccount": expected_service_account} if expected_service_account else {})]
+        result[label] = {"namespace": namespace, "podCount": len(items), "kubernetes": kubernetes_sets, "cilium": cilium_sets}
+    return result
+
 def _allows_workbench_port(value: dict[str, Any]) -> bool:
     for rule in value.get("spec", {}).get("ingress", []):
         ports = rule.get("ports")
@@ -699,28 +869,34 @@ def _allows_workbench_port(value: dict[str, Any]) -> bool:
             if start <= POLICY.WORKBENCH_PORT <= end: return True
     return False
 
-def policy_union_v4(r: Runner, kubeconfig: str, owned: set[tuple[str, str]] | None = None) -> dict[str, Any]:
+def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], CreatedV4] | None = None) -> dict[str, Any]:
     """Conservatively reject additive K8s/Cilium participant allows."""
-    owned = owned or set(); count = 0
+    owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []
     families = (("networkpolicy", ["-A"], "kubernetes"), ("ciliumnetworkpolicies.cilium.io", ["-A"], "cilium"), ("ciliumclusterwidenetworkpolicies.cilium.io", [], "cilium-clusterwide"))
     for resource, extra, family in families:
         listing = obj(checked(r, kb(kubeconfig) + ["get", resource, *extra, "-o", "json"], f"fresh {resource} scan"), resource)
         require(isinstance(listing.get("items"), list), f"{resource} items absent")
         for item in listing["items"]:
             count += 1; metadata = item.get("metadata", {}); namespace, name = metadata.get("namespace", ""), metadata.get("name")
-            if family == "kubernetes" and (namespace, name) in owned: continue
+            if family == "kubernetes" and (namespace, name) in owned:
+                binding = owned[(namespace, name)]
+                require(item.get("metadata", {}).get("uid") == binding.observed.get("metadata", {}).get("uid"), f"owned NetworkPolicy UID drift: {namespace}/{name}")
+                _policy_call(POLICY.require_semantically_equal, item, binding.desired, f"owned NetworkPolicy semantics {namespace}/{name}")
+                owned_validated.append({"namespace": namespace, "name": name, "uid": item["metadata"]["uid"], "semanticSha256": POLICY.semantic_sha256(item)})
+                continue
             if family == "kubernetes":
                 selector = item.get("spec", {}).get("podSelector", {})
-                if namespace == NAMESPACE and _selector_matches_v4(selector, POLICY.GATEWAY_LABELS): raise ActivationError(f"pre-existing NetworkPolicy selects gateway: {namespace}/{name}")
-                if namespace == WORKBENCH_NAMESPACE and _selector_matches_v4(selector, POLICY.WORKBENCH_SELECTOR):
+                if namespace == NAMESPACE and any(_selector_could_match_with_additional_labels_v4(selector, labels) for labels in label_sets["gateway"]["kubernetes"]): raise ActivationError(f"pre-existing NetworkPolicy can select gateway: {namespace}/{name}")
+                if namespace == WORKBENCH_NAMESPACE and any(_selector_could_match_with_additional_labels_v4(selector, labels) for labels in label_sets["workbench"]["kubernetes"]):
                     require(name == POLICY.WORKBENCH_NAME, f"pre-existing NetworkPolicy selects workbench: {namespace}/{name}")
                     require(not _allows_workbench_port(item), "manual workbench policy already allows participant port 18083")
             else:
                 specs = item.get("specs") if isinstance(item.get("specs"), list) else [item.get("spec", {})]
-                gateway_labels = POLICY.GATEWAY_LABELS | {"io.kubernetes.pod.namespace": NAMESPACE}
-                workbench_labels = POLICY.WORKBENCH_SELECTOR | {"io.kubernetes.pod.namespace": WORKBENCH_NAMESPACE}
-                if any(_selector_matches_v4(spec.get("endpointSelector", {}), gateway_labels) or _selector_matches_v4(spec.get("endpointSelector", {}), workbench_labels) for spec in specs): raise ActivationError(f"pre-existing {resource} overlaps participant selectors: {namespace}/{name}")
-    return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count}
+                candidates = []
+                if family == "cilium-clusterwide" or namespace == NAMESPACE: candidates.extend(label_sets["gateway"]["cilium"])
+                if family == "cilium-clusterwide" or namespace == WORKBENCH_NAMESPACE: candidates.extend(label_sets["workbench"]["cilium"])
+                if candidates and any(_selector_could_match_with_additional_labels_v4(spec.get("endpointSelector", {}), labels) for spec in specs for labels in candidates): raise ActivationError(f"pre-existing {resource} overlaps participant selectors: {namespace}/{name}")
+    return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request: Any, file_pointer: Any, code: int, message: str, headers: Any, new_url: str) -> None:
@@ -862,15 +1038,15 @@ def _require_json_response_v4(observed: dict[str, Any], expected_status: int, ex
     require(media_type == "application/json", f"{label} content type drift")
     require(obj(observed["body"], label + " body") == expected_body, f"{label} body drift")
 
-def _require_cors_v4(observed: dict[str, Any], origin: str, *, preflight: bool) -> None:
+def _require_cors_v4(observed: dict[str, Any], origin: str, *, preflight_method: str | None = None) -> None:
     headers = observed["headers"]
     require(headers.get("access-control-allow-origin") == origin and headers.get("access-control-allow-credentials") == "true", "route CORS origin/credentials drift")
     vary = {item.strip().lower() for item in headers.get("vary", "").split(",") if item.strip()}
     require("origin" in vary, "route CORS Vary drift")
-    if preflight:
+    if preflight_method is not None:
         methods = {item.strip().upper() for item in headers.get("access-control-allow-methods", "").split(",") if item.strip()}
         allowed_headers = {item.strip().lower() for item in headers.get("access-control-allow-headers", "").split(",") if item.strip()}
-        require(methods == {"GET", "POST", "OPTIONS"} and allowed_headers == {"content-type"} and headers.get("access-control-max-age") == "600", "route CORS preflight contract drift")
+        require(methods == {preflight_method} and allowed_headers == {"content-type"} and headers.get("access-control-max-age") == "600", "route CORS preflight contract drift")
 
 def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     del r  # The fixed urllib transport deliberately cannot inherit shell proxy state.
@@ -893,21 +1069,21 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         return observed
 
     status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
-    observed = call("GET", status_path); _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin, preflight=False); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
+    observed = call("GET", status_path); _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
     for path, allowed in [(status_path, "GET"), *[(path, "POST") for path in posts]]:
         observed = call("OPTIONS", path, requested_method=allowed)
         require(observed["status"] == 204 and observed["body"] == "" and "content-type" not in observed["headers"], f"OPTIONS {path} response drift")
-        _require_cors_v4(observed, origin, preflight=True); result.append({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204})
+        _require_cors_v4(observed, origin, preflight_method=allowed); result.append({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204})
     post_errors = {
-        posts[0]: (400, {"error": "admission_invalid"}),
-        posts[1]: (400, {"error": "challenge_invalid"}),
+        posts[0]: (401, {"error": "admission_invalid"}),
+        posts[1]: (401, {"error": "challenge_invalid"}),
         posts[2]: (401, {"error": "session_required"}),
         posts[3]: (401, {"error": "session_required"}),
         posts[4]: (401, {"error": "session_required"}),
     }
     for path, (status, expected_body) in post_errors.items():
         observed = call("POST", path, body=b"{}")
-        _require_json_response_v4(observed, status, expected_body, f"POST {path}"); _require_cors_v4(observed, origin, preflight=False)
+        _require_json_response_v4(observed, status, expected_body, f"POST {path}"); _require_cors_v4(observed, origin)
         result.append({"case": "unauthenticated-post", "method": "POST", "path": path, "status": status})
     for method, path in [("POST", status_path), *[("GET", path) for path in posts], ("HEAD", status_path), ("DELETE", status_path)]:
         observed = call(method, path, body=b"{}" if method == "POST" else None)
@@ -920,7 +1096,13 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         ("unknown-preflight", "OPTIONS", prefix + "/unknown"),
     ):
         observed = call(method, path, requested_method="POST" if method == "OPTIONS" else None)
-        require(observed["status"] == 404 and observed["body"] == "" and "content-type" not in observed["headers"], f"{label} route boundary drift")
+        if label == "query":
+            # HAProxy's exact `path` ACL intentionally ignores the query; the
+            # protected product rejects it with the closed JSON response.
+            _require_json_response_v4(observed, 404, {"error": "not_found"}, "query route")
+            require("access-control-allow-origin" not in observed["headers"], "query rejection exposed CORS authority")
+        else:
+            require(observed["status"] == 404 and observed["body"] == "" and "content-type" not in observed["headers"], f"{label} route boundary drift")
         result.append({"case": label, "method": method, "path": path, "status": 404})
     wrong_origin = "https://attacker.invalid"
     observed = call("POST", posts[0], request_origin=wrong_origin, body=b"{}")
@@ -977,8 +1159,11 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
             # left untouched and makes rollback incomplete.
             _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback post-nonce ownership {created.logical_name}")
     rv = current["metadata"].get("resourceVersion"); require(isinstance(rv, str) and rv.isdigit(), f"rollback resourceVersion absent for {created.logical_name}")
-    payload = canonical({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": current["metadata"]["uid"], "resourceVersion": rv}})
     kind = desired["kind"].lower()
+    foreground = kind == "deployment"
+    payload_value: dict[str, Any] = {"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": current["metadata"]["uid"], "resourceVersion": rv}}
+    if foreground: payload_value["propagationPolicy"] = "Foreground"
+    payload = canonical(payload_value)
     api, plural = {"ingress": ("networking.k8s.io/v1", "ingresses"), "networkpolicy": ("networking.k8s.io/v1", "networkpolicies"), "deployment": ("apps/v1", "deployments"), "service": ("v1", "services"), "serviceaccount": ("v1", "serviceaccounts")}[kind]
     prefix = "/api" if api == "v1" else "/apis"
     resource_path = f"{prefix}/{api}/namespaces/{metadata['namespace']}/{plural}/{metadata['name']}"
@@ -988,10 +1173,21 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
         after = get_optional(r, kubeconfig, kind, metadata["name"], metadata["namespace"])
         if after is None: break
         finalizers = after.get("metadata", {}).get("finalizers", [])
-        if after.get("metadata", {}).get("deletionTimestamp") and finalizers: raise ActivationError(f"rollback blocked by finalizers for {created.logical_name}: {finalizers}")
+        if after.get("metadata", {}).get("deletionTimestamp") and finalizers:
+            allowed = ["foregroundDeletion"] if foreground else []
+            require(finalizers == allowed, f"rollback blocked by finalizers for {created.logical_name}: {finalizers}")
         require(time.monotonic() < deadline, f"rollback absence timeout for {created.logical_name}")
         time.sleep(0.1)
-    return {"logicalName": created.logical_name, "uid": current["metadata"]["uid"], "deleteResourceVersion": rv, "absent": True, "finalizersRemovedByRunner": False}
+    return {"logicalName": created.logical_name, "uid": current["metadata"]["uid"], "deleteResourceVersion": rv, "absent": True, "foregroundPropagation": foreground, "finalizersRemovedByRunner": False}
+
+def deployment_dependents_absent_v4(r: Runner, kubeconfig: str) -> dict[str, Any]:
+    selector = ",".join(f"{key}={value}" for key, value in sorted(POLICY.GATEWAY_LABELS.items()))
+    result = {}
+    for resource in ("pods", "replicasets.apps"):
+        listing = obj(checked(r, kb(kubeconfig) + ["-n", NAMESPACE, "get", resource, "-l", selector, "-o", "json"], f"rollback {resource} absence"), f"rollback {resource}")
+        items = listing.get("items", []); require(isinstance(items, list) and not items, f"rollback left participant {resource} running")
+        result[resource] = {"selector": dict(POLICY.GATEWAY_LABELS), "count": 0}
+    return {"status": "deployment-foreground-dependents-absent", "resources": result}
 
 def _flux_suspended_and_quiescent_v4(value: dict[str, Any], owner: str, uid: str) -> dict[str, Any]:
     metadata, status = value.get("metadata", {}), value.get("status", {})
@@ -1055,11 +1251,21 @@ def rollback_v4(
     errors: list[str] = []; deleted: list[dict[str, Any]] = []; flux: dict[str, Any] = {}; final_checks: dict[str, Any] = {}
     ingress = next((item for item in created if item.logical_name == "gateway.ingress"), None)
     settings = p["httpBoundary"]["timeoutsSeconds"]; timeout = settings["rollback"]; deadline = time.monotonic() + timeout
+    # Re-bind the protected cluster before the first rollback mutation. A
+    # changed API origin/CA/SPKI/cluster UID is not authority to delete objects
+    # in whatever cluster the snapshot now reaches.
+    if snapshot is not None and initial_cluster is not None:
+        try:
+            entry_cluster = cluster_binding_v4(r, snapshot, p)
+            require_same_cluster_identity_v4(initial_cluster, entry_cluster, "before rollback")
+            final_checks["clusterBindingBeforeRollback"] = entry_cluster
+        except Exception as exc: errors.append(str(exc))
+    rollback_authorized = not errors
     # Exposure closes first, before either reconciler is touched.
-    if ingress:
+    if ingress and rollback_authorized:
         try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
         except Exception as exc: errors.append(str(exc))
-    if bootstrap:
+    if bootstrap and rollback_authorized:
         for owner in ("gateway", "workbenchIngress"):
             try:
                 target = p["gitOps"]["reconcilers"][owner]["kustomization"]; current = _target_live(r, kubeconfig, target)
@@ -1080,9 +1286,18 @@ def rollback_v4(
                 deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
         except Exception as exc: errors.append(str(exc))
     if not errors and (bootstrap is None or len(flux) == 2):
-        for item in reversed([entry for entry in created if entry is not ingress]):
-            try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, max(1, int(deadline - time.monotonic()))))
-            except Exception as exc: errors.append(str(exc)); break
+        remaining = [entry for entry in created if entry is not ingress]
+        deployment = next((entry for entry in remaining if entry.logical_name == "gateway.deployment"), None)
+        if deployment is not None:
+            try:
+                deleted.append(delete_with_preconditions_v4(r, kubeconfig, deployment, max(1, int(deadline - time.monotonic()))))
+                final_checks["deploymentDependents"] = deployment_dependents_absent_v4(r, kubeconfig)
+                remaining.remove(deployment)
+            except Exception as exc: errors.append(str(exc))
+        if not errors:
+            for item in reversed(remaining):
+                try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, max(1, int(deadline - time.monotonic()))))
+                except Exception as exc: errors.append(str(exc)); break
     if not errors and rendered is not None:
         try:
             owned_uids = {item.logical_name: item.observed.get("metadata", {}).get("uid") for item in created}
@@ -1130,8 +1345,9 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
     """Execute both Flux paths as one guarded transaction; no caller evidence."""
     if not live: return dry_run_plan(p, rev, {})
     _policy_call(POLICY.assert_activation_ready, p); require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
-    rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; partial: dict[str, Any] = {}; snapshot: KubeconfigSnapshot | None = None; mutation_started = False
+    rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; operation_nonce: str | None = None; partial: dict[str, Any] = {}; snapshot: KubeconfigSnapshot | None = None; mutation_started = False
     started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    previous_signal_handlers = install_transaction_signal_handlers_v4()
     try:
         snapshot = snapshot_kubeconfig_v4(kube, r); snapshot_path = str(snapshot.path)
         partial["clusterBinding"] = cluster_binding_v4(r, snapshot, p)
@@ -1153,7 +1369,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
             created.append(item); remove_operation_nonce_v4(r, snapshot_path, item, operation_nonce); uncertain = None
             if logical == "gateway.deployment": deployment, haproxy = health_v4(r, snapshot_path, p)
         require(deployment is not None and haproxy is not None, "internal health facts absent")
-        owned = {(item.desired["metadata"]["namespace"], item.desired["metadata"]["name"]) for item in created if item.desired["kind"] == "NetworkPolicy"}
+        owned = {(item.desired["metadata"]["namespace"], item.desired["metadata"]["name"]): item for item in created if item.desired["kind"] == "NetworkPolicy"}
         partial["publication"]["runtime"] = runtime_image_v4(r, snapshot_path, p)
         secret_before_ingress = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_before_ingress, "before Ingress")
         policy_before_ingress = policy_union_v4(r, snapshot_path, owned)
@@ -1179,26 +1395,51 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
         success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}
         # Durable receipt persistence is the transaction commit point. Any
-        # failure here is handled exactly like an activation failure.
+        # failure here is handled exactly like an activation failure. Ignore
+        # termination only across this commit point and subsequent cleanup.
+        defer_transaction_signals_v4()
         sink.commit(success)
         return success
-    except Exception as exc:
+    except (Exception, KeyboardInterrupt) as exc:
+        # A second SIGINT/SIGTERM cannot interrupt the bounded rollback and
+        # leave a partially exposed transaction without a durable receipt.
+        defer_transaction_signals_v4()
         if mutation_started and snapshot is not None:
+            if uncertain is not None and operation_nonce is not None:
+                try:
+                    recovered = rediscover_uncertain_create_v4(r, str(snapshot.path), uncertain, rendered[uncertain], operation_nonce, p["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"])
+                    if recovered is not None: created.append(recovered); uncertain = None
+                except Exception:
+                    # A mismatched or still unreadable name is deliberately not
+                    # adopted. rollback_v4 records the unresolved target and
+                    # cannot report completion while it remains present.
+                    pass
             rolled = rollback_v4(r, str(snapshot.path), p, created, bootstrap, preserved, uncertain, rendered=rendered, snapshot=snapshot, initial_cluster=partial.get("clusterBinding"))
         else:
             rolled = {"status": "complete", "bothKustomizationsSuspended": False, "flux": {}, "deleted": [], "finalChecks": {"noMutationStarted": True}, "preservation": {}, "uncertainTarget": None, "errors": [], "finalizersRemovedByRunner": False}
-        failure = {"schemaVersion": RECEIPT_SCHEMA, "status": "rolled-back" if rolled["status"] == "complete" else "rollback-incomplete", "protectedRevision": rev, "failure": str(exc), "protectedRunnerFileSha256": runner_hashes, "objectCreateResults": [item.receipt for item in created], "rollback": rolled, "civicAuthorityEffects": False}
+        interrupted = isinstance(exc, (ActivationInterrupted, KeyboardInterrupt))
+        failure_text = str(exc) or "activation interrupted by operator"
+        failure = {"schemaVersion": RECEIPT_SCHEMA, "status": "rolled-back" if rolled["status"] == "complete" else "rollback-incomplete", "protectedRevision": rev, "failure": failure_text, "protectedRunnerFileSha256": runner_hashes, "objectCreateResults": [item.receipt for item in created], "rollback": rolled, "termination": {"interrupted": interrupted, "signal": exc.signum if isinstance(exc, ActivationInterrupted) else None, "signalsDeferredDuringRollback": True}, "civicAuthorityEffects": False}
         sink.commit(failure); raise ActivationError(f"activation {failure['status']}: {exc}") from exc
     finally:
-        if snapshot is not None: snapshot.close()
+        try:
+            if snapshot is not None: snapshot.close()
+        finally:
+            restore_transaction_signal_handlers_v4(previous_signal_handlers)
 
 def main() -> int:
+    global POLICY
     ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
     if a.dry_run == a.live: print("activation blocked: choose exactly one of --dry-run or --live", file=sys.stderr); return 2
     try:
+        require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "executor requires python3 -I isolated safe-path mode")
+        os.environ.pop("PYTHONPATH", None)
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
         require(subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
-        runner_hashes = protected_checkout(rev); p = policy(rev)
+        runner_hashes = protected_checkout(rev)
+        POLICY = compile_verified_policy_module_v4(git_blob(rev, POLICY_MODULE_PATH), rev)
+        bind_verified_policy_identity_v4(POLICY)
+        p = policy(rev)
         if a.dry_run:
             result = dry_run_plan(p, rev, runner_hashes)
             sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0

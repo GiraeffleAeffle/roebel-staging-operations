@@ -158,8 +158,8 @@
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/posts", "status": 204},
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/comments", "status": 204},
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/nostr-post", "status": 204},
-      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 400},
-      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/session", "status": 400},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/session", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/posts", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/comments", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/nostr-post", "status": 401},
@@ -259,21 +259,23 @@
     }
   },
   "productPins": {
-    "databaseSchemaSha256": null,
+    "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
     "deactivation": {
       "path": "supabase/staging_participant_gateway_deactivate.sql",
-      "sha256": null
+      "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5"
     },
-    "imageManifestDigest": null,
+    "imageManifestDigest": "sha256:23243a09a9035f10540e4612c481a188750c8a5d9006062a60423c1850b7d45f",
     "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
     "migration": {
       "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
-      "sha256": null
+      "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
     },
-    "sourceRevision": null,
-    "sourceTreeSha256": null,
+    "sourceRevision": "7cb7e5b7b0f71c8072aefbec900cd229847d6dea",
+    "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
+    "sourceTreeSha256": "sha256:88544f383178e2b85ef031ae11295ec45917ee6df6ac117381b2f5e0854b6d4a",
     "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
-    "workflowSha256": null
+    "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
+    "workflowSha256": "sha256:a65d9ef0563e492c688f752a4b6604fe114eec0fc9e8807dc346660a0e327e2d"
   },
   "render": {
     "createOrder": [
@@ -333,7 +335,9 @@
   "rollback": {
     "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
     "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
+    "deploymentDeletion": "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets",
     "firstStep": "delete-exact-owned-participant-ingress-uid",
+    "networkPolicyDeletion": "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
     "preserve": [
       "shared-flux-source",
       "web-ingress",
@@ -348,7 +352,9 @@
       "existing-workbench-network-policy-byte-identical",
       "no-civic-authority-effects"
     ],
-    "secondStep": "cas-suspend-both-participant-kustomizations"
+    "secondStep": "cas-suspend-both-participant-kustomizations",
+    "termination": "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt",
+    "uncertainCreateRediscovery": "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback"
   },
   "runtime": {
     "containerPort": 18085,

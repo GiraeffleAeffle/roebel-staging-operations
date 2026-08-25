@@ -89,8 +89,8 @@ HTTP_PREFIX = "/api/staging-participant/v1"
 ROUTE_EXPECTATIONS = (
     {"case": "status", "method": "GET", "path": ROUTES[0], "status": 200},
     *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in ROUTES),
-    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[1], "status": 400},
-    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[2], "status": 400},
+    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[1], "status": 401},
+    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[2], "status": 401},
     *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in ROUTES[3:]),
     {"case": "method-denied", "method": "POST", "path": ROUTES[0], "status": 405},
     *({"case": "method-denied", "method": "GET", "path": path, "status": 405} for path in POST_ROUTES),
@@ -174,23 +174,25 @@ def _static_descriptor() -> dict[str, Any]:
             },
         },
         "productPins": {
-            "sourceRevision": None,
-            "sourceTreeSha256": None,
+            "sourceRevision": "7cb7e5b7b0f71c8072aefbec900cd229847d6dea",
+            "sourceTreeSha256": "sha256:88544f383178e2b85ef031ae11295ec45917ee6df6ac117381b2f5e0854b6d4a",
+            "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
             "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-            "imageManifestDigest": None,
+            "imageManifestDigest": "sha256:23243a09a9035f10540e4612c481a188750c8a5d9006062a60423c1850b7d45f",
             "workflowIdentity": (
                 "https://github.com/GiraeffleAeffle/Roebel-App/"
                 ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
             ),
-            "workflowSha256": None,
+            "workflowSha256": "sha256:a65d9ef0563e492c688f752a4b6604fe114eec0fc9e8807dc346660a0e327e2d",
+            "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
             "migration": {
                 "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
-                "sha256": None,
+                "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
             },
-            "databaseSchemaSha256": None,
+            "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
             "deactivation": {
                 "path": "supabase/staging_participant_gateway_deactivate.sql",
-                "sha256": None,
+                "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
             },
         },
         "endpoints": {
@@ -410,7 +412,11 @@ def _static_descriptor() -> dict[str, Any]:
         "rollback": {
             "firstStep": "delete-exact-owned-participant-ingress-uid",
             "secondStep": "cas-suspend-both-participant-kustomizations",
+            "termination": "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt",
+            "uncertainCreateRediscovery": "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback",
+            "deploymentDeletion": "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets",
             "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
+            "networkPolicyDeletion": "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
             "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
             "preserve": [
                 "shared-flux-source",
@@ -476,10 +482,12 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
         "component": "staging-participant-gateway",
         "sourceRevision": pins["sourceRevision"],
         "sourceTreeSha256": pins["sourceTreeSha256"],
+        "sourceTreeHashSemantics": pins["sourceTreeHashSemantics"],
         "imageRepository": pins["imageRepository"],
         "manifestDigest": pins["imageManifestDigest"],
         "workflowIdentity": pins["workflowIdentity"],
         "workflowSha256": pins["workflowSha256"],
+        "workflowHashSemantics": pins["workflowHashSemantics"],
         "migrationSha256": pins["migration"]["sha256"],
         "databaseSchemaSha256": pins["databaseSchemaSha256"],
         "deactivationSha256": pins["deactivation"]["sha256"],
@@ -567,6 +575,10 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
             "https://github.com/GiraeffleAeffle/Roebel-App/"
             ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
         )
+        and pins["sourceTreeHashSemantics"]
+        == "sha256-of-git-ls-tree-rz-full-tree-raw-bytes"
+        and pins["workflowHashSemantics"]
+        == "sha256-of-raw-git-blob-bytes-at-source-revision"
         and pins["migration"]["path"]
         == "supabase/migrations/20260825_staging_participant_gateway.sql"
         and pins["deactivation"]["path"]
@@ -714,8 +726,16 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
     _require(value["httpBoundary"]["expectations"] == list(ROUTE_EXPECTATIONS), "participant route expectation matrix drift")
     _require(
         value["rollback"]["database"]
-        == "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
-        "participant database rollback authority drift",
+        == "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation"
+        and value["rollback"]["termination"]
+        == "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt"
+        and value["rollback"]["uncertainCreateRediscovery"]
+        == "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback"
+        and value["rollback"]["deploymentDeletion"]
+        == "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets"
+        and value["rollback"]["networkPolicyDeletion"]
+        == "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
+        "participant rollback transaction boundary drift",
     )
 
 
@@ -863,6 +883,11 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
     paths = [route["path"] for route in boundary["routes"]]
     post_paths = [route["path"] for route in boundary["routes"] if "POST" in route["methods"]]
     early = "\n".join([
+        # Reject unknown/trailing/query-normalized paths before evaluating the
+        # method matrix.  Otherwise an unknown GET/OPTIONS would be mislabeled
+        # 405 and the protected 404 route contract could never pass.
+        "http-request deny deny_status 404 "
+        + " ".join(f"!{{ path {path} }}" for path in paths),
         "http-request deny deny_status 405 if { method POST } "
         + " ".join(f"!{{ path {path} }}" for path in post_paths),
         "http-request deny deny_status 405 if { method OPTIONS } "
@@ -870,8 +895,6 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
         "http-request deny deny_status 405 if { method HEAD }",
         f"http-request deny deny_status 405 if {{ method GET }} !{{ path {paths[0]} }}",
         "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }",
-        "http-request deny deny_status 404 "
-        + " ".join(f"!{{ path {path} }}" for path in paths),
         "stick-table type ip size 10k expire 60s store http_req_rate(1m)",
         "http-request track-sc0 src",
         "http-request deny deny_status 429 if { sc_http_req_rate(0) gt 30 }",

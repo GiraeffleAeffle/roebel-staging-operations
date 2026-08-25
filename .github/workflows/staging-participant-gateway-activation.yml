@@ -34,7 +34,7 @@ jobs:
           git diff --check
       - name: Emit no-cluster activation plan
         run: >-
-          python3 scripts/activate-staging-participant-gateway.py
+          python3 -I scripts/activate-staging-participant-gateway.py
           --dry-run
           --expected-protected-revision '${{ inputs.protected_revision }}'
           --receipt participant-gateway-dry-run-receipt.json

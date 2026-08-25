@@ -1,10 +1,14 @@
-import base64, contextlib, copy, datetime as dt, importlib.util, json, os, stat, sys, tempfile, unittest
+import base64, contextlib, copy, datetime as dt, importlib.util, json, os, stat, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("activation", Path(__file__).with_name("activate-staging-participant-gateway.py"))
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
 REV = "a" * 40
+MODULE.POLICY = MODULE.compile_verified_policy_module_v4(
+    Path(__file__).with_name("staging_participant_gateway_policy.py").read_bytes(),
+    REV,
+)
 def sha(x="a"): return "sha256:" + x * 64
 def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="10", **extra):
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
@@ -74,6 +78,20 @@ class ExecutorTests(unittest.TestCase):
             with patch.object(MODULE, "ROOT", root), patch.object(MODULE, "git_blob", return_value=path.read_bytes()):
                 with self.assertRaisesRegex(MODULE.ActivationError, "policy drift"):
                     MODULE.policy(REV)
+
+    def test_verified_policy_identity_must_match_runner_constants(self):
+        MODULE.bind_verified_policy_identity_v4(MODULE.POLICY)
+        drifted = Mock(**{
+            "GATEWAY_NAMESPACE": MODULE.POLICY.GATEWAY_NAMESPACE,
+            "FLUX_NAMESPACE": MODULE.POLICY.FLUX_NAMESPACE,
+            "GATEWAY_NAME": "attacker-selected-gateway",
+            "FLUX_SOURCE_NAME": MODULE.POLICY.FLUX_SOURCE_NAME,
+            "WORKBENCH_NAMESPACE": MODULE.POLICY.WORKBENCH_NAMESPACE,
+            "WORKBENCH_INGRESS_POLICY_NAME": MODULE.POLICY.WORKBENCH_INGRESS_POLICY_NAME,
+            "POLICY_PATH": MODULE.POLICY.POLICY_PATH,
+        })
+        with self.assertRaisesRegex(MODULE.ActivationError, "runner/policy identity drift"):
+            MODULE.bind_verified_policy_identity_v4(drifted)
     def test_inert_dry_run_reports_every_blocker_without_runner(self):
         value = policy(); hashes = {"runner": sha()}
         result = MODULE.dry_run_plan(value, REV, hashes)
@@ -89,11 +107,28 @@ class ExecutorTests(unittest.TestCase):
         self.assertNotIn("--evidence", source)
         self.assertNotIn("--render-root", source)
         self.assertNotIn("--gateway-url", source)
+
+    def test_command_requires_isolated_mode_before_local_imports_and_policy_compilation(self):
+        source = Path(MODULE.__file__).read_text()
+        self.assertLess(source.index("runner_hashes = protected_checkout(rev)"), source.index("POLICY = compile_verified_policy_module_v4"))
+        with tempfile.TemporaryDirectory() as directory:
+            scripts = Path(directory) / "scripts"; scripts.mkdir()
+            runner = scripts / "activate-staging-participant-gateway.py"; runner.write_text(source)
+            marker = Path(directory) / "shadow-executed"
+            (scripts / "secrets.py").write_text(f"from pathlib import Path\nPath({str(marker)!r}).write_text('unsafe')\n")
+            args = [str(runner), "--dry-run", "--expected-protected-revision", REV, "--receipt", str(Path(directory) / "receipt.json")]
+            unsafe = subprocess.run([sys.executable, *args], text=True, capture_output=True, check=False)
+            self.assertEqual(unsafe.returncode, 2); self.assertIn("python3 -I", unsafe.stderr); self.assertFalse(marker.exists())
+            isolated = subprocess.run([sys.executable, "-I", *args], text=True, capture_output=True, check=False)
+            self.assertEqual(isolated.returncode, 2); self.assertIn("protected repository checkout", isolated.stderr); self.assertFalse(marker.exists())
     def test_empty_and_matching_selectors_are_rejected(self):
         self.assertTrue(MODULE._selector_matches_v4({}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertTrue(MODULE._selector_matches_v4({"matchLabels": {"app.kubernetes.io/name": MODULE.NAME}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertTrue(MODULE._selector_matches_v4({"matchLabels": {"any:app.kubernetes.io/name": MODULE.NAME}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertFalse(MODULE._selector_matches_v4({"matchLabels": {"app.kubernetes.io/name": "other"}}, MODULE.POLICY.GATEWAY_LABELS))
+        self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"pod-template-hash": "future"}}, MODULE.POLICY.GATEWAY_LABELS))
+        self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"k8s:io.cilium.k8s.policy.serviceaccount": MODULE.NAME}}, MODULE.POLICY.GATEWAY_LABELS))
+        self.assertFalse(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"app.kubernetes.io/name": "other"}}, MODULE.POLICY.GATEWAY_LABELS))
     def test_live_gate_fails_before_runner_or_kubeconfig_validation(self):
         value = policy()
         with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "activation blocked"):
@@ -145,6 +180,48 @@ class ExecutorTests(unittest.TestCase):
             for bad in ("https://user@api.example.test:6443", "https://api.example.test:6443/path", "https://api.example.test:6443?x=1", "https://api.example.test:6443#x"):
                 with self.assertRaisesRegex(MODULE.ActivationError, "HTTPS origin"):
                     MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened(bad)))
+
+            failed_snapshot = Path(directory) / "failed-snapshot"
+            def make_failed_snapshot(*_args, **_kwargs):
+                failed_snapshot.mkdir(mode=0o700)
+                return str(failed_snapshot)
+            with patch.object(MODULE.tempfile, "mkdtemp", side_effect=make_failed_snapshot), patch.object(MODULE.os, "fsync", side_effect=OSError("injected fsync failure")):
+                with self.assertRaisesRegex(OSError, "injected fsync failure"):
+                    MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened("https://api.example.test:6443")))
+            self.assertFalse(failed_snapshot.exists(), "failed credential snapshot must be removed")
+
+    def test_raw_delete_proxy_exposes_only_the_exact_escaped_resource_path(self):
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+        class Opener:
+            def open(self, request, timeout):
+                self.request, self.timeout = request, timeout
+                return Response()
+        class Process:
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Starting to serve on 127.0.0.1:41777\n"); os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0); self.terminated = False
+            def poll(self): return None
+            def terminate(self): self.terminated = True
+            def wait(self, timeout): return 0
+            def kill(self): self.terminated = True
+        resource_path = f"/apis/networking.k8s.io/v1/namespaces/{MODULE.NAMESPACE}/networkpolicies/{MODULE.NAME}"
+        process, opener = Process(), Opener()
+        with patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, patch.object(MODULE.urllib.request, "build_opener", return_value=opener):
+            MODULE.raw_delete("/snapshot", resource_path, '{"kind":"DeleteOptions"}')
+        command = popen.call_args.args[0]
+        self.assertIn("--address=127.0.0.1", command)
+        self.assertIn("--accept-hosts=^127\\.0\\.0\\.1$", command)
+        self.assertIn("--accept-paths=^" + resource_path.replace(".", r"\.") + "$", command)
+        self.assertEqual(opener.request.full_url, "http://127.0.0.1:41777" + resource_path)
+        self.assertEqual(opener.request.method, "DELETE"); self.assertTrue(process.terminated); self.assertTrue(process.stdout.closed)
+        with patch.object(MODULE.subprocess, "Popen") as forbidden:
+            with self.assertRaisesRegex(MODULE.ActivationError, "outside closed policy"):
+                MODULE.raw_delete("/snapshot", resource_path + "?watch=true", "{}")
+        forbidden.assert_not_called()
     def test_definite_create_conflict_is_never_treated_as_uncertain(self):
         class Conflict(MODULE.Runner):
             def run(self, args, *, input_text=None):
@@ -204,6 +281,15 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "live_obj", side_effect=MODULE.ActivationError("not readable")):
             with self.assertRaisesRegex(MODULE.TransportUncertainError, "unresolved"):
                 MODULE.create_v4(ServerError(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, "a" * 64)
+
+    def test_v4_uncertain_create_is_boundedly_rediscovered_for_rollback(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "d" * 64
+        rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "17")
+        with patch.object(MODULE, "get_optional", side_effect=[MODULE.ActivationError("temporary read failure"), observed]), patch.object(MODULE.time, "monotonic", side_effect=[0.0, 0.0, 0.1]), patch.object(MODULE.time, "sleep"):
+            recovered = MODULE.rediscover_uncertain_create_v4(Fake(), "/snapshot", "workbenchIngress.networkPolicy", rendered, nonce, 1)
+        self.assertIsNotNone(recovered); self.assertEqual(recovered.observed["metadata"]["uid"], "owned")
+        self.assertTrue(recovered.receipt["recoveredDuringRollbackEntry"]); self.assertFalse(recovered.receipt["temporaryNonceRemoved"])
 
     def test_v4_exact_six_target_absence_preflight_is_closed_and_non_adopting(self):
         value = ready_policy()
@@ -274,6 +360,23 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn(f"/namespaces/{MODULE.WORKBENCH_NAMESPACE}/networkpolicies/{MODULE.WORKBENCH_POLICY_NAME}", path)
         self.assertIn('"uid":"owned-uid"', payload); self.assertIn('"resourceVersion":"10"', payload)
 
+    def test_v4_deployment_rollback_is_foreground_and_proves_runtime_dependents_absent(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
+        current = admitted(desired, "deployment-uid", "31")
+        created = MODULE.CreatedV4("gateway.deployment", desired, current, {"uid": "deployment-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        with patch.object(MODULE, "get_optional", side_effect=[current, None]), patch.object(MODULE, "raw_delete") as delete:
+            receipt = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
+        payload = json.loads(delete.call_args.args[2])
+        self.assertEqual(payload["propagationPolicy"], "Foreground")
+        self.assertEqual(payload["preconditions"], {"uid": "deployment-uid", "resourceVersion": "31"})
+        self.assertTrue(receipt["foregroundPropagation"])
+        with patch.object(MODULE, "checked", side_effect=[json.dumps({"items": []}), json.dumps({"items": []})]) as query:
+            dependents = MODULE.deployment_dependents_absent_v4(Fake(), "/tmp/kube")
+        self.assertEqual(dependents["status"], "deployment-foreground-dependents-absent")
+        self.assertEqual(query.call_count, 2)
+
     def test_v4_flux_ready_requires_generation_and_exact_revision(self):
         desired = MODULE.POLICY.gateway_flux_objects(suspended=False)["kustomization"]
         live = admitted(desired, "g", "11"); live["metadata"]["generation"] = 7
@@ -333,17 +436,19 @@ class ExecutorTests(unittest.TestCase):
     def test_v4_route_matrix_is_proxy_free_closed_and_checks_bodies_cors_and_deadline(self):
         value = policy(); origin = value["endpoints"]["browserOrigin"]; prefix = value["httpBoundary"]["prefix"]
         cors = {"access-control-allow-origin": origin, "access-control-allow-credentials": "true", "vary": "Origin"}
-        preflight = cors | {"access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
         status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
         def response(request_origin, method, path, headers, body, timeout):
             self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
             if method == "GET" and path == prefix + "/status": return {"status": 200, "headers": cors | {"content-type": "application/json; charset=utf-8"}, "body": json.dumps(status_body)}
-            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES: return {"status": 204, "headers": preflight, "body": ""}
+            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES:
+                preflight = cors | {"access-control-allow-methods": "GET" if path.endswith("/status") else "POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
+                return {"status": 204, "headers": preflight, "body": ""}
             if method == "POST" and path in MODULE.POLICY.POST_ROUTES:
                 if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
-                status, error = ((400, "admission_invalid") if path.endswith("/challenge") else (400, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
+                status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
                 return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
             if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]: return {"status": 405, "headers": {}, "body": ""}
+            if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
             return {"status": 404, "headers": {}, "body": ""}
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
             receipt = MODULE.route_matrix_v4(Fake(), value)
@@ -477,6 +582,52 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(MODULE._allows_workbench_port(policy_with(18080, 18090)))
         self.assertFalse(MODULE._allows_workbench_port(policy_with(18084)))
 
+    def test_v4_policy_union_uses_runtime_cilium_identity_labels(self):
+        labels = {
+            "gateway": {
+                "namespace": MODULE.NAMESPACE,
+                "podCount": 1,
+                "kubernetes": [MODULE.POLICY.GATEWAY_LABELS | {"pod-template-hash": "abc123"}],
+                "cilium": [MODULE.POLICY.GATEWAY_LABELS | {
+                    "pod-template-hash": "abc123",
+                    "io.kubernetes.pod.namespace": MODULE.NAMESPACE,
+                    "io.cilium.k8s.policy.serviceaccount": MODULE.NAME,
+                }],
+            },
+            "workbench": {
+                "namespace": MODULE.WORKBENCH_NAMESPACE,
+                "podCount": 0,
+                "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR],
+                "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR | {"io.kubernetes.pod.namespace": MODULE.WORKBENCH_NAMESPACE}],
+            },
+        }
+        cilium_policy = {
+            "metadata": {"name": "unexpected-service-account-allow", "namespace": MODULE.NAMESPACE},
+            "spec": {"endpointSelector": {"matchLabels": {"k8s:io.cilium.k8s.policy.serviceaccount": MODULE.NAME}}},
+        }
+        listings = [json.dumps({"items": []}), json.dumps({"items": [cilium_policy]})]
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", side_effect=listings):
+            with self.assertRaisesRegex(MODULE.ActivationError, "overlaps participant selectors"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube")
+
+    def test_v4_policy_union_exempts_owned_policy_only_by_uid_and_exact_semantics(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy()
+        observed = admitted(desired, "owned-policy-uid", "10")
+        binding = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, observed, {"operationNonce": "a" * 64})
+        owned = {(MODULE.WORKBENCH_NAMESPACE, MODULE.WORKBENCH_POLICY_NAME): binding}
+        labels = {
+            "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
+            "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
+        }
+        foreign = admitted(desired, "foreign-policy-uid", "11")
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": [foreign]})):
+            with self.assertRaisesRegex(MODULE.ActivationError, "owned NetworkPolicy UID drift"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
+        widened = admitted(desired, "owned-policy-uid", "12"); widened["spec"]["ingress"][0]["ports"][0]["port"] = 18084
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": [widened]})):
+            with self.assertRaisesRegex(MODULE.ActivationError, "semantics"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
+
     def test_v4_rollback_rechecks_ingress_absence_after_dual_suspend(self):
         desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
         ingress = MODULE.CreatedV4("gateway.ingress", desired, admitted(desired, "ingress-uid"), {"uid": "ingress-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
@@ -490,6 +641,18 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(result["status"], "incomplete")
         self.assertTrue(result["bothKustomizationsSuspended"])
         self.assertIn("unowned UID", result["errors"][0])
+
+    def test_v4_rollback_refuses_mutation_if_protected_cluster_identity_changes(self):
+        desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
+        ingress = MODULE.CreatedV4("gateway.ingress", desired, admitted(desired, "ingress-uid"), {"uid": "ingress-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        initial = {"apiOrigin": "https://api.example:6443", "caCertificateSha256": sha("1"), "apiServerSpkiSha256": sha("2"), "kubeSystemNamespaceUid": "cluster-a"}
+        changed = initial | {"kubeSystemNamespaceUid": "cluster-b"}
+        snapshot = Mock()
+        with patch.object(MODULE, "cluster_binding_v4", return_value=changed), patch.object(MODULE, "delete_with_preconditions_v4") as delete:
+            result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [ingress], None, None, None, snapshot=snapshot, initial_cluster=initial)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("protected cluster identity changed before rollback", result["errors"][0])
+        delete.assert_not_called()
 
     def test_v4_success_receipt_rejects_incomplete_object_set(self):
         value = ready_policy(); facts = valid_success_facts(value)
@@ -505,6 +668,48 @@ class ExecutorTests(unittest.TestCase):
             facts["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
             with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
+
+    def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        rendered = {
+            "gateway.networkPolicy": {"desired": resources["networkPolicy"], "path": "np", "blobSha256": sha()},
+            "workbenchIngress.networkPolicy": {"desired": MODULE.POLICY.expected_workbench_ingress_network_policy(), "path": "wnp", "blobSha256": sha()},
+            "gateway.serviceAccount": {"desired": resources["serviceAccount"], "path": "sa", "blobSha256": sha()},
+            "gateway.service": {"desired": resources["service"], "path": "svc", "blobSha256": sha()},
+            "gateway.deployment": {"desired": resources["deployment"], "path": "dep", "blobSha256": sha()},
+            "gateway.ingress": {"desired": resources["ingress"], "path": "ing", "blobSha256": sha()},
+        }
+        snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        cluster = {"apiOrigin": value["clusterIdentity"]["apiOrigin"], "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"], "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"], "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"]}
+        sink = Mock(); rollback = {"status": "complete", "finalizersRemovedByRunner": False}
+        patches = (
+            patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+            patch.object(MODULE, "render_v4", return_value=rendered),
+            patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+            patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+            patch.object(MODULE, "anonymous_publication_v4", return_value={}),
+            patch.object(MODULE, "endpoint_facts_v4", return_value={}),
+            patch.object(MODULE, "preservation_v4", return_value={}),
+            patch.object(MODULE, "flux_preflight_v4", return_value={}),
+            patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
+            patch.object(MODULE, "secret_materialization_v4", return_value={}),
+            patch.object(MODULE, "policy_union_v4", return_value={}),
+            patch.object(MODULE, "create_v4", side_effect=MODULE.ActivationInterrupted(MODULE.signal.SIGTERM)),
+            patch.object(MODULE, "rediscover_uncertain_create_v4", return_value=None),
+            patch.object(MODULE, "rollback_v4", return_value=rollback),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with contextlib.ExitStack() as stack:
+                entered = [stack.enter_context(item) for item in patches]
+                with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()})
+        failure = sink.commit.call_args.args[0]
+        self.assertEqual(failure["status"], "rolled-back")
+        self.assertEqual(failure["termination"], {"interrupted": True, "signal": MODULE.signal.SIGTERM, "signalsDeferredDuringRollback": True})
+        entered[-1].assert_called_once(); snapshot.close.assert_called_once()
 
     def test_v4_success_receipt_persistence_failure_is_inside_transaction_and_rolls_back(self):
         value = ready_policy()

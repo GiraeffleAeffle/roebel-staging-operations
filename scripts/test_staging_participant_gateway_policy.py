@@ -58,13 +58,6 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(
             POLICY.activation_blockers(committed),
             (
-                "productPins.sourceRevision",
-                "productPins.sourceTreeSha256",
-                "productPins.imageManifestDigest",
-                "productPins.workflowSha256",
-                "productPins.migration.sha256",
-                "productPins.databaseSchemaSha256",
-                "productPins.deactivation.sha256",
                 "clusterIdentity.apiOrigin",
                 "clusterIdentity.caCertificateSha256",
                 "clusterIdentity.apiServerSpkiSha256",
@@ -83,6 +76,9 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertNotIn("activationEvidence", keys)
         self.assertNotIn("callerEvidence", keys)
         self.assertFalse(POLICY.activation_policy_descriptor()["network"]["conflictScan"]["staticInventoryHashes"])
+        pins = POLICY.activation_policy_descriptor()["productPins"]
+        self.assertEqual(pins["sourceTreeHashSemantics"], "sha256-of-git-ls-tree-rz-full-tree-raw-bytes")
+        self.assertEqual(pins["workflowHashSemantics"], "sha256-of-raw-git-blob-bytes-at-source-revision")
 
     def test_route_and_rate_limit_boundary_is_exact(self):
         value = POLICY.activation_policy_descriptor()
