@@ -205,10 +205,12 @@ PARTICIPANT_GATEWAY_LABELS = {
 PARTICIPANT_GATEWAY_CONFIG_SECRET = "roebel-staging-participant-gateway-config"
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = "roebel-staging-participant-gateway-runtime"
 
-# There is intentionally no evidence in this policy bootstrap.  A later,
-# separately reviewed policy change must pin exactly one complete endpoint,
-# publication, Flux and live-precondition record before any gateway render can
-# pass.  A render cannot approve its own external HTTPS destinations.
+# There is intentionally no evidence in this unmerged policy worktree.  Do not
+# spend the one administrator policy bootstrap on this ``None`` value: before
+# that merge, the exact endpoint, publication, Flux and live-precondition
+# record must be collected and embedded here in the same policy-only commit.
+# The following ordinary render PR can then be admitted by the protected-base
+# verifier.  A render cannot approve its own external HTTPS destinations.
 PARTICIPANT_GATEWAY_APPROVED_ACTIVATION_EVIDENCE: None | dict[str, Any] = None
 
 # Signed Nostr is a third, closed render shape layered on the already-admitted
@@ -529,7 +531,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
             "noOpPromotionAllowed": False,
         },
         "signedNostrBoundary": {
-            "activationEvidence": "pending-separate-review",
+            "activationEvidence": "must-be-embedded-in-policy-bootstrap-before-merge",
             "components": ["workbench", "citizen-relay", "agent-relay"],
             "normalReleaseSetPromotionMayChange": False,
             "publisherPinCanonicalChecksumRequired": True,
@@ -548,6 +550,22 @@ def verify_contract(root: Path) -> dict[str, Any]:
                 "/api/staging-participant/v1/posts",
                 "/api/staging-participant/v1/comments",
             ],
+            "methodPathMatrix": {
+                "GET": ["/api/staging-participant/v1/status"],
+                "OPTIONS": [
+                    "/api/staging-participant/v1/status",
+                    "/api/staging-participant/v1/challenge",
+                    "/api/staging-participant/v1/session",
+                    "/api/staging-participant/v1/posts",
+                    "/api/staging-participant/v1/comments",
+                ],
+                "POST": [
+                    "/api/staging-participant/v1/challenge",
+                    "/api/staging-participant/v1/session",
+                    "/api/staging-participant/v1/posts",
+                    "/api/staging-participant/v1/comments",
+                ],
+            },
             "normalReleaseSetPromotionMayChange": False,
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
@@ -2614,6 +2632,26 @@ def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict
     return evidence
 
 
+def verify_participant_gateway_activation_rollback_baseline(
+    activation_evidence: dict[str, Any],
+    protected_base_root: Path,
+) -> None:
+    """Bind the gateway teardown plan to the protected pre-activation ingress.
+
+    The activation candidate cannot choose this baseline: in pull-request
+    admission ``protected_base_root`` is the protected base checkout.  The
+    structural evidence validation has already checked the field shape; this
+    function establishes the byte-for-byte CAS binding.
+    """
+    expected = bytes_digest(
+        (protected_base_root / RENDER_ROOT / "web/ingress.json").read_bytes(),
+    )
+    require(
+        activation_evidence["rollback"]["previousIngressSha256"] == expected,
+        "participant gateway activation rollback ingress baseline drift",
+    )
+
+
 def verify_participant_gateway_runtime_pin(value: Any) -> dict[str, Any]:
     pin = closed(
         value,
@@ -2791,7 +2829,15 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) 
             "http-request deny deny_status 405 if { method OPTIONS } "
             + " ".join(f"!{{ path {path} }}" for path in participant_paths),
         )
-        early_lines[2] = "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }"
+        early_lines.insert(
+            2,
+            "http-request deny deny_status 405 if { path_beg /api/staging-participant/v1/ } { method HEAD }",
+        )
+        early_lines.insert(
+            3,
+            "http-request deny deny_status 405 if { method GET } { path_beg /api/staging-participant/v1/ } !{ path /api/staging-participant/v1/status }",
+        )
+        early_lines[4] = "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }"
         api_line = next(index for index, line in enumerate(early_lines) if "path_beg /api" in line)
         early_lines[api_line] += " !{ path_beg /api/staging-participant/v1/ }"
         participant_guard = (
@@ -2901,6 +2947,11 @@ def verify_network_boundary_migration(
                     "allowedMethods": ["GET", "HEAD", "POST", "OPTIONS"],
                     "exactGatewayPaths": ingress_paths,
                     "exactPostPaths": ingress_paths[1:],
+                    "gatewayMethodPathMatrix": {
+                        "GET": [ingress_paths[0]],
+                        "OPTIONS": ingress_paths,
+                        "POST": ingress_paths[1:],
+                    },
                     "rateLimit": {"scope": "gateway-paths-only", "requestsPerMinutePerSourceIp": 30},
                     "resource": {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
                 },
@@ -3262,6 +3313,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
             "participant gateway and signed-Nostr activation must be separate reviewed transitions",
         )
         require(candidate["head"] == base["head"], "participant gateway activation must preserve the Release Set head")
+        verify_participant_gateway_activation_rollback_baseline(
+            candidate["stagingParticipantGateway"]["runtimePin"]["activationEvidence"],
+            base_root,
+        )
         allowed_existing_changes = {
             f"{RENDER_ROOT}/integrity.json",
             f"{RENDER_ROOT}/web/ingress.json",

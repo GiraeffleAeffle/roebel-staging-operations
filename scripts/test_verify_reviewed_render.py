@@ -949,13 +949,41 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         for path in expected:
             self.assertIn(f"!{{ path {path} }}", early)
         self.assertIn("unless { method GET HEAD POST OPTIONS }", early)
+        self.assertIn(
+            "if { path_beg /api/staging-participant/v1/ } { method HEAD }",
+            early,
+        )
+        self.assertIn(
+            "if { method GET } { path_beg /api/staging-participant/v1/ } !{ path /api/staging-participant/v1/status }",
+            early,
+        )
+        post_guard = early.split("\n")[0]
+        self.assertIn("!{ path /api/staging-participant/v1/challenge }", post_guard)
+        self.assertIn("!{ path /api/staging-participant/v1/comments }", post_guard)
+        self.assertNotIn("/api/staging-participant/v1/status", post_guard)
         self.assertIn("sc_http_req_rate(0) gt 30", early)
         self.assertEqual(
             [entry["path"] for entry in ingress["spec"]["rules"][0]["http"]["paths"]],
             ["/supabase-read", "/api/staging-participant/v1", "/"],
         )
 
+    def test_participant_gateway_activation_binds_rollback_to_protected_base_ingress(self) -> None:
+        base = self.current_base()
+        ingress = base / "reviewed-render/roebel-staging/web/ingress.json"
+        evidence = {"rollback": {"previousIngressSha256": VERIFIER.bytes_digest(ingress.read_bytes())}}
+        VERIFIER.verify_participant_gateway_activation_rollback_baseline(evidence, base)
+        evidence["rollback"]["previousIngressSha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "participant gateway activation rollback ingress baseline drift",
+        ):
+            VERIFIER.verify_participant_gateway_activation_rollback_baseline(evidence, base)
+
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
+        self.assertIsNone(
+            VERIFIER.PARTICIPANT_GATEWAY_APPROVED_ACTIVATION_EVIDENCE,
+            "a None policy bootstrap must never be represented as activation-ready",
+        )
         pin = {
             "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
             "component": "staging-participant-gateway",

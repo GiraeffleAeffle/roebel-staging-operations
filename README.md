@@ -481,18 +481,30 @@ this public repository or the public Web Pod.
 The public Ingress may add only these method/path pairs: `GET` or `OPTIONS`
 on `/api/staging-participant/v1/status`, and `POST` or `OPTIONS` on
 `/challenge`, `/session`, `/posts`, and `/comments` below that same exact
-prefix.  Every other gateway path and method remains denied.  A per-source-IP
-30-request/minute limiter applies only to that gateway prefix.  The existing
-Mecky route and Web read surface remain intact.
+prefix. `HEAD` is deliberately denied on every gateway path; every other
+gateway path and method is denied too. A per-source-IP 30-request/minute
+limiter applies only to that gateway prefix. The existing Mecky route and Web
+read surface remain intact.
 
-Activation remains blocked because the protected policy has no approved
-evidence record.  A later exact review must pin, byte-for-byte, the staging
-database/Vault arm and migration checksum; the immutable image, source
-revision, publisher workflow, SLSA/SPDX and anonymous-pull digests; a
-namespace-scoped Flux identity; rollback hashes; and the exact HTTPS origins
-plus reviewed IPv4 `/32` sets for the Gnosis verifier and the staging Supabase
-endpoint.  The NetworkPolicy then permits only DNS and TCP/443 to those
-reviewed endpoints.  A candidate render cannot provide or approve those
+**Bootstrap timing is deliberate.** Do not merge a policy whose approved
+evidence constant is `None`: protected-base admission would then reject every
+later gateway render and changing that constant afterward would require a
+second administrator bypass. First collect the read-only staging database and
+Vault-arm preflight, the immutable image/publication receipts, reviewed Gnosis
+and Supabase endpoint `/32`s, namespace-scoped Flux identity, and rollback
+baseline. Then make the one administrator policy-only bootstrap merge that
+embeds that exact record in the protected constant while the six render files
+and all live resources remain absent. The next ordinary render pull request
+can add the complete resource set and is checked against that now-protected
+record.
+
+That record binds, byte-for-byte, the staging database/Vault arm and migration
+checksum; the immutable image, source revision, publisher workflow,
+SLSA/SPDX and anonymous-pull digests; a namespace-scoped Flux identity; the
+exact protected-base Web Ingress bytes for rollback; and the exact HTTPS
+origins plus reviewed IPv4 `/32` sets for the Gnosis verifier and staging
+Supabase endpoint. The NetworkPolicy then permits only DNS and TCP/443 to
+those reviewed endpoints. A candidate render cannot provide or approve those
 destinations itself.
 
 ## Promotion flow

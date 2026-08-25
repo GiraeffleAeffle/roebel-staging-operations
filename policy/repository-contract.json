@@ -54,7 +54,7 @@
     "noOpPromotionAllowed": false
   },
   "signedNostrBoundary": {
-    "activationEvidence": "pending-separate-review",
+    "activationEvidence": "must-be-embedded-in-policy-bootstrap-before-merge",
     "components": [
       "workbench",
       "citizen-relay",
@@ -77,6 +77,24 @@
       "/api/staging-participant/v1/posts",
       "/api/staging-participant/v1/comments"
     ],
+    "methodPathMatrix": {
+      "GET": [
+        "/api/staging-participant/v1/status"
+      ],
+      "OPTIONS": [
+        "/api/staging-participant/v1/status",
+        "/api/staging-participant/v1/challenge",
+        "/api/staging-participant/v1/session",
+        "/api/staging-participant/v1/posts",
+        "/api/staging-participant/v1/comments"
+      ],
+      "POST": [
+        "/api/staging-participant/v1/challenge",
+        "/api/staging-participant/v1/session",
+        "/api/staging-participant/v1/posts",
+        "/api/staging-participant/v1/comments"
+      ]
+    },
     "normalReleaseSetPromotionMayChange": false,
     "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
     "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
