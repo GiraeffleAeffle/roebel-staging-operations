@@ -7,14 +7,6 @@ on:
         description: Exact reviewed operations commit SHA
         required: true
         type: string
-      evidence_path:
-        description: Repository-relative protected-runner evidence JSON
-        required: true
-        type: string
-      render_root:
-        description: Repository-relative participant render directory
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -37,8 +29,6 @@ jobs:
           python3 scripts/activate-staging-participant-gateway.py
           --dry-run
           --expected-protected-revision '${{ inputs.protected_revision }}'
-          --evidence '${{ inputs.evidence_path }}'
-          --render-root '${{ inputs.render_root }}'
           --receipt participant-gateway-dry-run-receipt.json
       - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:

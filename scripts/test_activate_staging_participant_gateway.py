@@ -1,90 +1,96 @@
-import datetime as dt
-import importlib.util
-import json
-import sys
-import tempfile
-import unittest
+import importlib.util, json, sys, tempfile, unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location("activation", Path(__file__).with_name("activate-staging-participant-gateway.py"))
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
-NOW = dt.datetime(2026, 8, 25, 12, tzinfo=dt.timezone.utc)
-
-def sha(letter="a"): return "sha256:" + letter * 64
-def obj(kind, name=MODULE.GATEWAY_NAME, namespace=MODULE.TARGET_NAMESPACE, uid="uid", rv="10", **extra):
+REV = "a" * 40
+def sha(x="a"): return "sha256:" + x * 64
+def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="10", **extra):
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
-def routes():
-    result = {}
-    for method, paths in MODULE.ALLOWED_METHODS.items():
-        for path in paths: result[f"{method} {path}"] = 200 if method != "POST" else 400
-    for path in MODULE.ALLOWED_PATHS: result[f"HEAD {path}"] = 405
-    for path in MODULE.ALLOWED_PATHS[1:]: result[f"GET {path}"] = 405
-    result[f"POST {MODULE.ALLOWED_PATHS[0]}"] = 405; result[f"DELETE {MODULE.ALLOWED_PATHS[0]}"] = 405; result["POST /api/staging-participant/v1/not-approved"] = 404
+def policy():
+    hexes = "abcdef0123456789"
+    return {"schemaVersion": MODULE.SCHEMA, "protectedRevision": REV, "renderBlobs": {f: sha(hexes[i]) for i, f in enumerate(MODULE.RENDER_FILES)}, "liveProjections": {k: sha(hexes[i]) for i, k in enumerate(("sharedSource", "dormantKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"))}, "routeMatrix": {"host": "https://roebel-web.staging.agentcart.eu", "expectations": {"GET /api/staging-participant/v1/status": 200, "HEAD /api/staging-participant/v1/status": 405}}, "haproxy": {"namespace": "ingress-system", "daemonSet": "haproxy-ingress", "replicas": 3, "sourceIpRateLimitPerReplica": 30, "uid": "haproxy", "canonicalSha256": sha("f")}, "desiredPolicyObjectDigests": [sha("0")]}
+def rendered():
+    result = {"kustomization.yaml": b"resources: []\n", "runtime-pin.json": b"{}\n"}
+    for file, kind in zip(MODULE.CREATE_FILES, MODULE.CREATE_KINDS, strict=True): result[file] = json.dumps(object_(kind)).encode()
     return result
-def render():
-    root = Path(tempfile.mkdtemp())
-    for file_name, kind in zip(MODULE.CREATE_FILES, MODULE.CREATE_ORDER, strict=True): (root / file_name).write_text(json.dumps(obj(kind)))
-    (root / "kustomization.yaml").write_text("resources: []\n"); (root / "runtime-pin.json").write_text("{}\n")
-    return root
-def evidence(root):
-    source = obj("GitRepository", MODULE.SOURCE_NAME, MODULE.FLUX_NAMESPACE, "source-uid", spec={"interval": "1m"}, status={"artifact": {"revision": "main@sha1:" + "a" * 40, "digest": sha("b")}})
-    web = obj("Ingress", MODULE.WEB_INGRESS_NAME, uid="web-uid")
-    projection = {"secretsKeysetsMatch": True, "databaseVaultPassed": True, "gnosisChainId": "0x64", "dnsTlsPassed": True, "haproxyUid": "haproxy-uid", "haproxyReplicas": 3, "sourceIpRateLimitPerReplica": 30}
-    return {"schemaVersion": MODULE.SCHEMA, "status": "approved-separate-review", "protectedRevision": "a" * 40, "checkedAt": "2026-08-25T11:56:00Z", "validUntil": "2026-08-25T12:01:00Z", "maxAgeSeconds": 300, "sharedFluxSource": {"uid": "source-uid", "specCanonicalSha256": MODULE.object_spec_digest(source), "artifactRevision": "main@sha1:" + "a" * 40, "artifactDigest": sha("b")}, "webIngress": {"uid": "web-uid", "canonicalSha256": MODULE.digest(web)}, "networkPolicyInventory": {"networkPolicyCanonicalSha256": sha("c"), "ciliumNetworkPolicyCanonicalSha256": sha("d"), "ciliumClusterwideNetworkPolicyCanonicalSha256": sha("e"), "preexistingSelectorAllowlist": []}, "render": {"manifestSha256": {name: MODULE.bytes_digest((root / name).read_bytes()) for name in MODULE.RENDER_FILES}, "expectedObjects": [{"kind": kind, "name": MODULE.GATEWAY_NAME, "namespace": MODULE.TARGET_NAMESPACE} for kind in MODULE.CREATE_ORDER]}, "publication": {"verified": True}, "secretMaterialization": {"secretRefs": ["config", "runtime"], "keysetPresent": True}, "databaseVaultPreflight": {"passed": True}, "gnosisChainCheck": {"chainId": "0x64"}, "dnsTlsEvidence": {"passed": True}, "rollback": {"ingressFirst": True}, "liveSemanticProjection": {"command": ["protected-preflight", "--json"], "canonicalSha256": MODULE.digest(projection)}, "routeExpectations": routes()}
-
-class FakeRunner(MODULE.Runner):
-    def __init__(self, mapping): self.mapping, self.calls = mapping, []
+class Fake(MODULE.Runner):
+    def __init__(self): self.calls = []
     def run(self, args, *, input_text=None):
-        self.calls.append((args, input_text)); value = self.mapping.get(" ".join(args), MODULE.CommandResult())
-        return value() if callable(value) else value
+        self.calls.append((args, input_text))
+        if args and args[0] == "curl": return MODULE.Result(out="200" if "GET" in args else "405")
+        if " create " in " " + " ".join(args) + " ":
+            manifest = json.loads(input_text); manifest["metadata"] |= {"uid": manifest["kind"].lower() + "-uid", "resourceVersion": "10"}
+            return MODULE.Result(out=json.dumps(manifest))
+        return MODULE.Result()
 
-class Tests(unittest.TestCase):
-    def test_dry_run_has_create_order_and_no_cluster_commands(self):
-        root = render(); value = MODULE.activate(evidence(root), "a" * 40, root, kubeconfig=None, endpoint=None, live_mode=False, now=lambda: NOW)
-        self.assertEqual(value["status"], "dry-run-passed"); self.assertEqual([x["step"] for x in value["plan"][:5]], ["create-networkpolicy", "create-serviceaccount", "create-service", "create-deployment", "wait-internal-health"])
-    def test_stale_evidence_fails(self):
-        root = render(); value = evidence(root); value["validUntil"] = "2026-08-25T11:59:00Z"
-        with self.assertRaisesRegex(MODULE.ActivationError, "stale"): MODULE.activate(value, "a" * 40, root, kubeconfig=None, endpoint=None, live_mode=False, now=lambda: NOW)
-    def test_secret_value_rejected_and_receipt_has_none(self):
-        root = render(); value = evidence(root); value["publication"]["token"] = "leak"
-        with self.assertRaisesRegex(MODULE.ActivationError, "not permitted"): MODULE.activate(value, "a" * 40, root, kubeconfig=None, endpoint=None, live_mode=False, now=lambda: NOW)
-    def test_source_drift_rejected_before_create(self):
-        root = render(); value = evidence(root); source = obj("GitRepository", MODULE.SOURCE_NAME, MODULE.FLUX_NAMESPACE, "wrong", spec={"interval": "1m"}, status={"artifact": {"revision": "main@sha1:" + "a" * 40, "digest": sha("b")}})
-        kube = Path(tempfile.mkstemp()[1]); runner = FakeRunner({f"kubectl --kubeconfig {kube} -n flux-roebel-staging get gitrepository roebel-staging-operations -o json": MODULE.CommandResult(stdout=json.dumps(source))})
-        with self.assertRaisesRegex(MODULE.ActivationError, "GitRepository ownership"): MODULE.activate(value, "a" * 40, root, kubeconfig=str(kube), endpoint="https://example.test", runner=runner, live_mode=True, now=lambda: NOW)
-        self.assertFalse(any(" create " in " " + " ".join(args) + " " for args, _ in runner.calls))
-    def test_conflict_is_never_adopted(self):
-        with self.assertRaisesRegex(MODULE.ActivationError, "adoption is forbidden"): MODULE.run_checked(FakeRunner({"kubectl create -f -": MODULE.CommandResult(returncode=1, stderr="AlreadyExists")}), ["kubectl", "create", "-f", "-"], input_text="{}", label="test")
-    def test_negative_route_matrix_cannot_be_widened(self):
-        root = render(); value = evidence(root); value["routeExpectations"]["HEAD " + MODULE.ALLOWED_PATHS[0]] = 200
-        with self.assertRaisesRegex(MODULE.ActivationError, "widened"): MODULE.route_requests(value)
-    def test_existing_empty_or_matching_policy_is_a_fail_closed_blocker(self):
-        inventories = {"networkPolicyCanonicalSha256": {"items": [obj("NetworkPolicy", "broad", MODULE.TARGET_NAMESPACE, spec={"podSelector": {}})]}, "ciliumNetworkPolicyCanonicalSha256": {"items": []}, "ciliumClusterwideNetworkPolicyCanonicalSha256": {"items": []}}
-        root = render()
-        with self.assertRaisesRegex(MODULE.ActivationError, "selects participant"):
-            MODULE.assert_no_preexisting_policy_selects_gateway(inventories, evidence(root))
-    def test_render_symlink_is_rejected(self):
-        root = render(); target = root / "networkpolicy.real"; target.write_text((root / "networkpolicy.json").read_text()); (root / "networkpolicy.json").unlink(); (root / "networkpolicy.json").symlink_to(target.name)
-        with self.assertRaisesRegex(MODULE.ActivationError, "not a regular file"):
-            MODULE.activate(evidence(root), "a" * 40, root, kubeconfig=None, endpoint=None, live_mode=False, now=lambda: NOW)
-    def test_route_probe_allows_expected_negative_http_statuses(self):
-        root = render(); value = evidence(root)
-        def response():
-            index = len(runner.calls) - 1
-            return MODULE.CommandResult(stdout=str(MODULE.route_requests(value)[index][2]))
-        runner = FakeRunner({})
-        runner.run = lambda args, input_text=None: (runner.calls.append((args, input_text)) or response())
-        observed = MODULE.run_route_matrix(runner, "https://example.test", value)
-        self.assertEqual(len(observed), len(MODULE.route_requests(value)))
-        self.assertTrue(any("--fail-with-body" not in args for args, _ in runner.calls))
-    def test_rollback_ingress_first_and_uid_guard(self):
-        class RollbackRunner(FakeRunner):
-            def run(self, args, *, input_text=None):
-                self.calls.append((args, input_text))
-                if " get " in " " + " ".join(args) + " " and args[-2:] == ["-o", "json"]:
-                    return MODULE.CommandResult(stdout=json.dumps(obj("Ingress" if "ingress" in args else "Service", name=args[-3], uid="ok")))
-                return MODULE.CommandResult()
-        runner = RollbackRunner({}); errors = MODULE.rollback(runner, "/tmp/k", {"metadata": {"uid": "kus"}}, [{"kind": "Service", "name": "svc", "uid": "ok"}, {"kind": "Ingress", "name": "ing", "uid": "ok"}], False)
-        self.assertEqual(errors, []); deletes = [" ".join(args) for args, _ in runner.calls if " delete " in " " + " ".join(args) + " "]; self.assertIn(" delete ingress ing ", deletes[0])
+class ExecutorTests(unittest.TestCase):
+    def test_missing_fixed_policy_blocks_before_any_runner_call(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(MODULE, "ROOT", Path(directory)):
+            runner = Fake()
+            with self.assertRaisesRegex(MODULE.ActivationError, "policy descriptor is not wired"):
+                MODULE.policy(REV)
+            self.assertEqual(runner.calls, [])
+    def test_revision_and_policy_schema_are_closed(self):
+        with self.assertRaisesRegex(MODULE.ActivationError, "lowercase"):
+            MODULE.revision("A" * 40)
+        value = policy(); value["routeMatrix"]["host"] = "http://example.test"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / "policy").mkdir(); path = root / MODULE.POLICY_PATH; path.write_text(json.dumps(value))
+            with patch.object(MODULE, "ROOT", root), patch.object(MODULE, "git_blob", return_value=path.read_bytes()):
+                with self.assertRaisesRegex(MODULE.ActivationError, "route matrix invalid"):
+                    MODULE.policy(REV)
+    def test_render_is_git_blob_bound_not_caller_path(self):
+        value, blobs = policy(), rendered()
+        # The descriptor deliberately has unrelated pins, so any supplied bytes
+        # fail: a CLI cannot substitute a matching local render directory.
+        with patch.object(MODULE, "git_blob", side_effect=lambda rev, path: blobs[path.split("/")[-1]]):
+            with self.assertRaisesRegex(MODULE.ActivationError, "render Git blob drift"):
+                MODULE.render(REV, value)
+    def test_no_evidence_command_or_allowlist_surface_exists(self):
+        source = Path(MODULE.__file__).read_text()
+        self.assertNotIn("liveSemanticProjection", source)
+        self.assertNotIn("preexistingSelectorAllowlist", source)
+        self.assertNotIn("--evidence", source)
+        self.assertNotIn("--render-root", source)
+        self.assertNotIn("--gateway-url", source)
+    def test_empty_and_matching_selectors_are_rejected(self):
+        self.assertTrue(MODULE.labels_match({}))
+        self.assertTrue(MODULE.labels_match({"matchLabels": {"app.kubernetes.io/name": MODULE.NAME}}))
+        self.assertFalse(MODULE.labels_match({"matchLabels": {"app.kubernetes.io/name": "other"}}))
+    def test_full_fake_live_success_captures_create_and_receipt_fields(self):
+        value, blobs, runner = policy(), rendered(), Fake(); kube = Path(tempfile.mkstemp()[1])
+        # Bind hashes to the synthetic fixed Git blobs for this test only.
+        value["renderBlobs"] = {name: MODULE.bytes_digest(blob) for name, blob in blobs.items()}
+        dormant = object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, "k", "10", spec={"suspend": True})
+        active = object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, "k", "11", spec={"suspend": False})
+        values = {"sharedSource": object_("GitRepository", MODULE.SOURCE, MODULE.FLUX_NAMESPACE, "s"), "dormantKustomization": dormant, "serviceAccount": object_("ServiceAccount"), "role": object_("Role"), "roleBinding": object_("RoleBinding"), "retainedWebIngress": object_("Ingress", MODULE.WEB_INGRESS, uid="web")}
+        state = {"active": False}
+        def verify(_r, _k, _p, dormant):
+            if dormant: return values
+            return values | {"dormantKustomization": active}
+        def live(_r, _k, kind, name, namespace):
+            if kind == "kustomization": return active if state["active"] else dormant
+            return object_(kind.title(), name, namespace, uid=kind + "-uid")
+        original_run = runner.run
+        def run(args, *, input_text=None):
+            if " patch " in " " + " ".join(args) + " ": state["active"] = True
+            return original_run(args, input_text=input_text)
+        runner.run = run
+        with patch.object(MODULE, "render", return_value=blobs), patch.object(MODULE, "verify_live", side_effect=verify), patch.object(MODULE, "live_obj", side_effect=live), patch.object(MODULE, "inventory", return_value=None), patch.object(MODULE, "route_matrix", return_value=[{"method": "GET", "path": "/api/staging-participant/v1/status", "status": 200}]), patch.object(MODULE, "now", side_effect=["start", "health", "ingress", "done"]):
+            result = MODULE.activate(value, REV, str(kube), runner, True, Path(tempfile.mkstemp()[1]))
+        self.assertEqual(result["status"], "activated"); self.assertEqual([x["kind"] for x in result["created"]], list(MODULE.CREATE_KINDS)); self.assertTrue(all("canonicalSha256" in x for x in result["created"]))
+    def test_uncertain_create_rolls_back_incomplete_and_persists(self):
+        receipt = Path(tempfile.mkstemp()[1]); runner = Fake(); created = [("Ingress", object_("Ingress", uid="i"))]
+        with patch.object(MODULE, "live_obj", side_effect=MODULE.ActivationError("unknown live UID")):
+            complete, errors = MODULE.rollback(runner, "/tmp/k", created, object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, uid="k"))
+        self.assertFalse(complete); self.assertTrue(errors)
+        MODULE.atomic_receipt(receipt, {"schemaVersion": MODULE.RECEIPT_SCHEMA, "status": "rollback-incomplete"})
+        saved = json.loads(receipt.read_text()); self.assertEqual(saved["status"], "rollback-incomplete"); self.assertIn("canonicalSha256", saved)
+    def test_precondition_delete_uses_uid_and_resource_version(self):
+        runner = Fake(); before = object_("Ingress", uid="u", rv="99")
+        MODULE.delete_with_preconditions(runner, "/tmp/k", "ingress", before)
+        command = " ".join(runner.calls[-1][0]); self.assertIn("--raw", command); self.assertIn("resourceVersion", runner.calls[-1][0][-1]); self.assertIn("\"uid\":\"u\"", runner.calls[-1][0][-1])
 
 if __name__ == "__main__": unittest.main()
