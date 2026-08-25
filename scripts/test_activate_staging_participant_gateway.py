@@ -57,6 +57,16 @@ class Tests(unittest.TestCase):
     def test_negative_route_matrix_cannot_be_widened(self):
         root = render(); value = evidence(root); value["routeExpectations"]["HEAD " + MODULE.ALLOWED_PATHS[0]] = 200
         with self.assertRaisesRegex(MODULE.ActivationError, "widened"): MODULE.route_requests(value)
+    def test_route_probe_allows_expected_negative_http_statuses(self):
+        root = render(); value = evidence(root)
+        def response():
+            index = len(runner.calls) - 1
+            return MODULE.CommandResult(stdout=str(MODULE.route_requests(value)[index][2]))
+        runner = FakeRunner({})
+        runner.run = lambda args, input_text=None: (runner.calls.append((args, input_text)) or response())
+        observed = MODULE.run_route_matrix(runner, "https://example.test", value)
+        self.assertEqual(len(observed), len(MODULE.route_requests(value)))
+        self.assertTrue(any("--fail-with-body" not in args for args, _ in runner.calls))
     def test_rollback_ingress_first_and_uid_guard(self):
         class RollbackRunner(FakeRunner):
             def run(self, args, *, input_text=None):

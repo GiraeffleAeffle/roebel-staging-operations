@@ -192,7 +192,10 @@ def run_route_matrix(runner: Runner, endpoint: str, evidence: dict[str, Any]) ->
     if not endpoint.startswith("https://"): raise ActivationError("gateway endpoint must be HTTPS")
     results: list[dict[str, Any]] = []
     for method, path, expected in route_requests(evidence):
-        args = ["curl", "--fail-with-body", "--silent", "--show-error", "--output", os.devnull, "--write-out", "%{http_code}", "--request", method]
+        # Do not use --fail here: 404/405 are the *successful* proof for the
+        # negative half of the public boundary matrix.  Transport failures
+        # still cause curl to return non-zero and are rejected by run_checked.
+        args = ["curl", "--silent", "--show-error", "--output", os.devnull, "--write-out", "%{http_code}", "--request", method]
         if method == "POST": args += ["--header", "content-type: application/json", "--data", "{}"]
         observed = run_checked(runner, args + [endpoint.rstrip("/") + path], label=f"route {method} {path}").strip()
         if observed != str(expected): raise ActivationError(f"route boundary mismatch for {method} {path}: expected {expected}, got {observed}")
