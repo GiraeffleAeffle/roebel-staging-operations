@@ -2627,6 +2627,7 @@ def participant_gateway_target(kind: str, name: str, namespace: str) -> dict[str
     api_versions = {
         "Deployment": "apps/v1",
         "Ingress": "networking.k8s.io/v1",
+        "GitRepository": "source.toolkit.fluxcd.io/v1",
         "Kustomization": "kustomize.toolkit.fluxcd.io/v1",
         "NetworkPolicy": "networking.k8s.io/v1",
         "Role": "rbac.authorization.k8s.io/v1",
@@ -2714,7 +2715,7 @@ def participant_gateway_dns_tls_binding(value: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def verify_participant_gateway_flux_bootstrap(value: Any) -> dict[str, Any]:
+def verify_participant_gateway_flux_bootstrap(value: Any, operations_revision: str) -> dict[str, Any]:
     """Validate the one-time *suspended* Flux identity bootstrap.
 
     This is deliberately an evidence record, not a manifest.  The protected
@@ -2724,7 +2725,7 @@ def verify_participant_gateway_flux_bootstrap(value: Any) -> dict[str, Any]:
     """
     bootstrap = closed(
         value,
-        {"objects", "resourceAbsenceReceipts", "bootstrapReceipt", "webIngressReconciler"},
+        {"objects", "resourceAbsenceReceipts", "bootstrapReceipt", "sourceReceipt", "webIngressReconciler"},
         "participant gateway Flux bootstrap",
     )
     expected = expected_participant_gateway_flux_objects(suspended=True)
@@ -2791,6 +2792,13 @@ def verify_participant_gateway_flux_bootstrap(value: Any) -> dict[str, Any]:
         require(item["objectCanonicalSha256"] == digest(expected_object), "participant gateway bootstrap postcondition object drift")
         require(item["apiOperation"] == "POST-create" and item["apiOutcome"] == "http-201-created" and item["conflictPolicy"] == "fail-on-http-409-no-adopt", "participant gateway bootstrap postcondition not create-only")
     require(receipt["postconditionsCanonicalSha256"] == digest(postconditions), "participant gateway bootstrap postcondition checksum invalid")
+
+    source = closed(bootstrap["sourceReceipt"], {"target", "uid", "resourceVersion", "liveObject", "liveObjectCanonicalSha256", "lastAppliedRevision"}, "participant gateway Flux GitRepository source receipt")
+    require(source["target"] == participant_gateway_target("GitRepository", PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway Flux source target invalid")
+    require(isinstance(source["uid"], str) and UUID.fullmatch(source["uid"]) and isinstance(source["resourceVersion"], str) and source["resourceVersion"].isdigit(), "participant gateway Flux source identity invalid")
+    expected_source = {"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository", "metadata": {"name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE}, "spec": {"url": "https://github.com/GiraeffleAeffle/roebel-staging-operations", "ref": {"branch": "main"}, "verify": {"mode": "head"}}}
+    require(source["liveObject"] == expected_source and source["liveObjectCanonicalSha256"] == digest(expected_source), "participant gateway Flux source URL/ref/verification drift")
+    require(source["lastAppliedRevision"] == operations_revision, "participant gateway Flux source revision invalid")
 
     web = closed(bootstrap["webIngressReconciler"], {"kustomization", "serviceAccount"}, "participant gateway Web reconciler binding")
     expected_web_kustomization = participant_gateway_target("Kustomization", PARTICIPANT_GATEWAY_WEB_FLUX_KUSTOMIZATION, PARTICIPANT_GATEWAY_FLUX_NAMESPACE)
@@ -2944,7 +2952,9 @@ def verify_participant_gateway_application_bootstrap(value: Any, runtime_pin: di
     """
     bootstrap = closed(value, {"resourceAbsenceReceipts", "postconditions", "postconditionsCanonicalSha256"}, "participant gateway application bootstrap")
     resources = expected_participant_gateway_resources(runtime_pin)
-    order = (("serviceAccount", "serviceAccount"), ("deployment", "deployment"), ("service", "service"), ("networkPolicy", "networkPolicy"))
+    # NetworkPolicy must exist before any matching Pod; the dedicated Ingress
+    # is created only by the post-health activation transaction.
+    order = (("networkPolicy", "networkPolicy"), ("serviceAccount", "serviceAccount"), ("service", "service"), ("deployment", "deployment"))
     for field in ("resourceAbsenceReceipts", "postconditions"):
         require(isinstance(bootstrap[field], list) and len(bootstrap[field]) == len(order), f"participant gateway application {field} count invalid")
     for (object_id, resource_key), absence_value, post_value in zip(order, bootstrap["resourceAbsenceReceipts"], bootstrap["postconditions"], strict=True):
@@ -3000,7 +3010,7 @@ def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict
     evidence = closed(
         value,
         {
-            "schemaVersion", "status", "sourceRevision", "imageRepository", "manifestDigest",
+            "schemaVersion", "status", "operationsRevision", "sourceRevision", "imageRepository", "manifestDigest",
             "workflowIdentity", "publication", "egress", "fluxBootstrap", "applicationBootstrap", "ingressCas", "secretMaterialization",
             "databaseVaultPreflight", "gnosisChainCheck", "dnsTlsEvidence", "activationLiveRecheck", "activationTransaction", "rollback",
         },
@@ -3008,6 +3018,7 @@ def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict
     )
     require(evidence["schemaVersion"] == "roebel_staging_participant_gateway_activation_evidence_v1", "participant gateway evidence schema invalid")
     require(evidence["status"] == "approved-separate-review", "participant gateway evidence status invalid")
+    require(isinstance(evidence["operationsRevision"], str) and REVISION.fullmatch(evidence["operationsRevision"]), "participant gateway operations revision invalid")
     require(evidence["sourceRevision"] == runtime_pin["sourceRevision"], "participant gateway evidence source revision invalid")
     require(evidence["imageRepository"] == runtime_pin["imageRepository"], "participant gateway evidence image repository invalid")
     require(evidence["manifestDigest"] == runtime_pin["manifestDigest"], "participant gateway evidence image digest invalid")
@@ -3036,7 +3047,7 @@ def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict
             except ValueError:
                 parsed = None
             require(parsed is not None and parsed.version == 4 and parsed.prefixlen == 32, f"participant gateway {name} CIDR must be an exact IPv4 /32")
-    flux = verify_participant_gateway_flux_bootstrap(evidence["fluxBootstrap"])
+    flux = verify_participant_gateway_flux_bootstrap(evidence["fluxBootstrap"], evidence["operationsRevision"])
     rollback = closed( evidence["rollback"], {"previousIngressSha256", "deactivationSqlSha256"}, "participant gateway rollback evidence")
     require(isinstance(rollback["previousIngressSha256"], str) and SHA256.fullmatch(rollback["previousIngressSha256"]), "participant gateway rollback ingress invalid")
     require(isinstance(rollback["deactivationSqlSha256"], str) and SHA256.fullmatch(rollback["deactivationSqlSha256"]), "participant gateway rollback SQL invalid")
