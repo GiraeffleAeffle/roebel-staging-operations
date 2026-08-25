@@ -448,6 +448,151 @@ preserving the Release Set head and every other existing file. Routine
 Web/Mecky promotions must preserve every signed-Nostr file and boundary
 byte-for-byte.
 
+## Bounded staging participant gateway (static policy reserved; blocked)
+
+The participant gateway is a separate staging write capability. It is never
+folded into the public Web Pod or normal Web/Mecky promotion. The protected
+descriptor at `policy/staging-participant-gateway-activation-policy.json`
+contains only reviewable intent: fixed repositories and refs, endpoint
+origins, exact names and selectors, six method/path pairs, the per-controller
+HAProxy limit, Secret names/key sets, two Flux tenants, rollback rules and
+empty immutable publication/database slots. It contains no caller evidence,
+live UID/resource version, controller status, DNS answer, certificate, Secret
+value or cluster-wide inventory hash.
+
+`activationReady` is intentionally `false`. Admission accepts this inert
+policy-only repository, but rejects every participant render or activation
+until a protected change fills the exact source/tree/image/workflow,
+migration/schema/deactivation hashes and reviewed Supabase `/32` set, then
+sets `activationReady` to `true`. The later ordinary render is deterministic
+from that protected policy and cannot approve itself. Its runtime pin contains
+only those immutable policy values and the policy digest; live facts remain an
+out-of-band, five-minute runner receipt.
+
+The product source pins have one reproducible meaning. `sourceTreeSha256` is
+SHA-256 over the exact raw NUL-delimited bytes from
+`git ls-tree -r -z --full-tree <sourceRevision>`; `workflowSha256` is SHA-256
+over the raw workflow Git blob at that same revision. They are protected,
+reviewed static bindings. The anonymous registry check does not relabel them as
+runtime provenance; a separate verified attestation receipt is the publication
+provenance boundary.
+
+The complete future render has two separately owned paths:
+
+```text
+reviewed-render/roebel-staging/staging-participant-gateway/
+  networkpolicy.json
+  serviceaccount.json
+  service.json
+  deployment.json
+  ingress.json
+  kustomization.yaml
+  runtime-pin.json
+  workbench-ingress/
+    networkpolicy.json
+    kustomization.yaml
+```
+
+The first suspended Kustomization targets
+`stadtstack-roebel-web-preview`; the second targets
+`stadtstack-roebel-staging-lab` and owns only the additive reciprocal
+workbench-ingress NetworkPolicy. Each uses its own Flux ServiceAccount, Role,
+RoleBinding and exact path. The shared active GitRepository is read-only to
+this transaction. Activation compare-and-swap unsuspends both Kustomizations
+as one transaction and suspends both on any failure.
+
+The dedicated participant Ingress owns the longer
+`/api/staging-participant/v1` prefix. It permits `GET`/`OPTIONS` on `/status`
+and `POST`/`OPTIONS` on `/challenge`, `/session`, `/posts`, `/comments` and
+`/nostr-post`; every other method or path is denied. `HEAD` is deliberately
+denied. The truthful rate claim is 30 requests/minute/source IP per HAProxy
+controller replica, not an aggregate multi-replica guarantee. The existing
+Web Ingress stays byte-identical and is neither adopted nor mutated.
+
+The gateway NetworkPolicy permits only ingress-controller traffic, DNS,
+policy-pinned Gnosis and staging Supabase HTTPS `/32`s, and the exact
+cluster-local workbench on TCP 18083. The reciprocal policy permits only the
+gateway selector to that workbench port. Kubernetes and Cilium policy allows
+are additive, so the trusted runner performs a fresh selector-overlap scan of
+all three policy families before creation, before Ingress, and after Flux. It
+uses the complete fresh Pod labels plus Cilium namespace/service-account
+identity labels; an owned policy is exempt only after exact UID and protected
+semantic comparison. The existing manually owned workbench NetworkPolicy
+remains byte-identical and outside both Flux tenants.
+
+Create outcomes are fail-closed. A definite HTTP 409 is a hard failure and is
+never discovered or adopted. Every other non-success after a sent create—and
+even a successful exit with an unparseable or unbindable response—is uncertain.
+Discovery owns an object only when the exact per-run CSPRNG nonce, protected
+semantics, UID and resource version all bind. That temporary nonce is removed
+by CAS before Flux. An absent or mismatched nonce is never adopted or deleted.
+If the first discovery read is lost, rollback boundedly retries that same
+nonce/semantics/UID/resource-version proof before deciding the outcome remains
+incomplete. A definite 409 without the nonce is never rediscovered.
+Raw full-object hashes, live status and caller-supplied evidence never become
+static authority.
+
+The protected local runner must freshly verify the protected operations
+revision, immutable publication and anonymous pull, database/schema state,
+Secret materialization, endpoints, policy union, exact object semantics,
+Deployment health, HAProxy replica truth, the full route matrix and both Flux
+CAS transitions. Rollback removes the exact owned participant Ingress first,
+suspends both participant Kustomizations, waits for each exact UID to observe
+its suspended generation with no current reconciliation, foreground-deletes
+the exact Deployment, proves matching Pods and ReplicaSets absent while the
+gateway NetworkPolicy still isolates them, then deletes only the remaining
+transaction-owned UIDs in reverse order. It proves all six names stay absent
+for a bounded quiet interval and rechecks the shared source, protected cluster
+identity, Web Ingress and existing workbench policy. SIGINT/SIGTERM become a
+transaction abort; further termination is deferred through bounded rollback
+and durable receipt persistence. Secrets, unrelated policies and
+civic-authority systems are never rollback targets.
+
+Rollback always deletes and proves absence of the exact transaction-owned
+Service before waiting on Flux, because even an initially deleted Ingress can
+be recreated with a new UID before a failing reconciler becomes quiescent. It
+re-proves Service absence after the Flux/reappearance phase even when that
+phase fails, and never adopts or deletes an unknown Ingress. If no
+transaction-owned Deployment was bound, gateway isolation is retained until
+the exact Deployment name and matching Pods and ReplicaSets are all proved
+absent.
+
+The product/database preflight is the container-internal exact `GET /status`
+contract, not the public `/api/staging-participant/v1/status` session-UI route.
+The runner first verifies the complete ready Pod set and immutable runtime
+digest, then checks `get`/`list pods` and `create pods/portforward` authorization
+and opens an ephemeral, loopback-only port-forward to one exact Pod UID. This
+API-server/kubelet stream avoids assuming that control-plane Service-proxy
+traffic has a portable Cilium/NetworkPolicy source identity. Redirects and
+ambient proxies are disabled, the response is size- and time-bounded, the Pod
+UID is rechecked after the probe, and the whole subprocess group is terminated
+on every exit. `/status` is not added to the participant Ingress and no cluster
+namespace receives a new NetworkPolicy allowance.
+
+The runner/verifier integration seam is
+`scripts/staging_participant_gateway_policy.py`:
+
+The command-line runner must be invoked with `python3 -I`. It verifies the
+exact protected checkout before compiling the policy module directly from the
+Git blob, so neither a modified worktree module nor an untracked local module
+shadow can execute before admission. Its one-use flattened kubeconfig is
+removed on every construction failure, and the short-lived rollback proxy
+accepts only the exact escaped resource path.
+
+- `activation_policy_descriptor()` and `activation_policy_sha256()` expose
+  immutable intent; `assert_activation_ready()` is the render/activation gate.
+- `expected_gateway_resources()`, `gateway_flux_objects()` and
+  `workbench_ingress_flux_objects()` produce the only admitted desired objects.
+- `normalize_kubernetes_object()`, `semantically_equal()` and
+  `require_semantically_equal()` compare desired and fresh live objects without
+  turning UID/resource version/status into policy.
+- `bind_create_result()` rejects a definite 409 and emits a rollback-owned
+  UID/resource-version projection only for an exact create response or an
+  exact nonce-marked object discovered after any post-send uncertainty.
+- `trusted_live_facts_contract()` and `validate_trusted_live_facts()` define the
+  separate short-lived receipt envelope. The runner owns collection and the
+  section-level live checks; Git does not.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component
@@ -525,6 +670,44 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-recovery-compos
 
 The source remains safe to read anonymously. Runtime credentials and civic
 authority stay outside Git and outside Flux.
+
+## Staging participant gateway activation policy
+
+The participant gateway is still an inert, protected reservation. The static
+descriptor in `policy/staging-participant-gateway-activation-policy.json`
+contains no caller-provided or live cluster evidence and remains
+`activationReady: false` until the exact product, migration, schema, endpoint,
+and cluster-identity pins are reviewed into the protected base. The GitHub
+workflow has no kubeconfig and can only test and emit a no-cluster plan.
+
+Once those pins exist, the separate protected local runner is designed to:
+
+- reserve a new mode-`0600` receipt before any Kubernetes contact and use one
+  flattened mode-`0600` kubeconfig snapshot for the entire transaction;
+- bind the API origin, CA digest, API-server SPKI digest, and immutable
+  `kube-system` namespace UID before mutation, before success, and rollback;
+- require all six exact application resource names to be absent, mark every
+  create with one CSPRNG operation nonce, and remove that marker by
+  UID/resourceVersion/nonce CAS before Flux reconciliation;
+- create the two namespace-scoped Flux paths as one guarded transaction,
+  create the dedicated Ingress last, and preserve the existing Web Ingress and
+  manually owned workbench NetworkPolicy unchanged;
+- recheck runtime image identity, Secret identities/keysets without reading
+  values, Kubernetes/Cilium policy unions, the internal database `/status`
+  contract, and the full public route/CORS boundary; and
+- treat durable success-receipt persistence as the commit point. Failure first
+  removes the exact owned Ingress, suspends and observes both Flux
+  Kustomizations quiescent, foreground-deletes the Deployment, proves its Pods
+  and ReplicaSets absent before removing isolation, deletes only exact
+  transaction UIDs, and proves all six names absent for a bounded quiet
+  interval. Operator termination follows the same rollback and receipt path.
+
+An anonymous registry digest check proves only the bytes fetched at the
+reviewed digest; its receipt does not claim cryptographic publisher provenance,
+SBOM verification, or attestation verification. Database deactivation is not
+performed by this activation runner: it remains a separately authorized,
+policy-pinned out-of-band operation. No participant path can verify a citizen,
+cast a vote, change a treasury, or exercise municipal authority.
 
 ## Fixed network-boundary bootstrap
 

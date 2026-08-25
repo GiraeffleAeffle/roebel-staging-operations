@@ -1,0 +1,381 @@
+{
+  "activationReady": false,
+  "authority": {
+    "citizenVerification": false,
+    "civicAuthority": "none",
+    "environment": "staging",
+    "municipalPublication": false,
+    "proposalMutation": false,
+    "treasuryMutation": false,
+    "voteMutation": false
+  },
+  "clusterIdentity": {
+    "apiOrigin": null,
+    "apiServerSpkiSha256": null,
+    "caCertificateSha256": null,
+    "kubeSystemNamespaceUid": null
+  },
+  "endpoints": {
+    "browserOrigin": "https://roebel-web.staging.agentcart.eu",
+    "gnosis": {
+      "chainId": 100,
+      "httpsOrigin": "https://rpc.gnosischain.com",
+      "ipv4Cidrs": [
+        "34.111.230.52/32"
+      ],
+      "port": 443
+    },
+    "supabase": {
+      "httpsOrigin": "https://vdlksxpihmoumebjpeix.supabase.co",
+      "ipv4Cidrs": [],
+      "port": 443,
+      "projectRef": "vdlksxpihmoumebjpeix"
+    },
+    "workbench": {
+      "admissionHeader": {
+        "name": "x-stadtstack-e2e",
+        "value": "1"
+      },
+      "port": 18083,
+      "service": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "name": "e2e-workbench",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "url": "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/"
+    }
+  },
+  "gitOps": {
+    "activationTransaction": {
+      "adoption": "forbidden",
+      "createOutcomes": {
+        "http-201-created": {
+          "discoveryAllowed": false,
+          "ownedByTransaction": true
+        },
+        "http-409-already-exists": {
+          "discoveryAllowed": false,
+          "hardFailure": true,
+          "ownedByTransaction": false
+        },
+        "post-send-uncertain-discovered": {
+          "discoveryAllowed": true,
+          "exactSemanticMatchRequired": true,
+          "operationNonceRequired": true,
+          "ownedByTransaction": true,
+          "rollbackRequired": true,
+          "uidResourceVersionReceiptRequired": true
+        }
+      },
+      "absencePreflight": "all-six-exact-target-names-must-be-absent",
+      "deletionPolicy": "Orphan",
+      "failureState": "both-suspended",
+      "force": false,
+      "initialState": "both-suspended",
+      "operationNonce": {
+        "annotation": "stadtstack.io/participant-activation-nonce",
+        "encoding": "64-lower-hex",
+        "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
+        "source": "runner-csprng-only",
+        "temporary": true
+      },
+      "prune": false,
+      "unsuspend": "compare-and-swap-both-or-rollback"
+    },
+    "reconcilers": {
+      "gateway": {
+        "kustomization": {
+          "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+          "kind": "Kustomization",
+          "name": "roebel-staging-participant-gateway",
+          "namespace": "flux-roebel-staging"
+        },
+        "path": "./reviewed-render/roebel-staging/staging-participant-gateway",
+        "resourceNames": [
+          "roebel-staging-participant-gateway"
+        ],
+        "role": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "Role",
+          "name": "roebel-staging-participant-gateway-reconciler",
+          "namespace": "stadtstack-roebel-web-preview"
+        },
+        "roleBinding": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "RoleBinding",
+          "name": "roebel-staging-participant-gateway-reconciler",
+          "namespace": "stadtstack-roebel-web-preview"
+        },
+        "serviceAccount": {
+          "apiVersion": "v1",
+          "kind": "ServiceAccount",
+          "name": "roebel-staging-participant-gateway-reconciler",
+          "namespace": "flux-roebel-staging"
+        },
+        "targetNamespace": "stadtstack-roebel-web-preview"
+      },
+      "workbenchIngress": {
+        "kustomization": {
+          "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+          "kind": "Kustomization",
+          "name": "roebel-staging-participant-workbench-ingress",
+          "namespace": "flux-roebel-staging"
+        },
+        "path": "./reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress",
+        "resourceNames": [
+          "roebel-staging-participant-workbench-ingress"
+        ],
+        "role": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "Role",
+          "name": "roebel-staging-participant-workbench-ingress-reconciler",
+          "namespace": "stadtstack-roebel-staging-lab"
+        },
+        "roleBinding": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "RoleBinding",
+          "name": "roebel-staging-participant-workbench-ingress-reconciler",
+          "namespace": "stadtstack-roebel-staging-lab"
+        },
+        "serviceAccount": {
+          "apiVersion": "v1",
+          "kind": "ServiceAccount",
+          "name": "roebel-staging-participant-workbench-ingress-reconciler",
+          "namespace": "flux-roebel-staging"
+        },
+        "targetNamespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "sharedSourceOwnership": "read-only-never-adopted"
+  },
+  "httpBoundary": {
+    "expectations": [
+      {"case": "status", "method": "GET", "path": "/api/staging-participant/v1/status", "status": 200},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/status", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/challenge", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/session", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/posts", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/comments", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/nostr-post", "status": 204},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/session", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/posts", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/comments", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/nostr-post", "status": 401},
+      {"case": "method-denied", "method": "POST", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/challenge", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/session", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/posts", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/comments", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/nostr-post", "status": 405},
+      {"case": "method-denied", "method": "HEAD", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "method-denied", "method": "DELETE", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "unknown", "method": "GET", "path": "/api/staging-participant/v1/unknown", "status": 404},
+      {"case": "trailing-slash", "method": "GET", "path": "/api/staging-participant/v1/status/", "status": 404},
+      {"case": "query", "method": "GET", "path": "/api/staging-participant/v1/status?unexpected=1", "status": 404},
+      {"case": "unknown-preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/unknown", "status": 404},
+      {"case": "wrong-origin", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 403}
+    ],
+    "haproxyRateLimit": {
+      "aggregateClaimAllowed": false,
+      "key": "source-ip",
+      "requests": 30,
+      "scope": "per-controller-replica",
+      "sharedAcrossReplicas": false,
+      "windowSeconds": 60
+    },
+    "host": "roebel-web.staging.agentcart.eu",
+    "prefix": "/api/staging-participant/v1",
+    "routes": [
+      {"methods": ["GET", "OPTIONS"], "path": "/api/staging-participant/v1/status"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/challenge"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/session"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/posts"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/comments"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/nostr-post"}
+    ],
+    "timeoutsSeconds": {
+      "deploymentRollout": 120,
+      "fluxReady": 120,
+      "kubernetesRequest": 10,
+      "rollback": 120,
+      "rollbackAbsenceQuiet": 2,
+      "rollbackPoll": 0.25,
+      "routeMatrixTotal": 120,
+      "routeRequest": 10
+    }
+  },
+  "network": {
+    "conflictScan": {
+      "families": [
+        "networking.k8s.io/NetworkPolicy",
+        "cilium.io/CiliumNetworkPolicy",
+        "cilium.io/CiliumClusterwideNetworkPolicy"
+      ],
+      "scope": "fresh-runner-selector-overlap-scan",
+      "staticInventoryHashes": false
+    },
+    "dnsNamespaceSelector": {"kubernetes.io/metadata.name": "kube-system"},
+    "dnsPodSelector": {"k8s-app": "kube-dns"},
+    "gatewayIngressNamespaceSelector": {"kubernetes.io/metadata.name": "ingress-system"},
+    "gatewayPodSelector": {
+      "app.kubernetes.io/component": "staging-participant-gateway",
+      "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+      "app.kubernetes.io/part-of": "stadtstack",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/environment": "staging"
+    },
+    "reciprocalPort": 18083,
+    "workbenchPodSelector": {
+      "app.kubernetes.io/component": "e2e-workbench",
+      "app.kubernetes.io/name": "e2e-workbench",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+    }
+  },
+  "preservation": {
+    "existingWorkbenchNetworkPolicy": {
+      "adoption": "forbidden",
+      "mutation": "forbidden",
+      "prePostByteEqualityRequired": true,
+      "target": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "name": "e2e-workbench",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "webIngress": {
+      "adoption": "forbidden",
+      "mutation": "forbidden",
+      "prePostByteEqualityRequired": true,
+      "target": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "name": "roebel-web-presentation",
+        "namespace": "stadtstack-roebel-web-preview"
+      }
+    }
+  },
+  "productPins": {
+    "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
+    "deactivation": {
+      "path": "supabase/staging_participant_gateway_deactivate.sql",
+      "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5"
+    },
+    "imageManifestDigest": "sha256:23243a09a9035f10540e4612c481a188750c8a5d9006062a60423c1850b7d45f",
+    "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
+    "migration": {
+      "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
+      "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
+    },
+    "sourceRevision": "7cb7e5b7b0f71c8072aefbec900cd229847d6dea",
+    "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
+    "sourceTreeSha256": "sha256:88544f383178e2b85ef031ae11295ec45917ee6df6ac117381b2f5e0854b6d4a",
+    "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
+    "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
+    "workflowSha256": "sha256:a65d9ef0563e492c688f752a4b6604fe114eec0fc9e8807dc346660a0e327e2d"
+  },
+  "render": {
+    "createOrder": [
+      "gateway.networkPolicy",
+      "workbenchIngress.networkPolicy",
+      "gateway.serviceAccount",
+      "gateway.service",
+      "gateway.deployment",
+      "gateway.ingress-after-health"
+    ],
+    "gateway": {
+      "files": [
+        "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/service.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/deployment.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/ingress.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/kustomization.yaml",
+        "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json"
+      ],
+      "objects": [
+        {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+        {"apiVersion": "v1", "kind": "ServiceAccount", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+        {"apiVersion": "v1", "kind": "Service", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+        {"apiVersion": "apps/v1", "kind": "Deployment", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+        {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"}
+      ],
+      "root": "reviewed-render/roebel-staging/staging-participant-gateway"
+    },
+    "workbenchIngress": {
+      "files": [
+        "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
+        "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml"
+      ],
+      "objects": [
+        {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "name": "roebel-staging-participant-workbench-ingress", "namespace": "stadtstack-roebel-staging-lab"}
+      ],
+      "root": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress"
+    }
+  },
+  "repositories": {
+    "operations": {
+      "fluxSource": {
+        "apiVersion": "source.toolkit.fluxcd.io/v1",
+        "kind": "GitRepository",
+        "name": "roebel-staging-operations",
+        "namespace": "flux-roebel-staging"
+      },
+      "protectedRef": "refs/heads/main",
+      "url": "https://github.com/GiraeffleAeffle/roebel-staging-operations.git"
+    },
+    "product": {
+      "protectedRef": "refs/heads/main",
+      "url": "https://github.com/GiraeffleAeffle/Roebel-App.git"
+    }
+  },
+  "rollback": {
+    "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
+    "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
+    "deploymentDeletion": "foreground-exact-uid-resourceVersion-then-zero-matching-pods-and-replicasets",
+    "exposureBreaker": "delete-exact-owned-service-before-flux-and-reprove-after-flux-on-every-rollback",
+    "firstStep": "delete-exact-owned-participant-ingress-uid",
+    "networkPolicyDeletion": "retain-gateway-isolation-until-deployment-pods-and-replicasets-are-absent",
+    "preserve": [
+      "shared-flux-source",
+      "web-ingress",
+      "existing-workbench-network-policy",
+      "secrets",
+      "unrelated-network-policy-families"
+    ],
+    "requiredPostconditions": [
+      "both-participant-kustomizations-suspended",
+      "all-transaction-owned-objects-absent-or-restored",
+      "web-ingress-byte-identical",
+      "existing-workbench-network-policy-byte-identical",
+      "no-civic-authority-effects"
+    ],
+    "secondStep": "cas-suspend-both-participant-kustomizations",
+    "termination": "sigint-sigterm-converted-to-abort-and-further-signals-deferred-through-rollback-receipt",
+    "unboundDeploymentIsolation": "retain-gateway-networkpolicy-until-exact-name-pod-replicaset-absence",
+    "uncertainCreateRediscovery": "bounded-exact-operation-nonce-semantics-uid-resourceVersion-before-rollback"
+  },
+  "runtime": {
+    "containerPort": 18085,
+    "deploymentStrategy": "Recreate",
+    "replicas": 1,
+    "secretReferences": {
+      "config": {
+        "keys": ["allowed-wallets", "invite-sha256", "mecky-pubkey"],
+        "name": "roebel-staging-participant-gateway-config",
+        "namespace": "stadtstack-roebel-web-preview"
+      },
+      "runtime": {
+        "keys": ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
+        "name": "roebel-staging-participant-gateway-runtime",
+        "namespace": "stadtstack-roebel-web-preview"
+      }
+    },
+    "serviceAccountToken": false
+  },
+  "schemaVersion": "roebel_staging_participant_gateway_activation_policy_v4",
+  "trustedFactsReceiptSchemaVersion": "roebel_staging_participant_gateway_trusted_live_facts_v1"
+}

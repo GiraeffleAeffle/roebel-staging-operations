@@ -1,0 +1,45 @@
+name: staging-participant-gateway-activation
+
+on:
+  workflow_dispatch:
+    inputs:
+      protected_revision:
+        description: Exact reviewed operations commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  guarded-dry-run:
+    runs-on: ubuntu-24.04
+    # Intentionally no cluster credentials.  Live execution is only from an
+    # independently protected runner with an explicit kubeconfig, after this
+    # exact code/revision/evidence plan is accepted.
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.protected_revision }}
+          persist-credentials: false
+      - name: Test guarded executor
+        run: >-
+          python3 -m unittest -v
+          scripts/test_staging_participant_gateway_policy.py
+          scripts/test_activate_staging_participant_gateway.py
+          scripts/test_verify_reviewed_render.py
+      - name: Verify protected render and clean patch
+        run: |
+          python3 scripts/verify-reviewed-render.py --root .
+          git diff --check
+      - name: Emit no-cluster activation plan
+        run: >-
+          python3 -I scripts/activate-staging-participant-gateway.py
+          --dry-run
+          --expected-protected-revision '${{ inputs.protected_revision }}'
+          --receipt participant-gateway-dry-run-receipt.json
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: participant-gateway-dry-run-receipt
+          path: participant-gateway-dry-run-receipt.json
+          if-no-files-found: error

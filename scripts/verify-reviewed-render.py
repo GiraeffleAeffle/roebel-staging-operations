@@ -19,6 +19,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -26,6 +27,20 @@ REVISION = re.compile(r"^[0-9a-f]{40}$")
 IMMUTABLE_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 RFC3339_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+
+
+def load_participant_gateway_policy_module():
+    """Load policy beside this protected verifier, never from candidate data."""
+    path = Path(__file__).with_name("staging_participant_gateway_policy.py")
+    spec = importlib.util.spec_from_file_location("protected_participant_gateway_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected participant gateway policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+PARTICIPANT_POLICY = load_participant_gateway_policy_module()
 
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
@@ -123,6 +138,7 @@ EXPECTED_FILES = {
     ".github/CODEOWNERS",
     ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
+    ".github/workflows/staging-participant-gateway-activation.yml",
     ".gitignore",
     "LICENSE",
     "README.md",
@@ -130,8 +146,13 @@ EXPECTED_FILES = {
     "contracts/stadtstack-case-recovery-composition-contract.json",
     "contracts/stadtstack-case-runtime-contract.json",
     "policy/repository-contract.json",
+    "policy/staging-participant-gateway-activation-policy.json",
     "scripts/render-release-set-promotion.py",
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/staging_participant_gateway_policy.py",
     "scripts/test_automatic_promotion_workflow.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_staging_participant_gateway_policy.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
@@ -170,6 +191,47 @@ EXPECTED_FILES = {
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
 
+# The participant gateway is deliberately a fourth, independently pinned
+# staging capability.  It is never folded into the normal Web/Mecky release
+# set: the gateway has a writer capability while the public Web must remain
+# read-only.  The complete subtree is admitted only alongside the reviewed
+# public-knowledge runtime, and may later be composed with (but never hidden
+# inside) the signed-Nostr tracer.
+PARTICIPANT_GATEWAY_ROOT = PARTICIPANT_POLICY.GATEWAY_ROOT
+PARTICIPANT_GATEWAY_FILES = set(PARTICIPANT_POLICY.ALL_RENDER_FILES)
+PARTICIPANT_GATEWAY_EXPECTED_FILES = FUTURE_EXPECTED_FILES | PARTICIPANT_GATEWAY_FILES
+PARTICIPANT_GATEWAY_NAME = PARTICIPANT_POLICY.GATEWAY_NAME
+PARTICIPANT_GATEWAY_NAMESPACE = PARTICIPANT_POLICY.GATEWAY_NAMESPACE
+PARTICIPANT_GATEWAY_PORT = PARTICIPANT_POLICY.GATEWAY_PORT
+PARTICIPANT_GATEWAY_IMAGE = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["productPins"]["imageRepository"]
+PARTICIPANT_GATEWAY_WORKFLOW = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["productPins"]["workflowIdentity"]
+PARTICIPANT_GATEWAY_ORIGIN = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["endpoints"]["browserOrigin"]
+PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
+PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
+PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
+PARTICIPANT_GATEWAY_FLUX_NAMESPACE = PARTICIPANT_POLICY.FLUX_NAMESPACE
+PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME = PARTICIPANT_POLICY.FLUX_SOURCE_NAME
+PARTICIPANT_GATEWAY_FLUX_KUSTOMIZATION = "roebel-staging-participant-gateway"
+PARTICIPANT_GATEWAY_FLUX_SERVICE_ACCOUNT = "roebel-staging-participant-gateway-reconciler"
+PARTICIPANT_GATEWAY_FLUX_ROLE = "roebel-staging-participant-gateway-reconciler"
+PARTICIPANT_GATEWAY_FLUX_ROLE_BINDING = "roebel-staging-participant-gateway-reconciler"
+PARTICIPANT_GATEWAY_WEB_FLUX_KUSTOMIZATION = "roebel-web-presentation"
+PARTICIPANT_GATEWAY_WEB_FLUX_SERVICE_ACCOUNT = "roebel-web-reconciler"
+PARTICIPANT_GATEWAY_DNS_TLS_EVIDENCE_SCHEMA = "roebel_staging_participant_gateway_dns_tls_evidence_v1"
+PARTICIPANT_GATEWAY_ACTIVATION_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v1"
+PARTICIPANT_GATEWAY_ANONYMOUS_EMPTY_AUTH_CONFIG_SHA256 = (
+    "sha256:e58c7564b64e92c6c8ebc3cb296e644b4f2409ace8882621e888924c0c598753"
+)
+# This deliberately inert, policy-owned template is the only permitted
+# activation operation.  It is hashed into the approved evidence; a render PR
+# cannot replace it with a different command or use its own receipt as proof.
+PARTICIPANT_GATEWAY_VERIFICATION_TIME_OVERRIDE: datetime | None = None
+
+def participant_gateway_activation_script_sha256() -> str:
+    """Bind policy evidence to the committed guarded planner bytes."""
+    return bytes_digest(Path(__file__).with_name("activate-staging-participant-gateway.py").read_bytes())
+
+
 # Signed Nostr is a third, closed render shape layered on the already-admitted
 # reviewed-public-knowledge render.  The files are deliberately not present in
 # this policy/bootstrap change: a later activation must add all sixteen in one
@@ -193,6 +255,7 @@ SIGNED_NOSTR_FILES = (
     | {SIGNED_NOSTR_RUNTIME_PIN}
 )
 SIGNED_NOSTR_EXPECTED_FILES = FUTURE_EXPECTED_FILES | SIGNED_NOSTR_FILES
+SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES = SIGNED_NOSTR_EXPECTED_FILES | PARTICIPANT_GATEWAY_FILES
 SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/web/ingress.json",
@@ -355,6 +418,19 @@ def signed_nostr_verification_time() -> datetime:
     return value.replace(microsecond=0)
 
 
+def participant_gateway_verification_time() -> datetime:
+    value = PARTICIPANT_GATEWAY_VERIFICATION_TIME_OVERRIDE
+    if value is None:
+        return datetime.now(timezone.utc).replace(microsecond=0)
+    require(
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() == timezone.utc.utcoffset(value),
+        "participant gateway verification clock override must be UTC",
+    )
+    return value.replace(microsecond=0)
+
+
 def iter_keys(value: Any):
     if isinstance(value, dict):
         for key, child in value.items():
@@ -389,8 +465,12 @@ def verify_repository_file_set(root: Path) -> str:
         return "current"
     if actual == FUTURE_EXPECTED_FILES:
         return "reviewed-public-knowledge"
+    if actual == PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "reviewed-public-knowledge-participant-gateway"
     if actual == SIGNED_NOSTR_EXPECTED_FILES:
         return "signed-nostr"
+    if actual == SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "signed-nostr-participant-gateway"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -451,6 +531,22 @@ def verify_case_image_resource_inventory_contract_with_protected_policy(root: Pa
     require(errors == [], f"Case image/resource inventory contract verification failed: {errors!r}")
 
 
+def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -> dict[str, Any]:
+    """Treat candidate JSON as data under the protected sibling module."""
+    try:
+        value = PARTICIPANT_POLICY.validate_activation_policy(
+            load_json(root / PARTICIPANT_POLICY.POLICY_PATH),
+        )
+        if render_file_set in {
+            "reviewed-public-knowledge-participant-gateway",
+            "signed-nostr-participant-gateway",
+        }:
+            PARTICIPANT_POLICY.assert_activation_ready(value)
+        return value
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+
+
 def verify_contract(root: Path) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -491,6 +587,24 @@ def verify_contract(root: Path) -> dict[str, Any]:
             "renderRoot": SIGNED_NOSTR_ROOT,
             "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
             "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
+        },
+        "stagingParticipantGatewayBoundary": {
+            "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
+            "activationReady": False,
+            "component": "staging-participant-gateway",
+            "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
+            "methodPathMatrix": {
+                "GET": [PARTICIPANT_POLICY.ROUTES[0]],
+                "OPTIONS": list(PARTICIPANT_POLICY.ROUTES),
+                "POST": list(PARTICIPANT_POLICY.POST_ROUTES),
+            },
+            "normalReleaseSetPromotionMayChange": False,
+            "renderRoot": PARTICIPANT_GATEWAY_ROOT,
+            "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+            "singleReplicaRequired": True,
+            "trustedLiveFacts": "protected-local-runner-out-of-band-only",
+            "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
         },
         "requiredBranchProtection": {
             "requiredStatusChecks": ["reviewed-render-admission"],
@@ -2500,7 +2614,820 @@ def verify_web_network_policy(root: Path) -> dict[str, Any]:
     return policy
 
 
-def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
+def participant_gateway_secret_env(name: str, secret: str, key: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "valueFrom": {"secretKeyRef": {"key": key, "name": secret, "optional": False}},
+    }
+
+
+def participant_gateway_target(kind: str, name: str, namespace: str) -> dict[str, str]:
+    api_versions = {
+        "Deployment": "apps/v1",
+        "Ingress": "networking.k8s.io/v1",
+        "GitRepository": "source.toolkit.fluxcd.io/v1",
+        "Kustomization": "kustomize.toolkit.fluxcd.io/v1",
+        "NetworkPolicy": "networking.k8s.io/v1",
+        "Role": "rbac.authorization.k8s.io/v1",
+        "RoleBinding": "rbac.authorization.k8s.io/v1",
+        "Secret": "v1",
+        "Service": "v1",
+        "ServiceAccount": "v1",
+    }
+    api_version = api_versions.get(kind)
+    require(api_version is not None, f"participant gateway target kind invalid: {kind}")
+    return {"apiVersion": api_version, "kind": kind, "name": name, "namespace": namespace}
+
+
+def expected_participant_gateway_flux_objects(*, suspended: bool = True) -> dict[str, dict[str, Any]]:
+    return PARTICIPANT_POLICY.gateway_flux_objects(suspended=suspended)
+
+
+def expected_participant_workbench_ingress_flux_objects(
+    *, suspended: bool = True,
+) -> dict[str, dict[str, Any]]:
+    return PARTICIPANT_POLICY.workbench_ingress_flux_objects(suspended=suspended)
+
+
+def _legacy_expected_participant_gateway_flux_objects(*, suspended: bool = True) -> dict[str, dict[str, Any]]:
+    labels = {**PARTICIPANT_GATEWAY_LABELS, "stadtstack.io/gitops-owner": "participant-gateway", "stadtstack.io/flux-tenant": "roebel-staging"}
+    service_account = {
+        "apiVersion": "v1", "kind": "ServiceAccount",
+        # Flux resolves spec.serviceAccountName in the Kustomization namespace,
+        # never in targetNamespace.  The application workload ServiceAccount is
+        # separately rendered in the target namespace.
+        "metadata": {"labels": labels, "name": PARTICIPANT_GATEWAY_FLUX_SERVICE_ACCOUNT, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE},
+        "automountServiceAccountToken": False,
+    }
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
+        "metadata": {"labels": labels, "name": PARTICIPANT_GATEWAY_FLUX_ROLE, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "rules": [
+            {"apiGroups": [""], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["serviceaccounts", "services"], "verbs": ["get", "patch", "update"]},
+            {"apiGroups": ["apps"], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["deployments"], "verbs": ["get", "patch", "update"]},
+            {"apiGroups": ["networking.k8s.io"], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["networkpolicies"], "verbs": ["get", "patch", "update"]},
+            {"apiGroups": ["networking.k8s.io"], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["ingresses"], "verbs": ["get", "patch", "update"]},
+        ],
+    }
+    role_binding = {
+        "apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+        "metadata": {"labels": labels, "name": PARTICIPANT_GATEWAY_FLUX_ROLE_BINDING, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "roleRef": {"apiGroup": "rbac.authorization.k8s.io", "kind": "Role", "name": PARTICIPANT_GATEWAY_FLUX_ROLE},
+        "subjects": [{"kind": "ServiceAccount", "name": PARTICIPANT_GATEWAY_FLUX_SERVICE_ACCOUNT, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE}],
+    }
+    kustomization = {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
+        "metadata": {"labels": labels, "name": PARTICIPANT_GATEWAY_FLUX_KUSTOMIZATION, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE},
+        "spec": {
+            "deletionPolicy": "Orphan", "dependsOn": [], "force": False,
+            "healthChecks": [{"apiVersion": "apps/v1", "kind": "Deployment", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE}],
+            "interval": "5m", "path": f"./{PARTICIPANT_GATEWAY_ROOT}",
+            "prune": False, "retryInterval": "30s", "serviceAccountName": PARTICIPANT_GATEWAY_FLUX_SERVICE_ACCOUNT,
+            "sourceRef": {"kind": "GitRepository", "name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE},
+            "timeout": "2m", "wait": True,
+            # The policy bootstrap must not point an active controller at an
+            # absent render path.  A separately receipt-bound CAS unsuspend is
+            # the only later activation transition.
+            "suspend": suspended, "targetNamespace": PARTICIPANT_GATEWAY_NAMESPACE,
+        },
+    }
+    return {"kustomization": kustomization, "serviceAccount": service_account, "role": role, "roleBinding": role_binding}
+
+
+def expected_participant_gateway_flux_source() -> dict[str, Any]:
+    """Return the immutable projection of the shared, active Flux source.
+
+    The participant boundary owns only its dedicated Kustomization.  It may
+    never suspend, patch, or adopt this shared GitRepository.
+    """
+    return PARTICIPANT_POLICY.expected_shared_flux_source_projection()
+
+
+def verify_participant_gateway_dns_tls_evidence(value: Any, endpoint: dict[str, Any], label: str) -> dict[str, Any]:
+    evidence = closed(value, {"schemaVersion", "canonicalEncoding", "resolverIdentity", "resolutionMethod", "queriedHost", "queriedPort", "observedAt", "validUntil", "maxAgeSeconds", "addresses", "tlsCertificate"}, label)
+    require(evidence["schemaVersion"] == PARTICIPANT_GATEWAY_DNS_TLS_EVIDENCE_SCHEMA, f"{label} schema invalid")
+    require(evidence["canonicalEncoding"] == "canonical-json" and evidence["resolverIdentity"] == "reviewed-doh-resolver" and evidence["resolutionMethod"] == "dns-over-https-a-and-aaaa", f"{label} resolver identity invalid")
+    origin = urlparse(endpoint["httpsOrigin"])
+    require(evidence["queriedHost"] == origin.hostname and evidence["queriedPort"] == 443, f"{label} endpoint binding invalid")
+    observed, valid_until = utc_timestamp(evidence["observedAt"], f"{label} observedAt"), utc_timestamp(evidence["validUntil"], f"{label} validUntil")
+    require(evidence["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness window invalid")
+    addresses = closed(evidence["addresses"], {"a", "aaaa"}, f"{label} addresses")
+    expected_a = [str(ipaddress.ip_network(cidr, strict=True).network_address) for cidr in endpoint["ipv4Cidrs"]]
+    require(addresses == {"a": expected_a, "aaaa": []}, f"{label} DNS answer does not equal reviewed /32 set")
+    certificate = closed(evidence["tlsCertificate"], {"serverName", "issuer", "certificateSha256", "notBefore", "notAfter"}, f"{label} certificate")
+    require(certificate["serverName"] == origin.hostname and isinstance(certificate["issuer"], str) and certificate["issuer"], f"{label} TLS identity invalid")
+    require(isinstance(certificate["certificateSha256"], str) and SHA256.fullmatch(certificate["certificateSha256"]), f"{label} TLS digest invalid")
+    require(utc_timestamp(certificate["notBefore"], f"{label} notBefore") <= observed <= valid_until < utc_timestamp(certificate["notAfter"], f"{label} notAfter"), f"{label} TLS validity invalid")
+    return evidence
+
+
+def participant_gateway_dns_tls_binding(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resolverIdentity": value["resolverIdentity"],
+        "resolutionMethod": value["resolutionMethod"],
+        "queriedHost": value["queriedHost"],
+        "queriedPort": value["queriedPort"],
+        "addresses": value["addresses"],
+        "tlsCertificate": value["tlsCertificate"],
+    }
+
+
+def verify_participant_gateway_flux_bootstrap(value: Any, operations_revision: str) -> dict[str, Any]:
+    """Validate the one-time *suspended* Flux identity bootstrap.
+
+    This is deliberately an evidence record, not a manifest.  The protected
+    constant must bind its four exact objects and prove they were absent at
+    collection time.  In particular it cannot authorise the participant
+    reconciler to take ownership of the existing Web Ingress.
+    """
+    bootstrap = closed(
+        value,
+        {"objects", "resourceAbsenceReceipts", "bootstrapReceipt", "sourceReceipt", "webIngressReconciler"},
+        "participant gateway Flux bootstrap",
+    )
+    expected = expected_participant_gateway_flux_objects(suspended=True)
+    order = ("kustomization", "serviceAccount", "role", "roleBinding")
+    objects = bootstrap["objects"]
+    require(isinstance(objects, list) and len(objects) == len(order), "participant gateway Flux object count invalid")
+    for object_id, value_item in zip(order, objects, strict=True):
+        item = closed(value_item, {"objectId", "target", "object", "objectCanonicalSha256"}, f"participant gateway Flux {object_id}")
+        require(item["objectId"] == object_id, "participant gateway Flux object order invalid")
+        require(item["target"] == participant_gateway_target(
+            expected[object_id]["kind"], expected[object_id]["metadata"]["name"], expected[object_id]["metadata"]["namespace"],
+        ), "participant gateway Flux target invalid")
+        require(item["object"] == expected[object_id], "participant gateway Flux object widened or drifted")
+        require(item["objectCanonicalSha256"] == digest(expected[object_id]), "participant gateway Flux object digest invalid")
+
+    receipts = bootstrap["resourceAbsenceReceipts"]
+    require(isinstance(receipts, list) and len(receipts) == len(order), "participant gateway absence receipt count invalid")
+    for object_id, value_item in zip(order, receipts, strict=True):
+        expected_object = expected[object_id]
+        item = closed(
+            value_item,
+            {"objectId", "target", "desiredObjectDigest", "state", "uid", "resourceVersion", "currentObjectDigest", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+            f"participant gateway absence receipt {object_id}",
+        )
+        require(item["objectId"] == object_id, "participant gateway absence receipt order invalid")
+        require(item["target"] == participant_gateway_target(
+            expected_object["kind"], expected_object["metadata"]["name"], expected_object["metadata"]["namespace"],
+        ), "participant gateway absence receipt target invalid")
+        require(item["desiredObjectDigest"] == digest(expected_object), "participant gateway absence desired object digest invalid")
+        require(
+            item["state"] == "absent" and item["uid"] is None and item["resourceVersion"] is None and item["currentObjectDigest"] is None,
+            "participant gateway bootstrap must prove resource absence without adoption",
+        )
+        observed = utc_timestamp(item["observedAt"], f"participant gateway absence {object_id} observedAt")
+        valid_until = utc_timestamp(item["validUntil"], f"participant gateway absence {object_id} validUntil")
+        require(item["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, "participant gateway absence receipt freshness invalid")
+        require(item["apiOutcome"] == "http-404-not-found", "participant gateway absence receipt API outcome invalid")
+        canonical = {key: item[key] for key in item if key != "receiptCanonicalSha256"}
+        require(item["receiptCanonicalSha256"] == digest(canonical), "participant gateway absence receipt digest invalid")
+
+    receipt = closed(
+        bootstrap["bootstrapReceipt"],
+        {"status", "operationId", "completedAt", "validUntil", "maxAgeSeconds", "postconditions", "postconditionsCanonicalSha256"},
+        "participant gateway suspended Flux bootstrap receipt",
+    )
+    require(receipt["status"] == "completed-suspended-create-only", "participant gateway bootstrap receipt status invalid")
+    require(isinstance(receipt["operationId"], str) and UUID.fullmatch(receipt["operationId"]), "participant gateway bootstrap operation id invalid")
+    completed = utc_timestamp(receipt["completedAt"], "participant gateway bootstrap completedAt")
+    valid_until = utc_timestamp(receipt["validUntil"], "participant gateway bootstrap validUntil")
+    require(receipt["maxAgeSeconds"] == 300 and 0 < duration_seconds(completed, valid_until) <= 300, "participant gateway bootstrap receipt freshness invalid")
+    postconditions = receipt["postconditions"]
+    require(isinstance(postconditions, list) and len(postconditions) == len(order), "participant gateway bootstrap postcondition count invalid")
+    for object_id, value_item in zip(order, postconditions, strict=True):
+        expected_object = expected[object_id]
+        item = closed(
+            value_item,
+            {"objectId", "target", "uid", "resourceVersion", "objectCanonicalSha256", "apiOperation", "apiOutcome", "conflictPolicy"},
+            f"participant gateway bootstrap postcondition {object_id}",
+        )
+        require(item["objectId"] == object_id, "participant gateway bootstrap postcondition order invalid")
+        require(item["target"] == participant_gateway_target(expected_object["kind"], expected_object["metadata"]["name"], expected_object["metadata"]["namespace"]), "participant gateway bootstrap postcondition target invalid")
+        require(isinstance(item["uid"], str) and UUID.fullmatch(item["uid"]), "participant gateway bootstrap postcondition UID invalid")
+        require(isinstance(item["resourceVersion"], str) and item["resourceVersion"].isdigit(), "participant gateway bootstrap postcondition resourceVersion invalid")
+        require(item["objectCanonicalSha256"] == digest(expected_object), "participant gateway bootstrap postcondition object drift")
+        require(item["apiOperation"] == "POST-create" and item["apiOutcome"] == "http-201-created" and item["conflictPolicy"] == "fail-on-http-409-no-adopt", "participant gateway bootstrap postcondition not create-only")
+    require(receipt["postconditionsCanonicalSha256"] == digest(postconditions), "participant gateway bootstrap postcondition checksum invalid")
+
+    source = closed(bootstrap["sourceReceipt"], {"target", "uid", "resourceVersion", "liveObject", "liveObjectCanonicalSha256", "lastAppliedRevision"}, "participant gateway Flux GitRepository source receipt")
+    require(source["target"] == participant_gateway_target("GitRepository", PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway Flux source target invalid")
+    require(isinstance(source["uid"], str) and UUID.fullmatch(source["uid"]) and isinstance(source["resourceVersion"], str) and source["resourceVersion"].isdigit(), "participant gateway Flux source identity invalid")
+    expected_source = expected_participant_gateway_flux_source()
+    require(source["liveObject"] == expected_source and source["liveObjectCanonicalSha256"] == digest(expected_source), "participant gateway Flux source URL/ref/verification drift")
+    require(source["lastAppliedRevision"] == operations_revision, "participant gateway Flux source revision invalid")
+
+    web = closed(bootstrap["webIngressReconciler"], {"kustomization", "serviceAccount"}, "participant gateway Web reconciler binding")
+    expected_web_kustomization = participant_gateway_target("Kustomization", PARTICIPANT_GATEWAY_WEB_FLUX_KUSTOMIZATION, PARTICIPANT_GATEWAY_FLUX_NAMESPACE)
+    expected_web_sa = participant_gateway_target("ServiceAccount", PARTICIPANT_GATEWAY_WEB_FLUX_SERVICE_ACCOUNT, PARTICIPANT_GATEWAY_FLUX_NAMESPACE)
+    for key, target in (("kustomization", expected_web_kustomization), ("serviceAccount", expected_web_sa)):
+        record = closed(web[key], {"target", "uid", "resourceVersion", "liveObjectSha256"}, f"participant gateway Web reconciler {key}")
+        require(record["target"] == target, f"participant gateway Web reconciler {key} target invalid")
+        require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"participant gateway Web reconciler {key} UID invalid")
+        require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"participant gateway Web reconciler {key} resourceVersion invalid")
+        require(isinstance(record["liveObjectSha256"], str) and SHA256.fullmatch(record["liveObjectSha256"]), f"participant gateway Web reconciler {key} digest invalid")
+    return bootstrap
+
+
+def verify_participant_gateway_activation_transaction(value: Any, flux_bootstrap: dict[str, Any]) -> dict[str, Any]:
+    """Check the pre-approved dormant-to-active transaction template.
+
+    A postcondition cannot be known until the CAS patch happens.  It is audit
+    output, never candidate-controlled activation evidence; only this
+    protected precondition/template is admitted in the policy merge.
+    """
+    transaction = closed(
+        value,
+        {"scriptSha256", "receiptSchemaVersion", "precondition", "patch", "postconditionTemplate"},
+        "participant gateway activation transaction",
+    )
+    suspended = expected_participant_gateway_flux_objects(suspended=True)["kustomization"]
+    active = expected_participant_gateway_flux_objects(suspended=False)["kustomization"]
+    postcondition = flux_bootstrap["bootstrapReceipt"]["postconditions"][0]
+    require(transaction["scriptSha256"] == participant_gateway_activation_script_sha256(), "participant gateway activation script drift")
+    require(transaction["receiptSchemaVersion"] == PARTICIPANT_GATEWAY_ACTIVATION_RECEIPT_SCHEMA, "participant gateway activation receipt schema invalid")
+    precondition = closed(transaction["precondition"], {"target", "requiredUid", "requiredResourceVersion", "beforeObjectDigest"}, "participant gateway activation transaction precondition")
+    require(precondition["target"] == participant_gateway_target("Kustomization", PARTICIPANT_GATEWAY_FLUX_KUSTOMIZATION, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway activation target invalid")
+    require(precondition["requiredUid"] == postcondition["uid"] and precondition["requiredResourceVersion"] == postcondition["resourceVersion"], "participant gateway activation CAS binding invalid")
+    require(precondition["beforeObjectDigest"] == digest(suspended) == postcondition["objectCanonicalSha256"], "participant gateway activation before object invalid")
+    require(transaction["patch"] == {"op": "replace", "path": "/spec/suspend", "expected": True, "value": False}, "participant gateway activation patch widened")
+    require(transaction["postconditionTemplate"] == {
+        "target": participant_gateway_target("Kustomization", PARTICIPANT_GATEWAY_FLUX_KUSTOMIZATION, PARTICIPANT_GATEWAY_FLUX_NAMESPACE),
+        "requiredUid": postcondition["uid"],
+        "requiredResourceVersion": postcondition["resourceVersion"],
+        "beforeObjectDigest": digest(suspended),
+        "afterObjectDigest": digest(active),
+        "apiOperation": "PATCH-json-cas",
+        "apiOutcome": "http-200-re-read-exact-active",
+    }, "participant gateway activation postcondition template drift")
+    return transaction
+
+
+def verify_participant_gateway_activation_postcondition_receipt(value: Any, transaction: dict[str, Any]) -> dict[str, Any]:
+    """Validate audit output from the protected activation script, if supplied."""
+    receipt = closed(
+        value,
+        {"schemaVersion", "target", "requiredUid", "requiredResourceVersion", "beforeObjectDigest", "postResourceVersion", "afterObjectDigest", "apiOperation", "apiOutcome", "completedAt"},
+        "participant gateway activation postcondition receipt",
+    )
+    template = transaction["postconditionTemplate"]
+    require(receipt["schemaVersion"] == PARTICIPANT_GATEWAY_ACTIVATION_RECEIPT_SCHEMA, "participant gateway activation audit schema invalid")
+    for key in ("target", "requiredUid", "requiredResourceVersion", "beforeObjectDigest", "afterObjectDigest", "apiOperation", "apiOutcome"):
+        require(receipt[key] == template[key], f"participant gateway activation audit {key} drift")
+    require(isinstance(receipt["postResourceVersion"], str) and receipt["postResourceVersion"].isdigit() and int(receipt["postResourceVersion"]) > int(receipt["requiredResourceVersion"]), "participant gateway activation audit post resourceVersion invalid")
+    utc_timestamp(receipt["completedAt"], "participant gateway activation audit completedAt")
+    return receipt
+
+
+def verify_participant_gateway_ingress_cas(value: Any, rollback: dict[str, Any], label: str) -> dict[str, Any]:
+    record = closed(
+        value,
+        {"target", "uid", "resourceVersion", "liveObjectSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome"},
+        label,
+    )
+    require(record["target"] == participant_gateway_target("Ingress", PARTICIPANT_GATEWAY_NAME, PARTICIPANT_GATEWAY_NAMESPACE), f"{label} target invalid")
+    require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"{label} UID invalid")
+    require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"{label} resourceVersion invalid")
+    require(record["liveObjectSha256"] == rollback["participantIngressSha256"], f"{label} live bytes do not match participant rollback baseline")
+    observed = utc_timestamp(record["observedAt"], f"{label} observedAt")
+    valid_until = utc_timestamp(record["validUntil"], f"{label} validUntil")
+    require(record["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
+    require(record["apiOutcome"] == "http-200-exact-live-bytes", f"{label} API outcome invalid")
+    return record
+
+
+def verify_participant_gateway_secret_materialization(value: Any, label: str) -> dict[str, Any]:
+    materialization = closed(value, {"config", "runtime"}, label)
+    expected = {
+        "config": (PARTICIPANT_GATEWAY_CONFIG_SECRET, ["allowed-wallets", "invite-sha256", "mecky-pubkey"]),
+        "runtime": (PARTICIPANT_GATEWAY_RUNTIME_SECRET, ["session-key", "supabase-anon-key", "supabase-rpc-secret"]),
+    }
+    for name, (secret_name, keys) in expected.items():
+        record = closed(
+            materialization[name],
+            {"target", "uid", "resourceVersion", "keySet", "state", "semanticChecks", "materializedAt", "validUntil", "maxAgeSeconds", "vaultArm", "receiptCanonicalSha256"},
+            f"{label} {name} Secret",
+        )
+        require(record["target"] == participant_gateway_target("Secret", secret_name, PARTICIPANT_GATEWAY_NAMESPACE), f"{label} {name} Secret target invalid")
+        require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"{label} {name} Secret UID invalid")
+        require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"{label} {name} Secret resourceVersion invalid")
+        require(record["keySet"] == keys and record["state"] == "present-exact-keyset", f"{label} {name} Secret key set invalid")
+        expected_semantics = (
+            {"inviteSha256Is64LowerHex": True, "meckyPubkeyIs64LowerHex": True, "walletAllowListNonEmptyNormalized": True}
+            if name == "config" else
+            {"sessionHmacKeyAtLeast32Bytes": True, "sessionHmacKeyHighEntropy": True, "stagingSupabaseAnonCredentialValid": True, "stagingRpcSecretAccepted": True}
+        )
+        require(record["semanticChecks"] == expected_semantics, f"{label} {name} Secret semantic preflight invalid")
+        observed = utc_timestamp(record["materializedAt"], f"{label} {name} Secret materializedAt")
+        valid_until = utc_timestamp(record["validUntil"], f"{label} {name} Secret validUntil")
+        require(record["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} {name} Secret freshness invalid")
+        require(record["vaultArm"] == "roebel_staging_participant_environment_arm=staging-only", f"{label} {name} Secret Vault arm invalid")
+        canonical = {key: record[key] for key in record if key != "receiptCanonicalSha256"}
+        require(record["receiptCanonicalSha256"] == digest(canonical), f"{label} {name} Secret receipt invalid")
+    return materialization
+
+
+def verify_participant_gateway_database_preflight(value: Any, label: str) -> dict[str, Any]:
+    preflight = closed(
+        value,
+        {"databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+        label,
+    )
+    require(isinstance(preflight["databaseProject"], str) and re.fullmatch(r"[a-z0-9]{20}", preflight["databaseProject"]), f"{label} database project invalid")
+    require(preflight["environment"] == "staging" and preflight["vaultArm"] == "roebel_staging_participant_environment_arm=staging-only", f"{label} staging/Vault binding invalid")
+    for key in ("migrationSha256", "schemaSha256"):
+        require(isinstance(preflight[key], str) and SHA256.fullmatch(preflight[key]), f"{label} {key} invalid")
+    observed = utc_timestamp(preflight["observedAt"], f"{label} observedAt")
+    valid_until = utc_timestamp(preflight["validUntil"], f"{label} validUntil")
+    require(preflight["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
+    require(preflight["apiOutcome"] == "staging-schema-and-vault-arm-exact", f"{label} API outcome invalid")
+    canonical = {key: preflight[key] for key in preflight if key != "receiptCanonicalSha256"}
+    require(preflight["receiptCanonicalSha256"] == digest(canonical), f"{label} receipt invalid")
+    return preflight
+
+
+def verify_participant_gateway_gnosis_chain(value: Any, origin: str, label: str) -> dict[str, Any]:
+    receipt = closed(value, {"httpsOrigin", "request", "response", "observedAt", "validUntil", "maxAgeSeconds", "receiptCanonicalSha256"}, label)
+    require(receipt["httpsOrigin"] == origin, f"{label} origin invalid")
+    require(receipt["request"] == {"jsonrpc": "2.0", "id": 1, "method": "eth_chainId", "params": []}, f"{label} request invalid")
+    require(receipt["response"] == {"jsonrpc": "2.0", "id": 1, "result": "0x64"}, f"{label} must prove Gnosis eth_chainId 0x64")
+    observed = utc_timestamp(receipt["observedAt"], f"{label} observedAt")
+    valid_until = utc_timestamp(receipt["validUntil"], f"{label} validUntil")
+    require(receipt["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
+    canonical = {key: receipt[key] for key in receipt if key != "receiptCanonicalSha256"}
+    require(receipt["receiptCanonicalSha256"] == digest(canonical), f"{label} receipt invalid")
+    return receipt
+
+
+def verify_participant_gateway_application_bootstrap(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    """Prove the application objects were create-only in safe order.
+
+    The dormant Flux Kustomization never gets authority to create or adopt an
+    absent application object.  A privileged, reviewed bootstrap instead uses
+    one atomic POST per exact object and records the UID/RV/bytes Flux must
+    later observe unchanged.
+    """
+    bootstrap = closed(value, {"resourceAbsenceReceipts", "postconditions", "postconditionsCanonicalSha256", "healthBeforeIngress"}, "participant gateway application bootstrap")
+    resources = expected_participant_gateway_resources(runtime_pin)
+    # NetworkPolicy must exist before any matching Pod. The dedicated Ingress
+    # is the last create-only object and may appear only after the internal
+    # Service/Deployment health receipt. The existing Web Ingress is not part
+    # of this transaction and cannot be adopted or changed.
+    order = (
+        ("networkPolicy", "networkPolicy"),
+        ("serviceAccount", "serviceAccount"),
+        ("service", "service"),
+        ("deployment", "deployment"),
+        ("ingress", "ingress"),
+    )
+    for field in ("resourceAbsenceReceipts", "postconditions"):
+        require(isinstance(bootstrap[field], list) and len(bootstrap[field]) == len(order), f"participant gateway application {field} count invalid")
+    for (object_id, resource_key), absence_value, post_value in zip(order, bootstrap["resourceAbsenceReceipts"], bootstrap["postconditions"], strict=True):
+        expected = resources[resource_key]
+        target = participant_gateway_target(expected["kind"], expected["metadata"]["name"], expected["metadata"]["namespace"])
+        absence = closed(
+            absence_value,
+            {"objectId", "target", "desiredObjectDigest", "state", "uid", "resourceVersion", "currentObjectDigest", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+            f"participant gateway application absence {object_id}",
+        )
+        require(absence["objectId"] == object_id and absence["target"] == target and absence["desiredObjectDigest"] == digest(expected), "participant gateway application absence target/digest invalid")
+        require(absence["state"] == "absent" and absence["uid"] is None and absence["resourceVersion"] is None and absence["currentObjectDigest"] is None and absence["apiOutcome"] == "http-404-not-found", "participant gateway application absence must be exact no-adopt")
+        observed = utc_timestamp(absence["observedAt"], f"participant gateway application absence {object_id} observedAt")
+        valid_until = utc_timestamp(absence["validUntil"], f"participant gateway application absence {object_id} validUntil")
+        require(absence["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, "participant gateway application absence freshness invalid")
+        require(absence["receiptCanonicalSha256"] == digest({key: absence[key] for key in absence if key != "receiptCanonicalSha256"}), "participant gateway application absence digest invalid")
+        post_keys = {"objectId", "target", "uid", "resourceVersion", "objectCanonicalSha256", "apiOperation", "apiOutcome", "conflictPolicy"}
+        if object_id == "ingress":
+            post_keys.add("createdAt")
+        post = closed(post_value, post_keys, f"participant gateway application postcondition {object_id}")
+        require(post["objectId"] == object_id and post["target"] == target, "participant gateway application postcondition target invalid")
+        require(isinstance(post["uid"], str) and UUID.fullmatch(post["uid"]), "participant gateway application postcondition UID invalid")
+        require(isinstance(post["resourceVersion"], str) and post["resourceVersion"].isdigit(), "participant gateway application postcondition resourceVersion invalid")
+        require(post["objectCanonicalSha256"] == digest(expected), "participant gateway application postcondition object drift")
+        require(post["apiOperation"] == "POST-create" and post["apiOutcome"] == "http-201-created" and post["conflictPolicy"] == "fail-on-http-409-no-adopt", "participant gateway application postcondition not create-only")
+    require(bootstrap["postconditionsCanonicalSha256"] == digest(bootstrap["postconditions"]), "participant gateway application postcondition checksum invalid")
+    health = closed(
+        bootstrap["healthBeforeIngress"],
+        {"target", "deploymentUid", "deploymentResourceVersion", "serviceTarget", "statusPath", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+        "participant gateway pre-Ingress health receipt",
+    )
+    deployment_post = bootstrap["postconditions"][3]
+    require(health["target"] == deployment_post["target"] and health["deploymentUid"] == deployment_post["uid"] and health["deploymentResourceVersion"] == deployment_post["resourceVersion"], "participant gateway pre-Ingress health deployment binding invalid")
+    require(health["serviceTarget"] == participant_gateway_target("Service", PARTICIPANT_GATEWAY_NAME, PARTICIPANT_GATEWAY_NAMESPACE), "participant gateway pre-Ingress health Service target invalid")
+    require(health["statusPath"] == "/api/staging-participant/v1/status" and health["apiOutcome"] == "http-200-internal-status", "participant gateway pre-Ingress health outcome invalid")
+    observed = utc_timestamp(health["observedAt"], "participant gateway pre-Ingress health observedAt")
+    valid_until = utc_timestamp(health["validUntil"], "participant gateway pre-Ingress health validUntil")
+    require(health["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, "participant gateway pre-Ingress health freshness invalid")
+    require(health["receiptCanonicalSha256"] == digest({key: health[key] for key in health if key != "receiptCanonicalSha256"}), "participant gateway pre-Ingress health receipt invalid")
+    ingress_post = bootstrap["postconditions"][4]
+    require(utc_timestamp(health["observedAt"], "participant gateway pre-Ingress health observedAt") <= utc_timestamp(ingress_post["createdAt"], "participant gateway Ingress createdAt"), "participant gateway Ingress precedes health")
+    return bootstrap
+
+
+def verify_participant_gateway_publication_receipt(value: Any, runtime_pin: dict[str, Any], predicate_type: str, label: str) -> dict[str, Any]:
+    receipt = closed(value, {"receiptId", "receiptUrl", "subjectImage", "subjectDigest", "sourceRevision", "workflowIdentity", "runner", "predicateType", "attestationDigest", "verifiedAt", "verification", "canonicalReceiptSha256"}, label)
+    require(isinstance(receipt["receiptId"], str) and receipt["receiptId"].isdigit(), f"{label} receipt id invalid")
+    require(receipt["receiptUrl"] == f"https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/{receipt['receiptId']}", f"{label} receipt URL invalid")
+    require(receipt["subjectImage"] == runtime_pin["imageRepository"] and receipt["subjectDigest"] == runtime_pin["manifestDigest"], f"{label} image subject invalid")
+    require(receipt["sourceRevision"] == runtime_pin["sourceRevision"] and receipt["workflowIdentity"] == runtime_pin["workflowIdentity"], f"{label} source/workflow binding invalid")
+    require(receipt["runner"] == "github-hosted", f"{label} runner invalid")
+    require(receipt["predicateType"] == predicate_type, f"{label} predicate type invalid")
+    require(isinstance(receipt["attestationDigest"], str) and SHA256.fullmatch(receipt["attestationDigest"]) and receipt["attestationDigest"] != "sha256:" + "0" * 64, f"{label} attestation digest invalid")
+    utc_timestamp(receipt["verifiedAt"], f"{label} verifiedAt")
+    require(receipt["verification"] == {"tool": "gh", "command": "attestation-verify", "result": "verified", "subjectDigest": runtime_pin["manifestDigest"]}, f"{label} must contain a successful attestation verification receipt")
+    require(receipt["canonicalReceiptSha256"] == digest({key: receipt[key] for key in receipt if key != "canonicalReceiptSha256"}), f"{label} canonical receipt digest invalid")
+    return receipt
+
+
+def verify_participant_gateway_anonymous_pull_receipt(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    receipt = closed(value, {"subjectImage", "subjectDigest", "pullMode", "tool", "toolVersion", "resolverIdentity", "authContext", "authConfigSha256", "descriptor", "observedAt", "receiptCanonicalSha256"}, "participant gateway anonymous digest pull receipt")
+    require(receipt["subjectImage"] == runtime_pin["imageRepository"] and receipt["subjectDigest"] == runtime_pin["manifestDigest"], "participant gateway anonymous pull subject invalid")
+    require(receipt["pullMode"] == "anonymous-digest-pull", "participant gateway anonymous pull mode invalid")
+    require(receipt["tool"] == "oras" and isinstance(receipt["toolVersion"], str) and receipt["toolVersion"], "participant gateway anonymous pull tool invalid")
+    require(receipt["resolverIdentity"] == "oras-resolve-anonymous" and receipt["authContext"] == "isolated-empty-auth-config", "participant gateway anonymous pull identity invalid")
+    require(receipt["authConfigSha256"] == PARTICIPANT_GATEWAY_ANONYMOUS_EMPTY_AUTH_CONFIG_SHA256, "participant gateway anonymous pull must pin the reviewed empty auth config")
+    descriptor = closed(receipt["descriptor"], {"mediaType", "digest", "size"}, "participant gateway anonymous pull descriptor")
+    require(descriptor["mediaType"] == "application/vnd.oci.image.manifest.v1+json" and descriptor["digest"] == runtime_pin["manifestDigest"] and isinstance(descriptor["size"], int) and descriptor["size"] > 0, "participant gateway anonymous pull descriptor invalid")
+    utc_timestamp(receipt["observedAt"], "participant gateway anonymous pull observedAt")
+    require(receipt["receiptCanonicalSha256"] == digest({key: receipt[key] for key in receipt if key != "receiptCanonicalSha256"}), "participant gateway anonymous pull receipt digest invalid")
+    return receipt
+
+
+def verify_participant_gateway_network_policy_inventory(value: Any) -> dict[str, Any]:
+    """Require a complete, non-widening K8s and Cilium policy inventory.
+
+    The participant policy is additive only.  A blanket selector in either
+    API family would make the narrow Gateway NetworkPolicy impossible to
+    reason about, so the activation bundle must record all three inventories
+    and prove every selected policy has an exact matchLabels selector.
+    """
+    inventory = closed(
+        value,
+        {"schemaVersion", "namespace", "capturedAt", "validUntil", "maxAgeSeconds", "kubernetesNetworkPolicies", "ciliumNetworkPolicies", "ciliumClusterwideNetworkPolicies", "selectorWidening", "receiptCanonicalSha256"},
+        "participant gateway network policy inventory",
+    )
+    require(inventory["schemaVersion"] == "roebel_staging_participant_gateway_network_policy_inventory_v1", "participant gateway network policy inventory schema invalid")
+    require(inventory["namespace"] == PARTICIPANT_GATEWAY_NAMESPACE, "participant gateway network policy inventory namespace invalid")
+    captured = utc_timestamp(inventory["capturedAt"], "participant gateway network policy inventory capturedAt")
+    valid_until = utc_timestamp(inventory["validUntil"], "participant gateway network policy inventory validUntil")
+    require(inventory["maxAgeSeconds"] == 300 and 0 < duration_seconds(captured, valid_until) <= 300, "participant gateway network policy inventory freshness invalid")
+    require(inventory["selectorWidening"] is False, "participant gateway network policy selector widening observed")
+    for family in ("kubernetesNetworkPolicies", "ciliumNetworkPolicies", "ciliumClusterwideNetworkPolicies"):
+        records = inventory[family]
+        require(isinstance(records, list), f"participant gateway {family} inventory invalid")
+        seen: set[tuple[str, str, str]] = set()
+        for index, record_value in enumerate(records):
+            record = closed(record_value, {"target", "uid", "resourceVersion", "objectCanonicalSha256", "podSelector"}, f"participant gateway {family}[{index}]")
+            target = closed(record["target"], {"apiVersion", "kind", "name", "namespace"}, f"participant gateway {family}[{index}] target")
+            require(target["namespace"] in {PARTICIPANT_GATEWAY_NAMESPACE, ""}, f"participant gateway {family} target namespace invalid")
+            require(isinstance(target["kind"], str) and target["kind"].endswith("NetworkPolicy"), f"participant gateway {family} target kind invalid")
+            key = (target["apiVersion"], target["kind"], target["name"])
+            require(key not in seen, f"participant gateway {family} duplicate policy inventory target")
+            seen.add(key)
+            require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"participant gateway {family} UID invalid")
+            require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"participant gateway {family} resourceVersion invalid")
+            require(isinstance(record["objectCanonicalSha256"], str) and SHA256.fullmatch(record["objectCanonicalSha256"]), f"participant gateway {family} object digest invalid")
+            selector = closed(record["podSelector"], {"matchLabels"}, f"participant gateway {family} pod selector")
+            require(isinstance(selector["matchLabels"], dict) and selector["matchLabels"], f"participant gateway {family} has a broad or empty pod selector")
+    require(inventory["receiptCanonicalSha256"] == digest({key: inventory[key] for key in inventory if key != "receiptCanonicalSha256"}), "participant gateway network policy inventory receipt invalid")
+    return inventory
+
+
+def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    del value, runtime_pin
+    raise VerificationError(
+        "candidate-embedded participant activation evidence is forbidden; "
+        "trusted live facts are runner-owned and out-of-band",
+    )
+
+
+def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    evidence = closed(
+        value,
+        {
+            "schemaVersion", "status", "operationsRevision", "sourceRevision", "imageRepository", "manifestDigest",
+            "workflowIdentity", "publication", "egress", "networkPolicyInventory", "fluxBootstrap", "applicationBootstrap", "ingressCas", "secretMaterialization",
+            "databaseVaultPreflight", "gnosisChainCheck", "dnsTlsEvidence", "activationLiveRecheck", "activationTransaction", "rollback",
+        },
+        "staging participant gateway activation evidence",
+    )
+    require(evidence["schemaVersion"] == "roebel_staging_participant_gateway_activation_evidence_v1", "participant gateway evidence schema invalid")
+    require(evidence["status"] == "approved-separate-review", "participant gateway evidence status invalid")
+    require(isinstance(evidence["operationsRevision"], str) and REVISION.fullmatch(evidence["operationsRevision"]), "participant gateway operations revision invalid")
+    require(evidence["sourceRevision"] == runtime_pin["sourceRevision"], "participant gateway evidence source revision invalid")
+    require(evidence["imageRepository"] == runtime_pin["imageRepository"], "participant gateway evidence image repository invalid")
+    require(evidence["manifestDigest"] == runtime_pin["manifestDigest"], "participant gateway evidence image digest invalid")
+    require(evidence["workflowIdentity"] == runtime_pin["workflowIdentity"], "participant gateway evidence workflow invalid")
+    publication = closed(evidence["publication"], {"slsaProvenance", "spdxSbom", "anonymousPull"}, "participant gateway publication evidence")
+    verify_participant_gateway_publication_receipt(publication["slsaProvenance"], runtime_pin, "https://slsa.dev/provenance/v1", "participant gateway SLSA provenance")
+    verify_participant_gateway_publication_receipt(publication["spdxSbom"], runtime_pin, "https://spdx.dev/Document", "participant gateway SPDX SBOM")
+    verify_participant_gateway_anonymous_pull_receipt(publication["anonymousPull"], runtime_pin)
+    verify_participant_gateway_network_policy_inventory(evidence["networkPolicyInventory"])
+    egress = closed(evidence["egress"], {"gnosis", "supabase"}, "participant gateway egress evidence")
+    for name in ("gnosis", "supabase"):
+        endpoint = closed(egress[name], {"httpsOrigin", "ipv4Cidrs", "port"}, f"participant gateway {name} egress")
+        parsed_origin = urlparse(endpoint["httpsOrigin"])
+        require(
+            parsed_origin.scheme == "https" and parsed_origin.hostname and parsed_origin.port in {None, 443}
+            and not parsed_origin.username and not parsed_origin.password and parsed_origin.path in {"", "/"}
+            and not parsed_origin.params and not parsed_origin.query and not parsed_origin.fragment,
+            f"participant gateway {name} HTTPS origin invalid",
+        )
+        require(endpoint["httpsOrigin"] == f"https://{parsed_origin.hostname}", f"participant gateway {name} origin must be a canonical literal HTTPS origin")
+        require(endpoint["port"] == 443, f"participant gateway {name} port invalid")
+        cidrs = endpoint["ipv4Cidrs"]
+        require(isinstance(cidrs, list) and 1 <= len(cidrs) <= 8 and cidrs == sorted(set(cidrs)), f"participant gateway {name} CIDR set invalid")
+        for cidr in cidrs:
+            try:
+                parsed = ipaddress.ip_network(cidr, strict=True)
+            except ValueError:
+                parsed = None
+            require(parsed is not None and parsed.version == 4 and parsed.prefixlen == 32, f"participant gateway {name} CIDR must be an exact IPv4 /32")
+    flux = verify_participant_gateway_flux_bootstrap(evidence["fluxBootstrap"], evidence["operationsRevision"])
+    rollback = closed(evidence["rollback"], {"previousIngressSha256", "participantIngressSha256", "deactivationSqlSha256"}, "participant gateway rollback evidence")
+    require(isinstance(rollback["previousIngressSha256"], str) and SHA256.fullmatch(rollback["previousIngressSha256"]), "participant gateway rollback ingress invalid")
+    require(rollback["participantIngressSha256"] == digest(expected_participant_gateway_ingress()), "participant gateway rollback dedicated Ingress bytes invalid")
+    require(isinstance(rollback["deactivationSqlSha256"], str) and SHA256.fullmatch(rollback["deactivationSqlSha256"]), "participant gateway rollback SQL invalid")
+    application = verify_participant_gateway_application_bootstrap(evidence["applicationBootstrap"], runtime_pin)
+    ingress = verify_participant_gateway_ingress_cas(evidence["ingressCas"], rollback, "participant gateway Ingress CAS")
+    secrets = verify_participant_gateway_secret_materialization(evidence["secretMaterialization"], "participant gateway Secret materialization")
+    database = verify_participant_gateway_database_preflight(evidence["databaseVaultPreflight"], "participant gateway database/Vault preflight")
+    chain = verify_participant_gateway_gnosis_chain(evidence["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway Gnosis chain check")
+    initial_dns = closed(evidence["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway DNS/TLS evidence")
+    initial_dns = {
+        name: verify_participant_gateway_dns_tls_evidence(initial_dns[name], egress[name], f"participant gateway {name} DNS/TLS evidence")
+        for name in ("gnosis", "supabase")
+    }
+    recheck = closed(
+        evidence["activationLiveRecheck"],
+        {"checkedAt", "validUntil", "maxAgeSeconds", "sharedSourceRebind", "fluxKustomizationCas", "applicationStates", "ingressCas", "secretMaterialization", "databaseVaultPreflight", "gnosisChainCheck", "dnsTlsEvidence"},
+        "participant gateway activation live recheck",
+    )
+    checked = utc_timestamp(recheck["checkedAt"], "participant gateway activation live recheck checkedAt")
+    valid_until = utc_timestamp(recheck["validUntil"], "participant gateway activation live recheck validUntil")
+    require(recheck["maxAgeSeconds"] == 300 and 0 < duration_seconds(checked, valid_until) <= 300, "participant gateway activation live recheck freshness invalid")
+    source_rebind = closed(recheck["sharedSourceRebind"], {"target", "uid", "resourceVersion", "liveObjectCanonicalSha256", "artifactRevision", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome"}, "participant gateway activation shared Flux source rebind")
+    source = flux["sourceReceipt"]
+    require(source_rebind["target"] == source["target"] and source_rebind["uid"] == source["uid"], "participant gateway activation shared Flux source identity drift")
+    require(isinstance(source_rebind["resourceVersion"], str) and source_rebind["resourceVersion"].isdigit() and int(source_rebind["resourceVersion"]) >= int(source["resourceVersion"]), "participant gateway activation shared Flux source resourceVersion invalid")
+    require(source_rebind["liveObjectCanonicalSha256"] == source["liveObjectCanonicalSha256"], "participant gateway activation shared Flux source spec drift")
+    require(source_rebind["artifactRevision"] == evidence["operationsRevision"], "participant gateway activation shared Flux source is not rebound to the exact protected render revision")
+    require(source_rebind["apiOutcome"] == "http-200-active-source-exact-artifact", "participant gateway activation shared Flux source rebind outcome invalid")
+    source_observed = utc_timestamp(source_rebind["observedAt"], "participant gateway activation shared Flux source observedAt")
+    source_valid = utc_timestamp(source_rebind["validUntil"], "participant gateway activation shared Flux source validUntil")
+    require(source_rebind["maxAgeSeconds"] == 300 and source_observed <= checked <= source_valid, "participant gateway activation shared Flux source freshness invalid")
+    kustomization_cas = closed(recheck["fluxKustomizationCas"], {"target", "uid", "resourceVersion", "liveObjectSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome"}, "participant gateway activation Flux Kustomization CAS")
+    flux_kustomization = flux["bootstrapReceipt"]["postconditions"][0]
+    require(kustomization_cas["target"] == flux_kustomization["target"] and kustomization_cas["uid"] == flux_kustomization["uid"] and kustomization_cas["resourceVersion"] == flux_kustomization["resourceVersion"] and kustomization_cas["liveObjectSha256"] == flux_kustomization["objectCanonicalSha256"], "participant gateway activation Flux Kustomization CAS drift")
+    require(kustomization_cas["apiOutcome"] == "http-200-exact-suspended-bytes", "participant gateway activation Flux Kustomization CAS outcome invalid")
+    covers_kustomization_observed = utc_timestamp(kustomization_cas["observedAt"], "participant gateway activation Flux Kustomization observedAt")
+    covers_kustomization_valid = utc_timestamp(kustomization_cas["validUntil"], "participant gateway activation Flux Kustomization validUntil")
+    require(kustomization_cas["maxAgeSeconds"] == 300 and covers_kustomization_observed <= checked <= covers_kustomization_valid, "participant gateway activation Flux Kustomization CAS freshness invalid")
+    require(recheck["applicationStates"] == application["postconditions"], "participant gateway activation application ownership drift")
+    recheck_ingress = verify_participant_gateway_ingress_cas(recheck["ingressCas"], rollback, "participant gateway activation Ingress CAS")
+    recheck_secrets = verify_participant_gateway_secret_materialization(recheck["secretMaterialization"], "participant gateway activation Secret materialization")
+    recheck_database = verify_participant_gateway_database_preflight(recheck["databaseVaultPreflight"], "participant gateway activation database/Vault preflight")
+    recheck_chain = verify_participant_gateway_gnosis_chain(recheck["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway activation Gnosis chain check")
+    recheck_dns_value = closed(recheck["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway activation DNS/TLS recheck")
+    for name in ("gnosis", "supabase"):
+        current = verify_participant_gateway_dns_tls_evidence(recheck_dns_value[name], egress[name], f"participant gateway activation {name} DNS/TLS")
+        require(participant_gateway_dns_tls_binding(current) == participant_gateway_dns_tls_binding(initial_dns[name]), f"participant gateway activation {name} DNS/TLS binding drift")
+    def covers_checked(observed_at: str, receipt_valid_until: str, receipt_label: str) -> None:
+        require(
+            utc_timestamp(observed_at, f"{receipt_label} observed") <= checked <= utc_timestamp(receipt_valid_until, f"{receipt_label} validUntil"),
+            f"{receipt_label} does not cover activation recheck time",
+        )
+
+    covers_checked(recheck_ingress["observedAt"], recheck_ingress["validUntil"], "participant gateway activation Ingress CAS")
+    for name in ("config", "runtime"):
+        covers_checked(recheck_secrets[name]["materializedAt"], recheck_secrets[name]["validUntil"], f"participant gateway activation {name} Secret")
+        require(
+            {key: recheck_secrets[name][key] for key in ("target", "uid", "resourceVersion", "keySet", "state", "vaultArm")}
+            == {key: secrets[name][key] for key in ("target", "uid", "resourceVersion", "keySet", "state", "vaultArm")},
+            f"participant gateway activation {name} Secret identity drift",
+        )
+    covers_checked(recheck_database["observedAt"], recheck_database["validUntil"], "participant gateway activation database/Vault preflight")
+    require(
+        {key: recheck_database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")}
+        == {key: database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")},
+        "participant gateway activation database/Vault binding drift",
+    )
+    covers_checked(recheck_chain["observedAt"], recheck_chain["validUntil"], "participant gateway activation Gnosis chain check")
+    require(
+        {key: recheck_chain[key] for key in ("httpsOrigin", "request", "response")}
+        == {key: chain[key] for key in ("httpsOrigin", "request", "response")},
+        "participant gateway activation Gnosis chain binding drift",
+    )
+    require(
+        {key: recheck_ingress[key] for key in ("target", "uid", "resourceVersion", "liveObjectSha256", "apiOutcome")}
+        == {key: ingress[key] for key in ("target", "uid", "resourceVersion", "liveObjectSha256", "apiOutcome")},
+        "participant gateway activation Ingress CAS identity drift",
+    )
+    for name in ("gnosis", "supabase"):
+        covers_checked(recheck_dns_value[name]["observedAt"], recheck_dns_value[name]["validUntil"], f"participant gateway activation {name} DNS/TLS")
+    require(checked >= utc_timestamp(flux["resourceAbsenceReceipts"][0]["observedAt"], "participant gateway Flux absence observedAt"), "participant gateway activation recheck predates Flux absence evidence")
+    verify_participant_gateway_activation_transaction(evidence["activationTransaction"], flux)
+    return evidence
+
+
+def verify_participant_gateway_activation_rollback_baseline(
+    activation_evidence: dict[str, Any],
+    protected_base_root: Path,
+) -> None:
+    """Bind the gateway teardown plan to the protected pre-activation ingress.
+
+    The activation candidate cannot choose this baseline: in pull-request
+    admission ``protected_base_root`` is the protected base checkout.  The
+    structural evidence validation has already checked the field shape; this
+    function establishes the byte-for-byte CAS binding.
+    """
+    expected = bytes_digest(
+        (protected_base_root / RENDER_ROOT / "web/ingress.json").read_bytes(),
+    )
+    require(
+        activation_evidence["rollback"]["previousIngressSha256"] == expected,
+        "participant gateway activation rollback ingress baseline drift",
+    )
+
+
+def verify_participant_gateway_activation_admission_freshness(
+    activation_evidence: dict[str, Any],
+) -> None:
+    """Require activation to happen within the one reviewed preflight window.
+
+    The policy constant is immutable once bootstrapped, so it must contain the
+    read-only evidence.  This clock check runs only on the transition that
+    grants rendering authority; routine promotions remain reproducible after
+    the receipt expires.
+    """
+    now = participant_gateway_verification_time()
+    recheck = activation_evidence["activationLiveRecheck"]
+    checked = utc_timestamp(recheck["checkedAt"], "participant gateway activation live recheck checkedAt")
+    valid_until = utc_timestamp(recheck["validUntil"], "participant gateway activation live recheck validUntil")
+    require(
+        checked <= now <= valid_until,
+        "participant gateway activation evidence is future-dated or outside the current five-minute preflight",
+    )
+
+
+def verify_participant_gateway_runtime_pin(value: Any) -> dict[str, Any]:
+    try:
+        expected = PARTICIPANT_POLICY.expected_runtime_pin()
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    require(value == expected, "staging participant gateway runtime pin drift")
+    require("activationEvidence" not in value, "participant runtime pin may not carry live activation evidence")
+    return copy.deepcopy(expected)
+
+
+def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
+    return [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+        *[{"ipBlock": {"cidr": cidr}} for cidr in (
+            "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+            "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+            "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+        )],
+    ]
+
+
+def expected_participant_gateway_ingress() -> dict[str, Any]:
+    try:
+        return PARTICIPANT_POLICY.expected_gateway_ingress()
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+
+
+def expected_participant_gateway_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility adapter to the single protected policy module."""
+    try:
+        expected = PARTICIPANT_POLICY.expected_gateway_resources()
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    require(runtime_pin == expected["runtimePin"], "participant runtime pin differs from protected policy")
+    return {
+        "deployment": expected["deployment"],
+        "service": expected["service"],
+        "networkPolicy": expected["networkPolicy"],
+        "serviceAccount": expected["serviceAccount"],
+        "ingress": expected["ingress"],
+        "kustomization": expected["kustomization"],
+        "workbenchIngressNetworkPolicy": expected["workbenchIngressNetworkPolicy"],
+        "workbenchIngressKustomization": expected["workbenchIngressKustomization"],
+    }
+
+
+def _legacy_expected_participant_gateway_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    evidence = runtime_pin["activationEvidence"]
+    egress = evidence["egress"]
+    pod_security = {
+        "fsGroup": 65532, "runAsGroup": 65532, "runAsNonRoot": True,
+        "runAsUser": 65532, "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    container_security = {
+        "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+        "readOnlyRootFilesystem": True,
+    }
+    tcp_probe = lambda threshold, period: {
+        "failureThreshold": threshold, "periodSeconds": period, "successThreshold": 1,
+        "tcpSocket": {"port": "http"}, "timeoutSeconds": 3,
+    }
+    environment = [
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY", "value": "enabled"},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_HOST", "value": "0.0.0.0"},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PORT", "value": str(PARTICIPANT_GATEWAY_PORT)},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ORIGIN", "value": PARTICIPANT_GATEWAY_ORIGIN},
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_INVITE_SHA256", PARTICIPANT_GATEWAY_CONFIG_SECRET, "invite-sha256"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_ALLOWED_WALLETS", PARTICIPANT_GATEWAY_CONFIG_SECRET, "allowed-wallets"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SESSION_KEY", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "session-key"),
+        # Origins are reviewed policy data, not credentials.  Keeping them
+        # literal binds the Deployment and its NetworkPolicy to exactly the
+        # DNS/TLS evidence above; Secrets retain only secret material.
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": egress["gnosis"]["httpsOrigin"]},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": egress["supabase"]["httpsOrigin"]},
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "supabase-anon-key"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "supabase-rpc-secret"),
+    ]
+    deployment = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {
+            "replicas": 1, "selector": {"matchLabels": PARTICIPANT_GATEWAY_LABELS},
+            "strategy": {"type": "Recreate"},
+            "template": {
+                "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS},
+                "spec": {
+                    "automountServiceAccountToken": False, "restartPolicy": "Always",
+                    "serviceAccountName": PARTICIPANT_GATEWAY_NAME, "securityContext": pod_security,
+                    "volumes": [{"emptyDir": {"sizeLimit": "64Mi"}, "name": "tmp"}],
+                    "containers": [{
+                        "env": environment,
+                        "image": f"{runtime_pin['imageRepository']}@{runtime_pin['manifestDigest']}",
+                        "imagePullPolicy": "IfNotPresent", "name": "staging-participant-gateway",
+                        "ports": [{"containerPort": PARTICIPANT_GATEWAY_PORT, "name": "http", "protocol": "TCP"}],
+                        "readinessProbe": tcp_probe(3, 10), "livenessProbe": tcp_probe(3, 20), "startupProbe": tcp_probe(30, 2),
+                        "resources": {"limits": {"cpu": "200m", "memory": "128Mi"}, "requests": {"cpu": "50m", "memory": "64Mi"}},
+                        "securityContext": container_security,
+                        "volumeMounts": [{"mountPath": "/tmp", "name": "tmp"}],
+                    }],
+                },
+            },
+        },
+    }
+    service = {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {"ports": [{"name": "http", "port": PARTICIPANT_GATEWAY_PORT, "protocol": "TCP", "targetPort": "http"}], "selector": PARTICIPANT_GATEWAY_LABELS, "type": "ClusterIP"},
+    }
+    network_policy = {
+        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {
+            "podSelector": {"matchLabels": PARTICIPANT_GATEWAY_LABELS}, "policyTypes": ["Ingress", "Egress"],
+            "ingress": [{"from": participant_gateway_ingress_sources(), "ports": [{"port": PARTICIPANT_GATEWAY_PORT, "protocol": "TCP"}]}],
+            "egress": [
+                {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]},
+                *[{"to": [{"ipBlock": {"cidr": cidr}}], "ports": [{"port": 443, "protocol": "TCP"}]} for endpoint in (egress["gnosis"], egress["supabase"]) for cidr in endpoint["ipv4Cidrs"]],
+            ],
+        },
+    }
+    service_account = {
+        "apiVersion": "v1", "kind": "ServiceAccount",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "automountServiceAccountToken": False,
+    }
+    kustomization = (
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+        "  - serviceaccount.json\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n  - ingress.json\n"
+    )
+    return {"deployment": deployment, "service": service, "networkPolicy": network_policy, "serviceAccount": service_account, "ingress": expected_participant_gateway_ingress(), "kustomization": kustomization}
+
+
+def verify_participant_gateway(root: Path) -> dict[str, Any]:
+    runtime_pin = verify_participant_gateway_runtime_pin(load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"))
+    expected = expected_participant_gateway_resources(runtime_pin)
+    actual = {
+        "deployment": load_json(root / PARTICIPANT_GATEWAY_ROOT / "deployment.json"),
+        "service": load_json(root / PARTICIPANT_GATEWAY_ROOT / "service.json"),
+        "networkPolicy": load_json(root / PARTICIPANT_GATEWAY_ROOT / "networkpolicy.json"),
+        "serviceAccount": load_json(root / PARTICIPANT_GATEWAY_ROOT / "serviceaccount.json"),
+        "ingress": load_json(root / PARTICIPANT_GATEWAY_ROOT / "ingress.json"),
+        "kustomization": (root / PARTICIPANT_GATEWAY_ROOT / "kustomization.yaml").read_text(),
+        "workbenchIngressNetworkPolicy": load_json(
+            root / PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT / "networkpolicy.json",
+        ),
+        "workbenchIngressKustomization": (
+            root / PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT / "kustomization.yaml"
+        ).read_text(),
+    }
+    require(actual == expected, "staging participant gateway resource drift")
+    return {"runtimePin": runtime_pin, **actual}
+
+
+def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
+    # Participant routing is a separate, longer-prefix Ingress.  Keep this
+    # compatibility parameter inert so every existing Web byte stays fixed.
+    participant_gateway = False
     early = (
         "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
         "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
@@ -2529,6 +3456,56 @@ def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
                 "port": {"name": "http"},
             }},
             "path": "/stadtstack-test",
+            "pathType": "Prefix",
+        })
+    if participant_gateway:
+        participant_paths = (
+            "/api/staging-participant/v1/status",
+            "/api/staging-participant/v1/challenge",
+            "/api/staging-participant/v1/session",
+            "/api/staging-participant/v1/posts",
+            "/api/staging-participant/v1/comments",
+        )
+        post_paths = participant_paths[1:]
+        early_lines = early.split("\n")
+        early_lines[0] += " " + " ".join(f"!{{ path {path} }}" for path in post_paths)
+        early_lines.insert(
+            1,
+            "http-request deny deny_status 405 if { method OPTIONS } "
+            + " ".join(f"!{{ path {path} }}" for path in participant_paths),
+        )
+        early_lines.insert(
+            2,
+            "http-request deny deny_status 405 if { path_beg /api/staging-participant/v1/ } { method HEAD }",
+        )
+        early_lines.insert(
+            3,
+            "http-request deny deny_status 405 if { method GET } { path_beg /api/staging-participant/v1/ } !{ path /api/staging-participant/v1/status }",
+        )
+        early_lines[4] = "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }"
+        api_line = next(
+            index
+            for index, line in enumerate(early_lines)
+            if line.startswith("http-request deny deny_status 404 if { path_beg /api } ")
+        )
+        early_lines[api_line] += " !{ path_beg /api/staging-participant/v1/ }"
+        participant_guard = (
+            "http-request deny deny_status 404 if { path_beg /api/staging-participant/v1/ } "
+            + " ".join(f"!{{ path {path} }}" for path in participant_paths)
+        )
+        early_lines.insert(api_line + 1, participant_guard)
+        early_lines.extend([
+            "stick-table type ip size 10k expire 60s store http_req_rate(1m)",
+            "http-request track-sc0 src if { path_beg /api/staging-participant/v1/ }",
+            "http-request deny deny_status 429 if { path_beg /api/staging-participant/v1/ } { sc_http_req_rate(0) gt 30 }",
+        ])
+        early = "\n".join(early_lines)
+        paths.append({
+            "backend": {"service": {
+                "name": PARTICIPANT_GATEWAY_NAME,
+                "port": {"name": "http"},
+            }},
+            "path": "/api/staging-participant/v1",
             "pathType": "Prefix",
         })
     paths.append({
@@ -2579,9 +3556,9 @@ def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
     }
 
 
-def verify_web_ingress(root: Path, signed_nostr: bool) -> dict[str, Any]:
+def verify_web_ingress(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
     ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
-    require(ingress == expected_web_ingress(signed_nostr), "Web Ingress drift")
+    require(ingress == expected_web_ingress(signed_nostr, participant_gateway), "Web Ingress drift")
     return ingress
 
 
@@ -2591,8 +3568,91 @@ def verify_network_boundary_migration(
     web_ingress: dict[str, Any],
     public_mecky_network_policy: dict[str, Any],
     signed_nostr: bool,
+    participant_gateway: bool = False,
+    participant_gateway_objects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
+    if participant_gateway:
+        require(participant_gateway_objects is not None, "participant gateway boundary objects unavailable")
+        ingress_paths = list(PARTICIPANT_POLICY.ROUTES)
+        gateway_flux = expected_participant_gateway_flux_objects()
+        workbench_flux = expected_participant_workbench_ingress_flux_objects()
+        objects = [
+            {"kind": "NetworkPolicy", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(web_network_policy)},
+            {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(web_ingress)},
+            {"kind": "ServiceAccount", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["serviceAccount"])},
+            {"kind": "Deployment", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["deployment"])},
+            {"kind": "Service", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["service"])},
+            {"kind": "NetworkPolicy", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["networkPolicy"])},
+            {"kind": "Ingress", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["ingress"])},
+            {"kind": "NetworkPolicy", "name": PARTICIPANT_POLICY.WORKBENCH_INGRESS_POLICY_NAME, "namespace": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE, "sha256": digest(participant_gateway_objects["workbenchIngressNetworkPolicy"])},
+        ]
+        expected = {
+            "authority": "none",
+            "boundary": {
+                "ingress": {
+                    "allowedMethods": ["GET", "POST", "OPTIONS"],
+                    "exactGatewayPaths": ingress_paths,
+                    "exactPostPaths": ingress_paths[1:],
+                    "gatewayMethodPathMatrix": {
+                        "GET": [ingress_paths[0]],
+                        "OPTIONS": ingress_paths,
+                        "POST": ingress_paths[1:],
+                    },
+                    "rateLimit": {
+                        "aggregateClaimAllowed": False,
+                        "requestsPerMinutePerSourceIp": 30,
+                        "scope": "gateway-paths-only-per-controller-replica",
+                    },
+                    "resource": {"kind": "Ingress", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+                },
+                "participantGateway": {
+                    "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                    "name": PARTICIPANT_GATEWAY_NAME,
+                    "replicas": 1,
+                    "serviceAccountToken": False,
+                    "writerAuthority": "fixed-staging-rpcs-only",
+                    "civicAuthority": "none",
+                    "egress": "dns-plus-policy-pinned-gnosis-supabase-and-exact-workbench-only",
+                },
+                "workbenchIngress": {
+                    "name": PARTICIPANT_POLICY.WORKBENCH_INGRESS_POLICY_NAME,
+                    "namespace": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE,
+                    "port": PARTICIPANT_POLICY.WORKBENCH_PORT,
+                    "existingPolicyMutation": "forbidden",
+                    "source": {
+                        "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                        "podSelector": PARTICIPANT_GATEWAY_LABELS,
+                    },
+                },
+                "signedNostr": "retained-exact" if signed_nostr else "not-present",
+            },
+            "effects": {"civicMutation": False, "clusterMutation": False, "secretRead": False, "secretWrite": False},
+            "objects": objects,
+            "rbacBootstrap": {
+                "required": True,
+                "transaction": "cas-unsuspend-both-or-suspend-both",
+                "reconcilers": [
+                    {
+                        "kustomization": gateway_flux["kustomization"]["metadata"],
+                        "roleNamespace": gateway_flux["role"]["metadata"]["namespace"],
+                        "rules": gateway_flux["role"]["rules"],
+                        "serviceAccount": gateway_flux["serviceAccount"]["metadata"],
+                    },
+                    {
+                        "kustomization": workbench_flux["kustomization"]["metadata"],
+                        "roleNamespace": workbench_flux["role"]["metadata"]["namespace"],
+                        "rules": workbench_flux["role"]["rules"],
+                        "serviceAccount": workbench_flux["serviceAccount"]["metadata"],
+                    },
+                ],
+                "liveMutationPerformed": False,
+            },
+            "schemaVersion": "roebel_staging_participant_gateway_boundary_v1",
+            "status": "approved-for-exact-staging-activation",
+        }
+        require(migration == expected, "participant gateway network-boundary receipt drift")
+        return migration
     if signed_nostr:
         expected_signed_nostr = {
             "authority": "none",
@@ -2735,7 +3795,7 @@ def verify_network_boundary_migration(
     return migration
 
 
-def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
+def verify_kustomizations(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> None:
     public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
     web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - networkpolicy.json\n  - ingress.json\n"
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
@@ -2754,6 +3814,24 @@ def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
                 (root / SIGNED_NOSTR_ROOT / component / "kustomization.yaml").read_text() == expected,
                 f"signed-Nostr {component} Flux path widened",
             )
+    if participant_gateway:
+        expected = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+            "  - networkpolicy.json\n  - serviceaccount.json\n  - service.json\n  - deployment.json\n  - ingress.json\n"
+        )
+        require(
+            (root / PARTICIPANT_GATEWAY_ROOT / "kustomization.yaml").read_text() == expected,
+            "staging participant gateway Flux path widened",
+        )
+        reciprocal_expected = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+            "  - networkpolicy.json\n"
+        )
+        require(
+            (root / PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT / "kustomization.yaml").read_text()
+            == reciprocal_expected,
+            "staging participant reciprocal workbench Flux path widened",
+        )
 
 
 def expected_patch_value(component: str, path: str, head: dict[str, Any]) -> str:
@@ -2805,6 +3883,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     root = root.resolve()
     require(root.is_dir(), "repository root missing")
     render_file_set = verify_repository_file_set(root)
+    participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
@@ -2815,8 +3894,14 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
-    reviewed_knowledge = render_file_set in {"reviewed-public-knowledge", "signed-nostr"}
-    signed_nostr = render_file_set == "signed-nostr"
+    reviewed_knowledge = render_file_set in {
+        "reviewed-public-knowledge", "reviewed-public-knowledge-participant-gateway",
+        "signed-nostr", "signed-nostr-participant-gateway",
+    }
+    signed_nostr = render_file_set in {"signed-nostr", "signed-nostr-participant-gateway"}
+    participant_gateway = render_file_set in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
     deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
     network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
@@ -2825,8 +3910,12 @@ def verify_tree(root: Path) -> dict[str, Any]:
         signed_nostr,
     )
     web_network_policy = verify_web_network_policy(root)
-    web_ingress = verify_web_ingress(root, signed_nostr)
-    migration = verify_network_boundary_migration(root, web_network_policy, web_ingress, network_policy, signed_nostr)
+    participant_gateway_objects = verify_participant_gateway(root) if participant_gateway else None
+    web_ingress = verify_web_ingress(root, signed_nostr, participant_gateway)
+    migration = verify_network_boundary_migration(
+        root, web_network_policy, web_ingress, network_policy, signed_nostr,
+        participant_gateway, participant_gateway_objects,
+    )
     objects = [
         deployments["public-mecky"],
         service,
@@ -2844,9 +3933,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
     if signed_nostr:
         signed_nostr_objects = verify_signed_nostr(root)
         checksum_payload["signedNostr"] = signed_nostr_objects
+    if participant_gateway:
+        checksum_payload["stagingParticipantGateway"] = participant_gateway_objects
     require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
-    verify_kustomizations(root, signed_nostr)
+    verify_kustomizations(root, signed_nostr, participant_gateway)
     live = verify_live_preconditions(root, head)
     return {
         "root": root,
@@ -2860,12 +3951,20 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "publicMeckyReviewedEgress": public_mecky_reviewed_egress,
         "reviewedPublicKnowledge": reviewed_objects,
         "signedNostr": signed_nostr_objects,
+        "stagingParticipantGateway": participant_gateway_objects,
+        "stagingParticipantGatewayPolicy": participant_policy,
     }
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
+    base_participant_gateway = base["renderFileSet"] in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
+    candidate_participant_gateway = candidate["renderFileSet"] in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
     require(
         not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
         "reviewed-public-knowledge render set cannot regress to the legacy set",
@@ -2878,13 +3977,52 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         not (base["publicMeckyReviewedEgress"] and not candidate["publicMeckyReviewedEgress"]),
         "Public Mecky reviewed-runtime egress cannot regress",
     )
+    require(
+        not (base_participant_gateway and not candidate_participant_gateway),
+        "participant gateway deactivation is blocked pending separately reviewed exact teardown evidence",
+    )
 
-    if base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "signed-nostr":
+    if candidate_participant_gateway and not base_participant_gateway:
+        require(
+            base["renderFileSet"] in {"reviewed-public-knowledge", "signed-nostr"},
+            "participant gateway activation requires the reviewed public-knowledge render",
+        )
+        require(
+            not (
+                base["renderFileSet"] == "reviewed-public-knowledge"
+                and candidate["renderFileSet"] == "signed-nostr-participant-gateway"
+            ),
+            "participant gateway and signed-Nostr activation must be separate reviewed transitions",
+        )
+        require(candidate["head"] == base["head"], "participant gateway activation must preserve the Release Set head")
+        require(
+            candidate["stagingParticipantGatewayPolicy"]["activationReady"] is True,
+            "participant gateway activation policy is not ready",
+        )
+        allowed_existing_changes = {
+            f"{RENDER_ROOT}/integrity.json",
+            f"{RENDER_ROOT}/network-boundary-migration.json",
+        }
+        protected = SIGNED_NOSTR_EXPECTED_FILES if base["renderFileSet"] == "signed-nostr" else FUTURE_EXPECTED_FILES
+        for relative in protected:
+            if relative in allowed_existing_changes:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"participant gateway activation changed existing file: {relative}",
+            )
+        return
+
+    if (
+        base["renderFileSet"] in {"reviewed-public-knowledge", "reviewed-public-knowledge-participant-gateway"}
+        and candidate["renderFileSet"] in {"signed-nostr", "signed-nostr-participant-gateway"}
+    ):
         require(candidate["head"] == base["head"], "signed-Nostr activation must preserve the Release Set head")
         verify_signed_nostr_activation_admission_freshness(
             candidate["signedNostr"]["runtimePin"]["activationEvidence"],
         )
-        for relative in FUTURE_EXPECTED_FILES:
+        protected = PARTICIPANT_GATEWAY_EXPECTED_FILES if base_participant_gateway else FUTURE_EXPECTED_FILES
+        for relative in protected:
             if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
                 continue
             require(
@@ -2903,6 +4041,14 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
             "signed-Nostr activation rollback baseline drift",
         )
         return
+
+    require(
+        not (
+            base["renderFileSet"] == "signed-nostr-participant-gateway"
+            and candidate["renderFileSet"] != "signed-nostr-participant-gateway"
+        ),
+        "combined signed-Nostr/participant gateway deactivation blocked pending separately reviewed exact teardown evidence",
+    )
 
     if base["renderFileSet"] == "signed-nostr" and candidate["renderFileSet"] == "reviewed-public-knowledge":
         require(candidate["head"] == base["head"], "signed-Nostr rollback must preserve the Release Set head")
@@ -3007,11 +4153,17 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):
             require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
-    if base["renderFileSet"] == "signed-nostr":
+    if base["renderFileSet"] in {"signed-nostr", "signed-nostr-participant-gateway"}:
         for relative in SIGNED_NOSTR_FILES:
             require(
                 (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
                 f"routine promotion changed signed-Nostr runtime file: {relative}",
+            )
+    if base_participant_gateway:
+        for relative in PARTICIPANT_GATEWAY_FILES:
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"routine promotion changed staging participant gateway runtime file: {relative}",
             )
     for relative in (
         f"{RENDER_ROOT}/network-boundary-migration.json",
