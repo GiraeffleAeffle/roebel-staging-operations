@@ -84,7 +84,7 @@ def policy(rev: str) -> dict[str, Any]:
     require(set(p["renderBlobs"]) == set(RENDER_FILES), "activation policy render blob inventory is not closed")
     for name, value in p["renderBlobs"].items(): sha(value, f"render blob {name}")
     projection = p["liveProjections"]
-    require(set(projection) == {"sharedSource", "dormantKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"}, "activation policy live projections are not closed")
+    require(set(projection) == {"sharedSource", "dormantKustomization", "activeKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"}, "activation policy live projections are not closed")
     for key, value in projection.items(): sha(value, f"live projection {key}")
     route = p["routeMatrix"]; require(isinstance(route, dict) and set(route) == {"host", "expectations"} and isinstance(route["host"], str) and route["host"].startswith("https://"), "activation policy route matrix invalid")
     require(isinstance(route["expectations"], dict) and route["expectations"], "activation policy route expectations absent")
@@ -134,12 +134,15 @@ def inventory(r: Runner, kube: str, p: dict[str, Any]) -> None:
         require(digest(retained) == p["liveProjections"][pin], f"{resource} inventory projection drift")
 def verify_live(r: Runner, kube: str, p: dict[str, Any], *, dormant: bool) -> dict[str, Any]:
     q = p["liveProjections"]
-    specs = (("gitrepository", SOURCE, FLUX_NAMESPACE, "sharedSource"), ("kustomization", NAME, FLUX_NAMESPACE, "dormantKustomization"), ("serviceaccount", NAME, NAMESPACE, "serviceAccount"), ("role", NAME, NAMESPACE, "role"), ("rolebinding", NAME, NAMESPACE, "roleBinding"), ("ingress", WEB_INGRESS, NAMESPACE, "retainedWebIngress"))
+    kustomization_pin = "dormantKustomization" if dormant else "activeKustomization"
+    specs = (("gitrepository", SOURCE, FLUX_NAMESPACE, "sharedSource"), ("kustomization", NAME, FLUX_NAMESPACE, kustomization_pin), ("serviceaccount", NAME, NAMESPACE, "serviceAccount"), ("role", NAME, NAMESPACE, "role"), ("rolebinding", NAME, NAMESPACE, "roleBinding"), ("ingress", WEB_INGRESS, NAMESPACE, "retainedWebIngress"))
     values = {}
     for kind, name, namespace, pin in specs:
         value = live_obj(r, kube, kind, name, namespace); require(digest(value) == q[pin], f"live {pin} projection drift"); values[pin] = value
     require(values["sharedSource"].get("spec", {}).get("suspend") is not True, "shared source suspended")
-    require(values["dormantKustomization"].get("spec", {}).get("suspend") is dormant, "participant Kustomization suspension drift")
+    values["participantKustomization"] = values.pop(kustomization_pin)
+    require(values["participantKustomization"].get("spec", {}).get("suspend") is dormant, "participant Kustomization suspension drift")
+    if not dormant: require(values["participantKustomization"].get("status", {}).get("lastAppliedRevision") == f"main@sha1:{p['protectedRevision']}", "Flux applied revision drift")
     haproxy = live_obj(r, kube, "daemonset", p["haproxy"]["daemonSet"], p["haproxy"]["namespace"])
     require(haproxy.get("metadata", {}).get("uid") == p["haproxy"]["uid"] and digest(haproxy) == p["haproxy"]["canonicalSha256"], "HAProxy projection drift")
     require(haproxy.get("status", {}).get("numberReady") == p["haproxy"]["replicas"], "HAProxy replicas not ready")
@@ -204,7 +207,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
                 timings["internalAndHaproxyReadyAt"] = now()
             if kind == "Ingress": timings["ingressCreatedAt"] = now()
         routes = route_matrix(r, p)
-        k = prior["dormantKustomization"]; patch = canonical({"metadata": {"resourceVersion": k["metadata"]["resourceVersion"]}, "spec": {"suspend": False}})
+        k = prior["participantKustomization"]; patch = canonical({"metadata": {"resourceVersion": k["metadata"]["resourceVersion"]}, "spec": {"suspend": False}})
         checked(r, kb(kube) + ["-n", FLUX_NAMESPACE, "patch", "kustomization", NAME, "--type=merge", "-p", patch], "CAS unsuspend")
         after = live_obj(r, kube, "kustomization", NAME, FLUX_NAMESPACE); require(after.get("spec", {}).get("suspend") is False, "CAS unsuspend ambiguous")
         checked(r, kb(kube) + ["-n", FLUX_NAMESPACE, "wait", "--for=condition=Ready", f"kustomization/{NAME}", "--timeout=120s"], "Flux readiness")
@@ -213,7 +216,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
         require(timings.get("internalAndHaproxyReadyAt", "") <= timings.get("ingressCreatedAt", ""), "Ingress was not created last after health")
         return {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "timings": timings, "routeMatrix": routes, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"], "canonicalSha256": digest(x)} for kind, x in created], "preProjectionDigests": {key: digest(value) for key, value in prior.items()}, "postProjectionDigests": {key: digest(value) for key, value in final.items()}}
     except Exception as exc:
-        complete, errors = rollback(r, kube, created, prior["dormantKustomization"])
+        complete, errors = rollback(r, kube, created, prior["participantKustomization"])
         status = "rolled-back" if complete else "rollback-incomplete"
         failure = {"schemaVersion": RECEIPT_SCHEMA, "status": status, "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "completedAt": now(), "failure": str(exc), "rollbackErrors": errors, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"]} for kind, x in created]}
         atomic_receipt(receipt_path, failure); raise ActivationError(f"activation {status}: {exc}") from exc

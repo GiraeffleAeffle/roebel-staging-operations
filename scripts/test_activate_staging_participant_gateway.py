@@ -10,7 +10,7 @@ def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="1
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
 def policy():
     hexes = "abcdef0123456789"
-    return {"schemaVersion": MODULE.SCHEMA, "protectedRevision": REV, "renderBlobs": {f: sha(hexes[i]) for i, f in enumerate(MODULE.RENDER_FILES)}, "liveProjections": {k: sha(hexes[i]) for i, k in enumerate(("sharedSource", "dormantKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"))}, "routeMatrix": {"host": "https://roebel-web.staging.agentcart.eu", "expectations": {"GET /api/staging-participant/v1/status": 200, "HEAD /api/staging-participant/v1/status": 405}}, "haproxy": {"namespace": "ingress-system", "daemonSet": "haproxy-ingress", "replicas": 3, "sourceIpRateLimitPerReplica": 30, "uid": "haproxy", "canonicalSha256": sha("f")}, "desiredPolicyObjectDigests": [sha("0")]}
+    return {"schemaVersion": MODULE.SCHEMA, "protectedRevision": REV, "renderBlobs": {f: sha(hexes[i]) for i, f in enumerate(MODULE.RENDER_FILES)}, "liveProjections": {k: sha(hexes[i]) for i, k in enumerate(("sharedSource", "dormantKustomization", "activeKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"))}, "routeMatrix": {"host": "https://roebel-web.staging.agentcart.eu", "expectations": {"GET /api/staging-participant/v1/status": 200, "HEAD /api/staging-participant/v1/status": 405}}, "haproxy": {"namespace": "ingress-system", "daemonSet": "haproxy-ingress", "replicas": 3, "sourceIpRateLimitPerReplica": 30, "uid": "haproxy", "canonicalSha256": sha("f")}, "desiredPolicyObjectDigests": [sha("0")]}
 def rendered():
     result = {"kustomization.yaml": b"resources: []\n", "runtime-pin.json": b"{}\n"}
     for file, kind in zip(MODULE.CREATE_FILES, MODULE.CREATE_KINDS, strict=True): result[file] = json.dumps(object_(kind)).encode()
@@ -63,15 +63,14 @@ class ExecutorTests(unittest.TestCase):
         value, blobs, runner = policy(), rendered(), Fake(); kube = Path(tempfile.mkstemp()[1])
         # Bind hashes to the synthetic fixed Git blobs for this test only.
         value["renderBlobs"] = {name: MODULE.bytes_digest(blob) for name, blob in blobs.items()}
-        dormant = object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, "k", "10", spec={"suspend": True})
+        dormant_object = object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, "k", "10", spec={"suspend": True})
         active = object_("Kustomization", MODULE.NAME, MODULE.FLUX_NAMESPACE, "k", "11", spec={"suspend": False})
-        values = {"sharedSource": object_("GitRepository", MODULE.SOURCE, MODULE.FLUX_NAMESPACE, "s"), "dormantKustomization": dormant, "serviceAccount": object_("ServiceAccount"), "role": object_("Role"), "roleBinding": object_("RoleBinding"), "retainedWebIngress": object_("Ingress", MODULE.WEB_INGRESS, uid="web")}
+        values = {"sharedSource": object_("GitRepository", MODULE.SOURCE, MODULE.FLUX_NAMESPACE, "s"), "dormantKustomization": dormant_object, "serviceAccount": object_("ServiceAccount"), "role": object_("Role"), "roleBinding": object_("RoleBinding"), "retainedWebIngress": object_("Ingress", MODULE.WEB_INGRESS, uid="web")}
         state = {"active": False}
         def verify(_r, _k, _p, dormant):
-            if dormant: return values
-            return values | {"dormantKustomization": active}
+            return values | {"participantKustomization": dormant_object if dormant else active}
         def live(_r, _k, kind, name, namespace):
-            if kind == "kustomization": return active if state["active"] else dormant
+            if kind == "kustomization": return active if state["active"] else dormant_object
             return object_(kind.title(), name, namespace, uid=kind + "-uid")
         original_run = runner.run
         def run(args, *, input_text=None):
