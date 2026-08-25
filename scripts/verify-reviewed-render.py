@@ -2880,13 +2880,19 @@ def verify_participant_gateway_secret_materialization(value: Any, label: str) ->
     for name, (secret_name, keys) in expected.items():
         record = closed(
             materialization[name],
-            {"target", "uid", "resourceVersion", "keySet", "state", "materializedAt", "validUntil", "maxAgeSeconds", "vaultArm", "receiptCanonicalSha256"},
+            {"target", "uid", "resourceVersion", "keySet", "state", "semanticChecks", "materializedAt", "validUntil", "maxAgeSeconds", "vaultArm", "receiptCanonicalSha256"},
             f"{label} {name} Secret",
         )
         require(record["target"] == participant_gateway_target("Secret", secret_name, PARTICIPANT_GATEWAY_NAMESPACE), f"{label} {name} Secret target invalid")
         require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"{label} {name} Secret UID invalid")
         require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"{label} {name} Secret resourceVersion invalid")
         require(record["keySet"] == keys and record["state"] == "present-exact-keyset", f"{label} {name} Secret key set invalid")
+        expected_semantics = (
+            {"inviteSha256Is64LowerHex": True, "walletAllowListNonEmptyNormalized": True}
+            if name == "config" else
+            {"sessionHmacKeyAtLeast32Bytes": True, "sessionHmacKeyHighEntropy": True, "stagingSupabaseAnonCredentialValid": True, "stagingRpcSecretAccepted": True}
+        )
+        require(record["semanticChecks"] == expected_semantics, f"{label} {name} Secret semantic preflight invalid")
         observed = utc_timestamp(record["materializedAt"], f"{label} {name} Secret materializedAt")
         valid_until = utc_timestamp(record["validUntil"], f"{label} {name} Secret validUntil")
         require(record["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} {name} Secret freshness invalid")
