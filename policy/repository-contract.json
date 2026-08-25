@@ -67,6 +67,22 @@
     "runtimePin": "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
     "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
   },
+  "stagingParticipantGatewayBoundary": {
+    "activationEvidence": "pending-separate-review",
+    "component": "staging-participant-gateway",
+    "exactGatewayPaths": [
+      "/api/staging-participant/v1/status",
+      "/api/staging-participant/v1/challenge",
+      "/api/staging-participant/v1/session",
+      "/api/staging-participant/v1/posts",
+      "/api/staging-participant/v1/comments"
+    ],
+    "normalReleaseSetPromotionMayChange": false,
+    "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
+    "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
+    "singleReplicaRequired": true
+  },
   "requiredBranchProtection": {
     "requiredStatusChecks": [
       "reviewed-render-admission"

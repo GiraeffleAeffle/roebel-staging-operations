@@ -448,6 +448,53 @@ preserving the Release Set head and every other existing file. Routine
 Web/Mecky promotions must preserve every signed-Nostr file and boundary
 byte-for-byte.
 
+## Bounded staging participant gateway (reserved; still blocked)
+
+The gateway is a separate staging write capability, not a feature of the
+public Web deployment.  This policy reserves one complete, all-or-nothing
+subtree beside the reviewed-public-knowledge runtime:
+
+```text
+reviewed-render/roebel-staging/staging-participant-gateway/
+  serviceaccount.json
+  deployment.json
+  service.json
+  networkpolicy.json
+  kustomization.yaml
+  runtime-pin.json
+```
+
+It can be composed with the later signed-Nostr render, but neither it nor the
+signed-Nostr runtime is part of routine Web/Mecky promotion.  There are no
+gateway manifests, Secrets, image digest, endpoint addresses, Flux objects,
+database changes, or live cluster changes in this policy commit.
+
+When separately admitted, the resource set is fixed to one tokenless,
+non-root, read-only-root filesystem Deployment with a 64 MiB `/tmp` emptyDir,
+one named ServiceAccount, one ClusterIP Service on port 18085, and one
+NetworkPolicy.  It runs only the immutable
+`ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway` image from the
+dedicated Röbel-App publication workflow.  Secret references are limited to
+the named gateway configuration/runtime Secrets; their values never enter
+this public repository or the public Web Pod.
+
+The public Ingress may add only these method/path pairs: `GET` or `OPTIONS`
+on `/api/staging-participant/v1/status`, and `POST` or `OPTIONS` on
+`/challenge`, `/session`, `/posts`, and `/comments` below that same exact
+prefix.  Every other gateway path and method remains denied.  A per-source-IP
+30-request/minute limiter applies only to that gateway prefix.  The existing
+Mecky route and Web read surface remain intact.
+
+Activation remains blocked because the protected policy has no approved
+evidence record.  A later exact review must pin, byte-for-byte, the staging
+database/Vault arm and migration checksum; the immutable image, source
+revision, publisher workflow, SLSA/SPDX and anonymous-pull digests; a
+namespace-scoped Flux identity; rollback hashes; and the exact HTTPS origins
+plus reviewed IPv4 `/32` sets for the Gnosis verifier and the staging Supabase
+endpoint.  The NetworkPolicy then permits only DNS and TCP/443 to those
+reviewed endpoints.  A candidate render cannot provide or approve those
+destinations itself.
+
 ## Promotion flow
 
 1. Protected CI in `GiraeffleAeffle/Roebel-App` builds each changed component

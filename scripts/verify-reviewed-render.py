@@ -170,6 +170,47 @@ EXPECTED_FILES = {
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
 
+# The participant gateway is deliberately a fourth, independently pinned
+# staging capability.  It is never folded into the normal Web/Mecky release
+# set: the gateway has a writer capability while the public Web must remain
+# read-only.  The complete subtree is admitted only alongside the reviewed
+# public-knowledge runtime, and may later be composed with (but never hidden
+# inside) the signed-Nostr tracer.
+PARTICIPANT_GATEWAY_ROOT = f"{RENDER_ROOT}/staging-participant-gateway"
+PARTICIPANT_GATEWAY_FILES = {
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/service.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/networkpolicy.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/serviceaccount.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/kustomization.yaml",
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+}
+PARTICIPANT_GATEWAY_EXPECTED_FILES = FUTURE_EXPECTED_FILES | PARTICIPANT_GATEWAY_FILES
+PARTICIPANT_GATEWAY_NAME = "roebel-staging-participant-gateway"
+PARTICIPANT_GATEWAY_NAMESPACE = "stadtstack-roebel-web-preview"
+PARTICIPANT_GATEWAY_PORT = 18085
+PARTICIPANT_GATEWAY_IMAGE = "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway"
+PARTICIPANT_GATEWAY_WORKFLOW = (
+    "https://github.com/GiraeffleAeffle/Roebel-App/"
+    ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
+)
+PARTICIPANT_GATEWAY_ORIGIN = "https://roebel-web.staging.agentcart.eu"
+PARTICIPANT_GATEWAY_LABELS = {
+    "app.kubernetes.io/component": "staging-participant-gateway",
+    "app.kubernetes.io/name": PARTICIPANT_GATEWAY_NAME,
+    "app.kubernetes.io/part-of": "stadtstack",
+    "stadtstack.io/authority": "none",
+    "stadtstack.io/environment": "staging",
+}
+PARTICIPANT_GATEWAY_CONFIG_SECRET = "roebel-staging-participant-gateway-config"
+PARTICIPANT_GATEWAY_RUNTIME_SECRET = "roebel-staging-participant-gateway-runtime"
+
+# There is intentionally no evidence in this policy bootstrap.  A later,
+# separately reviewed policy change must pin exactly one complete endpoint,
+# publication, Flux and live-precondition record before any gateway render can
+# pass.  A render cannot approve its own external HTTPS destinations.
+PARTICIPANT_GATEWAY_APPROVED_ACTIVATION_EVIDENCE: None | dict[str, Any] = None
+
 # Signed Nostr is a third, closed render shape layered on the already-admitted
 # reviewed-public-knowledge render.  The files are deliberately not present in
 # this policy/bootstrap change: a later activation must add all sixteen in one
@@ -193,6 +234,7 @@ SIGNED_NOSTR_FILES = (
     | {SIGNED_NOSTR_RUNTIME_PIN}
 )
 SIGNED_NOSTR_EXPECTED_FILES = FUTURE_EXPECTED_FILES | SIGNED_NOSTR_FILES
+SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES = SIGNED_NOSTR_EXPECTED_FILES | PARTICIPANT_GATEWAY_FILES
 SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/web/ingress.json",
@@ -389,8 +431,12 @@ def verify_repository_file_set(root: Path) -> str:
         return "current"
     if actual == FUTURE_EXPECTED_FILES:
         return "reviewed-public-knowledge"
+    if actual == PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "reviewed-public-knowledge-participant-gateway"
     if actual == SIGNED_NOSTR_EXPECTED_FILES:
         return "signed-nostr"
+    if actual == SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "signed-nostr-participant-gateway"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -491,6 +537,22 @@ def verify_contract(root: Path) -> dict[str, Any]:
             "renderRoot": SIGNED_NOSTR_ROOT,
             "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
             "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
+        },
+        "stagingParticipantGatewayBoundary": {
+            "activationEvidence": "pending-separate-review",
+            "component": "staging-participant-gateway",
+            "exactGatewayPaths": [
+                "/api/staging-participant/v1/status",
+                "/api/staging-participant/v1/challenge",
+                "/api/staging-participant/v1/session",
+                "/api/staging-participant/v1/posts",
+                "/api/staging-participant/v1/comments",
+            ],
+            "normalReleaseSetPromotionMayChange": False,
+            "renderRoot": PARTICIPANT_GATEWAY_ROOT,
+            "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
+            "singleReplicaRequired": True,
         },
         "requiredBranchProtection": {
             "requiredStatusChecks": ["reviewed-render-admission"],
@@ -2500,7 +2562,185 @@ def verify_web_network_policy(root: Path) -> dict[str, Any]:
     return policy
 
 
-def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
+def participant_gateway_secret_env(name: str, secret: str, key: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "valueFrom": {"secretKeyRef": {"key": key, "name": secret, "optional": False}},
+    }
+
+
+def verify_participant_gateway_activation_evidence(value: Any, runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    evidence = closed(
+        value,
+        {
+            "schemaVersion", "status", "sourceRevision", "imageRepository", "manifestDigest",
+            "workflowIdentity", "publication", "egress", "fluxIdentity", "livePreconditions", "rollback",
+        },
+        "staging participant gateway activation evidence",
+    )
+    require(evidence["schemaVersion"] == "roebel_staging_participant_gateway_activation_evidence_v1", "participant gateway evidence schema invalid")
+    require(evidence["status"] == "approved-separate-review", "participant gateway evidence status invalid")
+    require(evidence["sourceRevision"] == runtime_pin["sourceRevision"], "participant gateway evidence source revision invalid")
+    require(evidence["imageRepository"] == runtime_pin["imageRepository"], "participant gateway evidence image repository invalid")
+    require(evidence["manifestDigest"] == runtime_pin["manifestDigest"], "participant gateway evidence image digest invalid")
+    require(evidence["workflowIdentity"] == runtime_pin["workflowIdentity"], "participant gateway evidence workflow invalid")
+    publication = closed(evidence["publication"], {"slsaProvenanceDigest", "spdxSbomDigest", "anonymousPullReceiptDigest"}, "participant gateway publication evidence")
+    for field, label in (("slsaProvenanceDigest", "SLSA"), ("spdxSbomDigest", "SPDX"), ("anonymousPullReceiptDigest", "anonymous pull receipt")):
+        require(isinstance(publication[field], str) and SHA256.fullmatch(publication[field]), f"participant gateway {label} evidence invalid")
+    egress = closed(evidence["egress"], {"gnosis", "supabase"}, "participant gateway egress evidence")
+    for name in ("gnosis", "supabase"):
+        endpoint = closed(egress[name], {"httpsOrigin", "ipv4Cidrs", "port"}, f"participant gateway {name} egress")
+        require(isinstance(endpoint["httpsOrigin"], str) and endpoint["httpsOrigin"].startswith("https://"), f"participant gateway {name} HTTPS origin invalid")
+        require(endpoint["port"] == 443, f"participant gateway {name} port invalid")
+        cidrs = endpoint["ipv4Cidrs"]
+        require(isinstance(cidrs, list) and 1 <= len(cidrs) <= 8 and cidrs == sorted(set(cidrs)), f"participant gateway {name} CIDR set invalid")
+        for cidr in cidrs:
+            try:
+                parsed = ipaddress.ip_network(cidr, strict=True)
+            except ValueError:
+                parsed = None
+            require(parsed is not None and parsed.version == 4 and parsed.prefixlen == 32, f"participant gateway {name} CIDR must be an exact IPv4 /32")
+    flux = closed(evidence["fluxIdentity"], {"kustomization", "namespace", "serviceAccount"}, "participant gateway Flux identity")
+    require(flux["namespace"] == "flux-roebel-staging", "participant gateway Flux namespace invalid")
+    require(flux["kustomization"] == "roebel-staging-participant-gateway", "participant gateway Flux kustomization invalid")
+    require(flux["serviceAccount"] == "roebel-staging-participant-gateway-reconciler", "participant gateway Flux ServiceAccount invalid")
+    live = closed(evidence["livePreconditions"], {"databaseProject", "vaultArm", "migrationSha256"}, "participant gateway live preconditions")
+    require(isinstance(live["databaseProject"], str) and live["databaseProject"], "participant gateway database project evidence invalid")
+    require(live["vaultArm"] == "roebel_staging_participant_environment_arm=staging-only", "participant gateway Vault arm evidence invalid")
+    require(isinstance(live["migrationSha256"], str) and SHA256.fullmatch(live["migrationSha256"]), "participant gateway migration evidence invalid")
+    rollback = closed( evidence["rollback"], {"previousIngressSha256", "deactivationSqlSha256"}, "participant gateway rollback evidence")
+    require(isinstance(rollback["previousIngressSha256"], str) and SHA256.fullmatch(rollback["previousIngressSha256"]), "participant gateway rollback ingress invalid")
+    require(isinstance(rollback["deactivationSqlSha256"], str) and SHA256.fullmatch(rollback["deactivationSqlSha256"]), "participant gateway rollback SQL invalid")
+    return evidence
+
+
+def verify_participant_gateway_runtime_pin(value: Any) -> dict[str, Any]:
+    pin = closed(
+        value,
+        {"schemaVersion", "component", "sourceRevision", "imageRepository", "manifestDigest", "workflowIdentity", "activationEvidence"},
+        "staging participant gateway runtime pin",
+    )
+    require(pin["schemaVersion"] == "roebel_staging_participant_gateway_runtime_pin_v1", "participant gateway runtime pin schema invalid")
+    require(pin["component"] == "staging-participant-gateway", "participant gateway component invalid")
+    require(isinstance(pin["sourceRevision"], str) and REVISION.fullmatch(pin["sourceRevision"]), "participant gateway source revision invalid")
+    require(pin["imageRepository"] == PARTICIPANT_GATEWAY_IMAGE, "participant gateway image repository invalid")
+    require(isinstance(pin["manifestDigest"], str) and SHA256.fullmatch(pin["manifestDigest"]), "participant gateway manifest digest invalid")
+    require(pin["workflowIdentity"] == PARTICIPANT_GATEWAY_WORKFLOW, "participant gateway workflow identity invalid")
+    approved = PARTICIPANT_GATEWAY_APPROVED_ACTIVATION_EVIDENCE
+    require(approved is not None, "participant gateway activation blocked: exact staging database, endpoint, Flux and publication evidence require separate review")
+    require(pin["activationEvidence"] == approved, "participant gateway activation evidence does not equal exact approved policy record")
+    verify_participant_gateway_activation_evidence(approved, pin)
+    return pin
+
+
+def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
+    return [
+        {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+        *[{"ipBlock": {"cidr": cidr}} for cidr in (
+            "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+            "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+            "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+        )],
+    ]
+
+
+def expected_participant_gateway_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+    evidence = runtime_pin["activationEvidence"]
+    egress = evidence["egress"]
+    pod_security = {
+        "fsGroup": 65532, "runAsGroup": 65532, "runAsNonRoot": True,
+        "runAsUser": 65532, "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    container_security = {
+        "allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]},
+        "readOnlyRootFilesystem": True,
+    }
+    tcp_probe = lambda threshold, period: {
+        "failureThreshold": threshold, "periodSeconds": period, "successThreshold": 1,
+        "tcpSocket": {"port": "http"}, "timeoutSeconds": 3,
+    }
+    environment = [
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY", "value": "enabled"},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_HOST", "value": "0.0.0.0"},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PORT", "value": str(PARTICIPANT_GATEWAY_PORT)},
+        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ORIGIN", "value": PARTICIPANT_GATEWAY_ORIGIN},
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_INVITE_SHA256", PARTICIPANT_GATEWAY_CONFIG_SECRET, "invite-sha256"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_ALLOWED_WALLETS", PARTICIPANT_GATEWAY_CONFIG_SECRET, "allowed-wallets"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SESSION_KEY", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "session-key"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "gnosis-rpc-url"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "supabase-url"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "supabase-anon-key"),
+        participant_gateway_secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET", PARTICIPANT_GATEWAY_RUNTIME_SECRET, "supabase-rpc-secret"),
+    ]
+    deployment = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {
+            "replicas": 1, "selector": {"matchLabels": PARTICIPANT_GATEWAY_LABELS},
+            "template": {
+                "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS},
+                "spec": {
+                    "automountServiceAccountToken": False, "restartPolicy": "Always",
+                    "serviceAccountName": PARTICIPANT_GATEWAY_NAME, "securityContext": pod_security,
+                    "volumes": [{"emptyDir": {"sizeLimit": "64Mi"}, "name": "tmp"}],
+                    "containers": [{
+                        "env": environment,
+                        "image": f"{runtime_pin['imageRepository']}@{runtime_pin['manifestDigest']}",
+                        "imagePullPolicy": "IfNotPresent", "name": "staging-participant-gateway",
+                        "ports": [{"containerPort": PARTICIPANT_GATEWAY_PORT, "name": "http", "protocol": "TCP"}],
+                        "readinessProbe": tcp_probe(3, 10), "livenessProbe": tcp_probe(3, 20), "startupProbe": tcp_probe(30, 2),
+                        "resources": {"limits": {"cpu": "200m", "memory": "128Mi"}, "requests": {"cpu": "50m", "memory": "64Mi"}},
+                        "securityContext": container_security,
+                        "volumeMounts": [{"mountPath": "/tmp", "name": "tmp"}],
+                    }],
+                },
+            },
+        },
+    }
+    service = {
+        "apiVersion": "v1", "kind": "Service",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {"ports": [{"name": "http", "port": PARTICIPANT_GATEWAY_PORT, "protocol": "TCP", "targetPort": "http"}], "selector": PARTICIPANT_GATEWAY_LABELS, "type": "ClusterIP"},
+    }
+    network_policy = {
+        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "spec": {
+            "podSelector": {"matchLabels": PARTICIPANT_GATEWAY_LABELS}, "policyTypes": ["Ingress", "Egress"],
+            "ingress": [{"from": participant_gateway_ingress_sources(), "ports": [{"port": PARTICIPANT_GATEWAY_PORT, "protocol": "TCP"}]}],
+            "egress": [
+                {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]},
+                *[{"to": [{"ipBlock": {"cidr": cidr}}], "ports": [{"port": 443, "protocol": "TCP"}]} for endpoint in (egress["gnosis"], egress["supabase"]) for cidr in endpoint["ipv4Cidrs"]],
+            ],
+        },
+    }
+    service_account = {
+        "apiVersion": "v1", "kind": "ServiceAccount",
+        "metadata": {"labels": PARTICIPANT_GATEWAY_LABELS, "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+        "automountServiceAccountToken": False,
+    }
+    kustomization = (
+        "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+        "  - serviceaccount.json\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+    )
+    return {"deployment": deployment, "service": service, "networkPolicy": network_policy, "serviceAccount": service_account, "kustomization": kustomization}
+
+
+def verify_participant_gateway(root: Path) -> dict[str, Any]:
+    runtime_pin = verify_participant_gateway_runtime_pin(load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"))
+    expected = expected_participant_gateway_resources(runtime_pin)
+    actual = {
+        "deployment": load_json(root / PARTICIPANT_GATEWAY_ROOT / "deployment.json"),
+        "service": load_json(root / PARTICIPANT_GATEWAY_ROOT / "service.json"),
+        "networkPolicy": load_json(root / PARTICIPANT_GATEWAY_ROOT / "networkpolicy.json"),
+        "serviceAccount": load_json(root / PARTICIPANT_GATEWAY_ROOT / "serviceaccount.json"),
+        "kustomization": (root / PARTICIPANT_GATEWAY_ROOT / "kustomization.yaml").read_text(),
+    }
+    require(actual == expected, "staging participant gateway resource drift")
+    return {"runtimePin": runtime_pin, **actual}
+
+
+def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
     early = (
         "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
         "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
@@ -2529,6 +2769,48 @@ def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
                 "port": {"name": "http"},
             }},
             "path": "/stadtstack-test",
+            "pathType": "Prefix",
+        })
+    if participant_gateway:
+        participant_paths = (
+            "/api/staging-participant/v1/status",
+            "/api/staging-participant/v1/challenge",
+            "/api/staging-participant/v1/session",
+            "/api/staging-participant/v1/posts",
+            "/api/staging-participant/v1/comments",
+        )
+        post_paths = participant_paths[1:]
+        early_lines = early.split("\n")
+        early_lines[0] = (
+            "http-request deny deny_status 405 if { method POST } "
+            "!{ path /api/chat/mecky } "
+            + " ".join(f"!{{ path {path} }}" for path in post_paths)
+        )
+        early_lines.insert(
+            1,
+            "http-request deny deny_status 405 if { method OPTIONS } "
+            + " ".join(f"!{{ path {path} }}" for path in participant_paths),
+        )
+        early_lines[2] = "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }"
+        api_line = next(index for index, line in enumerate(early_lines) if "path_beg /api" in line)
+        early_lines[api_line] += " !{ path_beg /api/staging-participant/v1/ }"
+        participant_guard = (
+            "http-request deny deny_status 404 if { path_beg /api/staging-participant/v1/ } "
+            + " ".join(f"!{{ path {path} }}" for path in participant_paths)
+        )
+        early_lines.insert(api_line + 1, participant_guard)
+        early_lines.extend([
+            "stick-table type ip size 10k expire 60s store http_req_rate(1m)",
+            "http-request track-sc0 src if { path_beg /api/staging-participant/v1/ }",
+            "http-request deny deny_status 429 if { path_beg /api/staging-participant/v1/ } { sc_http_req_rate(0) gt 30 }",
+        ])
+        early = "\n".join(early_lines)
+        paths.append({
+            "backend": {"service": {
+                "name": PARTICIPANT_GATEWAY_NAME,
+                "port": {"name": "http"},
+            }},
+            "path": "/api/staging-participant/v1",
             "pathType": "Prefix",
         })
     paths.append({
@@ -2579,9 +2861,9 @@ def expected_web_ingress(signed_nostr: bool) -> dict[str, Any]:
     }
 
 
-def verify_web_ingress(root: Path, signed_nostr: bool) -> dict[str, Any]:
+def verify_web_ingress(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
     ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
-    require(ingress == expected_web_ingress(signed_nostr), "Web Ingress drift")
+    require(ingress == expected_web_ingress(signed_nostr, participant_gateway), "Web Ingress drift")
     return ingress
 
 
@@ -2591,8 +2873,67 @@ def verify_network_boundary_migration(
     web_ingress: dict[str, Any],
     public_mecky_network_policy: dict[str, Any],
     signed_nostr: bool,
+    participant_gateway: bool = False,
+    participant_gateway_objects: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
+    if participant_gateway:
+        require(participant_gateway_objects is not None, "participant gateway boundary objects unavailable")
+        ingress_paths = [
+            "/api/staging-participant/v1/status",
+            "/api/staging-participant/v1/challenge",
+            "/api/staging-participant/v1/session",
+            "/api/staging-participant/v1/posts",
+            "/api/staging-participant/v1/comments",
+        ]
+        objects = [
+            {"kind": "NetworkPolicy", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(web_network_policy)},
+            {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(web_ingress)},
+            {"kind": "ServiceAccount", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["serviceAccount"])},
+            {"kind": "Deployment", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["deployment"])},
+            {"kind": "Service", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["service"])},
+            {"kind": "NetworkPolicy", "name": PARTICIPANT_GATEWAY_NAME, "namespace": PARTICIPANT_GATEWAY_NAMESPACE, "sha256": digest(participant_gateway_objects["networkPolicy"])},
+        ]
+        expected = {
+            "authority": "none",
+            "boundary": {
+                "ingress": {
+                    "allowedMethods": ["GET", "HEAD", "POST", "OPTIONS"],
+                    "exactGatewayPaths": ingress_paths,
+                    "exactPostPaths": ingress_paths[1:],
+                    "rateLimit": {"scope": "gateway-paths-only", "requestsPerMinutePerSourceIp": 30},
+                    "resource": {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": PARTICIPANT_GATEWAY_NAMESPACE},
+                },
+                "participantGateway": {
+                    "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                    "name": PARTICIPANT_GATEWAY_NAME,
+                    "replicas": 1,
+                    "serviceAccountToken": False,
+                    "writerAuthority": "two-gateway-rpcs-only",
+                    "civicAuthority": "none",
+                    "egress": "dns-plus-separately-reviewed-gnosis-and-staging-supabase-https-only",
+                },
+                "signedNostr": "retained-exact" if signed_nostr else "not-present",
+            },
+            "effects": {"civicMutation": False, "clusterMutation": False, "secretRead": False, "secretWrite": False},
+            "objects": objects,
+            "rbacBootstrap": {
+                "createAllowed": False, "deleteAllowed": False, "listAllowed": False, "required": True,
+                "roleNamespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                "serviceAccount": {"name": "roebel-staging-participant-gateway-reconciler", "namespace": "flux-roebel-staging"},
+                "watchAllowed": False,
+                "rules": [
+                    {"apiGroups": [""], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["serviceaccounts", "services"], "verbs": ["get", "patch", "update"]},
+                    {"apiGroups": ["apps"], "resourceNames": [PARTICIPANT_GATEWAY_NAME], "resources": ["deployments"], "verbs": ["get", "patch", "update"]},
+                    {"apiGroups": ["networking.k8s.io"], "resourceNames": [PARTICIPANT_GATEWAY_NAME, "roebel-web-presentation"], "resources": ["networkpolicies", "ingresses"], "verbs": ["get", "patch", "update"]},
+                ],
+                "liveMutationPerformed": False,
+            },
+            "schemaVersion": "roebel_staging_participant_gateway_boundary_v1",
+            "status": "approved-for-exact-staging-activation",
+        }
+        require(migration == expected, "participant gateway network-boundary receipt drift")
+        return migration
     if signed_nostr:
         expected_signed_nostr = {
             "authority": "none",
@@ -2735,7 +3076,7 @@ def verify_network_boundary_migration(
     return migration
 
 
-def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
+def verify_kustomizations(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> None:
     public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
     web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - networkpolicy.json\n  - ingress.json\n"
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
@@ -2754,6 +3095,15 @@ def verify_kustomizations(root: Path, signed_nostr: bool) -> None:
                 (root / SIGNED_NOSTR_ROOT / component / "kustomization.yaml").read_text() == expected,
                 f"signed-Nostr {component} Flux path widened",
             )
+    if participant_gateway:
+        expected = (
+            "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
+            "  - serviceaccount.json\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+        )
+        require(
+            (root / PARTICIPANT_GATEWAY_ROOT / "kustomization.yaml").read_text() == expected,
+            "staging participant gateway Flux path widened",
+        )
 
 
 def expected_patch_value(component: str, path: str, head: dict[str, Any]) -> str:
@@ -2815,8 +3165,14 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["schemaVersion"] == RENDER_SCHEMA, "integrity schema drift")
     require(integrity["releaseSetDigest"] == head["releaseSetDigest"], "integrity release binding invalid")
     require(isinstance(integrity["desiredRenderSha256"], str) and SHA256.fullmatch(integrity["desiredRenderSha256"]), "integrity checksum invalid")
-    reviewed_knowledge = render_file_set in {"reviewed-public-knowledge", "signed-nostr"}
-    signed_nostr = render_file_set == "signed-nostr"
+    reviewed_knowledge = render_file_set in {
+        "reviewed-public-knowledge", "reviewed-public-knowledge-participant-gateway",
+        "signed-nostr", "signed-nostr-participant-gateway",
+    }
+    signed_nostr = render_file_set in {"signed-nostr", "signed-nostr-participant-gateway"}
+    participant_gateway = render_file_set in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
     deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
     service = verify_public_mecky_service(root)
     network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
@@ -2825,8 +3181,12 @@ def verify_tree(root: Path) -> dict[str, Any]:
         signed_nostr,
     )
     web_network_policy = verify_web_network_policy(root)
-    web_ingress = verify_web_ingress(root, signed_nostr)
-    migration = verify_network_boundary_migration(root, web_network_policy, web_ingress, network_policy, signed_nostr)
+    participant_gateway_objects = verify_participant_gateway(root) if participant_gateway else None
+    web_ingress = verify_web_ingress(root, signed_nostr, participant_gateway)
+    migration = verify_network_boundary_migration(
+        root, web_network_policy, web_ingress, network_policy, signed_nostr,
+        participant_gateway, participant_gateway_objects,
+    )
     objects = [
         deployments["public-mecky"],
         service,
@@ -2844,9 +3204,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
     if signed_nostr:
         signed_nostr_objects = verify_signed_nostr(root)
         checksum_payload["signedNostr"] = signed_nostr_objects
+    if participant_gateway:
+        checksum_payload["stagingParticipantGateway"] = participant_gateway_objects
     require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
-    verify_kustomizations(root, signed_nostr)
+    verify_kustomizations(root, signed_nostr, participant_gateway)
     live = verify_live_preconditions(root, head)
     return {
         "root": root,
@@ -2860,12 +3222,19 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "publicMeckyReviewedEgress": public_mecky_reviewed_egress,
         "reviewedPublicKnowledge": reviewed_objects,
         "signedNostr": signed_nostr_objects,
+        "stagingParticipantGateway": participant_gateway_objects,
     }
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
+    base_participant_gateway = base["renderFileSet"] in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
+    candidate_participant_gateway = candidate["renderFileSet"] in {
+        "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
+    }
     require(
         not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
         "reviewed-public-knowledge render set cannot regress to the legacy set",
@@ -2878,13 +3247,46 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         not (base["publicMeckyReviewedEgress"] and not candidate["publicMeckyReviewedEgress"]),
         "Public Mecky reviewed-runtime egress cannot regress",
     )
+    require(
+        not (base_participant_gateway and not candidate_participant_gateway),
+        "participant gateway deactivation is blocked pending separately reviewed exact teardown evidence",
+    )
 
-    if base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "signed-nostr":
+    if candidate_participant_gateway and not base_participant_gateway:
+        require(
+            base["renderFileSet"] in {"reviewed-public-knowledge", "signed-nostr"},
+            "participant gateway activation requires the reviewed public-knowledge render",
+        )
+        require(
+            candidate["renderFileSet"] != "signed-nostr-participant-gateway",
+            "participant gateway and signed-Nostr activation must be separate reviewed transitions",
+        )
+        require(candidate["head"] == base["head"], "participant gateway activation must preserve the Release Set head")
+        allowed_existing_changes = {
+            f"{RENDER_ROOT}/integrity.json",
+            f"{RENDER_ROOT}/web/ingress.json",
+            f"{RENDER_ROOT}/network-boundary-migration.json",
+        }
+        protected = SIGNED_NOSTR_EXPECTED_FILES if base["renderFileSet"] == "signed-nostr" else FUTURE_EXPECTED_FILES
+        for relative in protected:
+            if relative in allowed_existing_changes:
+                continue
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"participant gateway activation changed existing file: {relative}",
+            )
+        return
+
+    if (
+        base["renderFileSet"] in {"reviewed-public-knowledge", "reviewed-public-knowledge-participant-gateway"}
+        and candidate["renderFileSet"] in {"signed-nostr", "signed-nostr-participant-gateway"}
+    ):
         require(candidate["head"] == base["head"], "signed-Nostr activation must preserve the Release Set head")
         verify_signed_nostr_activation_admission_freshness(
             candidate["signedNostr"]["runtimePin"]["activationEvidence"],
         )
-        for relative in FUTURE_EXPECTED_FILES:
+        protected = PARTICIPANT_GATEWAY_EXPECTED_FILES if base_participant_gateway else FUTURE_EXPECTED_FILES
+        for relative in protected:
             if relative in SIGNED_NOSTR_MUTABLE_EXISTING_FILES:
                 continue
             require(
@@ -2903,6 +3305,14 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
             "signed-Nostr activation rollback baseline drift",
         )
         return
+
+    require(
+        not (
+            base["renderFileSet"] == "signed-nostr-participant-gateway"
+            and candidate["renderFileSet"] != "signed-nostr-participant-gateway"
+        ),
+        "combined signed-Nostr/participant gateway deactivation blocked pending separately reviewed exact teardown evidence",
+    )
 
     if base["renderFileSet"] == "signed-nostr" and candidate["renderFileSet"] == "reviewed-public-knowledge":
         require(candidate["head"] == base["head"], "signed-Nostr rollback must preserve the Release Set head")
@@ -3007,11 +3417,17 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     for relative in EXPECTED_FILES:
         if not relative.startswith(RENDER_ROOT + "/"):
             require((candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(), f"promotion changed protected policy file: {relative}")
-    if base["renderFileSet"] == "signed-nostr":
+    if base["renderFileSet"] in {"signed-nostr", "signed-nostr-participant-gateway"}:
         for relative in SIGNED_NOSTR_FILES:
             require(
                 (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
                 f"routine promotion changed signed-Nostr runtime file: {relative}",
+            )
+    if base_participant_gateway:
+        for relative in PARTICIPANT_GATEWAY_FILES:
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"routine promotion changed staging participant gateway runtime file: {relative}",
             )
     for relative in (
         f"{RENDER_ROOT}/network-boundary-migration.json",

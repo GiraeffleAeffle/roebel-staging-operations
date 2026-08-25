@@ -924,6 +924,53 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
         self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.SIGNED_NOSTR_EXPECTED_FILES)
 
+    def test_participant_gateway_policy_reserves_a_closed_composable_subtree(self) -> None:
+        self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 6)
+        self.assertNotIn(
+            "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+            VERIFIER.repository_files(ROOT),
+        )
+        self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.PARTICIPANT_GATEWAY_EXPECTED_FILES)
+        self.assertTrue(
+            VERIFIER.SIGNED_NOSTR_EXPECTED_FILES
+            < VERIFIER.SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES,
+        )
+
+    def test_participant_gateway_ingress_is_exact_and_rate_limited(self) -> None:
+        ingress = VERIFIER.expected_web_ingress(False, participant_gateway=True)
+        early = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"]
+        expected = (
+            "/api/staging-participant/v1/status",
+            "/api/staging-participant/v1/challenge",
+            "/api/staging-participant/v1/session",
+            "/api/staging-participant/v1/posts",
+            "/api/staging-participant/v1/comments",
+        )
+        for path in expected:
+            self.assertIn(f"!{{ path {path} }}", early)
+        self.assertIn("unless { method GET HEAD POST OPTIONS }", early)
+        self.assertIn("sc_http_req_rate(0) gt 30", early)
+        self.assertEqual(
+            [entry["path"] for entry in ingress["spec"]["rules"][0]["http"]["paths"]],
+            ["/supabase-read", "/api/staging-participant/v1", "/"],
+        )
+
+    def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
+        pin = {
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
+            "component": "staging-participant-gateway",
+            "sourceRevision": "a" * 40,
+            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
+            "manifestDigest": "sha256:" + "b" * 64,
+            "workflowIdentity": VERIFIER.PARTICIPANT_GATEWAY_WORKFLOW,
+            "activationEvidence": {},
+        }
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "activation blocked: exact staging database, endpoint, Flux and publication evidence require separate review",
+        ):
+            VERIFIER.verify_participant_gateway_runtime_pin(pin)
+
     def test_signed_nostr_runtime_is_exact_but_blocked_pending_external_evidence(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
