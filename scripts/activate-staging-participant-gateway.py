@@ -7,7 +7,7 @@ fixed descriptor named below.  Until then *both* modes stop before contacting
 Kubernetes.  The live mode is consequently safe to ship before its policy.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, os, subprocess, sys, tempfile
+import argparse, datetime as dt, hashlib, json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -165,13 +165,40 @@ def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as f: f.write(canonical(value) + "\n"); tmp = Path(f.name)
     os.replace(tmp, path)
+def raw_delete(kube: str, resource_path: str, payload: str) -> None:
+    """Issue a real Kubernetes HTTP DELETE through a short-lived kubectl proxy.
+
+    ``kubectl delete`` has no UID+resourceVersion DeleteOptions transport.
+    The proxy authenticates with the explicit kubeconfig; urllib sends the raw
+    DELETE body unchanged and Kubernetes enforces its preconditions.
+    """
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0)); port = reservation.getsockname()[1]
+    process = subprocess.Popen(kb(kube) + ["proxy", f"--port={port}", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None: raise ActivationError("kubectl proxy terminated before raw rollback delete")
+            with socket.socket() as probe:
+                probe.settimeout(0.1)
+                try: probe.connect(("127.0.0.1", port)); break
+                except OSError: time.sleep(0.05)
+        else: raise ActivationError("kubectl proxy did not become ready for raw rollback delete")
+        request = urllib.request.Request(f"http://127.0.0.1:{port}{resource_path}", data=payload.encode(), headers={"Content-Type": "application/json"}, method="DELETE")
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response: require(200 <= response.status < 300, "raw rollback delete did not return success")
+        except urllib.error.HTTPError as exc: raise ActivationError(f"raw rollback delete rejected by Kubernetes: HTTP {exc.code}") from exc
+    finally:
+        process.terminate()
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+
 def delete_with_preconditions(r: Runner, kube: str, kind: str, before: dict[str, Any]) -> None:
     m = before["metadata"]; payload = canonical({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": m["uid"], "resourceVersion": m["resourceVersion"]}})
     api, plural = {"ingress": ("networking.k8s.io/v1", "ingresses"), "networkpolicy": ("networking.k8s.io/v1", "networkpolicies"), "deployment": ("apps/v1", "deployments"), "service": ("v1", "services"), "serviceaccount": ("v1", "serviceaccounts")}[kind]
     prefix = "/api" if api == "v1" else "/apis"
-    # kubectl's raw request transports Kubernetes DeleteOptions unchanged;
     # UID+resourceVersion prevent a recreate from being deleted by rollback.
-    checked(r, kb(kube) + ["-n", NAMESPACE, "delete", kind, m["name"], "--raw", f"{prefix}/{api}/namespaces/{NAMESPACE}/{plural}/{m['name']}", "--data", payload], f"rollback delete {kind}")
+    raw_delete(kube, f"{prefix}/{api}/namespaces/{NAMESPACE}/{plural}/{m['name']}", payload)
 
 def rollback(r: Runner, kube: str, created: list[tuple[str, dict[str, Any]]], kustomization: dict[str, Any]) -> tuple[bool, list[str]]:
     errors = []

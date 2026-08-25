@@ -89,7 +89,10 @@ class ExecutorTests(unittest.TestCase):
         saved = json.loads(receipt.read_text()); self.assertEqual(saved["status"], "rollback-incomplete"); self.assertIn("canonicalSha256", saved)
     def test_precondition_delete_uses_uid_and_resource_version(self):
         runner = Fake(); before = object_("Ingress", uid="u", rv="99")
-        MODULE.delete_with_preconditions(runner, "/tmp/k", "ingress", before)
-        command = " ".join(runner.calls[-1][0]); self.assertIn("--raw", command); self.assertIn("resourceVersion", runner.calls[-1][0][-1]); self.assertIn("\"uid\":\"u\"", runner.calls[-1][0][-1])
+        with patch.object(MODULE, "raw_delete") as delete:
+            MODULE.delete_with_preconditions(runner, "/tmp/k", "ingress", before)
+        path, payload = delete.call_args.args[1:]
+        self.assertEqual(path, f"/apis/networking.k8s.io/v1/namespaces/{MODULE.NAMESPACE}/ingresses/{MODULE.NAME}")
+        self.assertIn("resourceVersion", payload); self.assertIn("\"uid\":\"u\"", payload)
 
 if __name__ == "__main__": unittest.main()
