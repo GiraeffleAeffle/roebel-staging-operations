@@ -19,8 +19,11 @@ CREATE_FILES = RENDER_FILES[:5]
 CREATE_KINDS = ("NetworkPolicy", "ServiceAccount", "Service", "Deployment", "Ingress")
 NAMESPACE, FLUX_NAMESPACE = "stadtstack-roebel-web-preview", "flux-roebel-staging"
 NAME, SOURCE, WEB_INGRESS = "roebel-staging-participant-gateway", "roebel-staging-operations", "roebel-web-presentation"
+RECONCILER = "roebel-staging-participant-gateway-reconciler"
 SCHEMA, RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v3", "roebel_staging_participant_gateway_activation_receipt_v3"
 ROOT = Path(__file__).resolve().parent.parent
+POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
+WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 
 class ActivationError(RuntimeError): pass
 def canonical(v: Any) -> str: return json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -38,11 +41,28 @@ def revision(v: Any) -> str:
     require(isinstance(v, str) and len(v) == 40 and all(c in "0123456789abcdef" for c in v), "expected revision must be 40 lowercase hex")
     return v
 
+def protected_checkout(rev: str) -> dict[str, str]:
+    """Bind every executable repo file before any Kubernetes subprocess exists."""
+    paths = (Path(__file__).relative_to(ROOT).as_posix(), POLICY_MODULE_PATH, WORKFLOW_PATH)
+    hashes: dict[str, str] = {}
+    for path in paths:
+        local = ROOT / path
+        require(local.is_file() and not local.is_symlink(), f"protected executable missing: {path}")
+        expected = git_blob(rev, path)
+        require(local.read_bytes() == expected, f"protected executable differs from exact Git blob: {path}")
+        hashes[path] = bytes_digest(expected)
+    diff = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", rev, "--", *paths], check=False)
+    cached = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *paths], check=False)
+    require(diff.returncode == 0 and cached.returncode == 0, "protected executable checkout is dirty")
+    return hashes
+
 @dataclass
 class Result: code: int = 0; out: str = ""; err: str = ""
 class Runner:
     def run(self, args: list[str], *, input_text: str | None = None) -> Result:
-        p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False); return Result(p.returncode, p.stdout, p.stderr)
+        try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=30)
+        except subprocess.TimeoutExpired as exc: return Result(124, "", f"timeout after 30s: {exc}")
+        return Result(p.returncode, p.stdout, p.stderr)
 def checked(r: Runner, args: list[str], label: str, input_text: str | None = None) -> str:
     x = r.run(args, input_text=input_text)
     if x.code:
@@ -84,7 +104,7 @@ def policy(rev: str) -> dict[str, Any]:
     require(set(p["renderBlobs"]) == set(RENDER_FILES), "activation policy render blob inventory is not closed")
     for name, value in p["renderBlobs"].items(): sha(value, f"render blob {name}")
     projection = p["liveProjections"]
-    require(set(projection) == {"sharedSource", "dormantKustomization", "activeKustomization", "serviceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"}, "activation policy live projections are not closed")
+    require(set(projection) == {"sharedSource", "dormantKustomization", "activeKustomization", "bootstrapServiceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"}, "activation policy live projections are not closed")
     for key, value in projection.items(): sha(value, f"live projection {key}")
     route = p["routeMatrix"]; require(isinstance(route, dict) and set(route) == {"host", "expectations"} and isinstance(route["host"], str) and route["host"].startswith("https://"), "activation policy route matrix invalid")
     require(isinstance(route["expectations"], dict) and route["expectations"], "activation policy route expectations absent")
@@ -135,7 +155,9 @@ def inventory(r: Runner, kube: str, p: dict[str, Any]) -> None:
 def verify_live(r: Runner, kube: str, p: dict[str, Any], *, dormant: bool) -> dict[str, Any]:
     q = p["liveProjections"]
     kustomization_pin = "dormantKustomization" if dormant else "activeKustomization"
-    specs = (("gitrepository", SOURCE, FLUX_NAMESPACE, "sharedSource"), ("kustomization", NAME, FLUX_NAMESPACE, kustomization_pin), ("serviceaccount", NAME, NAMESPACE, "serviceAccount"), ("role", NAME, NAMESPACE, "role"), ("rolebinding", NAME, NAMESPACE, "roleBinding"), ("ingress", WEB_INGRESS, NAMESPACE, "retainedWebIngress"))
+    # The app's tokenless ServiceAccount is create-owned by this transaction;
+    # only the distinct Flux reconciler SA/RBAC identities must pre-exist.
+    specs = (("gitrepository", SOURCE, FLUX_NAMESPACE, "sharedSource"), ("kustomization", NAME, FLUX_NAMESPACE, kustomization_pin), ("serviceaccount", RECONCILER, FLUX_NAMESPACE, "bootstrapServiceAccount"), ("role", RECONCILER, NAMESPACE, "role"), ("rolebinding", RECONCILER, NAMESPACE, "roleBinding"), ("ingress", WEB_INGRESS, NAMESPACE, "retainedWebIngress"))
     values = {}
     for kind, name, namespace, pin in specs:
         value = live_obj(r, kube, kind, name, namespace); require(digest(value) == q[pin], f"live {pin} projection drift"); values[pin] = value
@@ -154,7 +176,7 @@ def route_matrix(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     for key, expected in p["routeMatrix"]["expectations"].items():
         require(isinstance(key, str) and " " in key and isinstance(expected, int) and 100 <= expected <= 599, "route expectation invalid")
         method, path = key.split(" ", 1); require(method in {"GET", "POST", "OPTIONS", "HEAD", "DELETE"} and path.startswith("/api/staging-participant/v1/"), "route boundary widened")
-        args = ["curl", "--silent", "--show-error", "--output", os.devnull, "--write-out", "%{http_code}", "--request", method]
+        args = ["curl", "--max-time", "15", "--connect-timeout", "5", "--silent", "--show-error", "--output", os.devnull, "--write-out", "%{http_code}", "--request", method]
         if method == "POST": args += ["--header", "content-type: application/json", "--data", "{}"]
         observed = checked(r, args + [p["routeMatrix"]["host"].rstrip("/") + path], f"route {key}").strip()
         require(observed == str(expected), f"route status mismatch {key}"); result.append({"method": method, "path": path, "status": expected})
@@ -172,21 +194,24 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
     The proxy authenticates with the explicit kubeconfig; urllib sends the raw
     DELETE body unchanged and Kubernetes enforces its preconditions.
     """
-    with socket.socket() as reservation:
-        reservation.bind(("127.0.0.1", 0)); port = reservation.getsockname()[1]
-    process = subprocess.Popen(kb(kube) + ["proxy", f"--port={port}", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Let kubectl choose the port atomically; parsing its loopback-only startup
+    # line avoids reserving and releasing a raceable port in this process.
+    process = subprocess.Popen(kb(kube) + ["proxy", "--port=0", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 10; port: int | None = None
         while time.monotonic() < deadline:
             if process.poll() is not None: raise ActivationError("kubectl proxy terminated before raw rollback delete")
-            with socket.socket() as probe:
-                probe.settimeout(0.1)
-                try: probe.connect(("127.0.0.1", port)); break
-                except OSError: time.sleep(0.05)
-        else: raise ActivationError("kubectl proxy did not become ready for raw rollback delete")
+            line = process.stdout.readline() if process.stdout else ""
+            if "Starting to serve on 127.0.0.1:" in line:
+                try: port = int(line.rsplit(":", 1)[1].strip())
+                except ValueError as exc: raise ActivationError("kubectl proxy emitted malformed loopback port") from exc
+                break
+            time.sleep(0.02)
+        require(port is not None, "kubectl proxy did not become ready for raw rollback delete")
         request = urllib.request.Request(f"http://127.0.0.1:{port}{resource_path}", data=payload.encode(), headers={"Content-Type": "application/json"}, method="DELETE")
         try:
-            with urllib.request.urlopen(request, timeout=15) as response: require(200 <= response.status < 300, "raw rollback delete did not return success")
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=15) as response: require(200 <= response.status < 300, "raw rollback delete did not return success")
         except urllib.error.HTTPError as exc: raise ActivationError(f"raw rollback delete rejected by Kubernetes: HTTP {exc.code}") from exc
     finally:
         process.terminate()
@@ -219,14 +244,26 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
     rendered = render(rev, p)
     if not live: return {"schemaVersion": RECEIPT_SCHEMA, "status": "dry-run-passed-policy-wired", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "at": now()}
     require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
-    started = now(); prior = verify_live(r, kube, p, dormant=True); created: list[tuple[str, dict[str, Any]]] = []; timings: dict[str, str] = {"preflightVerifiedAt": now()}
+    started = now(); prior = verify_live(r, kube, p, dormant=True); created: list[tuple[str, dict[str, Any]]] = []; uncertain: list[str] = []; timings: dict[str, str] = {"preflightVerifiedAt": now()}
     try:
         for file, kind in zip(CREATE_FILES, CREATE_KINDS, strict=True):
             # ``create -o json`` is the only creation record we trust: it binds
             # the UID/resourceVersion returned by the API to this transaction.
-            item = obj(checked(r, kb(kube) + ["-n", NAMESPACE, "create", "-f", "-", "-o", "json"], f"create {kind}", rendered[file].decode()), f"created {kind}")
+            desired = obj(rendered[file].decode(), f"desired {kind}")
+            uncertain.append(kind)
+            try:
+                item = obj(checked(r, kb(kube) + ["-n", NAMESPACE, "create", "-f", "-", "-o", "json"], f"create {kind}", rendered[file].decode()), f"created {kind}")
+            except ActivationError:
+                # A transport loss can occur after API commit.  Discover only
+                # the exact desired object; any ambiguity is retained for the
+                # rollback path and can never be reported as success.
+                discovered = live_obj(r, kube, kind.lower(), NAME, NAMESPACE)
+                require(stable_object(discovered) == stable_object(desired), f"uncertain {kind} create is not the exact desired object")
+                item = discovered
             require(item.get("kind") == kind and item.get("metadata", {}).get("name") == NAME and item.get("metadata", {}).get("namespace") == NAMESPACE and item.get("metadata", {}).get("uid") and item.get("metadata", {}).get("resourceVersion"), f"atomic create response invalid for {kind}")
+            require(stable_object(item) == stable_object(desired), f"admitted {kind} differs from protected policy object")
             created.append((kind, item))
+            uncertain.remove(kind)
             inventory(r, kube, p)
             if kind == "Deployment":
                 checked(r, kb(kube) + ["-n", NAMESPACE, "rollout", "status", f"deployment/{NAME}", "--timeout=120s"], "deployment readiness")
@@ -244,6 +281,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
         return {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "timings": timings, "routeMatrix": routes, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"], "canonicalSha256": digest(x)} for kind, x in created], "preProjectionDigests": {key: digest(value) for key, value in prior.items()}, "postProjectionDigests": {key: digest(value) for key, value in final.items()}}
     except Exception as exc:
         complete, errors = rollback(r, kube, created, prior["participantKustomization"])
+        if uncertain: complete = False; errors.append(f"uncertain API create target(s) may remain: {', '.join(uncertain)}")
         status = "rolled-back" if complete else "rollback-incomplete"
         failure = {"schemaVersion": RECEIPT_SCHEMA, "status": status, "protectedRevision": rev, "runnerScriptSha256": bytes_digest(Path(__file__).read_bytes()), "startedAt": started, "completedAt": now(), "failure": str(exc), "rollbackErrors": errors, "created": [{"kind": kind, "uid": x["metadata"]["uid"], "resourceVersion": x["metadata"]["resourceVersion"]} for kind, x in created]}
         atomic_receipt(receipt_path, failure); raise ActivationError(f"activation {status}: {exc}") from exc
@@ -254,7 +292,9 @@ def main() -> int:
     try:
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
         require(subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
+        runner_hashes = protected_checkout(rev)
         result = activate(policy(rev), rev, a.kubeconfig, Runner(), a.live, a.receipt)
+        result["protectedRunnerFileSha256"] = runner_hashes
         atomic_receipt(a.receipt, result); print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2
 if __name__ == "__main__": raise SystemExit(main())
