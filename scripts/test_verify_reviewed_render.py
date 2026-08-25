@@ -1028,6 +1028,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             [["serviceaccounts", "services"], ["deployments"], ["networkpolicies"], ["ingresses"]],
         )
 
+    def test_participant_uses_shared_active_flux_source_without_owning_it(self) -> None:
+        source = VERIFIER.expected_participant_gateway_flux_source()
+        self.assertEqual(source["spec"]["suspend"], False)
+        self.assertEqual(source["spec"]["ref"], {"branch": "main"})
+        self.assertNotIn("secretRef", source["spec"])
+        self.assertNotIn("verify", source["spec"])
+
     def test_participant_gateway_origins_are_literal_while_secrets_contain_only_secret_material(self) -> None:
         resources = VERIFIER.expected_participant_gateway_resources({
             "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,

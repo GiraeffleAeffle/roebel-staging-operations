@@ -2686,6 +2686,30 @@ def expected_participant_gateway_flux_objects(*, suspended: bool = True) -> dict
     return {"kustomization": kustomization, "serviceAccount": service_account, "role": role, "roleBinding": role_binding}
 
 
+def expected_participant_gateway_flux_source() -> dict[str, Any]:
+    """Return the immutable projection of the shared, active Flux source.
+
+    The participant boundary owns only its dedicated Kustomization.  It may
+    never suspend, patch, or adopt this shared GitRepository.
+    """
+    return {
+        "apiVersion": "source.toolkit.fluxcd.io/v1",
+        "kind": "GitRepository",
+        "metadata": {
+            "labels": {"stadtstack.io/flux-tenant": "roebel-staging"},
+            "name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME,
+            "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE,
+        },
+        "spec": {
+            "interval": "1m",
+            "ref": {"branch": "main"},
+            "suspend": False,
+            "timeout": "30s",
+            "url": "https://github.com/GiraeffleAeffle/roebel-staging-operations.git",
+        },
+    }
+
+
 def verify_participant_gateway_dns_tls_evidence(value: Any, endpoint: dict[str, Any], label: str) -> dict[str, Any]:
     evidence = closed(value, {"schemaVersion", "canonicalEncoding", "resolverIdentity", "resolutionMethod", "queriedHost", "queriedPort", "observedAt", "validUntil", "maxAgeSeconds", "addresses", "tlsCertificate"}, label)
     require(evidence["schemaVersion"] == PARTICIPANT_GATEWAY_DNS_TLS_EVIDENCE_SCHEMA, f"{label} schema invalid")
@@ -2796,7 +2820,7 @@ def verify_participant_gateway_flux_bootstrap(value: Any, operations_revision: s
     source = closed(bootstrap["sourceReceipt"], {"target", "uid", "resourceVersion", "liveObject", "liveObjectCanonicalSha256", "lastAppliedRevision"}, "participant gateway Flux GitRepository source receipt")
     require(source["target"] == participant_gateway_target("GitRepository", PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway Flux source target invalid")
     require(isinstance(source["uid"], str) and UUID.fullmatch(source["uid"]) and isinstance(source["resourceVersion"], str) and source["resourceVersion"].isdigit(), "participant gateway Flux source identity invalid")
-    expected_source = {"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository", "metadata": {"labels": {"stadtstack.io/flux-tenant": "roebel-staging"}, "name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE}, "spec": {"interval": "1m", "ref": {"branch": "main"}, "suspend": True, "timeout": "30s", "url": "https://github.com/GiraeffleAeffle/roebel-staging-operations.git"}}
+    expected_source = expected_participant_gateway_flux_source()
     require(source["liveObject"] == expected_source and source["liveObjectCanonicalSha256"] == digest(expected_source), "participant gateway Flux source URL/ref/verification drift")
     require(source["lastAppliedRevision"] == operations_revision, "participant gateway Flux source revision invalid")
 
