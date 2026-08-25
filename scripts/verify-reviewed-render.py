@@ -2868,10 +2868,10 @@ def verify_participant_gateway_ingress_cas(value: Any, rollback: dict[str, Any],
         {"target", "uid", "resourceVersion", "liveObjectSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome"},
         label,
     )
-    require(record["target"] == participant_gateway_target("Ingress", "roebel-web-presentation", PARTICIPANT_GATEWAY_NAMESPACE), f"{label} target invalid")
+    require(record["target"] == participant_gateway_target("Ingress", PARTICIPANT_GATEWAY_NAME, PARTICIPANT_GATEWAY_NAMESPACE), f"{label} target invalid")
     require(isinstance(record["uid"], str) and UUID.fullmatch(record["uid"]), f"{label} UID invalid")
     require(isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), f"{label} resourceVersion invalid")
-    require(record["liveObjectSha256"] == rollback["previousIngressSha256"], f"{label} live bytes do not match rollback baseline")
+    require(record["liveObjectSha256"] == rollback["participantIngressSha256"], f"{label} live bytes do not match participant rollback baseline")
     observed = utc_timestamp(record["observedAt"], f"{label} observedAt")
     valid_until = utc_timestamp(record["validUntil"], f"{label} validUntil")
     require(record["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
@@ -3682,7 +3682,7 @@ def verify_kustomizations(root: Path, signed_nostr: bool, participant_gateway: b
     if participant_gateway:
         expected = (
             "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n"
-            "  - serviceaccount.json\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
+            "  - serviceaccount.json\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n  - ingress.json\n"
         )
         require(
             (root / PARTICIPANT_GATEWAY_ROOT / "kustomization.yaml").read_text() == expected,
