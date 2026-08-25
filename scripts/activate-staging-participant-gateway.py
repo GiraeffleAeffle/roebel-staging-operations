@@ -17,7 +17,10 @@ def canonical(value: object) -> str:
 def plan(evidence: dict[str, object], revision: str) -> dict[str, object]:
     if evidence.get("status") != "approved-separate-review":
         raise ValueError("activation blocked: evidence is not separately approved")
-    result = {"schemaVersion": "roebel_staging_participant_gateway_activation_plan_v1", "protectedRevision": revision, "createOrder": ORDER, "createConflictPolicy": "fail-on-http-409-no-adopt", "healthBeforeIngress": True, "rollback": "cas-resuspend-before-exact-uid-ingress-first-delete", "mode": "verify-plan-only"}
+    required = {"publication", "egress", "fluxBootstrap", "applicationBootstrap", "secretMaterialization", "databaseVaultPreflight", "gnosisChainCheck", "dnsTlsEvidence", "activationTransaction", "rollback"}
+    if not required <= set(evidence):
+        raise ValueError("activation blocked: closed evidence is incomplete")
+    result = {"schemaVersion": "roebel_staging_participant_gateway_activation_plan_v1", "protectedRevision": revision, "createOrder": ORDER, "createConflictPolicy": "fail-on-http-409-no-adopt", "healthBeforeIngress": True, "routeMatrix": {"GET": ["status"], "POST": ["challenge", "session", "posts", "comments"], "OPTIONS": ["status", "challenge", "session", "posts", "comments"], "HEAD": []}, "webIngress": "must-remain-byte-identical", "postcondition": "capture-dedicated-ingress-uid-rv-bytes-and-ready-revision", "rollback": "cas-resuspend-before-exact-uid-ingress-first-delete", "mode": "verify-plan-only"}
     result["planSha256"] = "sha256:" + hashlib.sha256(canonical(result).encode()).hexdigest()
     return result
 
