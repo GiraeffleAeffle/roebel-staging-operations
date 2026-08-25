@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +18,21 @@ SPEC = importlib.util.spec_from_file_location("reviewed_render_verifier", ROOT /
 assert SPEC and SPEC.loader
 VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
+
+
+def participant_ready_policy() -> dict:
+    value = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+    pins = value["productPins"]
+    pins["sourceRevision"] = "a" * 40
+    pins["sourceTreeSha256"] = "sha256:" + "b" * 64
+    pins["imageManifestDigest"] = "sha256:" + "c" * 64
+    pins["workflowSha256"] = "sha256:" + "d" * 64
+    pins["migration"]["sha256"] = "sha256:" + "e" * 64
+    pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
+    pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
+    value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
+    value["activationReady"] = True
+    return value
 
 
 class ReviewedRenderVerifierTests(unittest.TestCase):
@@ -925,7 +941,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.SIGNED_NOSTR_EXPECTED_FILES)
 
     def test_participant_gateway_policy_reserves_a_closed_composable_subtree(self) -> None:
-        self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 7)
+        self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 9)
         self.assertNotIn(
             "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
             VERIFIER.repository_files(ROOT),
@@ -943,19 +959,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "pending-separate-review",
         )
         self.assertEqual(
-            contract["stagingParticipantGatewayBoundary"]["activationEvidence"],
-            "must-be-embedded-in-policy-bootstrap-before-merge",
+            contract["stagingParticipantGatewayBoundary"]["activationPolicy"],
+            "policy/staging-participant-gateway-activation-policy.json",
+        )
+        self.assertFalse(contract["stagingParticipantGatewayBoundary"]["activationReady"])
+        self.assertEqual(
+            contract["stagingParticipantGatewayBoundary"]["trustedLiveFacts"],
+            "protected-local-runner-out-of-band-only",
         )
 
     def test_participant_gateway_ingress_is_exact_and_rate_limited(self) -> None:
-        expected = (
-            "/api/staging-participant/v1/status",
-            "/api/staging-participant/v1/challenge",
-            "/api/staging-participant/v1/session",
-            "/api/staging-participant/v1/posts",
-            "/api/staging-participant/v1/comments",
-        )
-        ingress = VERIFIER.expected_participant_gateway_ingress()
+        expected = VERIFIER.PARTICIPANT_POLICY.ROUTES
+        with mock.patch.object(
+            VERIFIER.PARTICIPANT_POLICY,
+            "STATIC_ACTIVATION_POLICY",
+            participant_ready_policy(),
+        ):
+            ingress = VERIFIER.expected_participant_gateway_ingress()
         lines = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"].split("\n")
         self.assertEqual(lines[0], "http-request deny deny_status 405 if { method POST } " + " ".join(f"!{{ path {path} }}" for path in expected[1:]))
         self.assertEqual(lines[1], "http-request deny deny_status 405 if { method OPTIONS } " + " ".join(f"!{{ path {path} }}" for path in expected))
@@ -967,29 +987,24 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(ingress["spec"]["rules"][0]["http"]["paths"][0]["path"], "/api/staging-participant/v1")
         self.assertEqual(VERIFIER.expected_web_ingress(False), VERIFIER.expected_web_ingress(False, participant_gateway=True))
 
-    def test_participant_gateway_activation_binds_rollback_to_protected_base_ingress(self) -> None:
-        base = self.current_base()
-        ingress = base / "reviewed-render/roebel-staging/web/ingress.json"
-        evidence = {"rollback": {"previousIngressSha256": VERIFIER.bytes_digest(ingress.read_bytes())}}
-        VERIFIER.verify_participant_gateway_activation_rollback_baseline(evidence, base)
-        evidence["rollback"]["previousIngressSha256"] = "sha256:" + "0" * 64
-        with self.assertRaisesRegex(
-            VERIFIER.VerificationError,
-            "participant gateway activation rollback ingress baseline drift",
-        ):
-            VERIFIER.verify_participant_gateway_activation_rollback_baseline(evidence, base)
+    def test_participant_gateway_policy_forbids_web_ingress_mutation(self) -> None:
+        preserved = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["preservation"]["webIngress"]
+        self.assertEqual(preserved["mutation"], "forbidden")
+        self.assertEqual(preserved["adoption"], "forbidden")
+        self.assertTrue(preserved["prePostByteEqualityRequired"])
+        self.assertEqual(
+            VERIFIER.expected_web_ingress(False),
+            VERIFIER.expected_web_ingress(False, participant_gateway=True),
+        )
 
     def test_participant_gateway_cannot_roll_out_a_second_challenge_store(self) -> None:
-        resources = VERIFIER.expected_participant_gateway_resources({
-            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
-            "manifestDigest": "sha256:" + "a" * 64,
-            "activationEvidence": {
-                "egress": {
-                    "gnosis": {"httpsOrigin": "https://gnosis.example", "ipv4Cidrs": ["192.0.2.1/32"]},
-                    "supabase": {"httpsOrigin": "https://supabase.example", "ipv4Cidrs": ["192.0.2.2/32"]},
-                },
-            },
-        })
+        with mock.patch.object(
+            VERIFIER.PARTICIPANT_POLICY,
+            "STATIC_ACTIVATION_POLICY",
+            participant_ready_policy(),
+        ):
+            pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin()
+            resources = VERIFIER.expected_participant_gateway_resources(pin)
         self.assertEqual(resources["deployment"]["spec"]["replicas"], 1)
         self.assertEqual(resources["deployment"]["spec"]["strategy"], {"type": "Recreate"})
 
@@ -1025,8 +1040,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertNotIn("roebel-web-presentation", json.dumps(rules))
         self.assertEqual(
             [rule["resources"] for rule in rules],
-            [["serviceaccounts", "services"], ["deployments"], ["networkpolicies"], ["ingresses"]],
+            [["serviceaccounts", "services"], ["deployments"], ["networkpolicies", "ingresses"]],
         )
+        reciprocal = VERIFIER.expected_participant_workbench_ingress_flux_objects()
+        self.assertEqual(reciprocal["role"]["metadata"]["namespace"], "stadtstack-roebel-staging-lab")
+        self.assertTrue(reciprocal["kustomization"]["spec"]["suspend"])
 
     def test_participant_uses_shared_active_flux_source_without_owning_it(self) -> None:
         source = VERIFIER.expected_participant_gateway_flux_source()
@@ -1036,48 +1054,68 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertNotIn("verify", source["spec"])
 
     def test_participant_gateway_origins_are_literal_while_secrets_contain_only_secret_material(self) -> None:
-        resources = VERIFIER.expected_participant_gateway_resources({
-            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
-            "manifestDigest": "sha256:" + "a" * 64,
-            "activationEvidence": {
-                "egress": {
-                    "gnosis": {"httpsOrigin": "https://gnosis.example", "ipv4Cidrs": ["192.0.2.1/32"]},
-                    "supabase": {"httpsOrigin": "https://supabase.example", "ipv4Cidrs": ["192.0.2.2/32"]},
-                },
-            },
-        })
+        with mock.patch.object(
+            VERIFIER.PARTICIPANT_POLICY,
+            "STATIC_ACTIVATION_POLICY",
+            participant_ready_policy(),
+        ):
+            pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin()
+            resources = VERIFIER.expected_participant_gateway_resources(pin)
         env = {
             item["name"]: item
             for item in resources["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
         }
-        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": "https://gnosis.example"})
-        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": "https://supabase.example"})
+        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": "https://rpc.gnosischain.com"})
+        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": "https://vdlksxpihmoumebjpeix.supabase.co"})
         secret_keys = {
             item["valueFrom"]["secretKeyRef"]["key"]
             for item in env.values()
             if "valueFrom" in item
         }
-        self.assertEqual(secret_keys, {"allowed-wallets", "invite-sha256", "session-key", "supabase-anon-key", "supabase-rpc-secret"})
+        self.assertEqual(secret_keys, {"allowed-wallets", "invite-sha256", "mecky-pubkey", "session-key", "supabase-anon-key", "supabase-rpc-secret"})
 
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
-        self.assertIsNone(
-            VERIFIER.PARTICIPANT_GATEWAY_APPROVED_ACTIVATION_EVIDENCE,
-            "a None policy bootstrap must never be represented as activation-ready",
-        )
+        self.assertFalse(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
         pin = {
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
             "component": "staging-participant-gateway",
             "sourceRevision": "a" * 40,
             "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
             "manifestDigest": "sha256:" + "b" * 64,
             "workflowIdentity": VERIFIER.PARTICIPANT_GATEWAY_WORKFLOW,
-            "activationEvidence": {},
         }
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
-            "activation blocked: exact staging database, endpoint, Flux and publication evidence require separate review",
+            "activation blocked: protected product, database and endpoint pins are incomplete",
         ):
             VERIFIER.verify_participant_gateway_runtime_pin(pin)
+
+    def test_participant_render_is_rejected_while_static_policy_is_not_ready(self) -> None:
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "activation blocked: protected product, database and endpoint pins are incomplete",
+        ):
+            VERIFIER.verify_participant_gateway_static_policy(
+                ROOT,
+                "reviewed-public-knowledge-participant-gateway",
+            )
+
+    def test_candidate_cannot_widen_static_activation_policy(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+        policy = json.loads(path.read_text())
+        policy["network"]["conflictScan"]["staticInventoryHashes"] = True
+        path.write_text(json.dumps(policy, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "activation policy drift"):
+            VERIFIER.verify_participant_gateway_static_policy(candidate, "reviewed-public-knowledge")
+
+    def test_candidate_embedded_participant_live_evidence_api_is_closed(self) -> None:
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "candidate-embedded participant activation evidence is forbidden",
+        ):
+            VERIFIER.verify_participant_gateway_activation_evidence({}, {})
 
     def test_signed_nostr_runtime_is_exact_but_blocked_pending_external_evidence(self) -> None:
         temp, candidate = self.candidate()

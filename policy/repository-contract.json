@@ -68,14 +68,16 @@
     "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
   },
   "stagingParticipantGatewayBoundary": {
-    "activationEvidence": "must-be-embedded-in-policy-bootstrap-before-merge",
+    "activationPolicy": "policy/staging-participant-gateway-activation-policy.json",
+    "activationReady": false,
     "component": "staging-participant-gateway",
     "exactGatewayPaths": [
       "/api/staging-participant/v1/status",
       "/api/staging-participant/v1/challenge",
       "/api/staging-participant/v1/session",
       "/api/staging-participant/v1/posts",
-      "/api/staging-participant/v1/comments"
+      "/api/staging-participant/v1/comments",
+      "/api/staging-participant/v1/nostr-post"
     ],
     "methodPathMatrix": {
       "GET": [
@@ -86,20 +88,24 @@
         "/api/staging-participant/v1/challenge",
         "/api/staging-participant/v1/session",
         "/api/staging-participant/v1/posts",
-        "/api/staging-participant/v1/comments"
+        "/api/staging-participant/v1/comments",
+        "/api/staging-participant/v1/nostr-post"
       ],
       "POST": [
         "/api/staging-participant/v1/challenge",
         "/api/staging-participant/v1/session",
         "/api/staging-participant/v1/posts",
-        "/api/staging-participant/v1/comments"
+        "/api/staging-participant/v1/comments",
+        "/api/staging-participant/v1/nostr-post"
       ]
     },
     "normalReleaseSetPromotionMayChange": false,
     "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
     "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
-    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v1",
-    "singleReplicaRequired": true
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+    "singleReplicaRequired": true,
+    "trustedLiveFacts": "protected-local-runner-out-of-band-only",
+    "workbenchIngressRenderRoot": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress"
   },
   "requiredBranchProtection": {
     "requiredStatusChecks": [

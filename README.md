@@ -448,95 +448,101 @@ preserving the Release Set head and every other existing file. Routine
 Web/Mecky promotions must preserve every signed-Nostr file and boundary
 byte-for-byte.
 
-## Bounded staging participant gateway (reserved; still blocked)
+## Bounded staging participant gateway (static policy reserved; blocked)
 
-The gateway is a separate staging write capability, not a feature of the
-public Web deployment.  This policy reserves one complete, all-or-nothing
-subtree beside the reviewed-public-knowledge runtime:
+The participant gateway is a separate staging write capability. It is never
+folded into the public Web Pod or normal Web/Mecky promotion. The protected
+descriptor at `policy/staging-participant-gateway-activation-policy.json`
+contains only reviewable intent: fixed repositories and refs, endpoint
+origins, exact names and selectors, six method/path pairs, the per-controller
+HAProxy limit, Secret names/key sets, two Flux tenants, rollback rules and
+empty immutable publication/database slots. It contains no caller evidence,
+live UID/resource version, controller status, DNS answer, certificate, Secret
+value or cluster-wide inventory hash.
+
+`activationReady` is intentionally `false`. Admission accepts this inert
+policy-only repository, but rejects every participant render or activation
+until a protected change fills the exact source/tree/image/workflow,
+migration/schema/deactivation hashes and reviewed Supabase `/32` set, then
+sets `activationReady` to `true`. The later ordinary render is deterministic
+from that protected policy and cannot approve itself. Its runtime pin contains
+only those immutable policy values and the policy digest; live facts remain an
+out-of-band, five-minute runner receipt.
+
+The complete future render has two separately owned paths:
 
 ```text
 reviewed-render/roebel-staging/staging-participant-gateway/
-  serviceaccount.json
-  deployment.json
-  service.json
   networkpolicy.json
+  serviceaccount.json
+  service.json
+  deployment.json
+  ingress.json
   kustomization.yaml
   runtime-pin.json
+  workbench-ingress/
+    networkpolicy.json
+    kustomization.yaml
 ```
 
-It can be composed with the later signed-Nostr render, but neither it nor the
-signed-Nostr runtime is part of routine Web/Mecky promotion.  There are no
-gateway manifests, Secrets, image digest, endpoint addresses, Flux objects,
-database changes, or live cluster changes in this policy commit.
+The first suspended Kustomization targets
+`stadtstack-roebel-web-preview`; the second targets
+`stadtstack-roebel-staging-lab` and owns only the additive reciprocal
+workbench-ingress NetworkPolicy. Each uses its own Flux ServiceAccount, Role,
+RoleBinding and exact path. The shared active GitRepository is read-only to
+this transaction. Activation compare-and-swap unsuspends both Kustomizations
+as one transaction and suspends both on any failure.
 
-When separately admitted, the resource set is fixed to one tokenless,
-non-root, read-only-root filesystem Deployment with a 64 MiB `/tmp` emptyDir,
-one named ServiceAccount, one ClusterIP Service on port 18085, and one
-NetworkPolicy.  It runs only the immutable
-`ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway` image from the
-dedicated Röbel-App publication workflow.  Secret references are limited to
-the named gateway configuration/runtime Secrets; their values never enter
-this public repository or the public Web Pod.
+The dedicated participant Ingress owns the longer
+`/api/staging-participant/v1` prefix. It permits `GET`/`OPTIONS` on `/status`
+and `POST`/`OPTIONS` on `/challenge`, `/session`, `/posts`, `/comments` and
+`/nostr-post`; every other method or path is denied. `HEAD` is deliberately
+denied. The truthful rate claim is 30 requests/minute/source IP per HAProxy
+controller replica, not an aggregate multi-replica guarantee. The existing
+Web Ingress stays byte-identical and is neither adopted nor mutated.
 
-The public Ingress may add only these method/path pairs: `GET` or `OPTIONS`
-on `/api/staging-participant/v1/status`, and `POST` or `OPTIONS` on
-`/challenge`, `/session`, `/posts`, and `/comments` below that same exact
-prefix. `HEAD` is deliberately denied on every gateway path; every other
-gateway path and method is denied too. A per-source-IP 30-request/minute
-limiter applies only to that gateway prefix. The existing Mecky route and Web
-read surface remain intact.
+The gateway NetworkPolicy permits only ingress-controller traffic, DNS,
+policy-pinned Gnosis and staging Supabase HTTPS `/32`s, and the exact
+cluster-local workbench on TCP 18083. The reciprocal policy permits only the
+gateway selector to that workbench port. Kubernetes and Cilium policy allows
+are additive, so the trusted runner performs a fresh selector-overlap scan of
+all three policy families before creation. The existing manually owned
+workbench NetworkPolicy remains byte-identical and outside both Flux tenants.
 
-**Bootstrap timing is deliberate.** Do not merge a policy whose approved
-evidence constant is `None`: protected-base admission would then reject every
-later gateway render and changing that constant afterward would require a
-second administrator bypass. First collect the read-only staging database and
-Vault-arm preflight, the immutable image/publication receipts, reviewed Gnosis
-and Supabase endpoint `/32`s, namespace-scoped Flux identity, and rollback
-baseline. Then make the one administrator policy-only bootstrap merge that
-embeds that exact record in the protected constant while the six render files
-and all live resources remain absent. The next ordinary render pull request
-can add the complete resource set and is checked against that now-protected
-record.
+Create outcomes are fail-closed. A definite HTTP 409 is a hard failure and is
+never discovered or adopted. Only a transport-uncertain response after a sent
+create may be discovered; the live object must equal the protected desired
+object after the shared semantic normalizer removes only server identity and
+known defaults, and its UID/resource version must be receipt-bound and owned
+by rollback. Raw full-object hashes, live status and caller-supplied evidence
+never become static authority.
 
-That record binds, byte-for-byte, the staging database/Vault arm and migration
-checksum; the immutable image, source revision, publisher workflow,
-SLSA/SPDX and anonymous-pull digests; and the exact protected-base Web Ingress
-UID, resource version, and live bytes for a compare-and-swap change. It also
-contains fresh (five-minute) absence receipts followed by atomic-create
-postconditions for the exact suspended Flux Kustomization, its Flux-namespace
-ServiceAccount, and its target-namespace Role and RoleBinding. The
-Kustomization has `prune: false`, `force: false`, `deletionPolicy: Orphan`,
-its one exact source/path, and starts suspended, so it cannot reconcile an
-absent render path. A separate fresh, CAS-bound unsuspend receipt is required
-at activation.
+The protected local runner must freshly verify the protected operations
+revision, immutable publication and anonymous pull, database/Vault state,
+Secret materialization, endpoints, policy union, exact object semantics,
+Deployment health, HAProxy replica truth, the full route matrix and both Flux
+CAS transitions. Rollback removes the exact owned participant Ingress first,
+suspends both participant Kustomizations, deletes only transaction-owned UIDs
+in reverse order, and proves that the Web Ingress and existing workbench policy
+are byte-identical. Secrets, unrelated policies and civic-authority systems
+are never rollback targets.
 
-That last requirement deliberately exposes a sequencing constraint: a real
-unsuspend receipt contains a live UID/resource version which does not exist
-until after the suspended bootstrap. It therefore cannot honestly be embedded
-in a policy constant before that operation. This repository does **not** add
-an unsigned candidate-evidence escape hatch. Before activation, choose and
-review either a second protected evidence-only merge after the suspended
-bootstrap, or a cryptographically verified receipt from a separately approved
-in-cluster trust root. Until one is selected, the constant stays `None` and
-all participant rendering remains blocked.
+The runner/verifier integration seam is
+`scripts/staging_participant_gateway_policy.py`:
 
-The participant reconciler owns only its target ServiceAccount, Deployment,
-Service, and NetworkPolicy. It has no Ingress permission. The existing
-`flux-roebel-staging/roebel-web-reconciler` and its exact Web Kustomization are
-recorded separately with UID/resource-version/digest evidence for the one
-Ingress CAS change. This prevents controller ownership overlap and prevents
-adopting a raced or replaced Ingress.
-
-The evidence fixes literal HTTPS origins plus reviewed IPv4 `/32` sets for the
-Gnosis verifier and staging Supabase endpoint. Those origins appear as literal
-Deployment environment values; only credentials, the allow-list, invitation
-hash, and session key remain named Secret references. It also requires a
-fresh key-set/UID/resource-version Secret materialization receipt, exact
-staging DB/Vault preflight, `eth_chainId == 0x64`, and DNS-over-HTTPS A/AAAA +
-SNI/TLS-certificate receipts whose activation recheck is equal to the reviewed
-binding. The NetworkPolicy then permits only DNS and TCP/443 to those reviewed
-endpoints. A candidate render cannot provide or approve those destinations
-itself.
+- `activation_policy_descriptor()` and `activation_policy_sha256()` expose
+  immutable intent; `assert_activation_ready()` is the render/activation gate.
+- `expected_gateway_resources()`, `gateway_flux_objects()` and
+  `workbench_ingress_flux_objects()` produce the only admitted desired objects.
+- `normalize_kubernetes_object()`, `semantically_equal()` and
+  `require_semantically_equal()` compare desired and fresh live objects without
+  turning UID/resource version/status into policy.
+- `bind_create_result()` rejects a definite 409 and emits a rollback-owned
+  UID/resource-version projection only for an exact create response or an
+  exact object discovered after transport uncertainty.
+- `trusted_live_facts_contract()` and `validate_trusted_live_facts()` define the
+  separate short-lived receipt envelope. The runner owns collection and the
+  section-level live checks; Git does not.
 
 ## Promotion flow
 
