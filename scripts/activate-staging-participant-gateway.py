@@ -7,7 +7,7 @@ fixed descriptor named below.  Until then *both* modes stop before contacting
 Kubernetes.  The live mode is consequently safe to ship before its policy.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, os, re, selectors, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, datetime as dt, hashlib, importlib.util, json, os, re, selectors, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,10 +20,20 @@ CREATE_KINDS = ("NetworkPolicy", "ServiceAccount", "Service", "Deployment", "Ing
 NAMESPACE, FLUX_NAMESPACE = "stadtstack-roebel-web-preview", "flux-roebel-staging"
 NAME, SOURCE, WEB_INGRESS = "roebel-staging-participant-gateway", "roebel-staging-operations", "roebel-web-presentation"
 RECONCILER = "roebel-staging-participant-gateway-reconciler"
-SCHEMA, RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v3", "roebel_staging_participant_gateway_activation_receipt_v3"
+SCHEMA, RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v4", "roebel_staging_participant_gateway_activation_receipt_v4"
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
+
+def _load_policy_module() -> Any:
+    path = ROOT / POLICY_MODULE_PATH
+    spec = importlib.util.spec_from_file_location("staging_participant_gateway_policy", path)
+    if spec is None or spec.loader is None: raise RuntimeError("protected participant policy module cannot be loaded")
+    module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
+    return module
+
+POLICY = _load_policy_module()
+PLAN_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_plan_v4"
 
 class ActivationError(RuntimeError): pass
 class CreateConflictError(ActivationError): pass
@@ -45,7 +55,7 @@ def revision(v: Any) -> str:
 
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
-    paths = (Path(__file__).relative_to(ROOT).as_posix(), POLICY_MODULE_PATH, WORKFLOW_PATH)
+    paths = (Path(__file__).relative_to(ROOT).as_posix(), POLICY_MODULE_PATH, POLICY_PATH, WORKFLOW_PATH, "scripts/verify-reviewed-render.py", "policy/repository-contract.json")
     hashes: dict[str, str] = {}
     for path in paths:
         local = ROOT / path
@@ -110,24 +120,28 @@ def public_projection(value: Any) -> Any:
 def policy(rev: str) -> dict[str, Any]:
     path = ROOT / POLICY_PATH
     require(path.is_file() and not path.is_symlink(), "protected activation policy descriptor is not wired")
-    raw = path.read_bytes(); require(bytes_digest(git_blob(rev, POLICY_PATH)) == bytes_digest(raw), "policy descriptor is not the exact checked-out protected Git blob")
+    raw = path.read_bytes()
+    require(raw == git_blob(rev, POLICY_PATH), "policy descriptor is not the exact checked-out protected Git blob")
     p = obj(raw.decode(), "activation policy descriptor"); public_projection(p)
-    required = {"schemaVersion", "protectedRevision", "renderBlobs", "liveProjections", "routeMatrix", "haproxy", "desiredPolicyObjectDigests"}
-    require(required <= set(p), "activation policy descriptor is incomplete")
-    require(p["schemaVersion"] == SCHEMA and p["protectedRevision"] == rev, "activation policy revision/schema mismatch")
-    require(set(p["renderBlobs"]) == set(RENDER_FILES), "activation policy render blob inventory is not closed")
-    for name, value in p["renderBlobs"].items(): sha(value, f"render blob {name}")
-    projection = p["liveProjections"]
-    require(set(projection) == {"sharedSource", "dormantKustomization", "activeKustomization", "bootstrapServiceAccount", "role", "roleBinding", "retainedWebIngress", "networkPolicyInventory", "ciliumNetworkPolicyInventory", "ciliumClusterwideNetworkPolicyInventory"}, "activation policy live projections are not closed")
-    for key, value in projection.items(): sha(value, f"live projection {key}")
-    route = p["routeMatrix"]; require(isinstance(route, dict) and set(route) == {"host", "expectations"} and isinstance(route["host"], str) and route["host"].startswith("https://"), "activation policy route matrix invalid")
-    require(isinstance(route["expectations"], dict) and route["expectations"], "activation policy route expectations absent")
-    haproxy = p["haproxy"]
-    require(set(haproxy) == {"namespace", "daemonSet", "replicas", "sourceIpRateLimitPerReplica", "uid", "canonicalSha256"} and haproxy["namespace"] == "ingress-system" and haproxy["daemonSet"] == "haproxy-ingress" and haproxy["replicas"] == 3 and haproxy["sourceIpRateLimitPerReplica"] == 30 and isinstance(haproxy["uid"], str) and haproxy["uid"], "HAProxy policy projection invalid")
-    sha(haproxy["canonicalSha256"], "HAProxy projection")
-    require(isinstance(p["desiredPolicyObjectDigests"], list) and p["desiredPolicyObjectDigests"], "desired policy object digest set absent")
-    for item in p["desiredPolicyObjectDigests"]: sha(item, "desired policy object digest")
-    return p
+    try: return POLICY.validate_activation_policy(p)
+    except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
+
+def dry_run_plan(p: dict[str, Any], rev: str, runner_hashes: dict[str, str]) -> dict[str, Any]:
+    blockers = list(POLICY.activation_blockers(p))
+    return {
+        "schemaVersion": PLAN_RECEIPT_SCHEMA,
+        "status": "blocked-policy-incomplete" if blockers else "ready-no-cluster-plan",
+        "mode": "dry-run",
+        "protectedRevision": rev,
+        "activationReady": p["activationReady"] is True and not blockers,
+        "blockers": blockers,
+        "activationPolicySha256": POLICY.activation_policy_sha256(p),
+        "protectedRunnerFileSha256": runner_hashes,
+        "renderFiles": list(POLICY.ALL_RENDER_FILES),
+        "fluxTransaction": {"owners": ["gateway", "workbenchIngress"], "initialState": "both-suspended", "failureState": "both-suspended"},
+        "kubernetesContacted": False,
+        "callerEvidenceAccepted": False,
+    }
 
 def render(rev: str, p: dict[str, Any]) -> dict[str, bytes]:
     result = {}
@@ -321,8 +335,16 @@ def main() -> int:
     try:
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
         require(subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
-        runner_hashes = protected_checkout(rev)
-        result = activate(policy(rev), rev, a.kubeconfig, Runner(), a.live, a.receipt)
+        runner_hashes = protected_checkout(rev); p = policy(rev)
+        if a.dry_run:
+            result = dry_run_plan(p, rev, runner_hashes)
+            atomic_receipt(a.receipt, result); print(canonical(result)); return 0
+        # The immutable readiness gate deliberately precedes kubeconfig
+        # validation and Runner construction. The committed policy therefore
+        # cannot contact Kubernetes in live mode.
+        try: POLICY.assert_activation_ready(p)
+        except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
+        result = activate(p, rev, a.kubeconfig, Runner(), True, a.receipt)
         result["protectedRunnerFileSha256"] = runner_hashes
         atomic_receipt(a.receipt, result); print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2
