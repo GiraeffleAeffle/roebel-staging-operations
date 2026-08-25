@@ -222,14 +222,11 @@ PARTICIPANT_GATEWAY_ACTIVATION_RECEIPT_SCHEMA = "roebel_staging_participant_gate
 # This deliberately inert, policy-owned template is the only permitted
 # activation operation.  It is hashed into the approved evidence; a render PR
 # cannot replace it with a different command or use its own receipt as proof.
-PARTICIPANT_GATEWAY_ACTIVATION_SCRIPT = """#!/bin/sh
-set -eu
-# Verify the reviewed Kustomization target UID, resourceVersion and suspended
-# canonical bytes immediately before patching /spec/suspend from true to false.
-# Abort on every mismatch; do not create, delete, adopt, or patch any other object.
-# Re-read the same target after the CAS patch and emit the v1 postcondition receipt.
-"""
 PARTICIPANT_GATEWAY_VERIFICATION_TIME_OVERRIDE: datetime | None = None
+
+def participant_gateway_activation_script_sha256() -> str:
+    """Bind policy evidence to the committed guarded planner bytes."""
+    return bytes_digest(Path(__file__).with_name("activate-staging-participant-gateway.py").read_bytes())
 
 # There is intentionally no evidence in this unmerged policy worktree.  Do not
 # spend the one administrator policy bootstrap on this ``None`` value: before
@@ -2830,7 +2827,7 @@ def verify_participant_gateway_activation_transaction(value: Any, flux_bootstrap
     suspended = expected_participant_gateway_flux_objects(suspended=True)["kustomization"]
     active = expected_participant_gateway_flux_objects(suspended=False)["kustomization"]
     postcondition = flux_bootstrap["bootstrapReceipt"]["postconditions"][0]
-    require(transaction["scriptSha256"] == bytes_digest(PARTICIPANT_GATEWAY_ACTIVATION_SCRIPT.encode()), "participant gateway activation script drift")
+    require(transaction["scriptSha256"] == participant_gateway_activation_script_sha256(), "participant gateway activation script drift")
     require(transaction["receiptSchemaVersion"] == PARTICIPANT_GATEWAY_ACTIVATION_RECEIPT_SCHEMA, "participant gateway activation receipt schema invalid")
     precondition = closed(transaction["precondition"], {"target", "requiredUid", "requiredResourceVersion", "beforeObjectDigest"}, "participant gateway activation transaction precondition")
     require(precondition["target"] == participant_gateway_target("Kustomization", PARTICIPANT_GATEWAY_FLUX_KUSTOMIZATION, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway activation target invalid")
