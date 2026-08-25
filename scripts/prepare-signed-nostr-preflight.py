@@ -514,14 +514,17 @@ def build_preflight(value: Any) -> dict[str, Any]:
 
     inventory = []
     for entry in managed:
-        inventory.append({
+        object_value = entry["object"]
+        inventory_item = {
             "objectId": entry["objectId"],
             "class": entry["class"],
-            "target": VERIFY.signed_nostr_object_target(entry["object"]),
-            "object": entry["object"],
-            "objectDigest": digest(entry["object"]),
-            "fluxSuspended": entry["objectId"].startswith("flux/"),
-        })
+            "target": VERIFY.signed_nostr_object_target(object_value),
+            "object": object_value,
+            "objectDigest": digest(object_value),
+        }
+        if object_value["kind"] == "Kustomization":
+            inventory_item["reconciliationSuspended"] = object_value["spec"].get("suspend") is True
+        inventory.append(inventory_item)
     blockers = sorted(blockers, key=lambda item: (item["code"], item["detail"]))
     return {
         "schemaVersion": OUTPUT_SCHEMA,

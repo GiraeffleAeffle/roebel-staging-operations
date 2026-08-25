@@ -175,6 +175,15 @@ class SignedNostrPreflightTests(unittest.TestCase):
         proxy_ids = [item["objectId"] for item in result["managedObjectInventory"] if "gnosis-proxy" in item["objectId"]]
         self.assertEqual(len(proxy_ids), 3)
 
+    def test_inventory_marks_only_kustomizations_as_suspended(self) -> None:
+        result = MODULE.build_preflight(self.base_input())
+        inventory = result["managedObjectInventory"]
+        suspended = [item for item in inventory if "reconciliationSuspended" in item]
+        self.assertEqual(len(suspended), 3)
+        self.assertTrue(all(item["reconciliationSuspended"] is True for item in suspended))
+        self.assertTrue(all(item["object"]["kind"] == "Kustomization" for item in suspended))
+        self.assertTrue(all("reconciliationSuspended" not in item for item in inventory if item["object"]["kind"] != "Kustomization"))
+
     def test_missing_executor_sequencing_paradox_is_reported(self) -> None:
         result = MODULE.build_preflight(self.base_input())
         codes = {item["code"] for item in result["blockers"]}
