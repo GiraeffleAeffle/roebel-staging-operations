@@ -925,7 +925,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.SIGNED_NOSTR_EXPECTED_FILES)
 
     def test_participant_gateway_policy_reserves_a_closed_composable_subtree(self) -> None:
-        self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 6)
+        self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 7)
         self.assertNotIn(
             "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
             VERIFIER.repository_files(ROOT),
@@ -936,9 +936,18 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             < VERIFIER.SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES,
         )
 
+    def test_participant_bootstrap_marker_does_not_change_signed_nostr_semantics(self) -> None:
+        contract = json.loads((ROOT / "policy/repository-contract.json").read_text())
+        self.assertEqual(
+            contract["signedNostrBoundary"]["activationEvidence"],
+            "pending-separate-review",
+        )
+        self.assertEqual(
+            contract["stagingParticipantGatewayBoundary"]["activationEvidence"],
+            "must-be-embedded-in-policy-bootstrap-before-merge",
+        )
+
     def test_participant_gateway_ingress_is_exact_and_rate_limited(self) -> None:
-        ingress = VERIFIER.expected_web_ingress(False, participant_gateway=True)
-        early = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"]
         expected = (
             "/api/staging-participant/v1/status",
             "/api/staging-participant/v1/challenge",
@@ -946,26 +955,17 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "/api/staging-participant/v1/posts",
             "/api/staging-participant/v1/comments",
         )
-        for path in expected:
-            self.assertIn(f"!{{ path {path} }}", early)
-        self.assertIn("unless { method GET HEAD POST OPTIONS }", early)
-        self.assertIn(
-            "if { path_beg /api/staging-participant/v1/ } { method HEAD }",
-            early,
-        )
-        self.assertIn(
-            "if { method GET } { path_beg /api/staging-participant/v1/ } !{ path /api/staging-participant/v1/status }",
-            early,
-        )
-        post_guard = early.split("\n")[0]
-        self.assertIn("!{ path /api/staging-participant/v1/challenge }", post_guard)
-        self.assertIn("!{ path /api/staging-participant/v1/comments }", post_guard)
-        self.assertNotIn("/api/staging-participant/v1/status", post_guard)
-        self.assertIn("sc_http_req_rate(0) gt 30", early)
-        self.assertEqual(
-            [entry["path"] for entry in ingress["spec"]["rules"][0]["http"]["paths"]],
-            ["/supabase-read", "/api/staging-participant/v1", "/"],
-        )
+        ingress = VERIFIER.expected_participant_gateway_ingress()
+        lines = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"].split("\n")
+        self.assertEqual(lines[0], "http-request deny deny_status 405 if { method POST } " + " ".join(f"!{{ path {path} }}" for path in expected[1:]))
+        self.assertEqual(lines[1], "http-request deny deny_status 405 if { method OPTIONS } " + " ".join(f"!{{ path {path} }}" for path in expected))
+        self.assertEqual(lines[2], "http-request deny deny_status 405 if { method HEAD }")
+        self.assertEqual(lines[3], f"http-request deny deny_status 405 if {{ method GET }} !{{ path {expected[0]} }}")
+        self.assertEqual(lines[4], "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }")
+        self.assertEqual(lines[5], "http-request deny deny_status 404 " + " ".join(f"!{{ path {path} }}" for path in expected))
+        self.assertIn("http-request deny deny_status 429 if { sc_http_req_rate(0) gt 30 }", lines)
+        self.assertEqual(ingress["spec"]["rules"][0]["http"]["paths"][0]["path"], "/api/staging-participant/v1")
+        self.assertEqual(VERIFIER.expected_web_ingress(False), VERIFIER.expected_web_ingress(False, participant_gateway=True))
 
     def test_participant_gateway_activation_binds_rollback_to_protected_base_ingress(self) -> None:
         base = self.current_base()
@@ -978,6 +978,79 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "participant gateway activation rollback ingress baseline drift",
         ):
             VERIFIER.verify_participant_gateway_activation_rollback_baseline(evidence, base)
+
+    def test_participant_gateway_cannot_roll_out_a_second_challenge_store(self) -> None:
+        resources = VERIFIER.expected_participant_gateway_resources({
+            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
+            "manifestDigest": "sha256:" + "a" * 64,
+            "activationEvidence": {
+                "egress": {
+                    "gnosis": {"httpsOrigin": "https://gnosis.example", "ipv4Cidrs": ["192.0.2.1/32"]},
+                    "supabase": {"httpsOrigin": "https://supabase.example", "ipv4Cidrs": ["192.0.2.2/32"]},
+                },
+            },
+        })
+        self.assertEqual(resources["deployment"]["spec"]["replicas"], 1)
+        self.assertEqual(resources["deployment"]["spec"]["strategy"], {"type": "Recreate"})
+
+    def test_participant_flux_bootstrap_is_suspended_and_cannot_own_web_ingress(self) -> None:
+        flux = VERIFIER.expected_participant_gateway_flux_objects()
+        self.assertEqual(flux["serviceAccount"]["metadata"]["namespace"], "flux-roebel-staging")
+        self.assertEqual(
+            flux["roleBinding"]["subjects"],
+            [{
+                "kind": "ServiceAccount",
+                "name": "roebel-staging-participant-gateway-reconciler",
+                "namespace": "flux-roebel-staging",
+            }],
+        )
+        specification = flux["kustomization"]["spec"]
+        self.assertEqual(
+            {key: specification[key] for key in ("suspend", "prune", "force", "deletionPolicy", "path", "sourceRef", "dependsOn")},
+            {
+                "suspend": True,
+                "prune": False,
+                "force": False,
+                "deletionPolicy": "Orphan",
+                "path": "./reviewed-render/roebel-staging/staging-participant-gateway",
+                "sourceRef": {
+                    "kind": "GitRepository",
+                    "name": "roebel-staging-operations",
+                    "namespace": "flux-roebel-staging",
+                },
+                "dependsOn": [],
+            },
+        )
+        rules = flux["role"]["rules"]
+        self.assertNotIn("roebel-web-presentation", json.dumps(rules))
+        self.assertEqual(
+            [rule["resources"] for rule in rules],
+            [["serviceaccounts", "services"], ["deployments"], ["networkpolicies"], ["ingresses"]],
+        )
+
+    def test_participant_gateway_origins_are_literal_while_secrets_contain_only_secret_material(self) -> None:
+        resources = VERIFIER.expected_participant_gateway_resources({
+            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
+            "manifestDigest": "sha256:" + "a" * 64,
+            "activationEvidence": {
+                "egress": {
+                    "gnosis": {"httpsOrigin": "https://gnosis.example", "ipv4Cidrs": ["192.0.2.1/32"]},
+                    "supabase": {"httpsOrigin": "https://supabase.example", "ipv4Cidrs": ["192.0.2.2/32"]},
+                },
+            },
+        })
+        env = {
+            item["name"]: item
+            for item in resources["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": "https://gnosis.example"})
+        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": "https://supabase.example"})
+        secret_keys = {
+            item["valueFrom"]["secretKeyRef"]["key"]
+            for item in env.values()
+            if "valueFrom" in item
+        }
+        self.assertEqual(secret_keys, {"allowed-wallets", "invite-sha256", "session-key", "supabase-anon-key", "supabase-rpc-secret"})
 
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
         self.assertIsNone(

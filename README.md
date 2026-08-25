@@ -500,12 +500,43 @@ record.
 
 That record binds, byte-for-byte, the staging database/Vault arm and migration
 checksum; the immutable image, source revision, publisher workflow,
-SLSA/SPDX and anonymous-pull digests; a namespace-scoped Flux identity; the
-exact protected-base Web Ingress bytes for rollback; and the exact HTTPS
-origins plus reviewed IPv4 `/32` sets for the Gnosis verifier and staging
-Supabase endpoint. The NetworkPolicy then permits only DNS and TCP/443 to
-those reviewed endpoints. A candidate render cannot provide or approve those
-destinations itself.
+SLSA/SPDX and anonymous-pull digests; and the exact protected-base Web Ingress
+UID, resource version, and live bytes for a compare-and-swap change. It also
+contains fresh (five-minute) absence receipts followed by atomic-create
+postconditions for the exact suspended Flux Kustomization, its Flux-namespace
+ServiceAccount, and its target-namespace Role and RoleBinding. The
+Kustomization has `prune: false`, `force: false`, `deletionPolicy: Orphan`,
+its one exact source/path, and starts suspended, so it cannot reconcile an
+absent render path. A separate fresh, CAS-bound unsuspend receipt is required
+at activation.
+
+That last requirement deliberately exposes a sequencing constraint: a real
+unsuspend receipt contains a live UID/resource version which does not exist
+until after the suspended bootstrap. It therefore cannot honestly be embedded
+in a policy constant before that operation. This repository does **not** add
+an unsigned candidate-evidence escape hatch. Before activation, choose and
+review either a second protected evidence-only merge after the suspended
+bootstrap, or a cryptographically verified receipt from a separately approved
+in-cluster trust root. Until one is selected, the constant stays `None` and
+all participant rendering remains blocked.
+
+The participant reconciler owns only its target ServiceAccount, Deployment,
+Service, and NetworkPolicy. It has no Ingress permission. The existing
+`flux-roebel-staging/roebel-web-reconciler` and its exact Web Kustomization are
+recorded separately with UID/resource-version/digest evidence for the one
+Ingress CAS change. This prevents controller ownership overlap and prevents
+adopting a raced or replaced Ingress.
+
+The evidence fixes literal HTTPS origins plus reviewed IPv4 `/32` sets for the
+Gnosis verifier and staging Supabase endpoint. Those origins appear as literal
+Deployment environment values; only credentials, the allow-list, invitation
+hash, and session key remain named Secret references. It also requires a
+fresh key-set/UID/resource-version Secret materialization receipt, exact
+staging DB/Vault preflight, `eth_chainId == 0x64`, and DNS-over-HTTPS A/AAAA +
+SNI/TLS-certificate receipts whose activation recheck is equal to the reviewed
+binding. The NetworkPolicy then permits only DNS and TCP/443 to those reviewed
+endpoints. A candidate render cannot provide or approve those destinations
+itself.
 
 ## Promotion flow
 

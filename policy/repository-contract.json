@@ -54,7 +54,7 @@
     "noOpPromotionAllowed": false
   },
   "signedNostrBoundary": {
-    "activationEvidence": "must-be-embedded-in-policy-bootstrap-before-merge",
+    "activationEvidence": "pending-separate-review",
     "components": [
       "workbench",
       "citizen-relay",
@@ -68,7 +68,7 @@
     "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
   },
   "stagingParticipantGatewayBoundary": {
-    "activationEvidence": "pending-separate-review",
+    "activationEvidence": "must-be-embedded-in-policy-bootstrap-before-merge",
     "component": "staging-participant-gateway",
     "exactGatewayPaths": [
       "/api/staging-participant/v1/status",
