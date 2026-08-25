@@ -15,23 +15,7 @@ def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="1
 def policy():
     return copy.deepcopy(MODULE.POLICY.STATIC_ACTIVATION_POLICY)
 def ready_policy():
-    value = policy(); pins = value["productPins"]
-    pins["sourceRevision"] = "b" * 40
-    pins["sourceTreeSha256"] = sha("1")
-    pins["imageManifestDigest"] = sha("2")
-    pins["workflowSha256"] = sha("3")
-    pins["migration"]["sha256"] = sha("4")
-    pins["databaseSchemaSha256"] = sha("5")
-    pins["deactivation"]["sha256"] = sha("6")
-    value["clusterIdentity"] = {
-        "apiOrigin": "https://api.staging.example:6443",
-        "caCertificateSha256": sha("7"),
-        "apiServerSpkiSha256": sha("8"),
-        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
-    }
-    value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.10/32"]
-    value["activationReady"] = True
-    return value
+    return MODULE.POLICY.approved_next_activation_policy_descriptor()
 def admitted(desired, uid="owned-uid", rv="10"):
     value = copy.deepcopy(desired); value.setdefault("metadata", {})["uid"] = uid; value["metadata"]["resourceVersion"] = rv
     return value
@@ -134,6 +118,12 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "activation blocked"):
             MODULE.POLICY.assert_activation_ready(value)
         self.assertFalse(value["activationReady"])
+
+    def test_exact_approved_successor_can_pass_the_future_gate_without_runner_code_changes(self):
+        value = ready_policy()
+        self.assertEqual(MODULE.POLICY.validate_activation_policy(value), value)
+        self.assertEqual(MODULE.POLICY.assert_activation_ready(value), value)
+        self.assertEqual(MODULE.POLICY.activation_blockers(value), ())
 
     def test_duplicate_json_keys_are_rejected_at_every_object_boundary(self):
         with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):

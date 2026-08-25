@@ -20,24 +20,7 @@ SPEC.loader.exec_module(POLICY)
 
 
 def ready_policy() -> dict:
-    value = POLICY.activation_policy_descriptor()
-    pins = value["productPins"]
-    pins["sourceRevision"] = "a" * 40
-    pins["sourceTreeSha256"] = "sha256:" + "b" * 64
-    pins["imageManifestDigest"] = "sha256:" + "c" * 64
-    pins["workflowSha256"] = "sha256:" + "d" * 64
-    pins["migration"]["sha256"] = "sha256:" + "e" * 64
-    pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
-    pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
-    value["clusterIdentity"] = {
-        "apiOrigin": "https://api.staging.example:6443",
-        "caCertificateSha256": "sha256:" + "2" * 64,
-        "apiServerSpkiSha256": "sha256:" + "3" * 64,
-        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
-    }
-    value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
-    value["activationReady"] = True
-    return value
+    return POLICY.approved_next_activation_policy_descriptor()
 
 
 def all_keys(value):
@@ -68,6 +51,64 @@ class StaticPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
             POLICY.assert_activation_ready(committed)
 
+    def test_only_exact_one_way_ready_transition_is_approved(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        self.assertEqual(
+            POLICY.validate_activation_policy_transition(current, approved),
+            approved,
+        )
+        self.assertTrue(approved["activationReady"])
+        self.assertEqual(POLICY.activation_blockers(approved), ())
+        self.assertEqual(
+            approved["clusterIdentity"],
+            {
+                "apiOrigin": "https://10.255.240.11:6443",
+                "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+                "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+                "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+            },
+        )
+        self.assertEqual(
+            approved["endpoints"]["supabase"]["ipv4Cidrs"],
+            ["104.18.38.10/32", "172.64.149.246/32"],
+        )
+
+    def test_ready_transition_rejects_every_partial_reverse_reordered_or_widened_shape(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        mutations = []
+        for key in approved["clusterIdentity"]:
+            partial = copy.deepcopy(approved)
+            partial["clusterIdentity"][key] = None
+            mutations.append((f"partial-{key}", partial))
+        partial_cidrs = copy.deepcopy(approved)
+        partial_cidrs["endpoints"]["supabase"]["ipv4Cidrs"] = ["104.18.38.10/32"]
+        mutations.append(("partial-cidrs", partial_cidrs))
+        reordered = copy.deepcopy(approved)
+        reordered["endpoints"]["supabase"]["ipv4Cidrs"].reverse()
+        mutations.append(("reordered-cidrs", reordered))
+        widened = copy.deepcopy(approved)
+        widened["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.1/32")
+        mutations.append(("widened-cidrs", widened))
+        authority_widened = copy.deepcopy(approved)
+        authority_widened["authority"]["civicAuthority"] = "municipal"
+        mutations.append(("widened-authority", authority_widened))
+        extra = copy.deepcopy(approved)
+        extra["callerEvidence"] = {"trusted": True}
+        mutations.append(("extra-field", extra))
+        wrong_ready = copy.deepcopy(approved)
+        wrong_ready["activationReady"] = False
+        mutations.append(("derived-ready-tamper", wrong_ready))
+        for label, candidate in mutations:
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(POLICY.PolicyError, "transition candidate drift"):
+                    POLICY.validate_activation_policy_transition(current, candidate)
+        with self.assertRaisesRegex(POLICY.PolicyError, "transition base drift"):
+            POLICY.validate_activation_policy_transition(approved, current)
+        with self.assertRaisesRegex(POLICY.PolicyError, "transition candidate drift"):
+            POLICY.validate_activation_policy_transition(current, current)
+
     def test_static_descriptor_contains_no_caller_or_live_evidence(self):
         keys = set(all_keys(POLICY.activation_policy_descriptor()))
         self.assertTrue(
@@ -79,6 +120,25 @@ class StaticPolicyTests(unittest.TestCase):
         pins = POLICY.activation_policy_descriptor()["productPins"]
         self.assertEqual(pins["sourceTreeHashSemantics"], "sha256-of-git-ls-tree-rz-full-tree-raw-bytes")
         self.assertEqual(pins["workflowHashSemantics"], "sha256-of-raw-git-blob-bytes-at-source-revision")
+
+    def test_trusted_facts_contract_is_bound_to_the_same_exact_ready_successor(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        contract = POLICY.trusted_live_facts_contract()
+        self.assertEqual(
+            contract["policyBinding"],
+            POLICY.activation_policy_sha256(approved),
+        )
+        self.assertNotEqual(
+            contract["policyBinding"],
+            POLICY.activation_policy_sha256(current),
+        )
+        self.assertEqual(
+            POLICY.trusted_live_facts_contract(approved),
+            contract,
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
+            POLICY.trusted_live_facts_contract(current)
 
     def test_route_and_rate_limit_boundary_is_exact(self):
         value = POLICY.activation_policy_descriptor()

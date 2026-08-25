@@ -456,18 +456,20 @@ descriptor at `policy/staging-participant-gateway-activation-policy.json`
 contains only reviewable intent: fixed repositories and refs, endpoint
 origins, exact names and selectors, six method/path pairs, the per-controller
 HAProxy limit, Secret names/key sets, two Flux tenants, rollback rules and
-empty immutable publication/database slots. It contains no caller evidence,
+immutable publication/database pins. It contains no caller evidence,
 live UID/resource version, controller status, DNS answer, certificate, Secret
 value or cluster-wide inventory hash.
 
 `activationReady` is intentionally `false`. Admission accepts this inert
-policy-only repository, but rejects every participant render or activation
-until a protected change fills the exact source/tree/image/workflow,
-migration/schema/deactivation hashes and reviewed Supabase `/32` set, then
-sets `activationReady` to `true`. The later ordinary render is deterministic
-from that protected policy and cannot approve itself. Its runtime pin contains
-only those immutable policy values and the policy digest; live facts remain an
-out-of-band, five-minute runner receipt.
+policy-only repository, but rejects every participant render or activation.
+The protected verifier already contains one exact approved successor for the
+four cluster-identity facts and ordered Supabase `/32` set. It admits only the
+standalone, one-way JSON/contract transition to that successor; candidate code,
+the runner, workflow, render, Secrets and live evidence must remain unchanged.
+The later ordinary render is deterministic from the protected ready policy and
+cannot approve itself. Its runtime pin contains only immutable policy values
+and the policy digest; fresh runtime facts remain an out-of-band, five-minute
+runner receipt.
 
 The product source pins have one reproducible meaning. `sourceTreeSha256` is
 SHA-256 over the exact raw NUL-delimited bytes from
@@ -676,9 +678,12 @@ authority stay outside Git and outside Flux.
 The participant gateway is still an inert, protected reservation. The static
 descriptor in `policy/staging-participant-gateway-activation-policy.json`
 contains no caller-provided or live cluster evidence and remains
-`activationReady: false` until the exact product, migration, schema, endpoint,
-and cluster-identity pins are reviewed into the protected base. The GitHub
-workflow has no kubeconfig and can only test and emit a no-cluster plan.
+`activationReady: false`. The protected base has approved exactly one future
+descriptor containing the reviewed API origin, CA and API-server SPKI digests,
+immutable `kube-system` namespace UID, and ordered Supabase IPv4 `/32` set.
+That approval does not change the committed descriptor or enable the runner.
+The GitHub workflow has no kubeconfig and can only test and emit a no-cluster
+plan.
 
 Once those pins exist, the separate protected local runner is designed to:
 

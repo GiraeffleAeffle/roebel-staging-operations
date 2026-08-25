@@ -441,10 +441,51 @@ def _static_descriptor() -> dict[str, Any]:
 
 STATIC_ACTIVATION_POLICY = _static_descriptor()
 
+# This protected base approves exactly one future policy-data transition.  The
+# five facts were collected independently of the pull request that will carry
+# them.  Keeping the approved successor here means admission and the local
+# runner can validate candidate JSON without importing or executing candidate
+# policy code.
+APPROVED_ACTIVATION_FACTS = {
+    "clusterIdentity": {
+        "apiOrigin": "https://10.255.240.11:6443",
+        "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+        "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+        "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+    },
+    "supabaseIpv4Cidrs": ["104.18.38.10/32", "172.64.149.246/32"],
+}
+APPROVED_ACTIVATION_TRANSITION_PATHS = (
+    "activationReady",
+    "clusterIdentity.apiOrigin",
+    "clusterIdentity.caCertificateSha256",
+    "clusterIdentity.apiServerSpkiSha256",
+    "clusterIdentity.kubeSystemNamespaceUid",
+    "endpoints.supabase.ipv4Cidrs",
+)
+
+
+def _approved_next_activation_policy() -> dict[str, Any]:
+    value = copy.deepcopy(STATIC_ACTIVATION_POLICY)
+    value["clusterIdentity"] = copy.deepcopy(APPROVED_ACTIVATION_FACTS["clusterIdentity"])
+    value["endpoints"]["supabase"]["ipv4Cidrs"] = list(
+        APPROVED_ACTIVATION_FACTS["supabaseIpv4Cidrs"],
+    )
+    value["activationReady"] = True
+    return value
+
+
+APPROVED_NEXT_ACTIVATION_POLICY = _approved_next_activation_policy()
+
 
 def activation_policy_descriptor() -> dict[str, Any]:
-    """Return a defensive copy of the exact protected static descriptor."""
+    """Return the still-inert descriptor committed by this protected base."""
     return copy.deepcopy(STATIC_ACTIVATION_POLICY)
+
+
+def approved_next_activation_policy_descriptor() -> dict[str, Any]:
+    """Return the only ready descriptor this protected base may admit next."""
+    return copy.deepcopy(APPROVED_NEXT_ACTIVATION_POLICY)
 
 
 def activation_policy_sha256(policy: dict[str, Any] | None = None) -> str:
@@ -499,7 +540,10 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
 
 def validate_activation_policy(value: Any) -> dict[str, Any]:
     _require(isinstance(value, dict), "participant activation policy must be an object")
-    _require(value == STATIC_ACTIVATION_POLICY, "participant activation policy drift")
+    _require(
+        value in (STATIC_ACTIVATION_POLICY, APPROVED_NEXT_ACTIVATION_POLICY),
+        "participant activation policy drift",
+    )
     blockers = activation_blockers(value)
     _require(
         value["activationReady"] is (len(blockers) == 0),
@@ -507,6 +551,55 @@ def validate_activation_policy(value: Any) -> dict[str, Any]:
     )
     _validate_static_semantics(value)
     return copy.deepcopy(value)
+
+
+def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict[str, Any]:
+    """Validate the one approved inert-to-ready policy-data transition.
+
+    Equality against both protected descriptors rejects partial pinning,
+    reordered endpoint lists, additional fields, widening, reverse movement,
+    and any caller-selected evidence.  ``activationReady`` is derived from the
+    exact blocker set and is not an independent candidate choice.
+    """
+    _require(previous == STATIC_ACTIVATION_POLICY, "participant activation transition base drift")
+    _require(candidate == APPROVED_NEXT_ACTIVATION_POLICY, "participant activation transition candidate drift")
+    _require(previous != candidate, "participant activation transition must be one-way and non-empty")
+    validate_activation_policy(previous)
+    ready = validate_activation_policy(candidate)
+    changed_paths = []
+    if previous["activationReady"] != ready["activationReady"]:
+        changed_paths.append("activationReady")
+    for key in (
+        "apiOrigin",
+        "caCertificateSha256",
+        "apiServerSpkiSha256",
+        "kubeSystemNamespaceUid",
+    ):
+        if previous["clusterIdentity"][key] != ready["clusterIdentity"][key]:
+            changed_paths.append(f"clusterIdentity.{key}")
+    if (
+        previous["endpoints"]["supabase"]["ipv4Cidrs"]
+        != ready["endpoints"]["supabase"]["ipv4Cidrs"]
+    ):
+        changed_paths.append("endpoints.supabase.ipv4Cidrs")
+    _require(
+        tuple(changed_paths) == APPROVED_ACTIVATION_TRANSITION_PATHS,
+        "participant activation transition changed field set drift",
+    )
+    _require(
+        activation_blockers(previous)
+        == (
+            "clusterIdentity.apiOrigin",
+            "clusterIdentity.caCertificateSha256",
+            "clusterIdentity.apiServerSpkiSha256",
+            "clusterIdentity.kubeSystemNamespaceUid",
+            "endpoints.supabase.ipv4Cidrs",
+        ),
+        "participant activation transition base blocker set drift",
+    )
+    _require(not activation_blockers(ready), "participant activation transition remains blocked")
+    _require(previous["activationReady"] is False and ready["activationReady"] is True, "participant activation transition direction invalid")
+    return ready
 
 
 def assert_activation_ready(policy: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1115,14 +1208,19 @@ def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str
     }
 
 
-def trusted_live_facts_contract() -> dict[str, Any]:
-    """Describe runner-owned facts without placing any fact in static policy."""
+def trusted_live_facts_contract(
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe runner-owned facts bound to the exact approved ready policy."""
+    value = assert_activation_ready(
+        APPROVED_NEXT_ACTIVATION_POLICY if policy is None else policy,
+    )
     return {
         "schemaVersion": TRUSTED_LIVE_FACTS_SCHEMA,
         "authority": "protected-local-runner-only",
         "transport": "out-of-band-receipt",
         "maximumAgeSeconds": 300,
-        "policyBinding": activation_policy_sha256(),
+        "policyBinding": activation_policy_sha256(value),
         "requiredSections": [
             "clusterBinding",
             "operationReservation",
@@ -1340,9 +1438,12 @@ def validate_trusted_live_facts(value: Any, *, now: datetime | None = None) -> d
     exact policy binding and a closed section set.  Individual sections are
     compared to the static descriptor with the helpers above by the executor.
     """
-    policy = assert_activation_ready()
+    # The runner reaches this function only after its exact checked-out JSON
+    # has passed ``assert_activation_ready(p)``.  Bind the receipt to the one
+    # protected approved successor rather than the still-inert base default.
+    policy = assert_activation_ready(APPROVED_NEXT_ACTIVATION_POLICY)
     _require(isinstance(value, dict), "trusted live facts must be an object")
-    contract = trusted_live_facts_contract()
+    contract = trusted_live_facts_contract(policy)
     required = {
         "schemaVersion", "policySha256", "collectedAt", "validUntil", "maxAgeSeconds",
         *contract["requiredSections"],

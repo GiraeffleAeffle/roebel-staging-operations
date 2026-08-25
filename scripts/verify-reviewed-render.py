@@ -207,6 +207,10 @@ PARTICIPANT_GATEWAY_IMAGE = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["product
 PARTICIPANT_GATEWAY_WORKFLOW = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["productPins"]["workflowIdentity"]
 PARTICIPANT_GATEWAY_ORIGIN = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["endpoints"]["browserOrigin"]
 PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
+PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES = {
+    "policy/repository-contract.json",
+    PARTICIPANT_POLICY.POLICY_PATH,
+}
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
 PARTICIPANT_GATEWAY_FLUX_NAMESPACE = PARTICIPANT_POLICY.FLUX_NAMESPACE
@@ -547,7 +551,7 @@ def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -
         raise VerificationError(str(error)) from error
 
 
-def verify_contract(root: Path) -> dict[str, Any]:
+def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -590,7 +594,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         },
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
-            "activationReady": False,
+            "activationReady": participant_policy["activationReady"],
             "component": "staging-participant-gateway",
             "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
             "methodPathMatrix": {
@@ -3270,9 +3274,12 @@ def verify_participant_gateway_activation_admission_freshness(
     )
 
 
-def verify_participant_gateway_runtime_pin(value: Any) -> dict[str, Any]:
+def verify_participant_gateway_runtime_pin(
+    value: Any,
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        expected = PARTICIPANT_POLICY.expected_runtime_pin()
+        expected = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     require(value == expected, "staging participant gateway runtime pin drift")
@@ -3291,17 +3298,22 @@ def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
     ]
 
 
-def expected_participant_gateway_ingress() -> dict[str, Any]:
+def expected_participant_gateway_ingress(
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        return PARTICIPANT_POLICY.expected_gateway_ingress()
+        return PARTICIPANT_POLICY.expected_gateway_ingress(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
 
 
-def expected_participant_gateway_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+def expected_participant_gateway_resources(
+    runtime_pin: dict[str, Any],
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compatibility adapter to the single protected policy module."""
     try:
-        expected = PARTICIPANT_POLICY.expected_gateway_resources()
+        expected = PARTICIPANT_POLICY.expected_gateway_resources(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     require(runtime_pin == expected["runtimePin"], "participant runtime pin differs from protected policy")
@@ -3403,9 +3415,15 @@ def _legacy_expected_participant_gateway_resources(runtime_pin: dict[str, Any]) 
     return {"deployment": deployment, "service": service, "networkPolicy": network_policy, "serviceAccount": service_account, "ingress": expected_participant_gateway_ingress(), "kustomization": kustomization}
 
 
-def verify_participant_gateway(root: Path) -> dict[str, Any]:
-    runtime_pin = verify_participant_gateway_runtime_pin(load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"))
-    expected = expected_participant_gateway_resources(runtime_pin)
+def verify_participant_gateway(
+    root: Path,
+    participant_policy: dict[str, Any],
+) -> dict[str, Any]:
+    runtime_pin = verify_participant_gateway_runtime_pin(
+        load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"),
+        participant_policy,
+    )
+    expected = expected_participant_gateway_resources(runtime_pin, participant_policy)
     actual = {
         "deployment": load_json(root / PARTICIPANT_GATEWAY_ROOT / "deployment.json"),
         "service": load_json(root / PARTICIPANT_GATEWAY_ROOT / "service.json"),
@@ -3884,7 +3902,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     render_file_set = verify_repository_file_set(root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
-    verify_contract(root)
+    verify_contract(root, participant_policy)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
@@ -3910,7 +3928,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
         signed_nostr,
     )
     web_network_policy = verify_web_network_policy(root)
-    participant_gateway_objects = verify_participant_gateway(root) if participant_gateway else None
+    participant_gateway_objects = (
+        verify_participant_gateway(root, participant_policy)
+        if participant_gateway
+        else None
+    )
     web_ingress = verify_web_ingress(root, signed_nostr, participant_gateway)
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
@@ -3965,6 +3987,39 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_participant_gateway = candidate["renderFileSet"] in {
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
+
+    if candidate["stagingParticipantGatewayPolicy"] != base["stagingParticipantGatewayPolicy"]:
+        try:
+            PARTICIPANT_POLICY.validate_activation_policy_transition(
+                base["stagingParticipantGatewayPolicy"],
+                candidate["stagingParticipantGatewayPolicy"],
+            )
+        except PARTICIPANT_POLICY.PolicyError as error:
+            raise VerificationError(str(error)) from error
+        require(
+            candidate["renderFileSet"] == base["renderFileSet"],
+            "participant activation-policy transition may not add or remove a render",
+        )
+        require(
+            candidate["head"] == base["head"],
+            "participant activation-policy transition must preserve the Release Set head",
+        )
+        require(
+            candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+            "participant activation-policy transition may not change Public Mecky egress",
+        )
+        candidate_files = repository_files(candidate_root)
+        require(
+            candidate_files == repository_files(base_root),
+            "participant activation-policy transition file set drift",
+        )
+        for relative in sorted(candidate_files - PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES):
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"participant activation-policy transition changed protected file: {relative}",
+            )
+        return
+
     require(
         not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
         "reviewed-public-knowledge render set cannot regress to the legacy set",

@@ -21,24 +21,7 @@ SPEC.loader.exec_module(VERIFIER)
 
 
 def participant_ready_policy() -> dict:
-    value = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
-    pins = value["productPins"]
-    pins["sourceRevision"] = "a" * 40
-    pins["sourceTreeSha256"] = "sha256:" + "b" * 64
-    pins["imageManifestDigest"] = "sha256:" + "c" * 64
-    pins["workflowSha256"] = "sha256:" + "d" * 64
-    pins["migration"]["sha256"] = "sha256:" + "e" * 64
-    pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
-    pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
-    value["clusterIdentity"] = {
-        "apiOrigin": "https://api.staging.example:6443",
-        "caCertificateSha256": "sha256:" + "2" * 64,
-        "apiServerSpkiSha256": "sha256:" + "3" * 64,
-        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
-    }
-    value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
-    value["activationReady"] = True
-    return value
+    return VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
 
 
 class ReviewedRenderVerifierTests(unittest.TestCase):
@@ -138,6 +121,20 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp, base = self.candidate()
         self.addCleanup(temp.cleanup)
         return base
+
+    def participant_activation_policy_transition(self, root: Path) -> None:
+        policy_path = root / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+        policy_path.write_text(
+            json.dumps(
+                VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor(),
+                indent=2,
+            )
+            + "\n",
+        )
+        contract_path = root / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["stagingParticipantGatewayBoundary"]["activationReady"] = True
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
 
     def signed_nostr_pin(self, root: Path) -> dict[str, object]:
         render = root / "reviewed-render/roebel-staging"
@@ -1163,6 +1160,98 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(policy, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "activation policy drift"):
             VERIFIER.verify_participant_gateway_static_policy(candidate, "reviewed-public-knowledge")
+
+    def test_exact_participant_activation_policy_transition_is_admitted_as_data(self) -> None:
+        base = self.current_base()
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.participant_activation_policy_transition(candidate)
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(result["renderFileSet"], VERIFIER.verify_tree(base)["renderFileSet"])
+        self.assertTrue(
+            VERIFIER.verify_tree(candidate)["stagingParticipantGatewayPolicy"]["activationReady"],
+        )
+
+    def test_participant_activation_policy_transition_rejects_each_fact_drift(self) -> None:
+        mutations = {
+            "api-origin": lambda value: value["clusterIdentity"].__setitem__("apiOrigin", "https://10.255.240.12:6443"),
+            "ca": lambda value: value["clusterIdentity"].__setitem__("caCertificateSha256", "sha256:" + "a" * 64),
+            "spki": lambda value: value["clusterIdentity"].__setitem__("apiServerSpkiSha256", "sha256:" + "b" * 64),
+            "cluster-uid": lambda value: value["clusterIdentity"].__setitem__("kubeSystemNamespaceUid", "00000000-0000-4000-8000-000000000001"),
+            "partial-cidrs": lambda value: value["endpoints"]["supabase"].__setitem__("ipv4Cidrs", ["104.18.38.10/32"]),
+            "reordered-cidrs": lambda value: value["endpoints"]["supabase"]["ipv4Cidrs"].reverse(),
+            "widened-cidrs": lambda value: value["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.1/32"),
+            "readiness": lambda value: value.__setitem__("activationReady", False),
+            "extra": lambda value: value.__setitem__("liveEvidence", {"trusted": True}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                base = self.current_base()
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                self.participant_activation_policy_transition(candidate)
+                path = candidate / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+                value = json.loads(path.read_text())
+                mutate(value)
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaisesRegex(VERIFIER.VerificationError, "activation policy drift"):
+                    VERIFIER.verify(candidate, base)
+
+    def test_participant_activation_policy_transition_rejects_partial_contract_and_reverse(self) -> None:
+        base = self.current_base()
+        temp, partial = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.participant_activation_policy_transition(partial)
+        contract_path = partial / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["stagingParticipantGatewayBoundary"]["activationReady"] = False
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository contract drift"):
+            VERIFIER.verify(partial, base)
+
+        ready_temp, ready_base = self.candidate()
+        self.addCleanup(ready_temp.cleanup)
+        self.participant_activation_policy_transition(ready_base)
+        current_temp, current_candidate = self.candidate()
+        self.addCleanup(current_temp.cleanup)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "transition base drift"):
+            VERIFIER.verify(current_candidate, ready_base)
+
+    def test_participant_activation_policy_transition_cannot_change_executable_render_or_live_files(self) -> None:
+        protected = (
+            "README.md",
+            "scripts/activate-staging-participant-gateway.py",
+            ".github/workflows/staging-participant-gateway-activation.yml",
+            "reviewed-render/roebel-staging/web/ingress.json",
+            "reviewed-render/roebel-staging/live-preconditions.json",
+        )
+        self.assertEqual(
+            VERIFIER.PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES,
+            {
+                "policy/repository-contract.json",
+                "policy/staging-participant-gateway-activation-policy.json",
+            },
+        )
+        for relative in protected:
+            with self.subTest(relative=relative):
+                base = self.current_base()
+                temp, candidate = self.candidate()
+                self.addCleanup(temp.cleanup)
+                self.participant_activation_policy_transition(candidate)
+                path = candidate / relative
+                path.write_text(path.read_text() + "\n")
+                with self.assertRaisesRegex(VERIFIER.VerificationError, "changed protected file"):
+                    VERIFIER.verify(candidate, base)
+
+        base = self.current_base()
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        self.participant_activation_policy_transition(candidate)
+        secret = candidate / "reviewed-render/roebel-staging/staging-participant-secret.json"
+        secret.write_text('{"apiVersion":"v1","kind":"Secret"}\n')
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository file set drift"):
+            VERIFIER.verify(candidate, base)
 
     def test_candidate_embedded_participant_live_evidence_api_is_closed(self) -> None:
         with self.assertRaisesRegex(
