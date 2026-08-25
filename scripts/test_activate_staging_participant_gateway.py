@@ -92,13 +92,14 @@ class ExecutorTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(MODULE.ActivationError, "runner/policy identity drift"):
             MODULE.bind_verified_policy_identity_v4(drifted)
-    def test_inert_dry_run_reports_every_blocker_without_runner(self):
+    def test_ready_dry_run_reports_no_blocker_without_runner(self):
         value = policy(); hashes = {"runner": sha()}
         result = MODULE.dry_run_plan(value, REV, hashes)
-        self.assertEqual(result["status"], "blocked-policy-incomplete")
-        self.assertFalse(result["activationReady"])
-        self.assertEqual(result["blockers"], list(MODULE.POLICY.activation_blockers(value)))
+        self.assertEqual(result["status"], "ready-no-cluster-plan")
+        self.assertTrue(result["activationReady"])
+        self.assertEqual(result["blockers"], [])
         self.assertFalse(result["kubernetesContacted"])
+        self.assertFalse(result["callerEvidenceAccepted"])
         self.assertEqual(result["protectedRunnerFileSha256"], hashes)
     def test_no_evidence_command_or_allowlist_surface_exists(self):
         source = Path(MODULE.__file__).read_text()
@@ -129,11 +130,13 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"pod-template-hash": "future"}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"k8s:io.cilium.k8s.policy.serviceaccount": MODULE.NAME}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertFalse(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"app.kubernetes.io/name": "other"}}, MODULE.POLICY.GATEWAY_LABELS))
-    def test_live_gate_fails_before_runner_or_kubeconfig_validation(self):
+    def test_live_gate_accepts_only_the_exact_protected_ready_policy(self):
         value = policy()
-        with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "activation blocked"):
-            MODULE.POLICY.assert_activation_ready(value)
-        self.assertFalse(value["activationReady"])
+        self.assertEqual(MODULE.POLICY.assert_activation_ready(value), value)
+        widened = copy.deepcopy(value)
+        widened["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.10/32")
+        with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "policy drift"):
+            MODULE.POLICY.assert_activation_ready(widened)
 
     def test_duplicate_json_keys_are_rejected_at_every_object_boundary(self):
         with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):

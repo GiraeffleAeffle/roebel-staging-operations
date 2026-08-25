@@ -968,7 +968,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             contract["stagingParticipantGatewayBoundary"]["activationPolicy"],
             "policy/staging-participant-gateway-activation-policy.json",
         )
-        self.assertFalse(contract["stagingParticipantGatewayBoundary"]["activationReady"])
+        self.assertTrue(contract["stagingParticipantGatewayBoundary"]["activationReady"])
         self.assertEqual(
             contract["stagingParticipantGatewayBoundary"]["trustedLiveFacts"],
             "protected-local-runner-out-of-band-only",
@@ -1128,31 +1128,22 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(VERIFIER.VerificationError, "key set invalid"):
             VERIFIER.verify_participant_gateway_secret_materialization({"config": config_without_mecky, "runtime": runtime}, "participant Secrets")
 
-    def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
-        self.assertFalse(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
-        pin = {
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
-            "component": "staging-participant-gateway",
-            "sourceRevision": "a" * 40,
-            "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,
-            "manifestDigest": "sha256:" + "b" * 64,
-            "workflowIdentity": VERIFIER.PARTICIPANT_GATEWAY_WORKFLOW,
-        }
-        with self.assertRaisesRegex(
-            VERIFIER.VerificationError,
-            "activation blocked: protected product, database and endpoint pins are incomplete",
-        ):
-            VERIFIER.verify_participant_gateway_runtime_pin(pin)
+    def test_participant_gateway_runtime_is_bound_to_exact_ready_policy(self) -> None:
+        self.assertTrue(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
+        pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin()
+        self.assertEqual(VERIFIER.verify_participant_gateway_runtime_pin(pin), pin)
+        widened = copy.deepcopy(pin)
+        widened["manifestDigest"] = "sha256:" + "b" * 64
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "runtime pin drift"):
+            VERIFIER.verify_participant_gateway_runtime_pin(widened)
 
-    def test_participant_render_is_rejected_while_static_policy_is_not_ready(self) -> None:
-        with self.assertRaisesRegex(
-            VERIFIER.VerificationError,
-            "activation blocked: protected product, database and endpoint pins are incomplete",
-        ):
-            VERIFIER.verify_participant_gateway_static_policy(
-                ROOT,
-                "reviewed-public-knowledge-participant-gateway",
-            )
+    def test_participant_render_policy_is_admitted_only_after_exact_pin_transition(self) -> None:
+        policy = VERIFIER.verify_participant_gateway_static_policy(
+            ROOT,
+            "reviewed-public-knowledge-participant-gateway",
+        )
+        self.assertTrue(policy["activationReady"])
+        self.assertEqual(VERIFIER.PARTICIPANT_POLICY.activation_blockers(policy), ())
 
     def test_candidate_cannot_widen_static_activation_policy(self) -> None:
         temp, candidate = self.candidate()
@@ -1163,6 +1154,31 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         path.write_text(json.dumps(policy, indent=2) + "\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "activation policy drift"):
             VERIFIER.verify_participant_gateway_static_policy(candidate, "reviewed-public-knowledge")
+
+    def test_candidate_cannot_change_any_reviewed_activation_fact_pin(self) -> None:
+        replacements = {
+            ("activationReady",): False,
+            ("clusterIdentity", "apiOrigin"): "https://10.255.240.12:6443",
+            ("clusterIdentity", "caCertificateSha256"): "sha256:" + "a" * 64,
+            ("clusterIdentity", "apiServerSpkiSha256"): "sha256:" + "b" * 64,
+            ("clusterIdentity", "kubeSystemNamespaceUid"): "00000000-0000-4000-8000-000000000001",
+            ("endpoints", "supabase", "ipv4Cidrs"): ["192.0.2.25/32"],
+        }
+        for fields, replacement in replacements.items():
+            with self.subTest(fields=fields):
+                temp, candidate = self.candidate()
+                try:
+                    path = candidate / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+                    policy = json.loads(path.read_text())
+                    target = policy
+                    for field in fields[:-1]:
+                        target = target[field]
+                    target[fields[-1]] = replacement
+                    path.write_text(json.dumps(policy, indent=2) + "\n")
+                    with self.assertRaisesRegex(VERIFIER.VerificationError, "activation policy drift"):
+                        VERIFIER.verify_participant_gateway_static_policy(candidate, "reviewed-public-knowledge")
+                finally:
+                    temp.cleanup()
 
     def test_candidate_embedded_participant_live_evidence_api_is_closed(self) -> None:
         with self.assertRaisesRegex(

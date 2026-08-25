@@ -448,7 +448,7 @@ preserving the Release Set head and every other existing file. Routine
 Web/Mecky promotions must preserve every signed-Nostr file and boundary
 byte-for-byte.
 
-## Bounded staging participant gateway (static policy reserved; blocked)
+## Bounded staging participant gateway (static policy activation-ready)
 
 The participant gateway is a separate staging write capability. It is never
 folded into the public Web Pod or normal Web/Mecky promotion. The protected
@@ -456,18 +456,18 @@ descriptor at `policy/staging-participant-gateway-activation-policy.json`
 contains only reviewable intent: fixed repositories and refs, endpoint
 origins, exact names and selectors, six method/path pairs, the per-controller
 HAProxy limit, Secret names/key sets, two Flux tenants, rollback rules and
-empty immutable publication/database slots. It contains no caller evidence,
+reviewed immutable publication/database/endpoint pins. It contains no caller evidence,
 live UID/resource version, controller status, DNS answer, certificate, Secret
 value or cluster-wide inventory hash.
 
-`activationReady` is intentionally `false`. Admission accepts this inert
-policy-only repository, but rejects every participant render or activation
-until a protected change fills the exact source/tree/image/workflow,
-migration/schema/deactivation hashes and reviewed Supabase `/32` set, then
-sets `activationReady` to `true`. The later ordinary render is deterministic
-from that protected policy and cannot approve itself. Its runtime pin contains
-only those immutable policy values and the policy digest; live facts remain an
-out-of-band, five-minute runner receipt.
+`activationReady` is `true` only because a separate protected transition pins
+the exact cluster API origin, cluster CA digest, API-server SPKI digest,
+immutable `kube-system` namespace UID, and reviewed Supabase IPv4 `/32` set in
+addition to the source/tree/image/workflow and migration/schema/deactivation
+hashes. The later ordinary render is deterministic from that protected policy
+and cannot approve itself. Its runtime pin contains only immutable policy
+values and the policy digest; fresh runtime facts remain an out-of-band,
+five-minute runner receipt.
 
 The product source pins have one reproducible meaning. `sourceTreeSha256` is
 SHA-256 over the exact raw NUL-delimited bytes from
@@ -673,12 +673,14 @@ authority stay outside Git and outside Flux.
 
 ## Staging participant gateway activation policy
 
-The participant gateway is still an inert, protected reservation. The static
-descriptor in `policy/staging-participant-gateway-activation-policy.json`
-contains no caller-provided or live cluster evidence and remains
-`activationReady: false` until the exact product, migration, schema, endpoint,
-and cluster-identity pins are reviewed into the protected base. The GitHub
-workflow has no kubeconfig and can only test and emit a no-cluster plan.
+The participant gateway remains a protected reservation with no rendered or
+live workload in this transition. The static descriptor in
+`policy/staging-participant-gateway-activation-policy.json` contains no
+caller-provided evidence or credentials. Its exact product, migration, schema,
+endpoint, and cluster-identity pins are now reviewed and
+`activationReady: true`. The GitHub workflow still has no kubeconfig and can
+only test and emit a no-cluster plan; readiness alone cannot contact or mutate
+the cluster.
 
 Once those pins exist, the separate protected local runner is designed to:
 

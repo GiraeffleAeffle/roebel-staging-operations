@@ -2,8 +2,8 @@
 """Protected static policy for the Röbel staging participant gateway.
 
 This module is the shared seam between protected admission and the local
-activation runner.  Git contains product intent, exact identities and empty
-immutable publication/database slots.  It never contains live Kubernetes
+activation runner.  Git contains product intent, exact identities and reviewed
+immutable publication/database/endpoint pins.  It never contains live Kubernetes
 UIDs, resource versions, controller status, DNS observations or caller-supplied
 evidence.  Those facts belong to a short-lived runner receipt validated
 against this policy after the policy is activation-ready.
@@ -141,7 +141,7 @@ def _static_descriptor() -> dict[str, Any]:
     workbench_reconciler = "roebel-staging-participant-workbench-ingress-reconciler"
     return {
         "schemaVersion": POLICY_SCHEMA,
-        "activationReady": False,
+        "activationReady": True,
         "authority": {
             "environment": "staging",
             "civicAuthority": "none",
@@ -152,10 +152,10 @@ def _static_descriptor() -> dict[str, Any]:
             "treasuryMutation": False,
         },
         "clusterIdentity": {
-            "apiOrigin": None,
-            "caCertificateSha256": None,
-            "apiServerSpkiSha256": None,
-            "kubeSystemNamespaceUid": None,
+            "apiOrigin": "https://10.255.240.11:6443",
+            "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+            "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+            "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
         },
         "repositories": {
             "operations": {
@@ -207,7 +207,7 @@ def _static_descriptor() -> dict[str, Any]:
                 "httpsOrigin": "https://vdlksxpihmoumebjpeix.supabase.co",
                 "projectRef": "vdlksxpihmoumebjpeix",
                 "port": 443,
-                "ipv4Cidrs": [],
+                "ipv4Cidrs": ["104.18.38.10/32", "172.64.149.246/32"],
             },
             "workbench": {
                 "url": (
@@ -452,7 +452,7 @@ def activation_policy_sha256(policy: dict[str, Any] | None = None) -> str:
 
 
 def activation_blockers(policy: dict[str, Any] | None = None) -> tuple[str, ...]:
-    """Return every intentionally unfilled immutable activation slot."""
+    """Return any immutable activation slot still missing from protected Git."""
     value = STATIC_ACTIVATION_POLICY if policy is None else policy
     pins = value["productPins"]
     slots = {
@@ -1335,7 +1335,7 @@ def bind_create_result(
 def validate_trusted_live_facts(value: Any, *, now: datetime | None = None) -> dict[str, Any]:
     """Validate the runner receipt envelope; section semantics stay runner-owned.
 
-    This function intentionally cannot make an incomplete static policy ready.
+    This function cannot make the static policy ready; only protected Git can.
     Once the protected slots are filled, it enforces a short validity window,
     exact policy binding and a closed section set.  Individual sections are
     compared to the static descriptor with the helpers above by the executor.

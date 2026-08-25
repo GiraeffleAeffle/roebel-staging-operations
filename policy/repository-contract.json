@@ -69,7 +69,7 @@
   },
   "stagingParticipantGatewayBoundary": {
     "activationPolicy": "policy/staging-participant-gateway-activation-policy.json",
-    "activationReady": false,
+    "activationReady": true,
     "component": "staging-participant-gateway",
     "exactGatewayPaths": [
       "/api/staging-participant/v1/status",

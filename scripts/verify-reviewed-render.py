@@ -590,7 +590,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
         },
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
-            "activationReady": False,
+            "activationReady": True,
             "component": "staging-participant-gateway",
             "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
             "methodPathMatrix": {
