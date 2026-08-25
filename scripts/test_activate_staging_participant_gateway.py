@@ -95,4 +95,18 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(path, f"/apis/networking.k8s.io/v1/namespaces/{MODULE.NAMESPACE}/ingresses/{MODULE.NAME}")
         self.assertIn("resourceVersion", payload); self.assertIn("\"uid\":\"u\"", payload)
 
+    def test_definite_create_conflict_is_never_treated_as_uncertain(self):
+        class Conflict(MODULE.Runner):
+            def run(self, args, *, input_text=None):
+                return MODULE.Result(1, "", "Error from server (AlreadyExists): object exists")
+        with self.assertRaises(MODULE.CreateConflictError):
+            MODULE.checked(Conflict(), ["kubectl", "create"], "create NetworkPolicy", "{}")
+
+    def test_only_transport_failure_enters_uncertain_create_class(self):
+        class TimedOut(MODULE.Runner):
+            def run(self, args, *, input_text=None):
+                return MODULE.Result(124, "", "timeout after 30s")
+        with self.assertRaises(MODULE.TransportUncertainError):
+            MODULE.checked(TimedOut(), ["kubectl", "create"], "create NetworkPolicy", "{}")
+
 if __name__ == "__main__": unittest.main()

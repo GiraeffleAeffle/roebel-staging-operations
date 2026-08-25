@@ -7,7 +7,7 @@ fixed descriptor named below.  Until then *both* modes stop before contacting
 Kubernetes.  The live mode is consequently safe to ship before its policy.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, json, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, datetime as dt, hashlib, json, os, re, selectors, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,8 @@ POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 
 class ActivationError(RuntimeError): pass
+class CreateConflictError(ActivationError): pass
+class TransportUncertainError(ActivationError): pass
 def canonical(v: Any) -> str: return json.dumps(v, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 def digest(v: Any) -> str: return "sha256:" + hashlib.sha256(canonical(v).encode()).hexdigest()
 def bytes_digest(v: bytes) -> str: return "sha256:" + hashlib.sha256(v).hexdigest()
@@ -67,7 +69,19 @@ def checked(r: Runner, args: list[str], label: str, input_text: str | None = Non
     x = r.run(args, input_text=input_text)
     if x.code:
         text = (x.out + "\n" + x.err).strip()
-        if "AlreadyExists" in text or "409" in text: raise ActivationError(f"{label}: create conflict; adoption forbidden")
+        if "AlreadyExists" in text or "409" in text: raise CreateConflictError(f"{label}: create conflict; adoption forbidden")
+        lowered = text.lower()
+        transport_markers = (
+            "context deadline exceeded",
+            "connection reset",
+            "connection refused",
+            "connection timed out",
+            "i/o timeout",
+            "tls handshake timeout",
+            "unexpected eof",
+        )
+        if x.code == 124 or any(marker in lowered for marker in transport_markers):
+            raise TransportUncertainError(f"{label}: API transport outcome uncertain: {text[:320]}")
         raise ActivationError(f"{label}: {text[:400]}")
     return x.out
 def obj(raw: str, label: str) -> dict[str, Any]:
@@ -196,17 +210,25 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
     """
     # Let kubectl choose the port atomically; parsing its loopback-only startup
     # line avoids reserving and releasing a raceable port in this process.
-    process = subprocess.Popen(kb(kube) + ["proxy", "--port=0", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    process = subprocess.Popen(kb(kube) + ["proxy", "--port=0", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    selector = selectors.DefaultSelector()
     try:
-        deadline = time.monotonic() + 10; port: int | None = None
+        require(process.stdout is not None, "kubectl proxy output pipe unavailable")
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + 10; port: int | None = None; output = b""
         while time.monotonic() < deadline:
             if process.poll() is not None: raise ActivationError("kubectl proxy terminated before raw rollback delete")
-            line = process.stdout.readline() if process.stdout else ""
-            if "Starting to serve on 127.0.0.1:" in line:
-                try: port = int(line.rsplit(":", 1)[1].strip())
+            remaining = max(0.0, deadline - time.monotonic())
+            events = selector.select(timeout=min(0.25, remaining))
+            if not events: continue
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk: continue
+            output = (output + chunk)[-16384:]
+            match = re.search(rb"Starting to serve on 127\.0\.0\.1:(\d+)", output)
+            if match:
+                try: port = int(match.group(1))
                 except ValueError as exc: raise ActivationError("kubectl proxy emitted malformed loopback port") from exc
                 break
-            time.sleep(0.02)
         require(port is not None, "kubectl proxy did not become ready for raw rollback delete")
         request = urllib.request.Request(f"http://127.0.0.1:{port}{resource_path}", data=payload.encode(), headers={"Content-Type": "application/json"}, method="DELETE")
         try:
@@ -214,6 +236,7 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
             with opener.open(request, timeout=15) as response: require(200 <= response.status < 300, "raw rollback delete did not return success")
         except urllib.error.HTTPError as exc: raise ActivationError(f"raw rollback delete rejected by Kubernetes: HTTP {exc.code}") from exc
     finally:
+        selector.close()
         process.terminate()
         try: process.wait(timeout=5)
         except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
@@ -253,13 +276,19 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
             uncertain.append(kind)
             try:
                 item = obj(checked(r, kb(kube) + ["-n", NAMESPACE, "create", "-f", "-", "-o", "json"], f"create {kind}", rendered[file].decode()), f"created {kind}")
-            except ActivationError:
+            except TransportUncertainError:
                 # A transport loss can occur after API commit.  Discover only
                 # the exact desired object; any ambiguity is retained for the
                 # rollback path and can never be reported as success.
                 discovered = live_obj(r, kube, kind.lower(), NAME, NAMESPACE)
                 require(stable_object(discovered) == stable_object(desired), f"uncertain {kind} create is not the exact desired object")
                 item = discovered
+            except ActivationError:
+                # A definite HTTP rejection (especially 409 AlreadyExists) is
+                # not a response-loss case.  Nothing may be discovered or
+                # adopted on that path.
+                uncertain.remove(kind)
+                raise
             require(item.get("kind") == kind and item.get("metadata", {}).get("name") == NAME and item.get("metadata", {}).get("namespace") == NAMESPACE and item.get("metadata", {}).get("uid") and item.get("metadata", {}).get("resourceVersion"), f"atomic create response invalid for {kind}")
             require(stable_object(item) == stable_object(desired), f"admitted {kind} differs from protected policy object")
             created.append((kind, item))
