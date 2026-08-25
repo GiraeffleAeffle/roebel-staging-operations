@@ -7,7 +7,7 @@ fixed descriptor named below.  Until then *both* modes stop before contacting
 Kubernetes.  The live mode is consequently safe to ship before its policy.
 """
 from __future__ import annotations
-import argparse, datetime as dt, hashlib, importlib.util, json, os, re, selectors, signal, socket, ssl, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import argparse, base64, datetime as dt, hashlib, importlib.util, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,9 +70,22 @@ def checked(r: Runner, args: list[str], label: str, input_text: str | None = Non
     x = r.run(args, **kwargs)
     if x.code: raise _checked_error(x, label)
     return x.out
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result: raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+def json_value(raw: str, label: str) -> Any:
+    try: value = json.loads(raw, object_pairs_hook=_unique_object)
+    except ValueError as exc: raise ActivationError(f"{label}: invalid or duplicate-key JSON") from exc
+    return value
+
 def obj(raw: str, label: str) -> dict[str, Any]:
-    try: value = json.loads(raw)
+    try: value = json.loads(raw, object_pairs_hook=_unique_object)
     except json.JSONDecodeError as exc: raise ActivationError(f"{label}: invalid JSON") from exc
+    except ValueError as exc: raise ActivationError(f"{label}: duplicate JSON key") from exc
     require(isinstance(value, dict), f"{label}: JSON object required"); return value
 def kb(kubeconfig: str) -> list[str]: return ["kubectl", "--kubeconfig", kubeconfig]
 def get(r: Runner, args: list[str], label: str) -> dict[str, Any]: return obj(checked(r, args + ["-o", "json"], label), label)
@@ -122,11 +135,134 @@ def dry_run_plan(p: dict[str, Any], rev: str, runner_hashes: dict[str, str]) -> 
         "callerEvidenceAccepted": False,
     }
 
-def atomic_receipt(path: Path, value: dict[str, Any]) -> None:
-    public_projection(value); value["canonicalSha256"] = digest(value)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as f: f.write(canonical(value) + "\n"); tmp = Path(f.name)
-    os.replace(tmp, path)
+class ReceiptSink:
+    """A pre-reserved, non-overwriting, durably committed receipt target."""
+    def __init__(self, path: Path, device: int, inode: int):
+        self.path, self.device, self.inode = path, device, inode
+
+    @classmethod
+    def reserve(cls, path: Path) -> "ReceiptSink":
+        path = Path(os.path.realpath(os.path.abspath(path))); parent = path.parent
+        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        parent_info = os.lstat(parent)
+        require(parent.resolve() == parent and stat.S_ISDIR(parent_info.st_mode) and parent_info.st_uid == os.geteuid() and stat.S_IMODE(parent_info.st_mode) & 0o022 == 0, "receipt parent must be an owned non-writable real directory")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600); os.fsync(fd); info = os.fstat(fd)
+        finally: os.close(fd)
+        directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        return cls(path, info.st_dev, info.st_ino)
+
+    def commit(self, value: dict[str, Any]) -> None:
+        public_projection(value); final = dict(value); final["canonicalSha256"] = digest(value)
+        current = os.lstat(self.path)
+        require(stat.S_ISREG(current.st_mode) and current.st_dev == self.device and current.st_ino == self.inode, "reserved receipt target identity changed")
+        fd, raw_name = tempfile.mkstemp(prefix=".participant-receipt-", dir=self.path.parent)
+        tmp = Path(raw_name)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb", closefd=True) as stream:
+                stream.write((canonical(final) + "\n").encode()); stream.flush(); os.fsync(stream.fileno())
+            os.replace(tmp, self.path)
+            replaced = os.lstat(self.path)
+            self.device, self.inode = replaced.st_dev, replaced.st_ino
+            directory = os.open(self.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try: os.fsync(directory)
+            finally: os.close(directory)
+            committed = os.lstat(self.path)
+            require(stat.S_ISREG(committed.st_mode) and stat.S_IMODE(committed.st_mode) == 0o600, "committed receipt mode drift")
+            self.device, self.inode = committed.st_dev, committed.st_ino
+        finally:
+            try: tmp.unlink()
+            except FileNotFoundError: pass
+
+@dataclass
+class KubeconfigSnapshot:
+    path: Path
+    directory: Path
+    api_origin: str
+    hostname: str
+    port: int
+    tls_server_name: str
+    ca_pem: bytes
+    ca_sha256: str
+
+    def close(self) -> None:
+        try: self.path.unlink()
+        except FileNotFoundError: pass
+        try: self.directory.rmdir()
+        except FileNotFoundError: pass
+
+def _api_origin(server: str) -> tuple[str, str, int]:
+    try: parsed = urllib.parse.urlsplit(server)
+    except ValueError as exc: raise ActivationError("Kubernetes API server URL invalid") from exc
+    require(
+        parsed.scheme == "https" and parsed.hostname is not None
+        and parsed.username is None and parsed.password is None
+        and parsed.query == "" and parsed.fragment == "" and parsed.path in {"", "/"},
+        "Kubernetes API server must be an HTTPS origin without userinfo, path, query, or fragment",
+    )
+    try: port = parsed.port or 443
+    except ValueError as exc: raise ActivationError("Kubernetes API server port invalid") from exc
+    host = parsed.hostname.lower(); bracketed = f"[{host}]" if ":" in host else host
+    return f"https://{bracketed}" + ("" if port == 443 else f":{port}"), host, port
+
+def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
+    """Flatten one explicit kubeconfig into an owned 0600 one-use snapshot."""
+    source = Path(explicit).absolute(); info = os.lstat(source)
+    require(stat.S_ISREG(info.st_mode) and not source.is_symlink(), "explicit kubeconfig must be a regular non-symlink file")
+    flattened_result = r.run(["kubectl", "--kubeconfig", str(source), "config", "view", "--raw", "--flatten", "--minify", "-o", "json"])
+    require(flattened_result.code == 0, "explicit kubeconfig flattening failed")
+    flattened = flattened_result.out
+    config = obj(flattened, "flattened kubeconfig")
+    clusters, contexts, users = config.get("clusters"), config.get("contexts"), config.get("users")
+    require(all(isinstance(value, list) and len(value) == 1 for value in (clusters, contexts, users)), "flattened kubeconfig must contain exactly one cluster, context, and user")
+    require(config.get("current-context") == contexts[0].get("name"), "flattened kubeconfig current context drift")
+    cluster = clusters[0].get("cluster", {}); require(isinstance(cluster, dict), "flattened kubeconfig cluster absent")
+    require(not cluster.get("insecure-skip-tls-verify") and "proxy-url" not in cluster, "insecure or proxied Kubernetes API configuration forbidden")
+    origin, hostname, port = _api_origin(cluster.get("server", ""))
+    encoded_ca = cluster.get("certificate-authority-data")
+    require(isinstance(encoded_ca, str) and encoded_ca and "certificate-authority" not in cluster, "flattened kubeconfig must embed its CA")
+    try: ca_pem = base64.b64decode(encoded_ca, validate=True)
+    except (ValueError, TypeError) as exc: raise ActivationError("flattened kubeconfig CA data invalid") from exc
+    require(b"BEGIN CERTIFICATE" in ca_pem and len(ca_pem) <= 1024 * 1024, "flattened kubeconfig CA certificate invalid")
+    tls_name = cluster.get("tls-server-name", hostname)
+    require(isinstance(tls_name, str) and tls_name and not any(ch.isspace() for ch in tls_name), "Kubernetes TLS server name invalid")
+    user = users[0].get("user", {}); require(isinstance(user, dict) and user, "flattened kubeconfig user absent")
+    forbidden_user_fields = {"exec", "auth-provider", "client-certificate", "client-key", "tokenFile"}
+    require(not (forbidden_user_fields & set(user)), "flattened kubeconfig still depends on external credential execution or files")
+    directory = Path(tempfile.mkdtemp(prefix="participant-kubeconfig-")); os.chmod(directory, 0o700)
+    path = directory / "config"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        raw = canonical(config).encode() + b"\n"
+        with os.fdopen(fd, "wb", closefd=True) as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        fd = -1
+        parent = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(parent)
+        finally: os.close(parent)
+    finally:
+        if fd >= 0: os.close(fd)
+    return KubeconfigSnapshot(path, directory, origin, hostname, port, tls_name, ca_pem, bytes_digest(ca_pem))
+
+def _api_server_spki_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> str:
+    context = ssl.create_default_context(cadata=snapshot.ca_pem.decode("ascii"))
+    with socket.create_connection((snapshot.hostname, snapshot.port), timeout=timeout) as connection:
+        with context.wrap_socket(connection, server_hostname=snapshot.tls_server_name) as secured:
+            certificate = secured.getpeercert(binary_form=True)
+    require(isinstance(certificate, bytes) and certificate, "Kubernetes API TLS certificate absent")
+    first = subprocess.run(["openssl", "x509", "-inform", "DER", "-pubkey", "-noout"], input=certificate, capture_output=True, check=False, timeout=timeout)
+    require(first.returncode == 0 and first.stdout, "Kubernetes API certificate SPKI extraction failed")
+    second = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"], input=first.stdout, capture_output=True, check=False, timeout=timeout)
+    require(second.returncode == 0 and second.stdout, "Kubernetes API SPKI normalization failed")
+    return bytes_digest(second.stdout)
 def raw_delete(kube: str, resource_path: str, payload: str) -> None:
     """Issue a real Kubernetes HTTP DELETE through a short-lived kubectl proxy.
 
@@ -256,20 +392,75 @@ def render_v4(rev: str, p: dict[str, Any]) -> dict[str, dict[str, Any]]:
     require(set(result) == set(logical.values()), "participant render object inventory drift")
     return result
 
-def create_v4(r: Runner, kubeconfig: str, logical_name: str, rendered: dict[str, Any]) -> CreatedV4:
-    desired = rendered["desired"]; metadata = desired["metadata"]
+def _definite_create_conflict(result: Result) -> bool:
+    text = (result.out + "\n" + result.err).lower()
+    return result.code != 0 and ("alreadyexists" in text or re.search(r"\b409\b", text) is not None)
+
+def exact_absence_preflight_v4(r: Runner, kubeconfig: str, rendered: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Reserve the transaction only when all six exact names are absent."""
+    require(len(rendered) == 6, "exact six-target render inventory required")
+    targets = []
+    for logical_name in sorted(rendered):
+        desired = rendered[logical_name]["desired"]; metadata = desired["metadata"]
+        found = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
+        require(found is None, f"activation target already exists; adoption forbidden: {logical_name}")
+        targets.append({"logicalName": logical_name, "kind": desired["kind"], "namespace": metadata["namespace"], "name": metadata["name"], "absent": True})
+    return {"status": "all-six-exact-target-names-absent", "targets": targets}
+
+def create_v4(r: Runner, kubeconfig: str, logical_name: str, rendered: dict[str, Any], operation_nonce: str) -> CreatedV4:
+    static_desired = rendered["desired"]
+    desired = _policy_call(POLICY.with_operation_nonce, static_desired, operation_nonce)
+    metadata = desired["metadata"]
     args = kb(kubeconfig) + ["-n", metadata["namespace"], "create", "-f", "-", "-o", "json"]
-    outcome = "http-201-created"
-    try: observed = obj(checked(r, args, f"create {logical_name}", canonical(desired)), f"created {logical_name}")
-    except CreateConflictError: raise
-    except TransportUncertainError:
-        # Discovery is reserved solely for response loss after a sent create.
-        try: observed = live_obj(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
-        except Exception as exc: raise TransportUncertainError(f"{logical_name}: transport-uncertain create could not be discovered") from exc
-        outcome = "transport-uncertain-after-send"
-    receipt = _policy_call(POLICY.bind_create_result, outcome=outcome, observed=observed, desired=desired, label=logical_name)
-    receipt |= {"protectedRenderPath": rendered["path"], "protectedRenderBlobSha256": rendered["blobSha256"]}
-    return CreatedV4(logical_name, desired, observed, receipt)
+    response = r.run(args, input_text=canonical(desired))
+    if _definite_create_conflict(response):
+        # A lost response from an earlier actor is intentionally not inferred:
+        # without this run's nonce in an admitted response it is never owned.
+        raise CreateConflictError(f"create {logical_name}: create conflict; adoption forbidden")
+    outcome = "http-201-created"; observed: dict[str, Any] | None = None
+    if response.code == 0:
+        try:
+            candidate = obj(response.out, f"created {logical_name}")
+            _policy_call(POLICY.bind_create_result, outcome=outcome, observed=candidate, desired=desired, label=logical_name, operation_nonce=operation_nonce)
+            observed = candidate
+        except Exception:
+            # Once the create was sent, even rc=0 with a malformed/unbindable
+            # response is uncertain and must be discovered or rolled back.
+            observed = None
+    if observed is None:
+        outcome = "post-send-uncertain-discovered"
+        try:
+            discovered = live_obj(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
+            _policy_call(POLICY.bind_create_result, outcome=outcome, observed=discovered, desired=desired, label=logical_name, operation_nonce=operation_nonce)
+            observed = discovered
+        except Exception as exc:
+            raise TransportUncertainError(f"{logical_name}: post-send create outcome unresolved") from exc
+    receipt = _policy_call(POLICY.bind_create_result, outcome=outcome, observed=observed, desired=desired, label=logical_name, operation_nonce=operation_nonce)
+    receipt |= {"protectedRenderPath": rendered["path"], "protectedRenderBlobSha256": rendered["blobSha256"], "temporaryNonceRemoved": False}
+    return CreatedV4(logical_name, static_desired, observed, receipt)
+
+def remove_operation_nonce_v4(r: Runner, kubeconfig: str, created: CreatedV4, operation_nonce: str) -> dict[str, Any]:
+    metadata = created.observed.get("metadata", {}); uid, rv = metadata.get("uid"), metadata.get("resourceVersion")
+    require(isinstance(uid, str) and uid and isinstance(rv, str) and rv.isdigit(), f"{created.logical_name} nonce-removal preconditions absent")
+    annotation_path = "/metadata/annotations/" + POLICY.OPERATION_NONCE_ANNOTATION.replace("~", "~0").replace("/", "~1")
+    patch = [
+        {"op": "test", "path": "/metadata/uid", "value": uid},
+        {"op": "test", "path": "/metadata/resourceVersion", "value": rv},
+        {"op": "test", "path": annotation_path, "value": operation_nonce},
+        {"op": "remove", "path": annotation_path},
+    ]
+    desired_metadata = created.desired["metadata"]
+    raw = checked(
+        r,
+        kb(kubeconfig) + ["-n", desired_metadata["namespace"], "patch", created.desired["kind"].lower(), desired_metadata["name"], "--type=json", "-p", canonical(patch), "-o", "json"],
+        f"{created.logical_name} remove operation nonce",
+    )
+    after = obj(raw, f"{created.logical_name} nonce-removal response")
+    require(after.get("metadata", {}).get("uid") == uid, f"{created.logical_name} UID changed during nonce removal")
+    _policy_call(POLICY.require_semantically_equal, after, created.desired, f"{created.logical_name} post-nonce semantics")
+    created.observed = after; created.receipt["temporaryNonceRemoved"] = True
+    created.receipt["postNonceRemovalResourceVersion"] = after.get("metadata", {}).get("resourceVersion")
+    return after
 
 def _target_live(r: Runner, kubeconfig: str, target: dict[str, str]) -> dict[str, Any]:
     return live_obj(r, kubeconfig, target["kind"].lower(), target["name"], target["namespace"])
@@ -362,13 +553,32 @@ def secret_materialization_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> 
         result[label] = {"name": reference["name"], "namespace": reference["namespace"], "uid": uid, "resourceVersion": rv, "keys": sorted(keys), "valuesRead": False}
     return {"status": "exact-keysets-present-without-reading-values", "secrets": result}
 
-def cluster_binding_v4(r: Runner, kubeconfig: str) -> dict[str, Any]:
-    context = checked(r, kb(kubeconfig) + ["config", "current-context"], "Kubernetes current context").strip()
-    server = checked(r, kb(kubeconfig) + ["config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}"], "Kubernetes cluster server").strip()
-    namespace = obj(checked(r, kb(kubeconfig) + ["get", "namespace", "kube-system", "-o", "json"], "kube-system namespace identity"), "kube-system namespace")
-    uid = namespace.get("metadata", {}).get("uid")
-    require(context and server.startswith("https://") and uid, "Kubernetes cluster binding incomplete")
-    return {"context": context, "server": server, "kubeSystemNamespaceUid": uid, "kubeSystemNamespaceResourceVersion": namespace.get("metadata", {}).get("resourceVersion")}
+def require_same_secret_materialization_v4(before: dict[str, Any], after: dict[str, Any], label: str) -> None:
+    require(after == before, f"Secret identity/keyset/resourceVersion changed {label}")
+
+def cluster_binding_v4(r: Runner, snapshot: KubeconfigSnapshot, p: dict[str, Any]) -> dict[str, Any]:
+    """Bind the snapshotted credentials to the protected cluster identity."""
+    expected = p["clusterIdentity"]
+    require(snapshot.api_origin == expected["apiOrigin"], "Kubernetes API origin differs from protected identity")
+    require(snapshot.ca_sha256 == expected["caCertificateSha256"], "Kubernetes CA differs from protected identity")
+    spki = _api_server_spki_v4(snapshot, p["httpBoundary"]["timeoutsSeconds"]["routeRequest"])
+    require(spki == expected["apiServerSpkiSha256"], "Kubernetes API SPKI differs from protected identity")
+    namespace = obj(checked(r, kb(str(snapshot.path)) + ["get", "namespace", "kube-system", "-o", "json"], "kube-system namespace identity"), "kube-system namespace")
+    metadata = namespace.get("metadata", {}); uid, rv = metadata.get("uid"), metadata.get("resourceVersion")
+    require(uid == expected["kubeSystemNamespaceUid"] and isinstance(rv, str) and rv.isdigit(), "Kubernetes immutable cluster identifier drift")
+    return {
+        "apiOrigin": snapshot.api_origin,
+        "caCertificateSha256": snapshot.ca_sha256,
+        "apiServerSpkiSha256": spki,
+        "kubeSystemNamespaceUid": uid,
+        "kubeSystemNamespaceResourceVersion": rv,
+        "credentialsIncluded": False,
+        "kubeconfigPathIncluded": False,
+    }
+
+def require_same_cluster_identity_v4(before: dict[str, Any], after: dict[str, Any], label: str) -> None:
+    keys = ("apiOrigin", "caCertificateSha256", "apiServerSpkiSha256", "kubeSystemNamespaceUid")
+    require(all(before.get(key) == after.get(key) for key in keys), f"protected cluster identity changed {label}")
 
 def endpoint_facts_v4(p: dict[str, Any]) -> dict[str, Any]:
     """Resolve and TLS-check only the two fixed policy origins."""
@@ -409,14 +619,33 @@ def anonymous_publication_v4(p: dict[str, Any]) -> dict[str, Any]:
         require(match is not None, "anonymous registry challenge drift"); realm, service, scope = match.groups()
         require(realm == "https://ghcr.io/token" and service == "ghcr.io" and scope == f"repository:{image}:pull", "anonymous registry authority/scope drift")
         token_url = realm + "?" + urllib.parse.urlencode({"service": service, "scope": scope})
-        with opener.open(token_url, timeout=timeout) as token_response: token = json.loads(token_response.read()).get("token")
+        with opener.open(token_url, timeout=timeout) as token_response:
+            try: token_raw = token_response.read().decode("utf-8")
+            except UnicodeDecodeError as exc: raise ActivationError("anonymous registry token response is not UTF-8") from exc
+            token = obj(token_raw, "anonymous registry token response").get("token")
         require(isinstance(token, str) and token, "anonymous registry token absent")
         response = opener.open(urllib.request.Request(url, headers=headers | {"Authorization": "Bearer " + token}), timeout=timeout)
     with response:
         body = response.read(); header_digest = response.headers.get("Docker-Content-Digest")
     observed = "sha256:" + hashlib.sha256(body).hexdigest()
     require(observed == manifest and (header_digest is None or header_digest == manifest), "anonymous manifest digest drift")
-    return {"repository": repository, "manifestDigest": manifest, "anonymousCredentialInput": False, "anonymousBearerExchangeAllowed": True, "manifestBodySha256": observed, "dockerContentDigest": header_digest or observed, "sourceRevision": pins["sourceRevision"], "sourceTreeSha256": pins["sourceTreeSha256"], "workflowIdentity": pins["workflowIdentity"], "workflowSha256": pins["workflowSha256"]}
+    return {
+        "repository": repository,
+        "manifestDigest": manifest,
+        "anonymousCredentialInput": False,
+        "anonymousBearerExchangeAllowed": True,
+        "manifestBodySha256": observed,
+        "dockerContentDigest": header_digest or observed,
+        "verificationLevel": "anonymous-registry-manifest-digest-only",
+        "cryptographicPublicationProvenanceVerified": False,
+        "sbomOrAttestationVerified": False,
+        "reviewedStaticPins": {
+            "sourceRevision": pins["sourceRevision"],
+            "sourceTreeSha256": pins["sourceTreeSha256"],
+            "workflowIdentity": pins["workflowIdentity"],
+            "workflowSha256": pins["workflowSha256"],
+        },
+    }
 
 def runtime_image_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> dict[str, Any]:
     selector = ",".join(f"{key}={value}" for key, value in sorted(POLICY.GATEWAY_LABELS.items()))
@@ -611,16 +840,94 @@ def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: d
         "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
     }
 
+def _route_request_v4(origin: str, method: str, path: str, headers: dict[str, str], body: bytes | None, timeout: int | float) -> dict[str, Any]:
+    require(origin == "https://roebel-web.staging.agentcart.eu" and path.startswith("/"), "route request authority/path drift")
+    url = origin + path; request = urllib.request.Request(url, data=body, headers=headers, method=method)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    with response:
+        raw = response.read(8193); status = response.status
+        require(response.geturl() == url and len(raw) <= 8192, "public route redirected or response too large")
+        normalized_headers = {key.lower(): value.strip() for key, value in response.headers.items()}
+    try: decoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc: raise ActivationError("public route response is not UTF-8") from exc
+    return {"status": status, "headers": normalized_headers, "body": decoded}
+
+def _require_json_response_v4(observed: dict[str, Any], expected_status: int, expected_body: dict[str, Any], label: str) -> None:
+    require(observed["status"] == expected_status, f"{label} status drift")
+    media_type = observed["headers"].get("content-type", "").split(";", 1)[0].strip().lower()
+    require(media_type == "application/json", f"{label} content type drift")
+    require(obj(observed["body"], label + " body") == expected_body, f"{label} body drift")
+
+def _require_cors_v4(observed: dict[str, Any], origin: str, *, preflight: bool) -> None:
+    headers = observed["headers"]
+    require(headers.get("access-control-allow-origin") == origin and headers.get("access-control-allow-credentials") == "true", "route CORS origin/credentials drift")
+    vary = {item.strip().lower() for item in headers.get("vary", "").split(",") if item.strip()}
+    require("origin" in vary, "route CORS Vary drift")
+    if preflight:
+        methods = {item.strip().upper() for item in headers.get("access-control-allow-methods", "").split(",") if item.strip()}
+        allowed_headers = {item.strip().lower() for item in headers.get("access-control-allow-headers", "").split(",") if item.strip()}
+        require(methods == {"GET", "POST", "OPTIONS"} and allowed_headers == {"content-type"} and headers.get("access-control-max-age") == "600", "route CORS preflight contract drift")
+
 def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
-    boundary = p["httpBoundary"]; start = time.monotonic(); result = []
-    for expectation in boundary["expectations"]:
-        require(time.monotonic() - start < boundary["timeoutsSeconds"]["routeMatrixTotal"], "route matrix total timeout")
-        method, path, status = expectation["method"], expectation["path"], expectation["status"]
-        args = ["curl", "--max-time", str(boundary["timeoutsSeconds"]["routeRequest"]), "--silent", "--show-error", "--output", os.devnull, "--write-out", "%{http_code}", "--request", method]
-        if method == "POST": args += ["--header", "content-type: application/json", "--data", "{}"]
-        if method == "OPTIONS": args += ["--header", "Origin: https://roebel-web.staging.agentcart.eu", "--header", "Access-Control-Request-Method: POST"]
-        observed = checked(r, args + [p["endpoints"]["browserOrigin"].rstrip("/") + path], f"route {method} {path}", timeout=boundary["timeoutsSeconds"]["routeRequest"] + 2).strip()
-        require(observed == str(status), f"route {method} {path} status drift"); result.append(expectation)
+    del r  # The fixed urllib transport deliberately cannot inherit shell proxy state.
+    boundary = p["httpBoundary"]; timeout = boundary["timeoutsSeconds"]["routeRequest"]
+    total_deadline = time.monotonic() + boundary["timeoutsSeconds"]["routeMatrixTotal"]
+    origin = p["endpoints"]["browserOrigin"].rstrip("/"); prefix = boundary["prefix"]
+    status_path = prefix + "/status"; posts = [prefix + suffix for suffix in ("/challenge", "/session", "/posts", "/comments", "/nostr-post")]
+    require([entry["path"] for entry in boundary["routes"]] == [status_path, *posts], "fixed six-route inventory drift")
+    result: list[dict[str, Any]] = []
+
+    def call(method: str, path: str, *, request_origin: str | None = origin, body: bytes | None = None, requested_method: str | None = None) -> dict[str, Any]:
+        require(time.monotonic() < total_deadline, "route matrix total timeout")
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if request_origin is not None: headers["Origin"] = request_origin
+        if body is not None: headers["Content-Type"] = "application/json"
+        if requested_method is not None:
+            headers["Access-Control-Request-Method"] = requested_method; headers["Access-Control-Request-Headers"] = "content-type"
+        observed = _route_request_v4(origin, method, path, headers, body, timeout)
+        require(time.monotonic() < total_deadline, "route matrix total timeout after request")
+        return observed
+
+    status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
+    observed = call("GET", status_path); _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin, preflight=False); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
+    for path, allowed in [(status_path, "GET"), *[(path, "POST") for path in posts]]:
+        observed = call("OPTIONS", path, requested_method=allowed)
+        require(observed["status"] == 204 and observed["body"] == "" and "content-type" not in observed["headers"], f"OPTIONS {path} response drift")
+        _require_cors_v4(observed, origin, preflight=True); result.append({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204})
+    post_errors = {
+        posts[0]: (400, {"error": "admission_invalid"}),
+        posts[1]: (400, {"error": "challenge_invalid"}),
+        posts[2]: (401, {"error": "session_required"}),
+        posts[3]: (401, {"error": "session_required"}),
+        posts[4]: (401, {"error": "session_required"}),
+    }
+    for path, (status, expected_body) in post_errors.items():
+        observed = call("POST", path, body=b"{}")
+        _require_json_response_v4(observed, status, expected_body, f"POST {path}"); _require_cors_v4(observed, origin, preflight=False)
+        result.append({"case": "unauthenticated-post", "method": "POST", "path": path, "status": status})
+    for method, path in [("POST", status_path), *[("GET", path) for path in posts], ("HEAD", status_path), ("DELETE", status_path)]:
+        observed = call(method, path, body=b"{}" if method == "POST" else None)
+        require(observed["status"] == 405 and observed["body"] == "" and "content-type" not in observed["headers"], f"method boundary drift: {method} {path}")
+        result.append({"case": "method-denied", "method": method, "path": path, "status": 405})
+    for label, method, path in (
+        ("unknown", "GET", prefix + "/unknown"),
+        ("trailing-slash", "GET", status_path + "/"),
+        ("query", "GET", status_path + "?unexpected=1"),
+        ("unknown-preflight", "OPTIONS", prefix + "/unknown"),
+    ):
+        observed = call(method, path, requested_method="POST" if method == "OPTIONS" else None)
+        require(observed["status"] == 404 and observed["body"] == "" and "content-type" not in observed["headers"], f"{label} route boundary drift")
+        result.append({"case": label, "method": method, "path": path, "status": 404})
+    wrong_origin = "https://attacker.invalid"
+    observed = call("POST", posts[0], request_origin=wrong_origin, body=b"{}")
+    _require_json_response_v4(observed, 403, {"error": "origin_forbidden"}, "wrong-origin challenge")
+    require("access-control-allow-origin" not in observed["headers"], "wrong-origin response reflected CORS authority")
+    result.append({"case": "wrong-origin", "method": "POST", "path": posts[0], "status": 403})
+    require(result == boundary["expectations"], "route matrix receipt differs from protected static expectations")
     return result
 
 def health_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -656,6 +963,19 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
     current = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
     if current is None: return {"logicalName": created.logical_name, "absent": True, "alreadyAbsent": True}
     require(current.get("metadata", {}).get("uid") == admitted.get("metadata", {}).get("uid"), f"rollback UID mismatch for {created.logical_name}")
+    nonce = created.receipt.get("operationNonce")
+    require(isinstance(nonce, str) and bool(POLICY.NONCE.fullmatch(nonce)), f"rollback operation nonce receipt absent for {created.logical_name}")
+    if created.receipt.get("temporaryNonceRemoved") is True:
+        _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback ownership {created.logical_name}")
+    else:
+        nonce_desired = _policy_call(POLICY.with_operation_nonce, desired, nonce)
+        try: _policy_call(POLICY.require_semantically_equal, current, nonce_desired, f"rollback nonce ownership {created.logical_name}")
+        except ActivationError:
+            # The nonce-removal CAS response may itself have been lost. The
+            # exact originally receipt-bound UID plus exact post-removal static
+            # semantics still proves transaction ownership; anything else is
+            # left untouched and makes rollback incomplete.
+            _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback post-nonce ownership {created.logical_name}")
     rv = current["metadata"].get("resourceVersion"); require(isinstance(rv, str) and rv.isdigit(), f"rollback resourceVersion absent for {created.logical_name}")
     payload = canonical({"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": current["metadata"]["uid"], "resourceVersion": rv}})
     kind = desired["kind"].lower()
@@ -673,102 +993,204 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
         time.sleep(0.1)
     return {"logicalName": created.logical_name, "uid": current["metadata"]["uid"], "deleteResourceVersion": rv, "absent": True, "finalizersRemovedByRunner": False}
 
-def rollback_v4(r: Runner, kubeconfig: str, p: dict[str, Any], created: list[CreatedV4], bootstrap: dict[str, Any] | None, preserved: dict[str, PreservedV4] | None, uncertain: str | None) -> dict[str, Any]:
-    errors, deleted, flux = [], [], {}; ingress = next((item for item in created if item.logical_name == "gateway.ingress"), None); timeout = p["httpBoundary"]["timeoutsSeconds"]["rollback"]
+def _flux_suspended_and_quiescent_v4(value: dict[str, Any], owner: str, uid: str) -> dict[str, Any]:
+    metadata, status = value.get("metadata", {}), value.get("status", {})
+    require(metadata.get("uid") == uid and value.get("spec", {}).get("suspend") is True, f"{owner} rollback suspended identity drift")
+    generation = metadata.get("generation")
+    require(isinstance(generation, int) and status.get("observedGeneration") == generation, f"{owner} suspended generation not observed")
+    for condition in status.get("conditions", []):
+        if condition.get("type") == "Reconciling" and condition.get("status") == "True":
+            observed = condition.get("observedGeneration")
+            require(observed is not None and observed != generation, f"{owner} still Reconciling suspended generation")
+    return {"uid": uid, "resourceVersion": metadata.get("resourceVersion"), "generation": generation, "observedGeneration": generation, "suspended": True, "reconcilingCurrentGeneration": False}
+
+def wait_both_suspended_v4(r: Runner, kubeconfig: str, p: dict[str, Any], bootstrap: dict[str, Any], deadline: float) -> dict[str, Any]:
+    result: dict[str, Any] = {}; poll = p["httpBoundary"]["timeoutsSeconds"]["rollbackPoll"]
+    for owner in ("gateway", "workbenchIngress"):
+        target = p["gitOps"]["reconcilers"][owner]["kustomization"]
+        uid = bootstrap["owners"][owner]["kustomization"]["metadata"]["uid"]
+        while True:
+            require(time.monotonic() < deadline, f"{owner} rollback suspension timeout")
+            current = _target_live(r, kubeconfig, target)
+            try:
+                result[owner] = _flux_suspended_and_quiescent_v4(current, owner, uid); break
+            except ActivationError as exc:
+                if "UID" in str(exc) or "identity drift" in str(exc): raise
+                time.sleep(poll)
+    return result
+
+def _all_targets_absent_quiet_v4(r: Runner, kubeconfig: str, rendered: dict[str, dict[str, Any]], owned_uids: dict[str, str], deadline: float, quiet: float, poll: float) -> dict[str, Any]:
+    require(len(rendered) == 6, "rollback exact six-target inventory absent")
+    quiet_started: float | None = None; checks = 0
+    while True:
+        now = time.monotonic(); require(now < deadline, "rollback all-target absence timeout")
+        present = []
+        for logical_name in sorted(rendered):
+            desired = rendered[logical_name]["desired"]; metadata = desired["metadata"]
+            current = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
+            if current is not None:
+                uid = current.get("metadata", {}).get("uid")
+                require(owned_uids.get(logical_name) == uid, f"rollback target name occupied by unowned UID: {logical_name}")
+                present.append({"logicalName": logical_name, "uid": uid})
+        checks += 1
+        if present: quiet_started = None
+        elif quiet_started is None: quiet_started = now
+        elif now - quiet_started >= quiet:
+            return {"status": "all-six-names-absent-for-quiet-interval", "quietSeconds": quiet, "checks": checks}
+        time.sleep(poll)
+
+def rollback_v4(
+    r: Runner,
+    kubeconfig: str,
+    p: dict[str, Any],
+    created: list[CreatedV4],
+    bootstrap: dict[str, Any] | None,
+    preserved: dict[str, PreservedV4] | None,
+    uncertain: str | None,
+    *,
+    rendered: dict[str, dict[str, Any]] | None = None,
+    snapshot: KubeconfigSnapshot | None = None,
+    initial_cluster: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    errors: list[str] = []; deleted: list[dict[str, Any]] = []; flux: dict[str, Any] = {}; final_checks: dict[str, Any] = {}
+    ingress = next((item for item in created if item.logical_name == "gateway.ingress"), None)
+    settings = p["httpBoundary"]["timeoutsSeconds"]; timeout = settings["rollback"]; deadline = time.monotonic() + timeout
+    # Exposure closes first, before either reconciler is touched.
     if ingress:
-        try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, timeout))
+        try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
         except Exception as exc: errors.append(str(exc))
     if bootstrap:
         for owner in ("gateway", "workbenchIngress"):
             try:
-                target = p["gitOps"]["reconcilers"][owner]["kustomization"]; current = _target_live(r, kubeconfig, target); uid = bootstrap["owners"][owner]["kustomization"]["metadata"]["uid"]
+                target = p["gitOps"]["reconcilers"][owner]["kustomization"]; current = _target_live(r, kubeconfig, target)
+                uid = bootstrap["owners"][owner]["kustomization"]["metadata"]["uid"]
                 require(current.get("metadata", {}).get("uid") == uid, f"{owner} rollback Kustomization UID drift")
-                if current.get("spec", {}).get("suspend") is not True: current = cas_flux_v4(r, kubeconfig, p, owner, current, True)
-                builder = POLICY.gateway_flux_objects if owner == "gateway" else POLICY.workbench_ingress_flux_objects
-                _policy_call(POLICY.require_semantically_equal, current, _policy_call(builder, suspended=True)["kustomization"], f"{owner} rollback suspended Kustomization")
-                flux[owner] = {"uid": uid, "resourceVersion": current["metadata"]["resourceVersion"], "suspended": True}
+                if current.get("spec", {}).get("suspend") is not True: cas_flux_v4(r, kubeconfig, p, owner, current, True)
             except Exception as exc: errors.append(str(exc))
-    # An active reconciler could recreate the Ingress in the small interval
-    # between the exposure-closing delete and the dual suspension.  Never call
-    # rollback complete unless that exact name is still absent after both
-    # Kustomizations have reached their suspended semantics.  A replacement
-    # UID is not transaction-owned and is therefore reported, never deleted.
-    if ingress and not errors and (bootstrap is None or len(flux) == 2):
+        try: flux = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline)
+        except Exception as exc: errors.append(str(exc))
+    # If deletion was acknowledged but the same transaction UID remains or
+    # reappears, delete it again only after both reconcilers are quiescent.
+    if ingress and not errors:
         metadata = ingress.desired["metadata"]
         try:
-            recreated = get_optional(r, kubeconfig, "ingress", metadata["name"], metadata["namespace"])
-            require(recreated is None, f"participant Ingress reappeared during rollback with UID {recreated.get('metadata', {}).get('uid') if recreated else 'unknown'}")
+            current = get_optional(r, kubeconfig, "ingress", metadata["name"], metadata["namespace"])
+            if current is not None:
+                require(current.get("metadata", {}).get("uid") == ingress.observed.get("metadata", {}).get("uid"), "participant Ingress reappeared with unowned UID")
+                deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
         except Exception as exc: errors.append(str(exc))
     if not errors and (bootstrap is None or len(flux) == 2):
         for item in reversed([entry for entry in created if entry is not ingress]):
-            try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, timeout))
-            except Exception as exc: errors.append(str(exc))
+            try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, max(1, int(deadline - time.monotonic()))))
+            except Exception as exc: errors.append(str(exc)); break
+    if not errors and rendered is not None:
+        try:
+            owned_uids = {item.logical_name: item.observed.get("metadata", {}).get("uid") for item in created}
+            final_checks["absence"] = _all_targets_absent_quiet_v4(r, kubeconfig, rendered, owned_uids, deadline, settings["rollbackAbsenceQuiet"], settings["rollbackPoll"])
+        except Exception as exc: errors.append(str(exc))
+    if not errors and bootstrap:
+        try:
+            final_checks["flux"] = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline)
+            source = shared_source_revision_v4(r, kubeconfig, bootstrap["source"]["status"]["artifact"]["revision"].removeprefix("main@sha1:"))
+            require(source.get("metadata", {}).get("uid") == bootstrap["source"].get("metadata", {}).get("uid"), "shared Flux source UID changed during rollback")
+            final_checks["sharedSource"] = {"uid": source["metadata"]["uid"], "artifactRevision": source["status"]["artifact"]["revision"], "unchanged": True}
+        except Exception as exc: errors.append(str(exc))
     preservation = {}
     if preserved:
         try: preservation = verify_preservation_v4(r, kubeconfig, preserved)
         except Exception as exc: errors.append(str(exc))
-    if uncertain: errors.append(f"transport-uncertain create could not be discovered: {uncertain}")
-    return {"status": "complete" if not errors else "incomplete", "bothKustomizationsSuspended": len(flux) == 2, "flux": flux, "deleted": deleted, "preservation": preservation, "uncertainTarget": uncertain, "errors": errors, "finalizersRemovedByRunner": False}
+    if snapshot is not None and initial_cluster is not None:
+        try:
+            final_cluster = cluster_binding_v4(r, snapshot, p)
+            require_same_cluster_identity_v4(initial_cluster, final_cluster, "during rollback")
+            final_checks["clusterBinding"] = final_cluster
+        except Exception as exc: errors.append(str(exc))
+    if uncertain: errors.append(f"post-send create outcome unresolved: {uncertain}")
+    return {"status": "complete" if not errors else "incomplete", "bothKustomizationsSuspended": len(flux) == 2, "flux": flux, "deleted": deleted, "finalChecks": final_checks, "preservation": preservation, "uncertainTarget": uncertain, "errors": errors, "finalizersRemovedByRunner": False}
 
 def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str) -> None:
     _policy_call(POLICY.validate_trusted_live_facts, facts)
     require(facts["protectedRevision"] == rev and facts["policySha256"] == POLICY.activation_policy_sha256(p), "trusted facts Git/policy binding drift")
     require(facts["publication"]["manifestDigest"] == p["productPins"]["imageManifestDigest"], "trusted publication digest drift")
+    require(facts["publication"]["verificationLevel"] == "anonymous-registry-manifest-digest-only" and facts["publication"]["cryptographicPublicationProvenanceVerified"] is False, "publication verification claim widened")
     require(facts["database"]["databaseSchemaSha256"] == p["productPins"]["databaseSchemaSha256"], "trusted database schema drift")
     require(len(facts["objectCreateResults"]) == 6 and len(facts["semanticObjects"]) == 6, "trusted object receipt set incomplete")
+    require(facts["operationReservation"]["absencePreflight"]["status"] == "all-six-exact-target-names-absent" and len(facts["operationReservation"]["absencePreflight"]["targets"]) == 6, "trusted operation absence reservation incomplete")
+    require(all(item["operationNonce"] == facts["operationReservation"]["operationNonce"] and item["temporaryNonceRemoved"] is True for item in facts["objectCreateResults"]), "trusted operation nonce lifecycle incomplete")
     require(set(facts["fluxTransaction"]["ready"]) == {"gateway", "workbenchIngress"}, "trusted dual Flux receipt incomplete")
     source_before, source_after = facts["fluxTransaction"]["sourceBeforeCas"], facts["fluxTransaction"]["sourceAfterReady"]
     require(source_before["uid"] == source_after["uid"] and source_before["artifactRevision"] == source_after["artifactRevision"] == f"main@sha1:{rev}", "trusted Flux source revision/UID receipt drift")
     require(set(facts["preservation"]) == {"webIngress", "existingWorkbenchNetworkPolicy"} and all(value["byteIdenticalCanonicalJson"] for value in facts["preservation"].values()), "trusted preservation receipt incomplete")
+    secrets_receipt = facts["secretMaterialization"]
+    require(set(secrets_receipt) == {"beforeCreate", "beforeIngress", "afterFlux"} and secrets_receipt["beforeCreate"] == secrets_receipt["beforeIngress"] == secrets_receipt["afterFlux"], "trusted Secret recheck receipt incomplete")
+    require(set(facts["networkPolicyConflictScan"]) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted policy-union recheck receipt incomplete")
     require(facts["rollback"] == {"status": "not-required", "finalizersRemovedByRunner": False}, "trusted success rollback receipt drift")
 
-def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: bool, receipt_path: Path) -> dict[str, Any]:
+def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: bool, sink: ReceiptSink, runner_hashes: dict[str, str]) -> dict[str, Any]:
     """Execute both Flux paths as one guarded transaction; no caller evidence."""
     if not live: return dry_run_plan(p, rev, {})
     _policy_call(POLICY.assert_activation_ready, p); require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
-    rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; partial = {}
+    rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; partial: dict[str, Any] = {}; snapshot: KubeconfigSnapshot | None = None; mutation_started = False
     started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     try:
-        partial["clusterBinding"] = cluster_binding_v4(r, kube)
+        snapshot = snapshot_kubeconfig_v4(kube, r); snapshot_path = str(snapshot.path)
+        partial["clusterBinding"] = cluster_binding_v4(r, snapshot, p)
         partial["publication"] = anonymous_publication_v4(p)
         partial["endpoints"] = endpoint_facts_v4(p)
-        preserved = preservation_v4(r, kube, p); bootstrap = flux_preflight_v4(r, kube, p, rev)
-        partial["secretMaterialization"] = secret_materialization_v4(r, kube, p); partial["networkPolicyConflictScan"] = policy_union_v4(r, kube)
+        preserved = preservation_v4(r, snapshot_path, p); bootstrap = flux_preflight_v4(r, snapshot_path, p, rev)
+        absence = exact_absence_preflight_v4(r, snapshot_path, rendered); operation_nonce = secrets.token_hex(32)
+        require(bool(POLICY.NONCE.fullmatch(operation_nonce)), "runner CSPRNG operation nonce invalid")
+        secret_before = secret_materialization_v4(r, snapshot_path, p); policy_before = policy_union_v4(r, snapshot_path)
+        cluster_before_mutation = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_mutation, "before mutation")
         order = ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount", "gateway.service", "gateway.deployment")
         deployment = haproxy = None
         for logical in order:
-            uncertain = logical
-            try: item = create_v4(r, kube, logical, rendered[logical])
+            uncertain = logical; mutation_started = True
+            try: item = create_v4(r, snapshot_path, logical, rendered[logical], operation_nonce)
             except CreateConflictError: uncertain = None; raise
             except TransportUncertainError: raise
             except Exception: uncertain = None; raise
-            created.append(item); uncertain = None
-            if logical == "gateway.deployment": deployment, haproxy = health_v4(r, kube, p)
+            created.append(item); remove_operation_nonce_v4(r, snapshot_path, item, operation_nonce); uncertain = None
+            if logical == "gateway.deployment": deployment, haproxy = health_v4(r, snapshot_path, p)
         require(deployment is not None and haproxy is not None, "internal health facts absent")
+        owned = {(item.desired["metadata"]["namespace"], item.desired["metadata"]["name"]) for item in created if item.desired["kind"] == "NetworkPolicy"}
+        partial["publication"]["runtime"] = runtime_image_v4(r, snapshot_path, p)
+        secret_before_ingress = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_before_ingress, "before Ingress")
+        policy_before_ingress = policy_union_v4(r, snapshot_path, owned)
+        partial["database"] = database_status_v4(r, snapshot_path, p, partial["publication"]["runtime"])
         uncertain = "gateway.ingress"
-        try: ingress = create_v4(r, kube, uncertain, rendered[uncertain])
+        try: ingress = create_v4(r, snapshot_path, uncertain, rendered[uncertain], operation_nonce)
         except CreateConflictError: uncertain = None; raise
         except TransportUncertainError: raise
         except Exception: uncertain = None; raise
-        created.append(ingress); uncertain = None
-        owned = {(item.desired["metadata"]["namespace"], item.desired["metadata"]["name"]) for item in created if item.desired["kind"] == "NetworkPolicy"}
-        partial["networkPolicyConflictScan"] = policy_union_v4(r, kube, owned)
-        partial["publication"]["runtime"] = runtime_image_v4(r, kube, p)
-        partial["database"] = database_status_v4(r, kube, p, partial["publication"]["runtime"])
+        created.append(ingress); remove_operation_nonce_v4(r, snapshot_path, ingress, operation_nonce); uncertain = None
         partial["routeMatrix"] = route_matrix_v4(r, p)
-        source_before_cas = shared_source_revision_v4(r, kube, rev)
-        changed = unsuspend_both_v4(r, kube, p, bootstrap); ready = wait_both_ready_v4(r, kube, p, bootstrap, rev)
-        source_after_ready = shared_source_revision_v4(r, kube, rev)
-        final_semantics = semantic_postconditions_v4(r, kube, created)
-        preservation = verify_preservation_v4(r, kube, preserved); valid_until = started + dt.timedelta(seconds=300)
-        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": partial["clusterBinding"], "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": partial["secretMaterialization"], "networkPolicyConflictScan": partial["networkPolicyConflictScan"], "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
+        source_before_cas = shared_source_revision_v4(r, snapshot_path, rev)
+        changed = unsuspend_both_v4(r, snapshot_path, p, bootstrap); ready = wait_both_ready_v4(r, snapshot_path, p, bootstrap, rev)
+        source_after_ready = shared_source_revision_v4(r, snapshot_path, rev)
+        secret_after_flux = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_after_flux, "after Flux")
+        policy_after_flux = policy_union_v4(r, snapshot_path, owned)
+        final_semantics = semantic_postconditions_v4(r, snapshot_path, created)
+        preservation = verify_preservation_v4(r, snapshot_path, preserved)
+        final_cluster = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], final_cluster, "before success")
+        valid_until = started + dt.timedelta(seconds=300)
+        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
         validate_success_facts_v4(facts, p, rev)
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
-        return {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "trustedLiveFacts": facts, "civicAuthorityEffects": False}
+        success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}
+        # Durable receipt persistence is the transaction commit point. Any
+        # failure here is handled exactly like an activation failure.
+        sink.commit(success)
+        return success
     except Exception as exc:
-        rolled = rollback_v4(r, kube, p, created, bootstrap, preserved, uncertain)
-        failure = {"schemaVersion": RECEIPT_SCHEMA, "status": "rolled-back" if rolled["status"] == "complete" else "rollback-incomplete", "protectedRevision": rev, "failure": str(exc), "objectCreateResults": [item.receipt for item in created], "rollback": rolled, "civicAuthorityEffects": False}
-        atomic_receipt(receipt_path, failure); raise ActivationError(f"activation {failure['status']}: {exc}") from exc
+        if mutation_started and snapshot is not None:
+            rolled = rollback_v4(r, str(snapshot.path), p, created, bootstrap, preserved, uncertain, rendered=rendered, snapshot=snapshot, initial_cluster=partial.get("clusterBinding"))
+        else:
+            rolled = {"status": "complete", "bothKustomizationsSuspended": False, "flux": {}, "deleted": [], "finalChecks": {"noMutationStarted": True}, "preservation": {}, "uncertainTarget": None, "errors": [], "finalizersRemovedByRunner": False}
+        failure = {"schemaVersion": RECEIPT_SCHEMA, "status": "rolled-back" if rolled["status"] == "complete" else "rollback-incomplete", "protectedRevision": rev, "failure": str(exc), "protectedRunnerFileSha256": runner_hashes, "objectCreateResults": [item.receipt for item in created], "rollback": rolled, "civicAuthorityEffects": False}
+        sink.commit(failure); raise ActivationError(f"activation {failure['status']}: {exc}") from exc
+    finally:
+        if snapshot is not None: snapshot.close()
 
 def main() -> int:
     ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
@@ -779,14 +1201,14 @@ def main() -> int:
         runner_hashes = protected_checkout(rev); p = policy(rev)
         if a.dry_run:
             result = dry_run_plan(p, rev, runner_hashes)
-            atomic_receipt(a.receipt, result); print(canonical(result)); return 0
+            sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0
         # The immutable readiness gate deliberately precedes kubeconfig
         # validation and Runner construction. The committed policy therefore
         # cannot contact Kubernetes in live mode.
         try: POLICY.assert_activation_ready(p)
         except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
-        result = activate(p, rev, a.kubeconfig, Runner(), True, a.receipt)
-        result["protectedRunnerFileSha256"] = runner_hashes
-        atomic_receipt(a.receipt, result); print(canonical(result)); return 0
+        sink = ReceiptSink.reserve(a.receipt)
+        result = activate(p, rev, a.kubeconfig, Runner(), True, sink, runner_hashes)
+        print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2
 if __name__ == "__main__": raise SystemExit(main())

@@ -23,7 +23,15 @@ jobs:
           ref: ${{ inputs.protected_revision }}
           persist-credentials: false
       - name: Test guarded executor
-        run: python3 -m unittest -v scripts/test_activate_staging_participant_gateway.py
+        run: >-
+          python3 -m unittest -v
+          scripts/test_staging_participant_gateway_policy.py
+          scripts/test_activate_staging_participant_gateway.py
+          scripts/test_verify_reviewed_render.py
+      - name: Verify protected render and clean patch
+        run: |
+          python3 scripts/verify-reviewed-render.py --root .
+          git diff --check
       - name: Emit no-cluster activation plan
         run: >-
           python3 scripts/activate-staging-participant-gateway.py

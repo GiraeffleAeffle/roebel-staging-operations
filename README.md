@@ -510,22 +510,25 @@ all three policy families before creation. The existing manually owned
 workbench NetworkPolicy remains byte-identical and outside both Flux tenants.
 
 Create outcomes are fail-closed. A definite HTTP 409 is a hard failure and is
-never discovered or adopted. Only a transport-uncertain response after a sent
-create may be discovered; the live object must equal the protected desired
-object after the shared semantic normalizer removes only server identity and
-known defaults, and its UID/resource version must be receipt-bound and owned
-by rollback. Raw full-object hashes, live status and caller-supplied evidence
-never become static authority.
+never discovered or adopted. Every other non-success after a sent create—and
+even a successful exit with an unparseable or unbindable response—is uncertain.
+Discovery owns an object only when the exact per-run CSPRNG nonce, protected
+semantics, UID and resource version all bind. That temporary nonce is removed
+by CAS before Flux. An absent or mismatched nonce is never adopted or deleted.
+Raw full-object hashes, live status and caller-supplied evidence never become
+static authority.
 
 The protected local runner must freshly verify the protected operations
 revision, immutable publication and anonymous pull, database/schema state,
 Secret materialization, endpoints, policy union, exact object semantics,
 Deployment health, HAProxy replica truth, the full route matrix and both Flux
 CAS transitions. Rollback removes the exact owned participant Ingress first,
-suspends both participant Kustomizations, deletes only transaction-owned UIDs
-in reverse order, and proves that the Web Ingress and existing workbench policy
-are byte-identical. Secrets, unrelated policies and civic-authority systems
-are never rollback targets.
+suspends both participant Kustomizations, waits for each exact UID to observe
+its suspended generation with no current reconciliation, deletes only
+transaction-owned UIDs in reverse order, and proves all six names stay absent
+for a bounded quiet interval. It also rechecks the shared source, protected
+cluster identity, Web Ingress and existing workbench policy. Secrets, unrelated
+policies and civic-authority systems are never rollback targets.
 
 The product/database preflight is the container-internal exact `GET /status`
 contract, not the public `/api/staging-participant/v1/status` session-UI route.
@@ -551,7 +554,7 @@ The runner/verifier integration seam is
   turning UID/resource version/status into policy.
 - `bind_create_result()` rejects a definite 409 and emits a rollback-owned
   UID/resource-version projection only for an exact create response or an
-  exact object discovered after transport uncertainty.
+  exact nonce-marked object discovered after any post-send uncertainty.
 - `trusted_live_facts_contract()` and `validate_trusted_live_facts()` define the
   separate short-lived receipt envelope. The runner owns collection and the
   section-level live checks; Git does not.
@@ -633,6 +636,42 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-stadtstack-case-recovery-compos
 
 The source remains safe to read anonymously. Runtime credentials and civic
 authority stay outside Git and outside Flux.
+
+## Staging participant gateway activation policy
+
+The participant gateway is still an inert, protected reservation. The static
+descriptor in `policy/staging-participant-gateway-activation-policy.json`
+contains no caller-provided or live cluster evidence and remains
+`activationReady: false` until the exact product, migration, schema, endpoint,
+and cluster-identity pins are reviewed into the protected base. The GitHub
+workflow has no kubeconfig and can only test and emit a no-cluster plan.
+
+Once those pins exist, the separate protected local runner is designed to:
+
+- reserve a new mode-`0600` receipt before any Kubernetes contact and use one
+  flattened mode-`0600` kubeconfig snapshot for the entire transaction;
+- bind the API origin, CA digest, API-server SPKI digest, and immutable
+  `kube-system` namespace UID before mutation, before success, and rollback;
+- require all six exact application resource names to be absent, mark every
+  create with one CSPRNG operation nonce, and remove that marker by
+  UID/resourceVersion/nonce CAS before Flux reconciliation;
+- create the two namespace-scoped Flux paths as one guarded transaction,
+  create the dedicated Ingress last, and preserve the existing Web Ingress and
+  manually owned workbench NetworkPolicy unchanged;
+- recheck runtime image identity, Secret identities/keysets without reading
+  values, Kubernetes/Cilium policy unions, the internal database `/status`
+  contract, and the full public route/CORS boundary; and
+- treat durable success-receipt persistence as the commit point. Failure first
+  removes the exact owned Ingress, suspends and observes both Flux
+  Kustomizations quiescent, deletes only exact transaction UIDs, and proves all
+  six names absent for a bounded quiet interval.
+
+An anonymous registry digest check proves only the bytes fetched at the
+reviewed digest; its receipt does not claim cryptographic publisher provenance,
+SBOM verification, or attestation verification. Database deactivation is not
+performed by this activation runner: it remains a separately authorized,
+policy-pinned out-of-band operation. No participant path can verify a citizen,
+cast a vote, change a treasury, or exercise municipal authority.
 
 ## Fixed network-boundary bootstrap
 

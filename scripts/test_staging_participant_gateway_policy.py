@@ -29,6 +29,12 @@ def ready_policy() -> dict:
     pins["migration"]["sha256"] = "sha256:" + "e" * 64
     pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
     pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
+    value["clusterIdentity"] = {
+        "apiOrigin": "https://api.staging.example:6443",
+        "caCertificateSha256": "sha256:" + "2" * 64,
+        "apiServerSpkiSha256": "sha256:" + "3" * 64,
+        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
+    }
     value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
     value["activationReady"] = True
     return value
@@ -59,6 +65,10 @@ class StaticPolicyTests(unittest.TestCase):
                 "productPins.migration.sha256",
                 "productPins.databaseSchemaSha256",
                 "productPins.deactivation.sha256",
+                "clusterIdentity.apiOrigin",
+                "clusterIdentity.caCertificateSha256",
+                "clusterIdentity.apiServerSpkiSha256",
+                "clusterIdentity.kubeSystemNamespaceUid",
                 "endpoints.supabase.ipv4Cidrs",
             ),
         )
@@ -80,6 +90,8 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(len(POLICY.ROUTES), 6)
         self.assertEqual(value["httpBoundary"]["routes"][0]["methods"], ["GET", "OPTIONS"])
         self.assertTrue(all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]))
+        self.assertEqual(value["httpBoundary"]["expectations"], list(POLICY.ROUTE_EXPECTATIONS))
+        self.assertEqual(len(value["httpBoundary"]["expectations"]), 25)
         self.assertEqual(
             value["httpBoundary"]["haproxyRateLimit"],
             {
@@ -136,9 +148,10 @@ class StaticPolicyTests(unittest.TestCase):
             transaction["createOutcomes"]["http-409-already-exists"],
             {"discoveryAllowed": False, "hardFailure": True, "ownedByTransaction": False},
         )
-        uncertain = transaction["createOutcomes"]["transport-uncertain-after-send"]
+        uncertain = transaction["createOutcomes"]["post-send-uncertain-discovered"]
         self.assertTrue(uncertain["discoveryAllowed"])
         self.assertTrue(uncertain["exactSemanticMatchRequired"])
+        self.assertTrue(uncertain["operationNonceRequired"])
         self.assertTrue(uncertain["uidResourceVersionReceiptRequired"])
         self.assertTrue(uncertain["rollbackRequired"])
 
@@ -166,7 +179,8 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertFalse(POLICY.semantically_equal(live, desired))
 
     def test_create_result_binding_rejects_409_and_owns_only_exact_observed_object(self):
-        desired = POLICY.expected_workbench_ingress_network_policy()
+        nonce = "9" * 64
+        desired = POLICY.with_operation_nonce(POLICY.expected_workbench_ingress_network_policy(), nonce)
         observed = copy.deepcopy(desired)
         observed["metadata"]["uid"] = "00000000-0000-4000-8000-000000000001"
         observed["metadata"]["resourceVersion"] = "123"
@@ -176,24 +190,28 @@ class StaticPolicyTests(unittest.TestCase):
                 observed=observed,
                 desired=desired,
                 label="reciprocal policy",
+                operation_nonce=nonce,
             )
         receipt = POLICY.bind_create_result(
-            outcome="transport-uncertain-after-send",
+            outcome="post-send-uncertain-discovered",
             observed=observed,
             desired=desired,
             label="reciprocal policy",
+            operation_nonce=nonce,
         )
-        self.assertTrue(receipt["discoveredAfterTransportUncertainty"])
+        self.assertTrue(receipt["discoveredAfterPostSendUncertainty"])
+        self.assertEqual(receipt["operationNonce"], nonce)
         self.assertTrue(receipt["rollbackOwned"])
         self.assertEqual(receipt["uid"], observed["metadata"]["uid"])
         widened = copy.deepcopy(observed)
         widened["spec"]["ingress"][0]["from"].append({"namespaceSelector": {}})
         with self.assertRaisesRegex(POLICY.PolicyError, "semantic drift"):
             POLICY.bind_create_result(
-                outcome="transport-uncertain-after-send",
+                outcome="post-send-uncertain-discovered",
                 observed=widened,
                 desired=desired,
                 label="reciprocal policy",
+                operation_nonce=nonce,
             )
 
     def test_ready_policy_produces_complete_two_path_render_without_live_facts(self):

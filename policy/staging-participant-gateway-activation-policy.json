@@ -9,6 +9,12 @@
     "treasuryMutation": false,
     "voteMutation": false
   },
+  "clusterIdentity": {
+    "apiOrigin": null,
+    "apiServerSpkiSha256": null,
+    "caCertificateSha256": null,
+    "kubeSystemNamespaceUid": null
+  },
   "endpoints": {
     "browserOrigin": "https://roebel-web.staging.agentcart.eu",
     "gnosis": {
@@ -53,18 +59,27 @@
           "hardFailure": true,
           "ownedByTransaction": false
         },
-        "transport-uncertain-after-send": {
+        "post-send-uncertain-discovered": {
           "discoveryAllowed": true,
           "exactSemanticMatchRequired": true,
+          "operationNonceRequired": true,
           "ownedByTransaction": true,
           "rollbackRequired": true,
           "uidResourceVersionReceiptRequired": true
         }
       },
+      "absencePreflight": "all-six-exact-target-names-must-be-absent",
       "deletionPolicy": "Orphan",
       "failureState": "both-suspended",
       "force": false,
       "initialState": "both-suspended",
+      "operationNonce": {
+        "annotation": "stadtstack.io/participant-activation-nonce",
+        "encoding": "64-lower-hex",
+        "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
+        "source": "runner-csprng-only",
+        "temporary": true
+      },
       "prune": false,
       "unsuspend": "compare-and-swap-both-or-rollback"
     },
@@ -136,21 +151,31 @@
   },
   "httpBoundary": {
     "expectations": [
-      {"method": "GET", "path": "/api/staging-participant/v1/status", "status": 200},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/status", "status": 204},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/challenge", "status": 204},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/session", "status": 204},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/posts", "status": 204},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/comments", "status": 204},
-      {"method": "OPTIONS", "path": "/api/staging-participant/v1/nostr-post", "status": 204},
-      {"method": "POST", "path": "/api/staging-participant/v1/status", "status": 405},
-      {"method": "GET", "path": "/api/staging-participant/v1/challenge", "status": 405},
-      {"method": "GET", "path": "/api/staging-participant/v1/session", "status": 405},
-      {"method": "GET", "path": "/api/staging-participant/v1/posts", "status": 405},
-      {"method": "GET", "path": "/api/staging-participant/v1/comments", "status": 405},
-      {"method": "GET", "path": "/api/staging-participant/v1/nostr-post", "status": 405},
-      {"method": "HEAD", "path": "/api/staging-participant/v1/status", "status": 405},
-      {"method": "DELETE", "path": "/api/staging-participant/v1/status", "status": 405}
+      {"case": "status", "method": "GET", "path": "/api/staging-participant/v1/status", "status": 200},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/status", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/challenge", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/session", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/posts", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/comments", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/nostr-post", "status": 204},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 400},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/session", "status": 400},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/posts", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/comments", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/nostr-post", "status": 401},
+      {"case": "method-denied", "method": "POST", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/challenge", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/session", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/posts", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/comments", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/nostr-post", "status": 405},
+      {"case": "method-denied", "method": "HEAD", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "method-denied", "method": "DELETE", "path": "/api/staging-participant/v1/status", "status": 405},
+      {"case": "unknown", "method": "GET", "path": "/api/staging-participant/v1/unknown", "status": 404},
+      {"case": "trailing-slash", "method": "GET", "path": "/api/staging-participant/v1/status/", "status": 404},
+      {"case": "query", "method": "GET", "path": "/api/staging-participant/v1/status?unexpected=1", "status": 404},
+      {"case": "unknown-preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/unknown", "status": 404},
+      {"case": "wrong-origin", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 403}
     ],
     "haproxyRateLimit": {
       "aggregateClaimAllowed": false,
@@ -175,6 +200,8 @@
       "fluxReady": 120,
       "kubernetesRequest": 10,
       "rollback": 120,
+      "rollbackAbsenceQuiet": 2,
+      "rollbackPoll": 0.25,
       "routeMatrixTotal": 120,
       "routeRequest": 10
     }
@@ -305,7 +332,7 @@
   },
   "rollback": {
     "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
-    "database": "run-only-policy-pinned-deactivation-after-schema-binding",
+    "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
     "firstStep": "delete-exact-owned-participant-ingress-uid",
     "preserve": [
       "shared-flux-source",

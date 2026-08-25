@@ -1,6 +1,6 @@
-import copy, datetime as dt, importlib.util, json, sys, tempfile, unittest
+import base64, contextlib, copy, datetime as dt, importlib.util, json, os, stat, sys, tempfile, unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SPEC = importlib.util.spec_from_file_location("activation", Path(__file__).with_name("activate-staging-participant-gateway.py"))
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
@@ -19,12 +19,35 @@ def ready_policy():
     pins["migration"]["sha256"] = sha("4")
     pins["databaseSchemaSha256"] = sha("5")
     pins["deactivation"]["sha256"] = sha("6")
+    value["clusterIdentity"] = {
+        "apiOrigin": "https://api.staging.example:6443",
+        "caCertificateSha256": sha("7"),
+        "apiServerSpkiSha256": sha("8"),
+        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
+    }
     value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.10/32"]
     value["activationReady"] = True
     return value
 def admitted(desired, uid="owned-uid", rv="10"):
     value = copy.deepcopy(desired); value.setdefault("metadata", {})["uid"] = uid; value["metadata"]["resourceVersion"] = rv
     return value
+def valid_success_facts(value):
+    now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
+    sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
+    facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
+    facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"], "verificationLevel": "anonymous-registry-manifest-digest-only", "cryptographicPublicationProvenanceVerified": False}
+    facts["database"] = {"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}
+    facts["operationReservation"] = {"operationNonce": nonce, "absencePreflight": {"status": "all-six-exact-target-names-absent", "targets": [{"absent": True}] * 6}}
+    facts["objectCreateResults"] = [{"operationNonce": nonce, "temporaryNonceRemoved": True} for _ in range(6)]
+    facts["semanticObjects"] = {str(i): {"ok": True} for i in range(6)}
+    source = {"uid": "source-uid", "resourceVersion": "10", "artifactRevision": f"main@sha1:{REV}"}
+    facts["fluxTransaction"] = {"ready": {"gateway": {}, "workbenchIngress": {}}, "sourceBeforeCas": source, "sourceAfterReady": source | {"resourceVersion": "11"}}
+    facts["preservation"] = {"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}
+    secret = {"status": "exact", "secrets": {"config": {"uid": "s"}}}
+    facts["secretMaterialization"] = {"beforeCreate": secret, "beforeIngress": copy.deepcopy(secret), "afterFlux": copy.deepcopy(secret)}
+    facts["networkPolicyConflictScan"] = {"beforeCreate": {"ok": True}, "beforeIngress": {"ok": True}, "afterFlux": {"ok": True}}
+    facts["rollback"] = {"status": "not-required", "finalizersRemovedByRunner": False}
+    return facts
 class Fake(MODULE.Runner):
     def __init__(self): self.calls = []
     def run(self, args, *, input_text=None, timeout=10):
@@ -76,6 +99,52 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "activation blocked"):
             MODULE.POLICY.assert_activation_ready(value)
         self.assertFalse(value["activationReady"])
+
+    def test_duplicate_json_keys_are_rejected_at_every_object_boundary(self):
+        with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):
+            MODULE.obj('{"metadata":{},"metadata":{}}', "duplicate fixture")
+        with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):
+            MODULE.json_value('{"nested":{"key":1,"key":2}}', "duplicate nested fixture")
+
+    def test_receipt_sink_is_reserved_0600_non_overwriting_and_durable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "receipts" / "activation.json"
+            sink = MODULE.ReceiptSink.reserve(target)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            sink.commit({"status": "test", "civicAuthorityEffects": False})
+            committed = json.loads(target.read_text())
+            self.assertEqual(committed["status"], "test")
+            self.assertIn("canonicalSha256", committed)
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+            with self.assertRaises(FileExistsError):
+                MODULE.ReceiptSink.reserve(target)
+
+    def test_kubeconfig_snapshot_is_single_flattened_0600_file_and_rejects_url_tricks(self):
+        pem = b"-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"
+        def flattened(server):
+            return json.dumps({
+                "apiVersion": "v1", "kind": "Config", "current-context": "ctx",
+                "clusters": [{"name": "cluster", "cluster": {"server": server, "certificate-authority-data": base64.b64encode(pem).decode()}}],
+                "contexts": [{"name": "ctx", "context": {"cluster": "cluster", "user": "user"}}],
+                "users": [{"name": "user", "user": {"token": "secret-never-receipted"}}],
+            })
+        class Flatten(MODULE.Runner):
+            def __init__(self, raw): self.raw = raw; self.calls = []
+            def run(self, args, *, input_text=None, timeout=10): self.calls.append(args); return MODULE.Result(out=self.raw)
+        with tempfile.TemporaryDirectory() as directory:
+            original = Path(directory) / "original"; original.write_text("not-read-by-test-runner")
+            runner = Flatten(flattened("https://api.example.test:6443"))
+            snapshot = MODULE.snapshot_kubeconfig_v4(str(original), runner)
+            try:
+                self.assertEqual(snapshot.api_origin, "https://api.example.test:6443")
+                self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o600)
+                self.assertEqual(len(runner.calls), 1)
+                self.assertIn("--flatten", runner.calls[0]); self.assertIn("--raw", runner.calls[0])
+            finally: snapshot.close()
+            self.assertFalse(snapshot.path.exists())
+            for bad in ("https://user@api.example.test:6443", "https://api.example.test:6443/path", "https://api.example.test:6443?x=1", "https://api.example.test:6443#x"):
+                with self.assertRaisesRegex(MODULE.ActivationError, "HTTPS origin"):
+                    MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened(bad)))
     def test_definite_create_conflict_is_never_treated_as_uncertain(self):
         class Conflict(MODULE.Runner):
             def run(self, args, *, input_text=None):
@@ -93,46 +162,103 @@ class ExecutorTests(unittest.TestCase):
     def test_v4_definite_409_never_discovers_or_adopts(self):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy()
         rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
-        with patch.object(MODULE, "checked", side_effect=MODULE.CreateConflictError("409")), patch.object(MODULE, "live_obj") as discover:
+        class Conflict(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10): return MODULE.Result(1, "", "HTTP 409 AlreadyExists")
+        with patch.object(MODULE, "live_obj") as discover:
             with self.assertRaises(MODULE.CreateConflictError):
-                MODULE.create_v4(Fake(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered)
+                MODULE.create_v4(Conflict(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, "a" * 64)
         discover.assert_not_called()
 
     def test_v4_transport_uncertainty_discovers_exact_uid_rv(self):
-        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); observed = admitted(desired)
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "a" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce))
         rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
-        with patch.object(MODULE, "checked", side_effect=MODULE.TransportUncertainError("lost response")), patch.object(MODULE, "live_obj", return_value=observed) as discover:
-            result = MODULE.create_v4(Fake(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered)
+        class ServerError(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10): return MODULE.Result(1, "", "HTTP 503")
+        with patch.object(MODULE, "live_obj", return_value=observed) as discover:
+            result = MODULE.create_v4(ServerError(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, nonce)
         discover.assert_called_once()
-        self.assertTrue(result.receipt["discoveredAfterTransportUncertainty"])
+        self.assertTrue(result.receipt["discoveredAfterPostSendUncertainty"])
         self.assertEqual(result.receipt["uid"], "owned-uid")
         self.assertEqual(result.receipt["resourceVersion"], "10")
+
+    def test_v4_malformed_success_response_discovers_and_owns_only_exact_nonce(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "b" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce))
+        rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
+        class Malformed(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10): return MODULE.Result(0, "{malformed", "")
+        with patch.object(MODULE, "live_obj", return_value=observed):
+            result = MODULE.create_v4(Malformed(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, nonce)
+        self.assertEqual(result.receipt["outcome"], "post-send-uncertain-discovered")
+        wrong = admitted(desired)
+        with patch.object(MODULE, "live_obj", return_value=wrong):
+            with self.assertRaisesRegex(MODULE.TransportUncertainError, "unresolved"):
+                MODULE.create_v4(Malformed(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, nonce)
 
     def test_v4_transport_uncertainty_without_discovery_stays_unresolved(self):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy()
         rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
-        with patch.object(MODULE, "checked", side_effect=MODULE.TransportUncertainError("lost response")), patch.object(MODULE, "live_obj", side_effect=MODULE.ActivationError("not readable")):
-            with self.assertRaisesRegex(MODULE.TransportUncertainError, "could not be discovered"):
-                MODULE.create_v4(Fake(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered)
+        class ServerError(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10): return MODULE.Result(1, "", "HTTP 500")
+        with patch.object(MODULE, "live_obj", side_effect=MODULE.ActivationError("not readable")):
+            with self.assertRaisesRegex(MODULE.TransportUncertainError, "unresolved"):
+                MODULE.create_v4(ServerError(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, "a" * 64)
+
+    def test_v4_exact_six_target_absence_preflight_is_closed_and_non_adopting(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+            rendered = {
+                "gateway.networkPolicy": {"desired": resources["networkPolicy"]},
+                "workbenchIngress.networkPolicy": {"desired": MODULE.POLICY.expected_workbench_ingress_network_policy()},
+                "gateway.serviceAccount": {"desired": resources["serviceAccount"]},
+                "gateway.service": {"desired": resources["service"]},
+                "gateway.deployment": {"desired": resources["deployment"]},
+                "gateway.ingress": {"desired": resources["ingress"]},
+            }
+        with patch.object(MODULE, "get_optional", return_value=None) as lookup:
+            receipt = MODULE.exact_absence_preflight_v4(Fake(), "/snapshot", rendered)
+        self.assertEqual(receipt["status"], "all-six-exact-target-names-absent")
+        self.assertEqual(len(receipt["targets"]), 6); self.assertEqual(lookup.call_count, 6)
+        occupied = admitted(rendered["gateway.service"]["desired"], "foreign")
+        with patch.object(MODULE, "get_optional", side_effect=[None, None, None, None, occupied, None]):
+            with self.assertRaisesRegex(MODULE.ActivationError, "adoption forbidden"):
+                MODULE.exact_absence_preflight_v4(Fake(), "/snapshot", rendered)
+
+    def test_v4_nonce_removal_uses_uid_rv_nonce_cas_before_final_semantics(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "c" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "10")
+        created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, observed, {"operationNonce": nonce, "temporaryNonceRemoved": False})
+        after = admitted(desired, "owned", "11")
+        with patch.object(MODULE, "checked", return_value=json.dumps(after)) as command:
+            MODULE.remove_operation_nonce_v4(Fake(), "/snapshot", created, nonce)
+        args = command.call_args.args[1]; patch_body = json.loads(args[args.index("-p") + 1])
+        self.assertEqual([op["op"] for op in patch_body], ["test", "test", "test", "remove"])
+        self.assertEqual(patch_body[0]["value"], "owned"); self.assertEqual(patch_body[1]["value"], "10"); self.assertEqual(patch_body[2]["value"], nonce)
+        self.assertTrue(created.receipt["temporaryNonceRemoved"])
 
     def test_v4_dual_cas_partial_failure_is_rolled_back_to_both_suspended(self):
         gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "10")
         workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "20")
         active_gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=False)["kustomization"], "g", "11")
-        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}}
+        source = {"metadata": {"uid": "source-uid"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}, "source": source}
         with patch.object(MODULE, "cas_flux_v4", side_effect=[active_gateway, MODULE.ActivationError("second CAS failed")]):
             with self.assertRaisesRegex(MODULE.ActivationError, "second CAS"):
                 MODULE.unsuspend_both_v4(Fake(), "/tmp/kube", policy(), bootstrap)
         current = [active_gateway, workbench]
         suspended_gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "12")
-        with patch.object(MODULE, "_target_live", side_effect=current), patch.object(MODULE, "cas_flux_v4", side_effect=[suspended_gateway]) as suspend:
+        quiescent = {"gateway": {"uid": "g", "suspended": True}, "workbenchIngress": {"uid": "w", "suspended": True}}
+        source_after = {"metadata": {"uid": "source-uid"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        with patch.object(MODULE, "_target_live", side_effect=current), patch.object(MODULE, "cas_flux_v4", side_effect=[suspended_gateway]) as suspend, patch.object(MODULE, "wait_both_suspended_v4", return_value=quiescent), patch.object(MODULE, "shared_source_revision_v4", return_value=source_after):
             result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [], bootstrap, None, None)
         self.assertEqual(result["status"], "complete")
         self.assertTrue(result["bothKustomizationsSuspended"])
         suspend.assert_called_once()
 
     def test_v4_rollback_accepts_already_absent_owned_object(self):
-        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, admitted(desired), {"uid": "owned-uid"})
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, admitted(desired), {"uid": "owned-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
         with patch.object(MODULE, "get_optional", return_value=None), patch.object(MODULE, "raw_delete") as delete:
             result = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
         self.assertTrue(result["absent"]); self.assertTrue(result["alreadyAbsent"]); delete.assert_not_called()
@@ -140,7 +266,7 @@ class ExecutorTests(unittest.TestCase):
     def test_v4_rollback_reports_finalizers_without_removing_them(self):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); current = admitted(desired)
         terminating = admitted(desired); terminating["metadata"] |= {"deletionTimestamp": "2026-01-01T00:00:00Z", "finalizers": ["example.test/hold"]}
-        created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, current, {"uid": "owned-uid"})
+        created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, current, {"uid": "owned-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
         with patch.object(MODULE, "get_optional", side_effect=[current, terminating]), patch.object(MODULE, "raw_delete") as delete:
             with self.assertRaisesRegex(MODULE.ActivationError, "blocked by finalizers"):
                 MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
@@ -157,6 +283,44 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "observedGeneration"):
             MODULE.flux_ready_v4(live, "gateway", "g", REV)
 
+    def test_v4_suspended_flux_requires_observed_generation_and_no_current_reconciling(self):
+        desired = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "11")
+        desired["metadata"]["generation"] = 8
+        desired["status"] = {"observedGeneration": 8, "conditions": [{"type": "Reconciling", "status": "False", "observedGeneration": 8}]}
+        self.assertTrue(MODULE._flux_suspended_and_quiescent_v4(desired, "gateway", "g")["suspended"])
+        active = copy.deepcopy(desired); active["status"]["conditions"][0]["status"] = "True"
+        with self.assertRaisesRegex(MODULE.ActivationError, "still Reconciling"):
+            MODULE._flux_suspended_and_quiescent_v4(active, "gateway", "g")
+        stale = copy.deepcopy(desired); stale["status"]["observedGeneration"] = 7
+        with self.assertRaisesRegex(MODULE.ActivationError, "generation not observed"):
+            MODULE._flux_suspended_and_quiescent_v4(stale, "gateway", "g")
+
+    def test_v4_rollback_absence_requires_all_six_names_quiet_and_rejects_foreign_uid(self):
+        rendered = {f"item-{index}": {"desired": {"kind": "Service", "metadata": {"namespace": "ns", "name": f"name-{index}"}}} for index in range(6)}
+        owned = {name: f"uid-{index}" for index, name in enumerate(sorted(rendered))}
+        with patch.object(MODULE, "get_optional", return_value=None), patch.object(MODULE.time, "monotonic", side_effect=[0.0, 0.0, 0.1, 0.1]), patch.object(MODULE.time, "sleep"):
+            receipt = MODULE._all_targets_absent_quiet_v4(Fake(), "/snapshot", rendered, owned, 10.0, 0.05, 0.01)
+        self.assertEqual(receipt["status"], "all-six-names-absent-for-quiet-interval")
+        foreign = {"metadata": {"uid": "foreign"}}
+        with patch.object(MODULE, "get_optional", side_effect=[foreign]), patch.object(MODULE.time, "monotonic", return_value=0.0):
+            with self.assertRaisesRegex(MODULE.ActivationError, "unowned UID"):
+                MODULE._all_targets_absent_quiet_v4(Fake(), "/snapshot", rendered, owned, 10.0, 1.0, 0.1)
+
+    def test_v4_normalizer_ignores_only_real_deployment_revision_annotation(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
+        live = admitted(desired, "deployment-uid", "101")
+        live["metadata"] |= {"generation": 4, "annotations": {"deployment.kubernetes.io/revision": "7"}}
+        live["status"] = {"observedGeneration": 4}
+        MODULE.POLICY.require_semantically_equal(live, desired, "real Deployment fixture")
+        malformed = copy.deepcopy(live); malformed["metadata"]["annotations"]["deployment.kubernetes.io/revision"] = "latest"
+        with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "semantic drift"):
+            MODULE.POLICY.require_semantically_equal(malformed, desired, "malformed revision")
+        service = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "s", "namespace": "n", "annotations": {"deployment.kubernetes.io/revision": "7"}}, "spec": {}}
+        normalized = MODULE.POLICY.normalize_kubernetes_object(service)
+        self.assertIn("deployment.kubernetes.io/revision", normalized["metadata"]["annotations"])
+
     def test_v4_fixed_timeouts_fail_closed(self):
         class TimedOut(MODULE.Runner):
             def run(self, args, *, input_text=None): return MODULE.Result(124, "", "timeout after 30s")
@@ -165,6 +329,46 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE.time, "monotonic", side_effect=[0, 121]):
             with self.assertRaisesRegex(MODULE.ActivationError, "total timeout"):
                 MODULE.route_matrix_v4(Fake(), policy())
+
+    def test_v4_route_matrix_is_proxy_free_closed_and_checks_bodies_cors_and_deadline(self):
+        value = policy(); origin = value["endpoints"]["browserOrigin"]; prefix = value["httpBoundary"]["prefix"]
+        cors = {"access-control-allow-origin": origin, "access-control-allow-credentials": "true", "vary": "Origin"}
+        preflight = cors | {"access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
+        status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
+        def response(request_origin, method, path, headers, body, timeout):
+            self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
+            if method == "GET" and path == prefix + "/status": return {"status": 200, "headers": cors | {"content-type": "application/json; charset=utf-8"}, "body": json.dumps(status_body)}
+            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES: return {"status": 204, "headers": preflight, "body": ""}
+            if method == "POST" and path in MODULE.POLICY.POST_ROUTES:
+                if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
+                status, error = ((400, "admission_invalid") if path.endswith("/challenge") else (400, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
+                return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]: return {"status": 405, "headers": {}, "body": ""}
+            return {"status": 404, "headers": {}, "body": ""}
+        with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
+            receipt = MODULE.route_matrix_v4(Fake(), value)
+        self.assertEqual(len(receipt), 25); self.assertEqual(request.call_count, 25)
+        with patch.object(MODULE, "_route_request_v4", return_value={"status": 200, "headers": cors | {"content-type": "application/json"}, "body": json.dumps(status_body)}), patch.object(MODULE.time, "monotonic", side_effect=[0, 0, 121]):
+            with self.assertRaisesRegex(MODULE.ActivationError, "after request"):
+                MODULE.route_matrix_v4(Fake(), value)
+
+    def test_v4_route_transport_disables_ambient_proxies(self):
+        class Headers(dict):
+            def items(self): return super().items()
+        class Response:
+            status = 200; headers = Headers({"content-type": "application/json"})
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return "https://roebel-web.staging.agentcart.eu/test"
+            def read(self, size): return b"{}"
+        class Opener:
+            def open(self, request, timeout): return Response()
+        opener = Opener()
+        with patch.object(MODULE.urllib.request, "build_opener", return_value=opener) as build:
+            observed = MODULE._route_request_v4("https://roebel-web.staging.agentcart.eu", "GET", "/test", {}, None, 1)
+        self.assertEqual(observed["status"], 200)
+        proxy = build.call_args.args[0]
+        self.assertIsInstance(proxy, MODULE.urllib.request.ProxyHandler); self.assertEqual(proxy.proxies, {})
 
     def test_v4_protected_executable_blob_drift_is_rejected(self):
         with patch.object(MODULE, "git_blob", return_value=b"definitely-not-the-local-file"):
@@ -275,46 +479,79 @@ class ExecutorTests(unittest.TestCase):
 
     def test_v4_rollback_rechecks_ingress_absence_after_dual_suspend(self):
         desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
-        ingress = MODULE.CreatedV4("gateway.ingress", desired, admitted(desired, "ingress-uid"), {"uid": "ingress-uid"})
+        ingress = MODULE.CreatedV4("gateway.ingress", desired, admitted(desired, "ingress-uid"), {"uid": "ingress-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
         gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "10")
         workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "20")
-        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}}
+        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}, "source": {"metadata": {"uid": "source"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}}
         recreated = {"metadata": {"uid": "replacement-uid", "resourceVersion": "99"}}
-        with patch.object(MODULE, "delete_with_preconditions_v4", return_value={"absent": True}), patch.object(MODULE, "_target_live", side_effect=[gateway, workbench]), patch.object(MODULE, "get_optional", return_value=recreated):
+        quiescent = {"gateway": {"uid": "g", "suspended": True}, "workbenchIngress": {"uid": "w", "suspended": True}}
+        with patch.object(MODULE, "delete_with_preconditions_v4", return_value={"absent": True}), patch.object(MODULE, "_target_live", side_effect=[gateway, workbench]), patch.object(MODULE, "wait_both_suspended_v4", return_value=quiescent), patch.object(MODULE, "get_optional", return_value=recreated):
             result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [ingress], bootstrap, None, None)
         self.assertEqual(result["status"], "incomplete")
         self.assertTrue(result["bothKustomizationsSuspended"])
-        self.assertIn("reappeared", result["errors"][0])
+        self.assertIn("unowned UID", result["errors"][0])
 
     def test_v4_success_receipt_rejects_incomplete_object_set(self):
-        value = ready_policy(); now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-        sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
-        facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
-        facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"]}
-        facts["database"] = {"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}
-        facts["objectCreateResults"] = [{"ok": True}] * 5; facts["semanticObjects"] = {str(i): {} for i in range(6)}
-        facts["fluxTransaction"] = {"ready": {"gateway": {}, "workbenchIngress": {}}}
-        facts["preservation"] = {"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}
-        facts["rollback"] = {"status": "not-required", "finalizersRemovedByRunner": False}
+        value = ready_policy(); facts = valid_success_facts(value)
+        facts["objectCreateResults"] = facts["objectCreateResults"][:5]
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
             with self.assertRaisesRegex(MODULE.ActivationError, "object receipt set incomplete"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
 
     def test_v4_complete_receipt_binds_flux_source_before_and_after(self):
-        value = ready_policy(); now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
-        sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
-        facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
-        facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"]}
-        facts["database"] = {"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}
-        facts["objectCreateResults"] = [{"ok": True}] * 6; facts["semanticObjects"] = {str(i): {"ok": True} for i in range(6)}
-        source = {"uid": "source-uid", "resourceVersion": "10", "artifactRevision": f"main@sha1:{REV}"}
-        facts["fluxTransaction"] = {"ready": {"gateway": {}, "workbenchIngress": {}}, "sourceBeforeCas": source, "sourceAfterReady": source | {"resourceVersion": "11"}}
-        facts["preservation"] = {"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}
-        facts["rollback"] = {"status": "not-required", "finalizersRemovedByRunner": False}
+        value = ready_policy(); facts = valid_success_facts(value)
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
             MODULE.validate_success_facts_v4(facts, value, REV)
             facts["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
             with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
+
+    def test_v4_success_receipt_persistence_failure_is_inside_transaction_and_rolls_back(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        rendered = {
+            "gateway.networkPolicy": {"desired": resources["networkPolicy"], "path": "np", "blobSha256": sha()},
+            "workbenchIngress.networkPolicy": {"desired": MODULE.POLICY.expected_workbench_ingress_network_policy(), "path": "wnp", "blobSha256": sha()},
+            "gateway.serviceAccount": {"desired": resources["serviceAccount"], "path": "sa", "blobSha256": sha()},
+            "gateway.service": {"desired": resources["service"], "path": "svc", "blobSha256": sha()},
+            "gateway.deployment": {"desired": resources["deployment"], "path": "dep", "blobSha256": sha()},
+            "gateway.ingress": {"desired": resources["ingress"], "path": "ing", "blobSha256": sha()},
+        }
+        snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        source = {"metadata": {"uid": "source", "resourceVersion": "1"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        dormant = {"owners": {"gateway": {"kustomization": {"metadata": {"uid": "g"}}}, "workbenchIngress": {"kustomization": {"metadata": {"uid": "w"}}}}, "source": source}
+        cluster = {"apiOrigin": value["clusterIdentity"]["apiOrigin"], "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"], "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"], "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"]}
+        def create(_r, _kube, logical, item, nonce):
+            desired = item["desired"]; observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), logical + "-uid")
+            return MODULE.CreatedV4(logical, desired, observed, {"operationNonce": nonce, "temporaryNonceRemoved": False})
+        def remove(_r, _kube, created, _nonce): created.receipt["temporaryNonceRemoved"] = True; created.observed = admitted(created.desired, created.logical_name + "-uid", "11")
+        sink = Mock(); sink.commit.side_effect = [OSError("directory fsync failed"), None]
+        rollback = {"status": "complete", "finalizersRemovedByRunner": False}
+        rollback_patch = patch.object(MODULE, "rollback_v4", return_value=rollback)
+        patches = (
+            patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+            patch.object(MODULE, "render_v4", return_value=rendered), patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+            patch.object(MODULE, "cluster_binding_v4", return_value=cluster), patch.object(MODULE, "anonymous_publication_v4", return_value={"manifestDigest": value["productPins"]["imageManifestDigest"]}),
+            patch.object(MODULE, "endpoint_facts_v4", return_value={"ok": True}), patch.object(MODULE, "preservation_v4", return_value={}),
+            patch.object(MODULE, "flux_preflight_v4", return_value=dormant), patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
+            patch.object(MODULE, "secret_materialization_v4", return_value={"status": "same", "secrets": {"x": {}}}), patch.object(MODULE, "policy_union_v4", return_value={"ok": True}),
+            patch.object(MODULE, "create_v4", side_effect=create), patch.object(MODULE, "remove_operation_nonce_v4", side_effect=remove),
+            patch.object(MODULE, "health_v4", return_value=({}, {"ok": True})), patch.object(MODULE, "runtime_image_v4", return_value={"readyPodCount": 1, "pods": [{}]}),
+            patch.object(MODULE, "database_status_v4", return_value={"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}), patch.object(MODULE, "route_matrix_v4", return_value=[{}]),
+            patch.object(MODULE, "shared_source_revision_v4", return_value=source), patch.object(MODULE, "unsuspend_both_v4", return_value={"gateway": {"metadata": {"resourceVersion": "2"}}, "workbenchIngress": {"metadata": {"resourceVersion": "2"}}}),
+            patch.object(MODULE, "wait_both_ready_v4", return_value={"gateway": {}, "workbenchIngress": {}}), patch.object(MODULE, "semantic_postconditions_v4", return_value={str(i): {} for i in range(6)}),
+            patch.object(MODULE, "verify_preservation_v4", return_value={"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}),
+            patch.object(MODULE, "validate_success_facts_v4"), rollback_patch,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with contextlib.ExitStack() as stack:
+                entered = [stack.enter_context(item) for item in patches]
+                with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()})
+        self.assertEqual(sink.commit.call_count, 2)
+        self.assertEqual(sink.commit.call_args_list[1].args[0]["status"], "rolled-back")
+        entered[-1].assert_called_once(); snapshot.close.assert_called_once()
 
 if __name__ == "__main__": unittest.main()

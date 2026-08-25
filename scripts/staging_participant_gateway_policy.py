@@ -16,6 +16,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,6 +51,7 @@ WORKBENCH_PORT = 18083
 WORKBENCH_INGRESS_POLICY_NAME = "roebel-staging-participant-workbench-ingress"
 FLUX_NAMESPACE = "flux-roebel-staging"
 FLUX_SOURCE_NAME = "roebel-staging-operations"
+OPERATION_NONCE_ANNOTATION = "stadtstack.io/participant-activation-nonce"
 
 GATEWAY_LABELS = {
     "app.kubernetes.io/component": "staging-participant-gateway",
@@ -83,10 +85,29 @@ ROUTES = (
     "/api/staging-participant/v1/nostr-post",
 )
 POST_ROUTES = ROUTES[1:]
+HTTP_PREFIX = "/api/staging-participant/v1"
+ROUTE_EXPECTATIONS = (
+    {"case": "status", "method": "GET", "path": ROUTES[0], "status": 200},
+    *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in ROUTES),
+    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[1], "status": 400},
+    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[2], "status": 400},
+    *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in ROUTES[3:]),
+    {"case": "method-denied", "method": "POST", "path": ROUTES[0], "status": 405},
+    *({"case": "method-denied", "method": "GET", "path": path, "status": 405} for path in POST_ROUTES),
+    {"case": "method-denied", "method": "HEAD", "path": ROUTES[0], "status": 405},
+    {"case": "method-denied", "method": "DELETE", "path": ROUTES[0], "status": 405},
+    {"case": "unknown", "method": "GET", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "trailing-slash", "method": "GET", "path": ROUTES[0] + "/", "status": 404},
+    {"case": "query", "method": "GET", "path": ROUTES[0] + "?unexpected=1", "status": 404},
+    {"case": "unknown-preflight", "method": "OPTIONS", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "wrong-origin", "method": "POST", "path": ROUTES[1], "status": 403},
+)
 
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 RFC3339_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+NONCE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class PolicyError(ValueError):
@@ -129,6 +150,12 @@ def _static_descriptor() -> dict[str, Any]:
             "proposalMutation": False,
             "voteMutation": False,
             "treasuryMutation": False,
+        },
+        "clusterIdentity": {
+            "apiOrigin": None,
+            "caCertificateSha256": None,
+            "apiServerSpkiSha256": None,
+            "kubeSystemNamespaceUid": None,
         },
         "repositories": {
             "operations": {
@@ -192,19 +219,12 @@ def _static_descriptor() -> dict[str, Any]:
         },
         "httpBoundary": {
             "host": "roebel-web.staging.agentcart.eu",
-            "prefix": "/api/staging-participant/v1",
+            "prefix": HTTP_PREFIX,
             "routes": [
                 {"path": ROUTES[0], "methods": ["GET", "OPTIONS"]},
                 *[{"path": path, "methods": ["POST", "OPTIONS"]} for path in POST_ROUTES],
             ],
-            "expectations": [
-                {"method": "GET", "path": ROUTES[0], "status": 200},
-                *[{"method": "OPTIONS", "path": path, "status": 204} for path in ROUTES],
-                {"method": "POST", "path": ROUTES[0], "status": 405},
-                *[{"method": "GET", "path": path, "status": 405} for path in POST_ROUTES],
-                {"method": "HEAD", "path": ROUTES[0], "status": 405},
-                {"method": "DELETE", "path": ROUTES[0], "status": 405},
-            ],
+            "expectations": [copy.deepcopy(item) for item in ROUTE_EXPECTATIONS],
             "haproxyRateLimit": {
                 "requests": 30,
                 "windowSeconds": 60,
@@ -220,6 +240,8 @@ def _static_descriptor() -> dict[str, Any]:
                 "deploymentRollout": 120,
                 "fluxReady": 120,
                 "rollback": 120,
+                "rollbackAbsenceQuiet": 2,
+                "rollbackPoll": 0.25,
             },
         },
         "runtime": {
@@ -323,13 +345,22 @@ def _static_descriptor() -> dict[str, Any]:
                         "hardFailure": True,
                         "ownedByTransaction": False,
                     },
-                    "transport-uncertain-after-send": {
+                    "post-send-uncertain-discovered": {
                         "discoveryAllowed": True,
                         "exactSemanticMatchRequired": True,
+                        "operationNonceRequired": True,
                         "uidResourceVersionReceiptRequired": True,
                         "ownedByTransaction": True,
                         "rollbackRequired": True,
                     },
+                },
+                "absencePreflight": "all-six-exact-target-names-must-be-absent",
+                "operationNonce": {
+                    "annotation": OPERATION_NONCE_ANNOTATION,
+                    "encoding": "64-lower-hex",
+                    "source": "runner-csprng-only",
+                    "temporary": True,
+                    "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
                 },
             },
         },
@@ -380,7 +411,7 @@ def _static_descriptor() -> dict[str, Any]:
             "firstStep": "delete-exact-owned-participant-ingress-uid",
             "secondStep": "cas-suspend-both-participant-kustomizations",
             "applicationObjects": "delete-only-exact-transaction-owned-uids-in-reverse-create-order",
-            "database": "run-only-policy-pinned-deactivation-after-schema-binding",
+            "database": "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
             "preserve": [
                 "shared-flux-source",
                 "web-ingress",
@@ -426,6 +457,10 @@ def activation_blockers(policy: dict[str, Any] | None = None) -> tuple[str, ...]
         "productPins.deactivation.sha256": pins["deactivation"]["sha256"],
     }
     blockers = [name for name, slot in slots.items() if slot is None]
+    for name in ("apiOrigin", "caCertificateSha256", "apiServerSpkiSha256", "kubeSystemNamespaceUid"):
+        slot = value["clusterIdentity"][name]
+        if slot is None:
+            blockers.append(f"clusterIdentity.{name}")
     for endpoint in ("gnosis", "supabase"):
         if not value["endpoints"][endpoint]["ipv4Cidrs"]:
             blockers.append(f"endpoints.{endpoint}.ipv4Cidrs")
@@ -485,6 +520,26 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         },
         "participant authority boundary drift",
     )
+    cluster = value["clusterIdentity"]
+    _require(
+        set(cluster) == {"apiOrigin", "caCertificateSha256", "apiServerSpkiSha256", "kubeSystemNamespaceUid"},
+        "participant cluster identity field drift",
+    )
+    if cluster["apiOrigin"] is not None:
+        parsed_cluster = urllib.parse.urlsplit(cluster["apiOrigin"])
+        _require(
+            parsed_cluster.scheme == "https"
+            and parsed_cluster.hostname is not None
+            and parsed_cluster.username is None
+            and parsed_cluster.password is None
+            and not parsed_cluster.query
+            and not parsed_cluster.fragment
+            and parsed_cluster.path in {"", "/"},
+            "participant cluster API origin invalid",
+        )
+    for key in ("caCertificateSha256", "apiServerSpkiSha256"):
+        _require(cluster[key] is None or bool(SHA256.fullmatch(cluster[key])), f"participant cluster {key} invalid")
+    _require(cluster["kubeSystemNamespaceUid"] is None or bool(UUID.fullmatch(cluster["kubeSystemNamespaceUid"])), "participant cluster immutable identifier invalid")
     _require(
         value["repositories"] == {
             "operations": {
@@ -616,19 +671,51 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
     )
     _require(value["preservation"]["webIngress"]["mutation"] == "forbidden", "Web Ingress mutation permitted")
     _require(value["preservation"]["existingWorkbenchNetworkPolicy"]["adoption"] == "forbidden", "existing workbench policy adoption permitted")
-    outcomes = value["gitOps"]["activationTransaction"]["createOutcomes"]
+    transaction = value["gitOps"]["activationTransaction"]
+    outcomes = transaction["createOutcomes"]
     _require(
         outcomes["http-409-already-exists"]
         == {"discoveryAllowed": False, "hardFailure": True, "ownedByTransaction": False},
         "participant definite 409 must fail without adoption",
     )
-    uncertain = outcomes["transport-uncertain-after-send"]
+    uncertain = outcomes["post-send-uncertain-discovered"]
     _require(
         uncertain["discoveryAllowed"] is True
         and uncertain["exactSemanticMatchRequired"] is True
+        and uncertain["operationNonceRequired"] is True
         and uncertain["uidResourceVersionReceiptRequired"] is True
         and uncertain["rollbackRequired"] is True,
         "participant uncertain-create recovery boundary drift",
+    )
+    _require(
+        transaction["absencePreflight"] == "all-six-exact-target-names-must-be-absent"
+        and transaction["operationNonce"] == {
+            "annotation": OPERATION_NONCE_ANNOTATION,
+            "encoding": "64-lower-hex",
+            "source": "runner-csprng-only",
+            "temporary": True,
+            "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
+        },
+        "participant operation reservation boundary drift",
+    )
+    _require(
+        value["httpBoundary"]["timeoutsSeconds"] == {
+            "kubernetesRequest": 10,
+            "routeRequest": 10,
+            "routeMatrixTotal": 120,
+            "deploymentRollout": 120,
+            "fluxReady": 120,
+            "rollback": 120,
+            "rollbackAbsenceQuiet": 2,
+            "rollbackPoll": 0.25,
+        },
+        "participant timeout boundary drift",
+    )
+    _require(value["httpBoundary"]["expectations"] == list(ROUTE_EXPECTATIONS), "participant route expectation matrix drift")
+    _require(
+        value["rollback"]["database"]
+        == "out-of-band-separately-authorized-policy-pinned-deactivation-not-run-by-activation",
+        "participant database rollback authority drift",
     )
 
 
@@ -1009,6 +1096,7 @@ def trusted_live_facts_contract() -> dict[str, Any]:
         "policyBinding": activation_policy_sha256(),
         "requiredSections": [
             "clusterBinding",
+            "operationReservation",
             "protectedRevision",
             "publication",
             "database",
@@ -1053,16 +1141,19 @@ def normalize_kubernetes_object(value: Any) -> dict[str, Any]:
     result = copy.deepcopy(value)
     metadata = result.get("metadata")
     _require(isinstance(metadata, dict), "Kubernetes object metadata missing")
+    kind = result.get("kind")
     for key in ("creationTimestamp", "generation", "managedFields", "resourceVersion", "selfLink", "uid"):
         metadata.pop(key, None)
     annotations = metadata.get("annotations")
     if isinstance(annotations, dict):
         annotations.pop("kubectl.kubernetes.io/last-applied-configuration", None)
+        deployment_revision = annotations.get("deployment.kubernetes.io/revision")
+        if kind == "Deployment" and isinstance(deployment_revision, str) and deployment_revision.isdigit():
+            annotations.pop("deployment.kubernetes.io/revision")
         if not annotations:
             metadata.pop("annotations", None)
     result.pop("status", None)
 
-    kind = result.get("kind")
     # Flux adds this one controller finalizer even to suspended source and
     # Kustomization objects. It is not caller intent and neither participant
     # rollback nor teardown owns these bootstrap identities. Unknown or extra
@@ -1128,12 +1219,39 @@ def require_semantically_equal(live: Any, desired: Any, label: str) -> dict[str,
     return normalized_live
 
 
+def with_operation_nonce(desired: Any, operation_nonce: str) -> dict[str, Any]:
+    """Add the sole temporary transaction marker to one protected object."""
+    _require(isinstance(operation_nonce, str) and bool(NONCE.fullmatch(operation_nonce)), "operation nonce invalid")
+    _require(isinstance(desired, dict), "operation nonce desired object invalid")
+    result = copy.deepcopy(desired)
+    metadata = result.get("metadata")
+    _require(isinstance(metadata, dict), "operation nonce metadata absent")
+    annotations = metadata.setdefault("annotations", {})
+    _require(isinstance(annotations, dict) and OPERATION_NONCE_ANNOTATION not in annotations, "operation nonce annotation collision")
+    annotations[OPERATION_NONCE_ANNOTATION] = operation_nonce
+    return result
+
+
+def without_operation_nonce(value: Any, operation_nonce: str) -> dict[str, Any]:
+    """Verify and remove only this run's exact temporary transaction marker."""
+    _require(isinstance(operation_nonce, str) and bool(NONCE.fullmatch(operation_nonce)), "operation nonce invalid")
+    _require(isinstance(value, dict), "operation nonce object invalid")
+    result = copy.deepcopy(value); metadata = result.get("metadata")
+    _require(isinstance(metadata, dict), "operation nonce metadata absent")
+    annotations = metadata.get("annotations")
+    _require(isinstance(annotations, dict) and annotations.get(OPERATION_NONCE_ANNOTATION) == operation_nonce, "operation nonce ownership mismatch")
+    annotations.pop(OPERATION_NONCE_ANNOTATION)
+    if not annotations: metadata.pop("annotations")
+    return result
+
+
 def bind_create_result(
     *,
     outcome: str,
     observed: Any | None,
     desired: Any,
     label: str,
+    operation_nonce: str,
 ) -> dict[str, Any]:
     """Turn one trusted create result into a rollback-safe receipt projection.
 
@@ -1148,6 +1266,15 @@ def bind_create_result(
     if outcome == "http-409-already-exists":
         raise PolicyError(f"{label} create conflict: adoption forbidden")
     _require(observed is not None, f"{label} create result missing observed object")
+    _require(
+        isinstance(desired, dict)
+        and isinstance(observed, dict)
+        and isinstance(operation_nonce, str)
+        and bool(NONCE.fullmatch(operation_nonce))
+        and desired.get("metadata", {}).get("annotations", {}).get(OPERATION_NONCE_ANNOTATION) == operation_nonce
+        and observed.get("metadata", {}).get("annotations", {}).get(OPERATION_NONCE_ANNOTATION) == operation_nonce,
+        f"{label} operation nonce ownership mismatch",
+    )
     normalized = require_semantically_equal(observed, desired, label)
     metadata = observed.get("metadata")
     _require(isinstance(metadata, dict), f"{label} create metadata missing")
@@ -1161,7 +1288,8 @@ def bind_create_result(
     desired_metadata = normalized.get("metadata", {})
     return {
         "outcome": outcome,
-        "discoveredAfterTransportUncertainty": outcome == "transport-uncertain-after-send",
+        "discoveredAfterPostSendUncertainty": outcome == "post-send-uncertain-discovered",
+        "operationNonce": operation_nonce,
         "target": {
             "apiVersion": normalized.get("apiVersion"),
             "kind": normalized.get("kind"),

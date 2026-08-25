@@ -30,6 +30,12 @@ def participant_ready_policy() -> dict:
     pins["migration"]["sha256"] = "sha256:" + "e" * 64
     pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
     pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
+    value["clusterIdentity"] = {
+        "apiOrigin": "https://api.staging.example:6443",
+        "caCertificateSha256": "sha256:" + "2" * 64,
+        "apiServerSpkiSha256": "sha256:" + "3" * 64,
+        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
+    }
     value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
     value["activationReady"] = True
     return value
