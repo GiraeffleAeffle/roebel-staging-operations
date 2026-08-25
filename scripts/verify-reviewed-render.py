@@ -2642,7 +2642,7 @@ def participant_gateway_target(kind: str, name: str, namespace: str) -> dict[str
 
 
 def expected_participant_gateway_flux_objects(*, suspended: bool = True) -> dict[str, dict[str, Any]]:
-    labels = {**PARTICIPANT_GATEWAY_LABELS, "stadtstack.io/gitops-owner": "participant-gateway"}
+    labels = {**PARTICIPANT_GATEWAY_LABELS, "stadtstack.io/gitops-owner": "participant-gateway", "stadtstack.io/flux-tenant": "roebel-staging"}
     service_account = {
         "apiVersion": "v1", "kind": "ServiceAccount",
         # Flux resolves spec.serviceAccountName in the Kustomization namespace,
@@ -2796,7 +2796,7 @@ def verify_participant_gateway_flux_bootstrap(value: Any, operations_revision: s
     source = closed(bootstrap["sourceReceipt"], {"target", "uid", "resourceVersion", "liveObject", "liveObjectCanonicalSha256", "lastAppliedRevision"}, "participant gateway Flux GitRepository source receipt")
     require(source["target"] == participant_gateway_target("GitRepository", PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, PARTICIPANT_GATEWAY_FLUX_NAMESPACE), "participant gateway Flux source target invalid")
     require(isinstance(source["uid"], str) and UUID.fullmatch(source["uid"]) and isinstance(source["resourceVersion"], str) and source["resourceVersion"].isdigit(), "participant gateway Flux source identity invalid")
-    expected_source = {"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository", "metadata": {"name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE}, "spec": {"url": "https://github.com/GiraeffleAeffle/roebel-staging-operations", "ref": {"branch": "main"}, "verify": {"mode": "head"}}}
+    expected_source = {"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository", "metadata": {"labels": {"stadtstack.io/flux-tenant": "roebel-staging"}, "name": PARTICIPANT_GATEWAY_FLUX_SOURCE_NAME, "namespace": PARTICIPANT_GATEWAY_FLUX_NAMESPACE}, "spec": {"interval": "1m", "ref": {"branch": "main"}, "suspend": True, "timeout": "30s", "url": "https://github.com/GiraeffleAeffle/roebel-staging-operations.git"}}
     require(source["liveObject"] == expected_source and source["liveObjectCanonicalSha256"] == digest(expected_source), "participant gateway Flux source URL/ref/verification drift")
     require(source["lastAppliedRevision"] == operations_revision, "participant gateway Flux source revision invalid")
 
