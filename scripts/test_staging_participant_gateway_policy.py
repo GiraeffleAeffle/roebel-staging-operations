@@ -51,22 +51,25 @@ def all_keys(value):
 
 
 class StaticPolicyTests(unittest.TestCase):
-    def test_committed_descriptor_is_exact_and_inert(self):
+    def test_committed_descriptor_is_exact_and_activation_ready(self):
         committed = json.loads((ROOT / POLICY.POLICY_PATH).read_text())
         self.assertEqual(committed, POLICY.activation_policy_descriptor())
-        self.assertFalse(committed["activationReady"])
+        self.assertTrue(committed["activationReady"])
+        self.assertEqual(POLICY.activation_blockers(committed), ())
         self.assertEqual(
-            POLICY.activation_blockers(committed),
-            (
-                "clusterIdentity.apiOrigin",
-                "clusterIdentity.caCertificateSha256",
-                "clusterIdentity.apiServerSpkiSha256",
-                "clusterIdentity.kubeSystemNamespaceUid",
-                "endpoints.supabase.ipv4Cidrs",
-            ),
+            committed["clusterIdentity"],
+            {
+                "apiOrigin": "https://10.255.240.11:6443",
+                "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+                "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+                "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+            },
         )
-        with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
-            POLICY.assert_activation_ready(committed)
+        self.assertEqual(
+            committed["endpoints"]["supabase"]["ipv4Cidrs"],
+            ["104.18.38.10/32", "172.64.149.246/32"],
+        )
+        self.assertEqual(POLICY.assert_activation_ready(committed), committed)
 
     def test_static_descriptor_contains_no_caller_or_live_evidence(self):
         keys = set(all_keys(POLICY.activation_policy_descriptor()))
