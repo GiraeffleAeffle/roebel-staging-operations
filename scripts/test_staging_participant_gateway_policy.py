@@ -34,22 +34,29 @@ def all_keys(value):
 
 
 class StaticPolicyTests(unittest.TestCase):
-    def test_committed_descriptor_is_exact_and_inert(self):
+    def test_committed_descriptor_is_an_exact_approved_state(self):
         committed = json.loads((ROOT / POLICY.POLICY_PATH).read_text())
-        self.assertEqual(committed, POLICY.activation_policy_descriptor())
-        self.assertFalse(committed["activationReady"])
-        self.assertEqual(
-            POLICY.activation_blockers(committed),
-            (
-                "clusterIdentity.apiOrigin",
-                "clusterIdentity.caCertificateSha256",
-                "clusterIdentity.apiServerSpkiSha256",
-                "clusterIdentity.kubeSystemNamespaceUid",
-                "endpoints.supabase.ipv4Cidrs",
-            ),
-        )
-        with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
-            POLICY.assert_activation_ready(committed)
+        inert = POLICY.activation_policy_descriptor()
+        ready = ready_policy()
+        self.assertIn(committed, (inert, ready))
+        if committed == ready:
+            self.assertTrue(committed["activationReady"])
+            self.assertEqual(POLICY.activation_blockers(committed), ())
+            self.assertEqual(POLICY.assert_activation_ready(committed), committed)
+        else:
+            self.assertFalse(committed["activationReady"])
+            self.assertEqual(
+                POLICY.activation_blockers(committed),
+                (
+                    "clusterIdentity.apiOrigin",
+                    "clusterIdentity.caCertificateSha256",
+                    "clusterIdentity.apiServerSpkiSha256",
+                    "clusterIdentity.kubeSystemNamespaceUid",
+                    "endpoints.supabase.ipv4Cidrs",
+                ),
+            )
+            with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
+                POLICY.assert_activation_ready(committed)
 
     def test_only_exact_one_way_ready_transition_is_approved(self):
         current = POLICY.activation_policy_descriptor()

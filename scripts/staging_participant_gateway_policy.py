@@ -528,7 +528,7 @@ APPROVED_NEXT_ACTIVATION_POLICY = _approved_next_activation_policy()
 
 
 def activation_policy_descriptor() -> dict[str, Any]:
-    """Return the still-inert descriptor committed by this protected base."""
+    """Return the immutable inert predecessor for transition validation."""
     return copy.deepcopy(STATIC_ACTIVATION_POLICY)
 
 
