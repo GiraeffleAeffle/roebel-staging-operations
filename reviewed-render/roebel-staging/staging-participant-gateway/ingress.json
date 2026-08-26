@@ -1,0 +1,51 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "Ingress",
+  "metadata": {
+    "annotations": {
+      "haproxy-ingress.github.io/config-backend-early": "http-request deny deny_status 404 if !{ path /api/staging-participant/v1/status } !{ path /api/staging-participant/v1/challenge } !{ path /api/staging-participant/v1/session } !{ path /api/staging-participant/v1/posts } !{ path /api/staging-participant/v1/comments } !{ path /api/staging-participant/v1/nostr-post } !{ path /api/staging-participant/v1/promote-source-post } !{ path /api/staging-participant/v1/sign-topic-suggestion }\nhttp-request deny deny_status 405 if { method POST } !{ path /api/staging-participant/v1/challenge } !{ path /api/staging-participant/v1/session } !{ path /api/staging-participant/v1/posts } !{ path /api/staging-participant/v1/comments } !{ path /api/staging-participant/v1/nostr-post } !{ path /api/staging-participant/v1/promote-source-post } !{ path /api/staging-participant/v1/sign-topic-suggestion }\nhttp-request deny deny_status 405 if { method OPTIONS } !{ path /api/staging-participant/v1/status } !{ path /api/staging-participant/v1/challenge } !{ path /api/staging-participant/v1/session } !{ path /api/staging-participant/v1/posts } !{ path /api/staging-participant/v1/comments } !{ path /api/staging-participant/v1/nostr-post } !{ path /api/staging-participant/v1/promote-source-post } !{ path /api/staging-participant/v1/sign-topic-suggestion }\nhttp-request deny deny_status 405 if { method HEAD }\nhttp-request deny deny_status 405 if { method GET } !{ path /api/staging-participant/v1/status }\nhttp-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }\nstick-table type ip size 10k expire 60s store http_req_rate(1m)\nhttp-request track-sc0 src\nhttp-request deny deny_status 429 if { sc_http_req_rate(0) gt 30 }"
+    },
+    "labels": {
+      "app.kubernetes.io/component": "staging-participant-gateway",
+      "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+      "app.kubernetes.io/part-of": "stadtstack",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-staging-participant-gateway",
+    "namespace": "stadtstack-roebel-web-preview"
+  },
+  "spec": {
+    "ingressClassName": "haproxy",
+    "rules": [
+      {
+        "host": "roebel-web.staging.agentcart.eu",
+        "http": {
+          "paths": [
+            {
+              "backend": {
+                "service": {
+                  "name": "roebel-staging-participant-gateway",
+                  "port": {
+                    "name": "http"
+                  }
+                }
+              },
+              "path": "/api/staging-participant/v1",
+              "pathType": "Prefix"
+            }
+          ]
+        }
+      }
+    ],
+    "tls": [
+      {
+        "hosts": [
+          "roebel-web.staging.agentcart.eu"
+        ],
+        "secretName": "roebel-web-presentation-tls"
+      }
+    ]
+  }
+}

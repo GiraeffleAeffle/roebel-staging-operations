@@ -1,0 +1,58 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "staging-participant-workbench-ingress",
+      "app.kubernetes.io/name": "roebel-staging-participant-workbench-ingress",
+      "app.kubernetes.io/part-of": "stadtstack",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/environment": "staging",
+      "stadtstack.io/gitops-owner": "participant-workbench-ingress"
+    },
+    "name": "roebel-staging-participant-workbench-ingress",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "ingress": [
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "staging-participant-gateway",
+                "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none",
+                "stadtstack.io/civic-authority": "none",
+                "stadtstack.io/environment": "staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18083,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ],
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "e2e-workbench",
+        "app.kubernetes.io/name": "e2e-workbench",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "policyTypes": [
+      "Ingress"
+    ]
+  }
+}
