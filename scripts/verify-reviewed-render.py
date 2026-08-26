@@ -139,6 +139,7 @@ EXPECTED_FILES = {
     ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
     ".github/workflows/staging-participant-gateway-activation.yml",
+    ".github/workflows/staging-participant-flux-bootstrap.yml",
     ".gitignore",
     "LICENSE",
     "README.md",
@@ -149,9 +150,12 @@ EXPECTED_FILES = {
     "policy/staging-participant-gateway-activation-policy.json",
     "scripts/render-release-set-promotion.py",
     "scripts/activate-staging-participant-gateway.py",
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
     "scripts/test_automatic_promotion_workflow.py",
     "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
     "scripts/test_staging_participant_gateway_policy.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
@@ -207,6 +211,10 @@ PARTICIPANT_GATEWAY_IMAGE = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["product
 PARTICIPANT_GATEWAY_WORKFLOW = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["productPins"]["workflowIdentity"]
 PARTICIPANT_GATEWAY_ORIGIN = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["endpoints"]["browserOrigin"]
 PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
+PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES = {
+    "policy/repository-contract.json",
+    PARTICIPANT_POLICY.POLICY_PATH,
+}
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
 PARTICIPANT_GATEWAY_FLUX_NAMESPACE = PARTICIPANT_POLICY.FLUX_NAMESPACE
@@ -547,7 +555,7 @@ def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -
         raise VerificationError(str(error)) from error
 
 
-def verify_contract(root: Path) -> dict[str, Any]:
+def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -590,8 +598,17 @@ def verify_contract(root: Path) -> dict[str, Any]:
         },
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
-            "activationReady": False,
+            "activationReady": participant_policy["activationReady"],
+            "activationRequiresDormantFluxBootstrapReceipt": True,
             "component": "staging-participant-gateway",
+            "dormantFluxBootstrap": {
+                "exactObjectCount": len(PARTICIPANT_POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER),
+                "initialState": "all-eight-exact-names-absent",
+                "runner": "scripts/bootstrap-staging-participant-flux.py",
+                "receiptSchemaVersion": PARTICIPANT_POLICY.DORMANT_BOOTSTRAP_RECEIPT_SCHEMA,
+                "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+                "workflow": ".github/workflows/staging-participant-flux-bootstrap.yml",
+            },
             "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
             "methodPathMatrix": {
                 "GET": [PARTICIPANT_POLICY.ROUTES[0]],
@@ -601,7 +618,7 @@ def verify_contract(root: Path) -> dict[str, Any]:
             "normalReleaseSetPromotionMayChange": False,
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
             "singleReplicaRequired": True,
             "trustedLiveFacts": "protected-local-runner-out-of-band-only",
             "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
@@ -2927,16 +2944,46 @@ def verify_participant_gateway_secret_materialization(value: Any, label: str) ->
     return materialization
 
 
-def verify_participant_gateway_database_preflight(value: Any, label: str) -> dict[str, Any]:
+def verify_participant_gateway_database_preflight(
+    value: Any,
+    runtime_pin: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
     preflight = closed(
         value,
-        {"databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+        {
+            "databaseProject",
+            "environment",
+            "vaultArm",
+            "migrationSha256",
+            "schemaSha256",
+            "topicTracerMigrationSha256",
+            "topicTracerDatabaseSchemaSha256",
+            "observedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "apiOutcome",
+            "receiptCanonicalSha256",
+        },
         label,
     )
     require(isinstance(preflight["databaseProject"], str) and re.fullmatch(r"[a-z0-9]{20}", preflight["databaseProject"]), f"{label} database project invalid")
     require(preflight["environment"] == "staging" and preflight["vaultArm"] == "roebel_staging_participant_environment_arm=staging-only", f"{label} staging/Vault binding invalid")
-    for key in ("migrationSha256", "schemaSha256"):
-        require(isinstance(preflight[key], str) and SHA256.fullmatch(preflight[key]), f"{label} {key} invalid")
+    require(
+        {
+            "migrationSha256": preflight["migrationSha256"],
+            "schemaSha256": preflight["schemaSha256"],
+            "topicTracerMigrationSha256": preflight["topicTracerMigrationSha256"],
+            "topicTracerDatabaseSchemaSha256": preflight["topicTracerDatabaseSchemaSha256"],
+        }
+        == {
+            "migrationSha256": runtime_pin["migrationSha256"],
+            "schemaSha256": runtime_pin["databaseSchemaSha256"],
+            "topicTracerMigrationSha256": runtime_pin["topicTracerMigrationSha256"],
+            "topicTracerDatabaseSchemaSha256": runtime_pin["topicTracerDatabaseSchemaSha256"],
+        },
+        f"{label} pinned schema contract drift",
+    )
     observed = utc_timestamp(preflight["observedAt"], f"{label} observedAt")
     valid_until = utc_timestamp(preflight["validUntil"], f"{label} validUntil")
     require(preflight["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
@@ -3151,7 +3198,11 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
     application = verify_participant_gateway_application_bootstrap(evidence["applicationBootstrap"], runtime_pin)
     ingress = verify_participant_gateway_ingress_cas(evidence["ingressCas"], rollback, "participant gateway Ingress CAS")
     secrets = verify_participant_gateway_secret_materialization(evidence["secretMaterialization"], "participant gateway Secret materialization")
-    database = verify_participant_gateway_database_preflight(evidence["databaseVaultPreflight"], "participant gateway database/Vault preflight")
+    database = verify_participant_gateway_database_preflight(
+        evidence["databaseVaultPreflight"],
+        runtime_pin,
+        "participant gateway database/Vault preflight",
+    )
     chain = verify_participant_gateway_gnosis_chain(evidence["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway Gnosis chain check")
     initial_dns = closed(evidence["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway DNS/TLS evidence")
     initial_dns = {
@@ -3186,7 +3237,11 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
     require(recheck["applicationStates"] == application["postconditions"], "participant gateway activation application ownership drift")
     recheck_ingress = verify_participant_gateway_ingress_cas(recheck["ingressCas"], rollback, "participant gateway activation Ingress CAS")
     recheck_secrets = verify_participant_gateway_secret_materialization(recheck["secretMaterialization"], "participant gateway activation Secret materialization")
-    recheck_database = verify_participant_gateway_database_preflight(recheck["databaseVaultPreflight"], "participant gateway activation database/Vault preflight")
+    recheck_database = verify_participant_gateway_database_preflight(
+        recheck["databaseVaultPreflight"],
+        runtime_pin,
+        "participant gateway activation database/Vault preflight",
+    )
     recheck_chain = verify_participant_gateway_gnosis_chain(recheck["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway activation Gnosis chain check")
     recheck_dns_value = closed(recheck["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway activation DNS/TLS recheck")
     for name in ("gnosis", "supabase"):
@@ -3208,8 +3263,32 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
         )
     covers_checked(recheck_database["observedAt"], recheck_database["validUntil"], "participant gateway activation database/Vault preflight")
     require(
-        {key: recheck_database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")}
-        == {key: database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")},
+        {
+            key: recheck_database[key]
+            for key in (
+                "databaseProject",
+                "environment",
+                "vaultArm",
+                "migrationSha256",
+                "schemaSha256",
+                "topicTracerMigrationSha256",
+                "topicTracerDatabaseSchemaSha256",
+                "apiOutcome",
+            )
+        }
+        == {
+            key: database[key]
+            for key in (
+                "databaseProject",
+                "environment",
+                "vaultArm",
+                "migrationSha256",
+                "schemaSha256",
+                "topicTracerMigrationSha256",
+                "topicTracerDatabaseSchemaSha256",
+                "apiOutcome",
+            )
+        },
         "participant gateway activation database/Vault binding drift",
     )
     covers_checked(recheck_chain["observedAt"], recheck_chain["validUntil"], "participant gateway activation Gnosis chain check")
@@ -3270,9 +3349,12 @@ def verify_participant_gateway_activation_admission_freshness(
     )
 
 
-def verify_participant_gateway_runtime_pin(value: Any) -> dict[str, Any]:
+def verify_participant_gateway_runtime_pin(
+    value: Any,
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        expected = PARTICIPANT_POLICY.expected_runtime_pin()
+        expected = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     require(value == expected, "staging participant gateway runtime pin drift")
@@ -3291,17 +3373,22 @@ def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
     ]
 
 
-def expected_participant_gateway_ingress() -> dict[str, Any]:
+def expected_participant_gateway_ingress(
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
-        return PARTICIPANT_POLICY.expected_gateway_ingress()
+        return PARTICIPANT_POLICY.expected_gateway_ingress(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
 
 
-def expected_participant_gateway_resources(runtime_pin: dict[str, Any]) -> dict[str, Any]:
+def expected_participant_gateway_resources(
+    runtime_pin: dict[str, Any],
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compatibility adapter to the single protected policy module."""
     try:
-        expected = PARTICIPANT_POLICY.expected_gateway_resources()
+        expected = PARTICIPANT_POLICY.expected_gateway_resources(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     require(runtime_pin == expected["runtimePin"], "participant runtime pin differs from protected policy")
@@ -3403,9 +3490,15 @@ def _legacy_expected_participant_gateway_resources(runtime_pin: dict[str, Any]) 
     return {"deployment": deployment, "service": service, "networkPolicy": network_policy, "serviceAccount": service_account, "ingress": expected_participant_gateway_ingress(), "kustomization": kustomization}
 
 
-def verify_participant_gateway(root: Path) -> dict[str, Any]:
-    runtime_pin = verify_participant_gateway_runtime_pin(load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"))
-    expected = expected_participant_gateway_resources(runtime_pin)
+def verify_participant_gateway(
+    root: Path,
+    participant_policy: dict[str, Any],
+) -> dict[str, Any]:
+    runtime_pin = verify_participant_gateway_runtime_pin(
+        load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"),
+        participant_policy,
+    )
+    expected = expected_participant_gateway_resources(runtime_pin, participant_policy)
     actual = {
         "deployment": load_json(root / PARTICIPANT_GATEWAY_ROOT / "deployment.json"),
         "service": load_json(root / PARTICIPANT_GATEWAY_ROOT / "service.json"),
@@ -3884,7 +3977,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     render_file_set = verify_repository_file_set(root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
-    verify_contract(root)
+    verify_contract(root, participant_policy)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
@@ -3910,7 +4003,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
         signed_nostr,
     )
     web_network_policy = verify_web_network_policy(root)
-    participant_gateway_objects = verify_participant_gateway(root) if participant_gateway else None
+    participant_gateway_objects = (
+        verify_participant_gateway(root, participant_policy)
+        if participant_gateway
+        else None
+    )
     web_ingress = verify_web_ingress(root, signed_nostr, participant_gateway)
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
@@ -3965,6 +4062,39 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_participant_gateway = candidate["renderFileSet"] in {
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
+
+    if candidate["stagingParticipantGatewayPolicy"] != base["stagingParticipantGatewayPolicy"]:
+        try:
+            PARTICIPANT_POLICY.validate_activation_policy_transition(
+                base["stagingParticipantGatewayPolicy"],
+                candidate["stagingParticipantGatewayPolicy"],
+            )
+        except PARTICIPANT_POLICY.PolicyError as error:
+            raise VerificationError(str(error)) from error
+        require(
+            candidate["renderFileSet"] == base["renderFileSet"],
+            "participant activation-policy transition may not add or remove a render",
+        )
+        require(
+            candidate["head"] == base["head"],
+            "participant activation-policy transition must preserve the Release Set head",
+        )
+        require(
+            candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+            "participant activation-policy transition may not change Public Mecky egress",
+        )
+        candidate_files = repository_files(candidate_root)
+        require(
+            candidate_files == repository_files(base_root),
+            "participant activation-policy transition file set drift",
+        )
+        for relative in sorted(candidate_files - PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES):
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"participant activation-policy transition changed protected file: {relative}",
+            )
+        return
+
     require(
         not (base["renderFileSet"] == "reviewed-public-knowledge" and candidate["renderFileSet"] == "current"),
         "reviewed-public-knowledge render set cannot regress to the legacy set",

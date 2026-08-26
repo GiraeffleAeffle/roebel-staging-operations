@@ -70,14 +70,25 @@
   "stagingParticipantGatewayBoundary": {
     "activationPolicy": "policy/staging-participant-gateway-activation-policy.json",
     "activationReady": false,
+    "activationRequiresDormantFluxBootstrapReceipt": true,
     "component": "staging-participant-gateway",
+    "dormantFluxBootstrap": {
+      "exactObjectCount": 8,
+      "initialState": "all-eight-exact-names-absent",
+      "runner": "scripts/bootstrap-staging-participant-flux.py",
+      "receiptSchemaVersion": "roebel_staging_participant_flux_bootstrap_receipt_v1",
+      "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+      "workflow": ".github/workflows/staging-participant-flux-bootstrap.yml"
+    },
     "exactGatewayPaths": [
       "/api/staging-participant/v1/status",
       "/api/staging-participant/v1/challenge",
       "/api/staging-participant/v1/session",
       "/api/staging-participant/v1/posts",
       "/api/staging-participant/v1/comments",
-      "/api/staging-participant/v1/nostr-post"
+      "/api/staging-participant/v1/nostr-post",
+      "/api/staging-participant/v1/promote-source-post",
+      "/api/staging-participant/v1/sign-topic-suggestion"
     ],
     "methodPathMatrix": {
       "GET": [
@@ -89,20 +100,24 @@
         "/api/staging-participant/v1/session",
         "/api/staging-participant/v1/posts",
         "/api/staging-participant/v1/comments",
-        "/api/staging-participant/v1/nostr-post"
+        "/api/staging-participant/v1/nostr-post",
+        "/api/staging-participant/v1/promote-source-post",
+        "/api/staging-participant/v1/sign-topic-suggestion"
       ],
       "POST": [
         "/api/staging-participant/v1/challenge",
         "/api/staging-participant/v1/session",
         "/api/staging-participant/v1/posts",
         "/api/staging-participant/v1/comments",
-        "/api/staging-participant/v1/nostr-post"
+        "/api/staging-participant/v1/nostr-post",
+        "/api/staging-participant/v1/promote-source-post",
+        "/api/staging-participant/v1/sign-topic-suggestion"
       ]
     },
     "normalReleaseSetPromotionMayChange": false,
     "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
     "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
-    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
     "singleReplicaRequired": true,
     "trustedLiveFacts": "protected-local-runner-out-of-band-only",
     "workbenchIngressRenderRoot": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress"

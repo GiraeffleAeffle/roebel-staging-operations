@@ -20,24 +20,7 @@ SPEC.loader.exec_module(POLICY)
 
 
 def ready_policy() -> dict:
-    value = POLICY.activation_policy_descriptor()
-    pins = value["productPins"]
-    pins["sourceRevision"] = "a" * 40
-    pins["sourceTreeSha256"] = "sha256:" + "b" * 64
-    pins["imageManifestDigest"] = "sha256:" + "c" * 64
-    pins["workflowSha256"] = "sha256:" + "d" * 64
-    pins["migration"]["sha256"] = "sha256:" + "e" * 64
-    pins["databaseSchemaSha256"] = "sha256:" + "f" * 64
-    pins["deactivation"]["sha256"] = "sha256:" + "1" * 64
-    value["clusterIdentity"] = {
-        "apiOrigin": "https://api.staging.example:6443",
-        "caCertificateSha256": "sha256:" + "2" * 64,
-        "apiServerSpkiSha256": "sha256:" + "3" * 64,
-        "kubeSystemNamespaceUid": "00000000-0000-4000-8000-000000000001",
-    }
-    value["endpoints"]["supabase"]["ipv4Cidrs"] = ["192.0.2.25/32"]
-    value["activationReady"] = True
-    return value
+    return POLICY.approved_next_activation_policy_descriptor()
 
 
 def all_keys(value):
@@ -68,6 +51,64 @@ class StaticPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
             POLICY.assert_activation_ready(committed)
 
+    def test_only_exact_one_way_ready_transition_is_approved(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        self.assertEqual(
+            POLICY.validate_activation_policy_transition(current, approved),
+            approved,
+        )
+        self.assertTrue(approved["activationReady"])
+        self.assertEqual(POLICY.activation_blockers(approved), ())
+        self.assertEqual(
+            approved["clusterIdentity"],
+            {
+                "apiOrigin": "https://10.255.240.11:6443",
+                "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+                "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+                "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+            },
+        )
+        self.assertEqual(
+            approved["endpoints"]["supabase"]["ipv4Cidrs"],
+            ["104.18.38.10/32", "172.64.149.246/32"],
+        )
+
+    def test_ready_transition_rejects_every_partial_reverse_reordered_or_widened_shape(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        mutations = []
+        for key in approved["clusterIdentity"]:
+            partial = copy.deepcopy(approved)
+            partial["clusterIdentity"][key] = None
+            mutations.append((f"partial-{key}", partial))
+        partial_cidrs = copy.deepcopy(approved)
+        partial_cidrs["endpoints"]["supabase"]["ipv4Cidrs"] = ["104.18.38.10/32"]
+        mutations.append(("partial-cidrs", partial_cidrs))
+        reordered = copy.deepcopy(approved)
+        reordered["endpoints"]["supabase"]["ipv4Cidrs"].reverse()
+        mutations.append(("reordered-cidrs", reordered))
+        widened = copy.deepcopy(approved)
+        widened["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.1/32")
+        mutations.append(("widened-cidrs", widened))
+        authority_widened = copy.deepcopy(approved)
+        authority_widened["authority"]["civicAuthority"] = "municipal"
+        mutations.append(("widened-authority", authority_widened))
+        extra = copy.deepcopy(approved)
+        extra["callerEvidence"] = {"trusted": True}
+        mutations.append(("extra-field", extra))
+        wrong_ready = copy.deepcopy(approved)
+        wrong_ready["activationReady"] = False
+        mutations.append(("derived-ready-tamper", wrong_ready))
+        for label, candidate in mutations:
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(POLICY.PolicyError, "transition candidate drift"):
+                    POLICY.validate_activation_policy_transition(current, candidate)
+        with self.assertRaisesRegex(POLICY.PolicyError, "transition base drift"):
+            POLICY.validate_activation_policy_transition(approved, current)
+        with self.assertRaisesRegex(POLICY.PolicyError, "transition candidate drift"):
+            POLICY.validate_activation_policy_transition(current, current)
+
     def test_static_descriptor_contains_no_caller_or_live_evidence(self):
         keys = set(all_keys(POLICY.activation_policy_descriptor()))
         self.assertTrue(
@@ -80,14 +121,57 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(pins["sourceTreeHashSemantics"], "sha256-of-git-ls-tree-rz-full-tree-raw-bytes")
         self.assertEqual(pins["workflowHashSemantics"], "sha256-of-raw-git-blob-bytes-at-source-revision")
 
+    def test_trusted_facts_contract_is_bound_to_the_same_exact_ready_successor(self):
+        current = POLICY.activation_policy_descriptor()
+        approved = ready_policy()
+        contract = POLICY.trusted_live_facts_contract()
+        self.assertEqual(
+            contract["policyBinding"],
+            POLICY.activation_policy_sha256(approved),
+        )
+        self.assertNotEqual(
+            contract["policyBinding"],
+            POLICY.activation_policy_sha256(current),
+        )
+        self.assertEqual(
+            POLICY.trusted_live_facts_contract(approved),
+            contract,
+        )
+        self.assertEqual(
+            contract["schemaVersion"],
+            "roebel_staging_participant_gateway_trusted_live_facts_v2",
+        )
+        with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
+            POLICY.trusted_live_facts_contract(current)
+
     def test_route_and_rate_limit_boundary_is_exact(self):
         value = POLICY.activation_policy_descriptor()
         self.assertEqual(tuple(route["path"] for route in value["httpBoundary"]["routes"]), POLICY.ROUTES)
-        self.assertEqual(len(POLICY.ROUTES), 6)
+        self.assertEqual(len(POLICY.ROUTES), 8)
+        self.assertEqual(
+            POLICY.POST_ROUTES[-2:],
+            (
+                "/api/staging-participant/v1/promote-source-post",
+                "/api/staging-participant/v1/sign-topic-suggestion",
+            ),
+        )
         self.assertEqual(value["httpBoundary"]["routes"][0]["methods"], ["GET", "OPTIONS"])
         self.assertTrue(all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]))
         self.assertEqual(value["httpBoundary"]["expectations"], list(POLICY.ROUTE_EXPECTATIONS))
-        self.assertEqual(len(value["httpBoundary"]["expectations"]), 25)
+        self.assertEqual(len(value["httpBoundary"]["expectations"]), 31)
+        for path in POLICY.POST_ROUTES[-2:]:
+            self.assertIn(
+                {"case": "preflight", "method": "OPTIONS", "path": path, "status": 204},
+                value["httpBoundary"]["expectations"],
+            )
+            self.assertIn(
+                {"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401},
+                value["httpBoundary"]["expectations"],
+            )
+            self.assertIn(
+                {"case": "method-denied", "method": "GET", "path": path, "status": 405},
+                value["httpBoundary"]["expectations"],
+            )
         self.assertEqual(
             value["httpBoundary"]["haproxyRateLimit"],
             {
@@ -116,6 +200,35 @@ class StaticPolicyTests(unittest.TestCase):
             "./" + POLICY.WORKBENCH_INGRESS_ROOT,
         )
         self.assertFalse(POLICY.expected_shared_flux_source_projection()["spec"]["suspend"])
+
+    def test_dormant_flux_bootstrap_contract_is_exact_create_only_and_receipt_bound(self):
+        contract = POLICY.activation_policy_descriptor()["gitOps"]["dormantBootstrap"]
+        self.assertEqual(
+            contract["objectOrder"],
+            [
+                "gateway.serviceAccount",
+                "workbenchIngress.serviceAccount",
+                "gateway.role",
+                "workbenchIngress.role",
+                "gateway.roleBinding",
+                "workbenchIngress.roleBinding",
+                "gateway.kustomization",
+                "workbenchIngress.kustomization",
+            ],
+        )
+        self.assertEqual(contract["initialState"], "all-eight-exact-names-absent")
+        self.assertEqual(contract["successState"], "all-eight-exact-uids-present-both-kustomizations-suspended")
+        self.assertEqual(contract["adoption"], "forbidden")
+        self.assertEqual(contract["definite409"], "hard-failure-never-discover-never-adopt")
+        self.assertEqual(contract["operationNonce"]["annotation"], POLICY.DORMANT_BOOTSTRAP_NONCE_ANNOTATION)
+        self.assertEqual(
+            contract["operationNonce"]["removalIntent"],
+            "exact-uid-intent-durably-receipted-before-cas",
+        )
+        self.assertTrue(contract["laterActivationReceiptRequired"])
+        self.assertEqual(contract["receiptSchemaVersion"], POLICY.DORMANT_BOOTSTRAP_RECEIPT_SCHEMA)
+        self.assertEqual(contract["sharedSourceMutation"], "forbidden")
+        self.assertEqual(contract["secretAccess"], "forbidden")
 
     def test_reciprocal_network_policy_is_additive_and_does_not_adopt_workbench_policy(self):
         policy = POLICY.expected_workbench_ingress_network_policy()
@@ -242,11 +355,24 @@ class StaticPolicyTests(unittest.TestCase):
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": value["productPins"]["imageManifestDigest"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256": value["productPins"]["migration"]["sha256"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256": value["productPins"]["databaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_MIGRATION_SHA256": value["productPins"]["topicTracerMigration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_DATABASE_SCHEMA_SHA256": value["productPins"]["topicTracerDatabaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID": value["runtime"]["topicPolicy"]["municipalityId"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC": value["runtime"]["topicPolicy"]["sourceConversationTopic"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION": value["runtime"]["topicPolicy"]["policyVersion"],
         }
         for name, expected in literal_pins.items():
             self.assertEqual(env[name], {"name": name, "value": expected})
             self.assertNotIn("valueFrom", env[name])
         self.assertNotIn("activationEvidence", resources["runtimePin"])
+        self.assertEqual(
+            resources["runtimePin"],
+            POLICY.expected_runtime_pin(value),
+        )
+        self.assertEqual(
+            resources["runtimePin"]["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v3",
+        )
 
 
 if __name__ == "__main__":

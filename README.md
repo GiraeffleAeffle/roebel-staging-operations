@@ -454,20 +454,22 @@ The participant gateway is a separate staging write capability. It is never
 folded into the public Web Pod or normal Web/Mecky promotion. The protected
 descriptor at `policy/staging-participant-gateway-activation-policy.json`
 contains only reviewable intent: fixed repositories and refs, endpoint
-origins, exact names and selectors, six method/path pairs, the per-controller
+origins, exact names and selectors, eight method/path pairs, the per-controller
 HAProxy limit, Secret names/key sets, two Flux tenants, rollback rules and
-empty immutable publication/database slots. It contains no caller evidence,
+immutable publication/database pins. It contains no caller evidence,
 live UID/resource version, controller status, DNS answer, certificate, Secret
 value or cluster-wide inventory hash.
 
 `activationReady` is intentionally `false`. Admission accepts this inert
-policy-only repository, but rejects every participant render or activation
-until a protected change fills the exact source/tree/image/workflow,
-migration/schema/deactivation hashes and reviewed Supabase `/32` set, then
-sets `activationReady` to `true`. The later ordinary render is deterministic
-from that protected policy and cannot approve itself. Its runtime pin contains
-only those immutable policy values and the policy digest; live facts remain an
-out-of-band, five-minute runner receipt.
+policy-only repository, but rejects every participant render or activation.
+The protected verifier already contains one exact approved successor for the
+four cluster-identity facts and ordered Supabase `/32` set. It admits only the
+standalone, one-way JSON/contract transition to that successor; candidate code,
+the runner, workflow, render, Secrets and live evidence must remain unchanged.
+The later ordinary render is deterministic from the protected ready policy and
+cannot approve itself. Its runtime pin contains only immutable policy values
+and the policy digest; fresh runtime facts remain an out-of-band, five-minute
+runner receipt.
 
 The product source pins have one reproducible meaning. `sourceTreeSha256` is
 SHA-256 over the exact raw NUL-delimited bytes from
@@ -503,8 +505,9 @@ as one transaction and suspends both on any failure.
 
 The dedicated participant Ingress owns the longer
 `/api/staging-participant/v1` prefix. It permits `GET`/`OPTIONS` on `/status`
-and `POST`/`OPTIONS` on `/challenge`, `/session`, `/posts`, `/comments` and
-`/nostr-post`; every other method or path is denied. `HEAD` is deliberately
+and `POST`/`OPTIONS` on `/challenge`, `/session`, `/posts`, `/comments`,
+`/nostr-post`, `/promote-source-post` and `/sign-topic-suggestion`; every
+other method or path is denied. `HEAD` is deliberately
 denied. The truthful rate claim is 30 requests/minute/source IP per HAProxy
 controller replica, not an aggregate multi-replica guarantee. The existing
 Web Ingress stays byte-identical and is neither adopted nor mutated.
@@ -659,6 +662,7 @@ Run the same check locally:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_reviewed_render.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_staging_participant_gateway_policy.py scripts/test_staging_participant_flux_bootstrap.py scripts/test_activate_staging_participant_gateway.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-reviewed-render.py --root .
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v scripts/test_verify_case_staging_topology.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify-case-staging-topology.py --root .
@@ -676,9 +680,47 @@ authority stay outside Git and outside Flux.
 The participant gateway is still an inert, protected reservation. The static
 descriptor in `policy/staging-participant-gateway-activation-policy.json`
 contains no caller-provided or live cluster evidence and remains
-`activationReady: false` until the exact product, migration, schema, endpoint,
-and cluster-identity pins are reviewed into the protected base. The GitHub
-workflow has no kubeconfig and can only test and emit a no-cluster plan.
+`activationReady: false`. The protected base has approved exactly one future
+descriptor containing the reviewed API origin, CA and API-server SPKI digests,
+immutable `kube-system` namespace UID, and ordered Supabase IPv4 `/32` set.
+That approval does not change the committed descriptor or enable the runner.
+The GitHub workflow has no kubeconfig and can only test and emit a no-cluster
+plan.
+
+The one-time cluster bootstrap is now a separate create-only transaction, not
+an assumption hidden inside activation. It owns exactly eight identities: one
+ServiceAccount, Role, RoleBinding and suspended Kustomization for each of the
+gateway and reciprocal workbench-ingress paths. Before the first POST it
+requires all eight exact names to return 404. A definite 409 is never adopted;
+only a transport-uncertain create carrying this run's CSPRNG nonce and exact
+protected semantics may be discovered. Every journal update and final receipt
+is durably written to an owned mode-`0600` file with a canonical checksum.
+Before removing any bootstrap nonce, the runner durably records the exact UID
+and removal intent; a lost CAS response can therefore be recovered without
+ever treating a nonce-free object lacking that receipt proof as owned.
+Rollback deletes only receipt/nonce-bound UIDs, Kustomizations first, and then
+proves all eight names absent for a bounded quiet interval. Recovery only
+finishes that rollback; it never resumes creation.
+
+The repository workflow `.github/workflows/staging-participant-flux-bootstrap.yml`
+has no cluster credentials and runs dry mode only. After the exact ready-policy
+and render commits are protected, an operator can run the local transaction
+with an explicit kubeconfig and a fresh receipt path:
+
+```sh
+python3 -I scripts/bootstrap-staging-participant-flux.py \
+  --live \
+  --expected-protected-revision <exact-40-hex-operations-revision> \
+  --kubeconfig <explicit-kubeconfig> \
+  --receipt <new-owned-directory>/participant-flux-bootstrap.json
+```
+
+If a prior run was interrupted, `--recover --recovery-receipt <prior-0600-file>`
+writes a separate recovery receipt. The later activation command must receive
+the successful file through `--flux-bootstrap-receipt`; it rechecks all eight
+UIDs, resource versions, exact semantics and both suspended states before any
+application create. The receipt cannot select a namespace, resource, manifest,
+route, command, Secret or allowlist.
 
 Once those pins exist, the separate protected local runner is designed to:
 
@@ -689,9 +731,10 @@ Once those pins exist, the separate protected local runner is designed to:
 - require all six exact application resource names to be absent, mark every
   create with one CSPRNG operation nonce, and remove that marker by
   UID/resourceVersion/nonce CAS before Flux reconciliation;
-- create the two namespace-scoped Flux paths as one guarded transaction,
-  create the dedicated Ingress last, and preserve the existing Web Ingress and
-  manually owned workbench NetworkPolicy unchanged;
+- require the successful dormant-bootstrap receipt, CAS-unsuspend the two
+  namespace-scoped Flux paths as one guarded transaction, create the dedicated
+  Ingress last, and preserve the existing Web Ingress and manually owned
+  workbench NetworkPolicy unchanged;
 - recheck runtime image identity, Secret identities/keysets without reading
   values, Kubernetes/Cilium policy unions, the internal database `/status`
   contract, and the full public route/CORS boundary; and

@@ -17,7 +17,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("activation blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, datetime as dt, hashlib, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, types, urllib.error, urllib.parse, urllib.request
+import argparse, base64, copy, datetime as dt, hashlib, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, types, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,8 +30,22 @@ RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 ROOT = Path(__file__).resolve().parent.parent
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
+BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
+BOOTSTRAP_RUNNER_PATH = "scripts/bootstrap-staging-participant-flux.py"
+BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
+BOOTSTRAP_PROTECTED_PATHS = (
+    BOOTSTRAP_RUNNER_PATH,
+    BOOTSTRAP_MODULE_PATH,
+    POLICY_MODULE_PATH,
+    POLICY_PATH,
+    "scripts/activate-staging-participant-gateway.py",
+    BOOTSTRAP_WORKFLOW_PATH,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
 
 POLICY: Any = None
+BOOTSTRAP: Any = None
 
 def compile_verified_policy_module_v4(source: bytes, rev: str) -> Any:
     """Compile only policy bytes already read from the exact protected blob."""
@@ -45,6 +59,22 @@ def compile_verified_policy_module_v4(source: bytes, rev: str) -> Any:
     try:
         code = compile(source, module.__file__, "exec", dont_inherit=True)
         exec(code, module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+def compile_verified_bootstrap_module_v4(source: bytes, rev: str) -> Any:
+    """Compile the exact protected receipt binder without local imports."""
+    revision(rev)
+    require(isinstance(source, bytes) and source, "protected bootstrap module blob is empty")
+    name = f"staging_participant_flux_bootstrap_{rev}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{rev}:{BOOTSTRAP_MODULE_PATH}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec", dont_inherit=True), module.__dict__)
     except BaseException:
         sys.modules.pop(name, None)
         raise
@@ -115,7 +145,7 @@ def revision(v: Any) -> str:
 
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
-    paths = (Path(__file__).relative_to(ROOT).as_posix(), POLICY_MODULE_PATH, POLICY_PATH, WORKFLOW_PATH, "scripts/verify-reviewed-render.py", "policy/repository-contract.json")
+    paths = tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, WORKFLOW_PATH)))
     hashes: dict[str, str] = {}
     for path in paths:
         local = ROOT / path
@@ -205,6 +235,22 @@ def dry_run_plan(p: dict[str, Any], rev: str, runner_hashes: dict[str, str]) -> 
         "kubernetesContacted": False,
         "callerEvidenceAccepted": False,
     }
+
+def bind_flux_bootstrap_receipt_v4(
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+    receipt_path: Path,
+) -> dict[str, Any]:
+    """Bind exact dormant UIDs before constructing a Kubernetes runner."""
+    require(BOOTSTRAP is not None, "protected dormant Flux bootstrap binder unavailable")
+    bootstrap_hashes = {path: runner_hashes[path] for path in BOOTSTRAP_PROTECTED_PATHS}
+    try:
+        plan = BOOTSTRAP.build_plan(POLICY, p, rev, bootstrap_hashes)
+        receipt = BOOTSTRAP.load_receipt(receipt_path)
+        return BOOTSTRAP.bind_success_receipt(plan, receipt)
+    except (BOOTSTRAP.BootstrapError, OSError) as exc:
+        raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
 
 class ReceiptSink:
     """A pre-reserved, non-overwriting, durably committed receipt target."""
@@ -580,19 +626,56 @@ def remove_operation_nonce_v4(r: Runner, kubeconfig: str, created: CreatedV4, op
 def _target_live(r: Runner, kubeconfig: str, target: dict[str, str]) -> dict[str, Any]:
     return live_obj(r, kubeconfig, target["kind"].lower(), target["name"], target["namespace"])
 
-def flux_preflight_v4(r: Runner, kubeconfig: str, p: dict[str, Any], rev: str) -> dict[str, Any]:
+def flux_preflight_v4(
+    r: Runner,
+    kubeconfig: str,
+    p: dict[str, Any],
+    rev: str,
+    dormant_ownership: dict[str, Any],
+) -> dict[str, Any]:
     source = shared_source_revision_v4(r, kubeconfig, rev)
 
     builders = {"gateway": POLICY.gateway_flux_objects, "workbenchIngress": POLICY.workbench_ingress_flux_objects}
+    bound = {
+        item["logicalName"]: item
+        for item in dormant_ownership.get("objects", [])
+        if isinstance(item, dict) and isinstance(item.get("logicalName"), str)
+    }
+    require(
+        dormant_ownership.get("status") == "dormant-ready"
+        and dormant_ownership.get("protectedRevision") == rev
+        and dormant_ownership.get("activationPolicySha256") == POLICY.activation_policy_sha256(p)
+        and dormant_ownership.get("bothKustomizationsSuspended") is True
+        and set(bound) == set(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER),
+        "dormant Flux bootstrap receipt ownership set invalid",
+    )
     owners: dict[str, dict[str, Any]] = {}
     for owner, builder in builders.items():
         expected = _policy_call(builder, suspended=True); live: dict[str, Any] = {}
         for key in ("serviceAccount", "role", "roleBinding", "kustomization"):
             target = p["gitOps"]["reconcilers"][owner][key]; live[key] = _target_live(r, kubeconfig, target)
             _policy_call(POLICY.require_semantically_equal, live[key], expected[key], f"{owner} dormant {key}")
+            receipt = bound[f"{owner}.{key}"]
+            metadata = live[key].get("metadata", {})
+            require(
+                receipt["target"] == target
+                and metadata.get("uid") == receipt["uid"]
+                and isinstance(metadata.get("resourceVersion"), str)
+                and metadata["resourceVersion"].isdigit()
+                and int(metadata["resourceVersion"]) >= int(receipt["resourceVersion"]),
+                f"{owner} dormant {key} no longer matches bootstrap receipt identity",
+            )
         require(live["kustomization"].get("spec", {}).get("suspend") is True, f"{owner} Kustomization not dormant")
         owners[owner] = live
-    return {"source": source, "owners": owners}
+    return {
+        "source": source,
+        "owners": owners,
+        "bootstrapReceipt": {
+            "receiptSha256": dormant_ownership["receiptSha256"],
+            "protectedRevision": dormant_ownership["protectedRevision"],
+            "objects": copy.deepcopy(dormant_ownership["objects"]),
+        },
+    }
 
 def shared_source_revision_v4(r: Runner, kubeconfig: str, rev: str) -> dict[str, Any]:
     source = live_obj(r, kubeconfig, "gitrepository", SOURCE, FLUX_NAMESPACE)
@@ -983,6 +1066,104 @@ def _pod_port_forward_get_v4(
         if process.stdout is not None: process.stdout.close()
 
 
+def topic_tracer_readiness_projection_v4(p: dict[str, Any]) -> dict[str, str]:
+    """Return the closed five-field topic-tracer binding from policy data."""
+    pins = p["productPins"]
+    topic_policy = p["runtime"]["topicPolicy"]
+    return {
+        "municipalityId": topic_policy["municipalityId"],
+        "sourceConversationTopic": topic_policy["sourceConversationTopic"],
+        "topicPolicyVersion": topic_policy["policyVersion"],
+        "topicTracerMigrationSha256": pins["topicTracerMigration"]["sha256"],
+        "topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
+    }
+
+
+def expected_database_status_v4(p: dict[str, Any]) -> dict[str, str]:
+    """The exact payload emitted by the private gateway readiness endpoint."""
+    pins = p["productPins"]
+    return {
+        "schemaVersion": "roebel_staging_participant_gateway_status_v2",
+        "status": "ready",
+        "sourceRevision": pins["sourceRevision"],
+        "manifestDigest": pins["imageManifestDigest"],
+        "migrationSha256": pins["migration"]["sha256"],
+        "databaseSchemaSha256": pins["databaseSchemaSha256"],
+        **topic_tracer_readiness_projection_v4(p),
+    }
+
+
+def validate_database_status_receipt_v4(value: Any, p: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on the complete private readiness receipt, not a subset."""
+    require(isinstance(value, dict), "internal participant readiness receipt must be an object")
+    expected_status = expected_database_status_v4(p)
+    expected_keys = set(expected_status) | {"probe", "rbac"}
+    require(set(value) == expected_keys, "internal participant readiness receipt field set drift")
+    require(
+        {key: value[key] for key in expected_status} == expected_status,
+        "internal participant readiness product/topic-tracer contract drift",
+    )
+    require(
+        topic_tracer_readiness_projection_v4(p)
+        == {key: value[key] for key in topic_tracer_readiness_projection_v4(p)},
+        "internal participant readiness topic-tracer projection drift",
+    )
+    probe = value["probe"]
+    require(
+        isinstance(probe, dict)
+        and set(probe)
+        == {
+            "transport",
+            "pod",
+            "loopbackOnly",
+            "publicIngressUsed",
+            "serviceProxyUsed",
+            "redirectsAllowed",
+            "path",
+            "remotePort",
+            "podUid",
+            "podImage",
+            "podImageId",
+            "podReadyAfter",
+            "podResourceVersionBefore",
+            "podResourceVersionAfter",
+        },
+        "internal participant readiness probe receipt field set drift",
+    )
+    require(
+        probe["transport"] == "authenticated-kubernetes-pod-port-forward"
+        and isinstance(probe["pod"], str)
+        and bool(probe["pod"])
+        and probe["loopbackOnly"] is True
+        and probe["publicIngressUsed"] is False
+        and probe["serviceProxyUsed"] is False
+        and probe["redirectsAllowed"] is False
+        and probe["path"] == "/status"
+        and probe["remotePort"] == POLICY.GATEWAY_PORT
+        and isinstance(probe["podUid"], str)
+        and bool(probe["podUid"])
+        and probe["podImage"] == p["productPins"]["imageRepository"] + "@" + p["productPins"]["imageManifestDigest"]
+        and isinstance(probe["podImageId"], str)
+        and bool(probe["podImageId"])
+        and probe["podReadyAfter"] is True
+        and isinstance(probe["podResourceVersionBefore"], str)
+        and probe["podResourceVersionBefore"].isdigit()
+        and isinstance(probe["podResourceVersionAfter"], str)
+        and probe["podResourceVersionAfter"].isdigit()
+        and int(probe["podResourceVersionAfter"]) >= int(probe["podResourceVersionBefore"]),
+        "internal participant readiness probe receipt drift",
+    )
+    require(
+        value["rbac"] == {
+            "getPods": True,
+            "listPods": True,
+            "createPodsPortforward": True,
+        },
+        "internal participant readiness RBAC receipt drift",
+    )
+    return copy.deepcopy(value)
+
+
 def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     # This is the container-internal readiness contract. It is reached only by
     # an authenticated Pod port-forward and is deliberately distinct from the
@@ -1014,12 +1195,12 @@ def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: d
         and not current_spec.get("imagePullSecrets"),
         "readiness-probed participant Pod runtime pin changed",
     )
-    expected = {"schemaVersion": "roebel_staging_participant_gateway_status_v1", "status": "ready", "sourceRevision": pins["sourceRevision"], "manifestDigest": pins["imageManifestDigest"], "migrationSha256": pins["migration"]["sha256"], "databaseSchemaSha256": pins["databaseSchemaSha256"]}
-    require(obj(body, "internal participant /status") == expected, "internal participant /status product/database contract drift")
-    return expected | {
+    expected = expected_database_status_v4(p)
+    require(obj(body, "internal participant /status") == expected, "internal participant /status product/topic-tracer contract drift")
+    return validate_database_status_receipt_v4(expected | {
         "probe": probe | {"podUid": selected["uid"], "podImage": exact_image, "podImageId": selected["imageId"], "podReadyAfter": True, "podResourceVersionBefore": selected["resourceVersion"], "podResourceVersionAfter": current_metadata.get("resourceVersion")},
         "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
-    }
+    }, p)
 
 def _route_request_v4(origin: str, method: str, path: str, headers: dict[str, str], body: bytes | None, timeout: int | float) -> dict[str, Any]:
     require(origin == "https://roebel-web.staging.agentcart.eu" and path.startswith("/"), "route request authority/path drift")
@@ -1058,8 +1239,9 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     boundary = p["httpBoundary"]; timeout = boundary["timeoutsSeconds"]["routeRequest"]
     total_deadline = time.monotonic() + boundary["timeoutsSeconds"]["routeMatrixTotal"]
     origin = p["endpoints"]["browserOrigin"].rstrip("/"); prefix = boundary["prefix"]
-    status_path = prefix + "/status"; posts = [prefix + suffix for suffix in ("/challenge", "/session", "/posts", "/comments", "/nostr-post")]
-    require([entry["path"] for entry in boundary["routes"]] == [status_path, *posts], "fixed six-route inventory drift")
+    require(prefix == POLICY.HTTP_PREFIX, "fixed route prefix drift")
+    status_path = POLICY.ROUTES[0]; posts = list(POLICY.POST_ROUTES)
+    require([entry["path"] for entry in boundary["routes"]] == list(POLICY.ROUTES), "fixed eight-route inventory drift")
     result: list[dict[str, Any]] = []
 
     def call(method: str, path: str, *, request_origin: str | None = origin, body: bytes | None = None, requested_method: str | None = None) -> dict[str, Any]:
@@ -1082,9 +1264,7 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     post_errors = {
         posts[0]: (401, {"error": "admission_invalid"}),
         posts[1]: (401, {"error": "challenge_invalid"}),
-        posts[2]: (401, {"error": "session_required"}),
-        posts[3]: (401, {"error": "session_required"}),
-        posts[4]: (401, {"error": "session_required"}),
+        **{path: (401, {"error": "session_required"}) for path in posts[2:]},
     }
     for path, (status, expected_body) in post_errors.items():
         observed = call("POST", path, body=b"{}")
@@ -1392,11 +1572,34 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     require(facts["protectedRevision"] == rev and facts["policySha256"] == POLICY.activation_policy_sha256(p), "trusted facts Git/policy binding drift")
     require(facts["publication"]["manifestDigest"] == p["productPins"]["imageManifestDigest"], "trusted publication digest drift")
     require(facts["publication"]["verificationLevel"] == "anonymous-registry-manifest-digest-only" and facts["publication"]["cryptographicPublicationProvenanceVerified"] is False, "publication verification claim widened")
-    require(facts["database"]["databaseSchemaSha256"] == p["productPins"]["databaseSchemaSha256"], "trusted database schema drift")
+    database = validate_database_status_receipt_v4(facts["database"], p)
+    require(
+        {key: database[key] for key in topic_tracer_readiness_projection_v4(p)}
+        == topic_tracer_readiness_projection_v4(p),
+        "trusted topic-tracer readiness projection drift",
+    )
     require(len(facts["objectCreateResults"]) == 6 and len(facts["semanticObjects"]) == 6, "trusted object receipt set incomplete")
     require(facts["operationReservation"]["absencePreflight"]["status"] == "all-six-exact-target-names-absent" and len(facts["operationReservation"]["absencePreflight"]["targets"]) == 6, "trusted operation absence reservation incomplete")
     require(all(item["operationNonce"] == facts["operationReservation"]["operationNonce"] and item["temporaryNonceRemoved"] is True for item in facts["objectCreateResults"]), "trusted operation nonce lifecycle incomplete")
-    require(set(facts["fluxTransaction"]["ready"]) == {"gateway", "workbenchIngress"}, "trusted dual Flux receipt incomplete")
+    flux = facts["fluxTransaction"]
+    require(
+        set(flux)
+        == {
+            "bootstrapReceiptSha256",
+            "bootstrapObjectIdentities",
+            "sourceBeforeCas",
+            "casUnsuspended",
+            "ready",
+            "sourceAfterReady",
+        }
+        and isinstance(flux["bootstrapReceiptSha256"], str)
+        and bool(POLICY.SHA256.fullmatch(flux["bootstrapReceiptSha256"]))
+        and isinstance(flux["bootstrapObjectIdentities"], list)
+        and [item.get("logicalName") for item in flux["bootstrapObjectIdentities"]]
+        == list(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER)
+        and set(flux["ready"]) == {"gateway", "workbenchIngress"},
+        "trusted dual Flux/bootstrap receipt incomplete",
+    )
     source_before, source_after = facts["fluxTransaction"]["sourceBeforeCas"], facts["fluxTransaction"]["sourceAfterReady"]
     require(source_before["uid"] == source_after["uid"] and source_before["artifactRevision"] == source_after["artifactRevision"] == f"main@sha1:{rev}", "trusted Flux source revision/UID receipt drift")
     require(set(facts["preservation"]) == {"webIngress", "existingWorkbenchNetworkPolicy"} and all(value["byteIdenticalCanonicalJson"] for value in facts["preservation"].values()), "trusted preservation receipt incomplete")
@@ -1405,10 +1608,20 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     require(set(facts["networkPolicyConflictScan"]) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted policy-union recheck receipt incomplete")
     require(facts["rollback"] == {"status": "not-required", "finalizersRemovedByRunner": False}, "trusted success rollback receipt drift")
 
-def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: bool, sink: ReceiptSink, runner_hashes: dict[str, str]) -> dict[str, Any]:
+def activate(
+    p: dict[str, Any],
+    rev: str,
+    kube: str | None,
+    r: Runner,
+    live: bool,
+    sink: ReceiptSink,
+    runner_hashes: dict[str, str],
+    dormant_ownership: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Execute both Flux paths as one guarded transaction; no caller evidence."""
     if not live: return dry_run_plan(p, rev, {})
     _policy_call(POLICY.assert_activation_ready, p); require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
+    require(dormant_ownership is not None, "live activation requires exact dormant Flux bootstrap receipt")
     rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; operation_nonce: str | None = None; partial: dict[str, Any] = {}; snapshot: KubeconfigSnapshot | None = None; mutation_started = False
     started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     previous_signal_handlers = install_transaction_signal_handlers_v4()
@@ -1417,7 +1630,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
         partial["clusterBinding"] = cluster_binding_v4(r, snapshot, p)
         partial["publication"] = anonymous_publication_v4(p)
         partial["endpoints"] = endpoint_facts_v4(p)
-        preserved = preservation_v4(r, snapshot_path, p); bootstrap = flux_preflight_v4(r, snapshot_path, p, rev)
+        preserved = preservation_v4(r, snapshot_path, p); bootstrap = flux_preflight_v4(r, snapshot_path, p, rev, dormant_ownership)
         absence = exact_absence_preflight_v4(r, snapshot_path, rendered); operation_nonce = secrets.token_hex(32)
         require(bool(POLICY.NONCE.fullmatch(operation_nonce)), "runner CSPRNG operation nonce invalid")
         secret_before = secret_materialization_v4(r, snapshot_path, p); policy_before = policy_union_v4(r, snapshot_path)
@@ -1454,7 +1667,7 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
         preservation = verify_preservation_v4(r, snapshot_path, preserved)
         final_cluster = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], final_cluster, "before success")
         valid_until = started + dt.timedelta(seconds=300)
-        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
+        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
         validate_success_facts_v4(facts, p, rev)
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
         success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}
@@ -1492,8 +1705,8 @@ def activate(p: dict[str, Any], rev: str, kube: str | None, r: Runner, live: boo
             restore_transaction_signal_handlers_v4(previous_signal_handlers)
 
 def main() -> int:
-    global POLICY
-    ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
+    global POLICY, BOOTSTRAP
+    ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--flux-bootstrap-receipt", type=Path); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
     if a.dry_run == a.live: print("activation blocked: choose exactly one of --dry-run or --live", file=sys.stderr); return 2
     try:
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "executor requires python3 -I isolated safe-path mode")
@@ -1502,9 +1715,11 @@ def main() -> int:
         require(subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
         runner_hashes = protected_checkout(rev)
         POLICY = compile_verified_policy_module_v4(git_blob(rev, POLICY_MODULE_PATH), rev)
+        BOOTSTRAP = compile_verified_bootstrap_module_v4(git_blob(rev, BOOTSTRAP_MODULE_PATH), rev)
         bind_verified_policy_identity_v4(POLICY)
         p = policy(rev)
         if a.dry_run:
+            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None, "dry-run accepts no kubeconfig or Flux bootstrap receipt")
             result = dry_run_plan(p, rev, runner_hashes)
             sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0
         # The immutable readiness gate deliberately precedes kubeconfig
@@ -1512,8 +1727,10 @@ def main() -> int:
         # cannot contact Kubernetes in live mode.
         try: POLICY.assert_activation_ready(p)
         except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
+        require(a.flux_bootstrap_receipt is not None, "live activation requires --flux-bootstrap-receipt")
+        dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
         sink = ReceiptSink.reserve(a.receipt)
-        result = activate(p, rev, a.kubeconfig, Runner(), True, sink, runner_hashes)
+        result = activate(p, rev, a.kubeconfig, Runner(), True, sink, runner_hashes, dormant_ownership)
         print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2
 if __name__ == "__main__": raise SystemExit(main())

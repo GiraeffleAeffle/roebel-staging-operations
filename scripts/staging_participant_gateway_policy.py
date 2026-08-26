@@ -22,7 +22,7 @@ from typing import Any
 
 
 POLICY_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v4"
-TRUSTED_LIVE_FACTS_SCHEMA = "roebel_staging_participant_gateway_trusted_live_facts_v1"
+TRUSTED_LIVE_FACTS_SCHEMA = "roebel_staging_participant_gateway_trusted_live_facts_v2"
 POLICY_PATH = "policy/staging-participant-gateway-activation-policy.json"
 GATEWAY_ROOT = "reviewed-render/roebel-staging/staging-participant-gateway"
 WORKBENCH_INGRESS_ROOT = f"{GATEWAY_ROOT}/workbench-ingress"
@@ -52,6 +52,18 @@ WORKBENCH_INGRESS_POLICY_NAME = "roebel-staging-participant-workbench-ingress"
 FLUX_NAMESPACE = "flux-roebel-staging"
 FLUX_SOURCE_NAME = "roebel-staging-operations"
 OPERATION_NONCE_ANNOTATION = "stadtstack.io/participant-activation-nonce"
+DORMANT_BOOTSTRAP_NONCE_ANNOTATION = "stadtstack.io/participant-flux-bootstrap-nonce"
+DORMANT_BOOTSTRAP_RECEIPT_SCHEMA = "roebel_staging_participant_flux_bootstrap_receipt_v1"
+DORMANT_BOOTSTRAP_OBJECT_ORDER = (
+    "gateway.serviceAccount",
+    "workbenchIngress.serviceAccount",
+    "gateway.role",
+    "workbenchIngress.role",
+    "gateway.roleBinding",
+    "workbenchIngress.roleBinding",
+    "gateway.kustomization",
+    "workbenchIngress.kustomization",
+)
 
 GATEWAY_LABELS = {
     "app.kubernetes.io/component": "staging-participant-gateway",
@@ -83,6 +95,8 @@ ROUTES = (
     "/api/staging-participant/v1/posts",
     "/api/staging-participant/v1/comments",
     "/api/staging-participant/v1/nostr-post",
+    "/api/staging-participant/v1/promote-source-post",
+    "/api/staging-participant/v1/sign-topic-suggestion",
 )
 POST_ROUTES = ROUTES[1:]
 HTTP_PREFIX = "/api/staging-participant/v1"
@@ -174,22 +188,27 @@ def _static_descriptor() -> dict[str, Any]:
             },
         },
         "productPins": {
-            "sourceRevision": "7cb7e5b7b0f71c8072aefbec900cd229847d6dea",
-            "sourceTreeSha256": "sha256:88544f383178e2b85ef031ae11295ec45917ee6df6ac117381b2f5e0854b6d4a",
+            "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
+            "sourceTreeSha256": "sha256:7c537a038c84afe08740dabc1222c7b547a109a4a607b8bbab17bc6664a7bd47",
             "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
             "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-            "imageManifestDigest": "sha256:23243a09a9035f10540e4612c481a188750c8a5d9006062a60423c1850b7d45f",
+            "imageManifestDigest": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
             "workflowIdentity": (
                 "https://github.com/GiraeffleAeffle/Roebel-App/"
                 ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
             ),
-            "workflowSha256": "sha256:a65d9ef0563e492c688f752a4b6604fe114eec0fc9e8807dc346660a0e327e2d",
+            "workflowSha256": "sha256:0446a7fbf64ea28d4098d79a86e75ae004e3f175eca09186b8c2f18f2ce36d09",
             "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
             "migration": {
                 "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
                 "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
             },
             "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
+            "topicTracerMigration": {
+                "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
+                "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e",
+            },
+            "topicTracerDatabaseSchemaSha256": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb",
             "deactivation": {
                 "path": "supabase/staging_participant_gateway_deactivate.sql",
                 "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
@@ -251,6 +270,11 @@ def _static_descriptor() -> dict[str, Any]:
             "deploymentStrategy": "Recreate",
             "serviceAccountToken": False,
             "containerPort": GATEWAY_PORT,
+            "topicPolicy": {
+                "municipalityId": "roebel-mueritz",
+                "sourceConversationTopic": "roebel-app-conversation",
+                "policyVersion": "staging-participant-topic-v1",
+            },
             "secretReferences": {
                 "config": {
                     "name": "roebel-staging-participant-gateway-config",
@@ -365,6 +389,31 @@ def _static_descriptor() -> dict[str, Any]:
                     "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
                 },
             },
+            "dormantBootstrap": {
+                "objectOrder": list(DORMANT_BOOTSTRAP_OBJECT_ORDER),
+                "initialState": "all-eight-exact-names-absent",
+                "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+                "adoption": "forbidden",
+                "definite409": "hard-failure-never-discover-never-adopt",
+                "uncertainCreate": "discover-only-exact-operation-nonce-semantics-and-bind-uid-resourceVersion",
+                "operationNonce": {
+                    "annotation": DORMANT_BOOTSTRAP_NONCE_ANNOTATION,
+                    "encoding": "64-lower-hex",
+                    "source": "runner-csprng-only",
+                    "temporary": True,
+                    "removalIntent": "exact-uid-intent-durably-receipted-before-cas",
+                    "removal": "uid-resourceVersion-and-nonce-cas-after-all-eight-created",
+                },
+                "rollback": "delete-only-exact-operation-owned-uids-kustomizations-first-then-prove-all-eight-absent",
+                "recovery": "receipt-and-operation-nonce-bound-rollback-only-never-resume-create",
+                "receiptSchemaVersion": DORMANT_BOOTSTRAP_RECEIPT_SCHEMA,
+                "laterActivationReceiptRequired": True,
+                "sharedSourceMutation": "forbidden",
+                "secretAccess": "forbidden",
+                "webIngressMutation": "forbidden",
+                "existingWorkbenchNetworkPolicyMutation": "forbidden",
+                "civicAuthorityEffects": False,
+            },
         },
         "network": {
             "gatewayPodSelector": GATEWAY_LABELS,
@@ -441,10 +490,51 @@ def _static_descriptor() -> dict[str, Any]:
 
 STATIC_ACTIVATION_POLICY = _static_descriptor()
 
+# This protected base approves exactly one future policy-data transition.  The
+# five facts were collected independently of the pull request that will carry
+# them.  Keeping the approved successor here means admission and the local
+# runner can validate candidate JSON without importing or executing candidate
+# policy code.
+APPROVED_ACTIVATION_FACTS = {
+    "clusterIdentity": {
+        "apiOrigin": "https://10.255.240.11:6443",
+        "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+        "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+        "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+    },
+    "supabaseIpv4Cidrs": ["104.18.38.10/32", "172.64.149.246/32"],
+}
+APPROVED_ACTIVATION_TRANSITION_PATHS = (
+    "activationReady",
+    "clusterIdentity.apiOrigin",
+    "clusterIdentity.caCertificateSha256",
+    "clusterIdentity.apiServerSpkiSha256",
+    "clusterIdentity.kubeSystemNamespaceUid",
+    "endpoints.supabase.ipv4Cidrs",
+)
+
+
+def _approved_next_activation_policy() -> dict[str, Any]:
+    value = copy.deepcopy(STATIC_ACTIVATION_POLICY)
+    value["clusterIdentity"] = copy.deepcopy(APPROVED_ACTIVATION_FACTS["clusterIdentity"])
+    value["endpoints"]["supabase"]["ipv4Cidrs"] = list(
+        APPROVED_ACTIVATION_FACTS["supabaseIpv4Cidrs"],
+    )
+    value["activationReady"] = True
+    return value
+
+
+APPROVED_NEXT_ACTIVATION_POLICY = _approved_next_activation_policy()
+
 
 def activation_policy_descriptor() -> dict[str, Any]:
-    """Return a defensive copy of the exact protected static descriptor."""
+    """Return the still-inert descriptor committed by this protected base."""
     return copy.deepcopy(STATIC_ACTIVATION_POLICY)
+
+
+def approved_next_activation_policy_descriptor() -> dict[str, Any]:
+    """Return the only ready descriptor this protected base may admit next."""
+    return copy.deepcopy(APPROVED_NEXT_ACTIVATION_POLICY)
 
 
 def activation_policy_sha256(policy: dict[str, Any] | None = None) -> str:
@@ -462,6 +552,8 @@ def activation_blockers(policy: dict[str, Any] | None = None) -> tuple[str, ...]
         "productPins.workflowSha256": pins["workflowSha256"],
         "productPins.migration.sha256": pins["migration"]["sha256"],
         "productPins.databaseSchemaSha256": pins["databaseSchemaSha256"],
+        "productPins.topicTracerMigration.sha256": pins["topicTracerMigration"]["sha256"],
+        "productPins.topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
         "productPins.deactivation.sha256": pins["deactivation"]["sha256"],
     }
     blockers = [name for name, slot in slots.items() if slot is None]
@@ -480,7 +572,7 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
     value = assert_activation_ready(policy)
     pins = value["productPins"]
     return {
-        "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+        "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
         "component": "staging-participant-gateway",
         "sourceRevision": pins["sourceRevision"],
         "sourceTreeSha256": pins["sourceTreeSha256"],
@@ -492,6 +584,11 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
         "workflowHashSemantics": pins["workflowHashSemantics"],
         "migrationSha256": pins["migration"]["sha256"],
         "databaseSchemaSha256": pins["databaseSchemaSha256"],
+        "topicTracerMigrationSha256": pins["topicTracerMigration"]["sha256"],
+        "topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
+        "municipalityId": value["runtime"]["topicPolicy"]["municipalityId"],
+        "sourceConversationTopic": value["runtime"]["topicPolicy"]["sourceConversationTopic"],
+        "topicPolicyVersion": value["runtime"]["topicPolicy"]["policyVersion"],
         "deactivationSha256": pins["deactivation"]["sha256"],
         "activationPolicySha256": activation_policy_sha256(value),
     }
@@ -499,7 +596,10 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
 
 def validate_activation_policy(value: Any) -> dict[str, Any]:
     _require(isinstance(value, dict), "participant activation policy must be an object")
-    _require(value == STATIC_ACTIVATION_POLICY, "participant activation policy drift")
+    _require(
+        value in (STATIC_ACTIVATION_POLICY, APPROVED_NEXT_ACTIVATION_POLICY),
+        "participant activation policy drift",
+    )
     blockers = activation_blockers(value)
     _require(
         value["activationReady"] is (len(blockers) == 0),
@@ -507,6 +607,55 @@ def validate_activation_policy(value: Any) -> dict[str, Any]:
     )
     _validate_static_semantics(value)
     return copy.deepcopy(value)
+
+
+def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict[str, Any]:
+    """Validate the one approved inert-to-ready policy-data transition.
+
+    Equality against both protected descriptors rejects partial pinning,
+    reordered endpoint lists, additional fields, widening, reverse movement,
+    and any caller-selected evidence.  ``activationReady`` is derived from the
+    exact blocker set and is not an independent candidate choice.
+    """
+    _require(previous == STATIC_ACTIVATION_POLICY, "participant activation transition base drift")
+    _require(candidate == APPROVED_NEXT_ACTIVATION_POLICY, "participant activation transition candidate drift")
+    _require(previous != candidate, "participant activation transition must be one-way and non-empty")
+    validate_activation_policy(previous)
+    ready = validate_activation_policy(candidate)
+    changed_paths = []
+    if previous["activationReady"] != ready["activationReady"]:
+        changed_paths.append("activationReady")
+    for key in (
+        "apiOrigin",
+        "caCertificateSha256",
+        "apiServerSpkiSha256",
+        "kubeSystemNamespaceUid",
+    ):
+        if previous["clusterIdentity"][key] != ready["clusterIdentity"][key]:
+            changed_paths.append(f"clusterIdentity.{key}")
+    if (
+        previous["endpoints"]["supabase"]["ipv4Cidrs"]
+        != ready["endpoints"]["supabase"]["ipv4Cidrs"]
+    ):
+        changed_paths.append("endpoints.supabase.ipv4Cidrs")
+    _require(
+        tuple(changed_paths) == APPROVED_ACTIVATION_TRANSITION_PATHS,
+        "participant activation transition changed field set drift",
+    )
+    _require(
+        activation_blockers(previous)
+        == (
+            "clusterIdentity.apiOrigin",
+            "clusterIdentity.caCertificateSha256",
+            "clusterIdentity.apiServerSpkiSha256",
+            "clusterIdentity.kubeSystemNamespaceUid",
+            "endpoints.supabase.ipv4Cidrs",
+        ),
+        "participant activation transition base blocker set drift",
+    )
+    _require(not activation_blockers(ready), "participant activation transition remains blocked")
+    _require(previous["activationReady"] is False and ready["activationReady"] is True, "participant activation transition direction invalid")
+    return ready
 
 
 def assert_activation_ready(policy: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -583,18 +732,26 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         == "sha256-of-raw-git-blob-bytes-at-source-revision"
         and pins["migration"]["path"]
         == "supabase/migrations/20260825_staging_participant_gateway.sql"
+        and pins["topicTracerMigration"]["path"]
+        == "supabase/migrations/20260825_staging_participant_topic_tracer.sql"
         and pins["deactivation"]["path"]
         == "supabase/staging_participant_gateway_deactivate.sql",
         "participant product publication/database identity drift",
     )
-    for key in ("sourceTreeSha256", "imageManifestDigest", "workflowSha256", "databaseSchemaSha256"):
+    for key in (
+        "sourceTreeSha256",
+        "imageManifestDigest",
+        "workflowSha256",
+        "databaseSchemaSha256",
+        "topicTracerDatabaseSchemaSha256",
+    ):
         slot = pins[key]
         _require(slot is None or bool(SHA256.fullmatch(slot)), f"participant {key} invalid")
     _require(pins["sourceRevision"] is None or bool(REVISION.fullmatch(pins["sourceRevision"])), "participant sourceRevision invalid")
-    for nested in (pins["migration"], pins["deactivation"]):
+    for nested in (pins["migration"], pins["topicTracerMigration"], pins["deactivation"]):
         _require(nested["sha256"] is None or bool(SHA256.fullmatch(nested["sha256"])), "participant SQL hash invalid")
     _require([route["path"] for route in value["httpBoundary"]["routes"]] == list(ROUTES), "participant route order drift")
-    _require(len(value["httpBoundary"]["routes"]) == 6, "participant gateway must expose exactly six routes")
+    _require(len(value["httpBoundary"]["routes"]) == 8, "participant gateway must expose exactly eight routes")
     _require(
         value["httpBoundary"]["host"] == "roebel-web.staging.agentcart.eu"
         and value["httpBoundary"]["prefix"] == "/api/staging-participant/v1"
@@ -656,6 +813,15 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         "participant runtime Secret keyset drift",
     )
     _require(
+        value["runtime"]["topicPolicy"]
+        == {
+            "municipalityId": "roebel-mueritz",
+            "sourceConversationTopic": "roebel-app-conversation",
+            "policyVersion": "staging-participant-topic-v1",
+        },
+        "participant topic tracer policy drift",
+    )
+    _require(
         tuple(value["render"]["gateway"]["files"]) == GATEWAY_RENDER_FILES
         and tuple(value["render"]["workbenchIngress"]["files"]) == WORKBENCH_INGRESS_RENDER_FILES,
         "participant render inventory drift",
@@ -711,6 +877,35 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
             "removal": "uid-resourceVersion-and-nonce-cas-before-flux",
         },
         "participant operation reservation boundary drift",
+    )
+    _require(
+        value["gitOps"]["dormantBootstrap"]
+        == {
+            "objectOrder": list(DORMANT_BOOTSTRAP_OBJECT_ORDER),
+            "initialState": "all-eight-exact-names-absent",
+            "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+            "adoption": "forbidden",
+            "definite409": "hard-failure-never-discover-never-adopt",
+            "uncertainCreate": "discover-only-exact-operation-nonce-semantics-and-bind-uid-resourceVersion",
+            "operationNonce": {
+                "annotation": DORMANT_BOOTSTRAP_NONCE_ANNOTATION,
+                "encoding": "64-lower-hex",
+                "source": "runner-csprng-only",
+                "temporary": True,
+                "removalIntent": "exact-uid-intent-durably-receipted-before-cas",
+                "removal": "uid-resourceVersion-and-nonce-cas-after-all-eight-created",
+            },
+            "rollback": "delete-only-exact-operation-owned-uids-kustomizations-first-then-prove-all-eight-absent",
+            "recovery": "receipt-and-operation-nonce-bound-rollback-only-never-resume-create",
+            "receiptSchemaVersion": DORMANT_BOOTSTRAP_RECEIPT_SCHEMA,
+            "laterActivationReceiptRequired": True,
+            "sharedSourceMutation": "forbidden",
+            "secretAccess": "forbidden",
+            "webIngressMutation": "forbidden",
+            "existingWorkbenchNetworkPolicyMutation": "forbidden",
+            "civicAuthorityEffects": False,
+        },
+        "participant dormant Flux bootstrap boundary drift",
     )
     _require(
         value["httpBoundary"]["timeoutsSeconds"] == {
@@ -998,6 +1193,26 @@ def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str
             "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256",
             "value": value["productPins"]["databaseSchemaSha256"],
         },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_MIGRATION_SHA256",
+            "value": value["productPins"]["topicTracerMigration"]["sha256"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_DATABASE_SCHEMA_SHA256",
+            "value": value["productPins"]["topicTracerDatabaseSchemaSha256"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID",
+            "value": value["runtime"]["topicPolicy"]["municipalityId"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC",
+            "value": value["runtime"]["topicPolicy"]["sourceConversationTopic"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION",
+            "value": value["runtime"]["topicPolicy"]["policyVersion"],
+        },
     ]
     deployment = {
         "apiVersion": "apps/v1",
@@ -1115,14 +1330,19 @@ def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str
     }
 
 
-def trusted_live_facts_contract() -> dict[str, Any]:
-    """Describe runner-owned facts without placing any fact in static policy."""
+def trusted_live_facts_contract(
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Describe runner-owned facts bound to the exact approved ready policy."""
+    value = assert_activation_ready(
+        APPROVED_NEXT_ACTIVATION_POLICY if policy is None else policy,
+    )
     return {
         "schemaVersion": TRUSTED_LIVE_FACTS_SCHEMA,
         "authority": "protected-local-runner-only",
         "transport": "out-of-band-receipt",
         "maximumAgeSeconds": 300,
-        "policyBinding": activation_policy_sha256(),
+        "policyBinding": activation_policy_sha256(value),
         "requiredSections": [
             "clusterBinding",
             "operationReservation",
@@ -1340,9 +1560,12 @@ def validate_trusted_live_facts(value: Any, *, now: datetime | None = None) -> d
     exact policy binding and a closed section set.  Individual sections are
     compared to the static descriptor with the helpers above by the executor.
     """
-    policy = assert_activation_ready()
+    # The runner reaches this function only after its exact checked-out JSON
+    # has passed ``assert_activation_ready(p)``.  Bind the receipt to the one
+    # protected approved successor rather than the still-inert base default.
+    policy = assert_activation_ready(APPROVED_NEXT_ACTIVATION_POLICY)
     _require(isinstance(value, dict), "trusted live facts must be an object")
-    contract = trusted_live_facts_contract()
+    contract = trusted_live_facts_contract(policy)
     required = {
         "schemaVersion", "policySha256", "collectedAt", "validUntil", "maxAgeSeconds",
         *contract["requiredSections"],
