@@ -1,0 +1,262 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "staging-participant-gateway",
+      "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+      "app.kubernetes.io/part-of": "stadtstack",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-staging-participant-gateway",
+    "namespace": "stadtstack-roebel-web-preview"
+  },
+  "spec": {
+    "replicas": 1,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "staging-participant-gateway",
+        "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+        "app.kubernetes.io/part-of": "stadtstack",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/environment": "staging"
+      }
+    },
+    "strategy": {
+      "type": "Recreate"
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "staging-participant-gateway",
+          "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/authority": "none",
+          "stadtstack.io/civic-authority": "none",
+          "stadtstack.io/environment": "staging"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "restartPolicy": "Always",
+        "serviceAccountName": "roebel-staging-participant-gateway",
+        "securityContext": {
+          "fsGroup": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "volumes": [
+          {
+            "emptyDir": {
+              "sizeLimit": "64Mi"
+            },
+            "name": "tmp"
+          }
+        ],
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY",
+                "value": "enabled"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_HOST",
+                "value": "0.0.0.0"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PORT",
+                "value": "18085"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ORIGIN",
+                "value": "https://roebel-web.staging.agentcart.eu"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_INVITE_SHA256",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "invite-sha256",
+                    "name": "roebel-staging-participant-gateway-config",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ALLOWED_WALLETS",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "allowed-wallets",
+                    "name": "roebel-staging-participant-gateway-config",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SESSION_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "session-key",
+                    "name": "roebel-staging-participant-gateway-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL",
+                "value": "https://rpc.gnosischain.com"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL",
+                "value": "https://vdlksxpihmoumebjpeix.supabase.co"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "supabase-anon-key",
+                    "name": "roebel-staging-participant-gateway-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "supabase-rpc-secret",
+                    "name": "roebel-staging-participant-gateway-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MECKY_PUBKEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "mecky-pubkey",
+                    "name": "roebel-staging-participant-gateway-config",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PRIVATE_WORKBENCH_URL",
+                "value": "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PRIVATE_WORKBENCH_ADMISSION_HEADER",
+                "value": "x-stadtstack-e2e:1"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
+                "value": "9a478809a3d64b9efea279b6ee088a1346b045b4"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
+                "value": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
+                "value": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256",
+                "value": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_MIGRATION_SHA256",
+                "value": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_DATABASE_SCHEMA_SHA256",
+                "value": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID",
+                "value": "roebel-mueritz"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC",
+                "value": "roebel-app-conversation"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION",
+                "value": "staging-participant-topic-v1"
+              }
+            ],
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "staging-participant-gateway",
+            "ports": [
+              {
+                "containerPort": 18085,
+                "name": "http",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
+            "startupProbe": {
+              "failureThreshold": 30,
+              "periodSeconds": 2,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
+            "resources": {
+              "limits": {
+                "cpu": "200m",
+                "memory": "128Mi"
+              },
+              "requests": {
+                "cpu": "50m",
+                "memory": "64Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

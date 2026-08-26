@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
+  "component": "staging-participant-gateway",
+  "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
+  "sourceTreeSha256": "sha256:7c537a038c84afe08740dabc1222c7b547a109a4a607b8bbab17bc6664a7bd47",
+  "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
+  "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
+  "manifestDigest": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
+  "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
+  "workflowSha256": "sha256:0446a7fbf64ea28d4098d79a86e75ae004e3f175eca09186b8c2f18f2ce36d09",
+  "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
+  "migrationSha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
+  "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
+  "topicTracerMigrationSha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e",
+  "topicTracerDatabaseSchemaSha256": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb",
+  "municipalityId": "roebel-mueritz",
+  "sourceConversationTopic": "roebel-app-conversation",
+  "topicPolicyVersion": "staging-participant-topic-v1",
+  "deactivationSha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
+  "activationPolicySha256": "sha256:f7cfb5450201d6228690b6260359788a6d8fb8c6e807500248003edbd558874a"
+}
