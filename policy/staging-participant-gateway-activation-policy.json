@@ -1,5 +1,5 @@
 {
-  "activationReady": false,
+  "activationReady": true,
   "authority": {
     "citizenVerification": false,
     "civicAuthority": "none",
@@ -10,10 +10,10 @@
     "voteMutation": false
   },
   "clusterIdentity": {
-    "apiOrigin": null,
-    "apiServerSpkiSha256": null,
-    "caCertificateSha256": null,
-    "kubeSystemNamespaceUid": null
+    "apiOrigin": "https://10.255.240.11:6443",
+    "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+    "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+    "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420"
   },
   "endpoints": {
     "browserOrigin": "https://roebel-web.staging.agentcart.eu",
@@ -27,7 +27,10 @@
     },
     "supabase": {
       "httpsOrigin": "https://vdlksxpihmoumebjpeix.supabase.co",
-      "ipv4Cidrs": [],
+      "ipv4Cidrs": [
+        "104.18.38.10/32",
+        "172.64.149.246/32"
+      ],
       "port": 443,
       "projectRef": "vdlksxpihmoumebjpeix"
     },
