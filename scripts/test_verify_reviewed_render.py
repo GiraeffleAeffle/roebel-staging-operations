@@ -115,7 +115,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         destination = Path(temp.name) / "candidate"
         shutil.copytree(ROOT, destination, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
         self.normalize_current_seed(destination)
+        self.normalize_inert_participant_seed(destination)
         return temp, destination
+
+    def normalize_inert_participant_seed(self, destination: Path) -> None:
+        """Keep transition fixtures anchored to the immutable inert predecessor."""
+        policy_path = destination / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+        policy_path.write_text(
+            json.dumps(
+                VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor(),
+                indent=2,
+            )
+            + "\n",
+        )
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["stagingParticipantGatewayBoundary"]["activationReady"] = False
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
 
     def current_base(self) -> Path:
         temp, base = self.candidate()
@@ -957,6 +973,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def test_participant_bootstrap_marker_does_not_change_signed_nostr_semantics(self) -> None:
         contract = json.loads((ROOT / "policy/repository-contract.json").read_text())
+        committed_policy = json.loads(
+            (ROOT / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH).read_text(),
+        )
         self.assertEqual(
             contract["signedNostrBoundary"]["activationEvidence"],
             "pending-separate-review",
@@ -965,7 +984,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             contract["stagingParticipantGatewayBoundary"]["activationPolicy"],
             "policy/staging-participant-gateway-activation-policy.json",
         )
-        self.assertFalse(contract["stagingParticipantGatewayBoundary"]["activationReady"])
+        self.assertEqual(
+            contract["stagingParticipantGatewayBoundary"]["activationReady"],
+            committed_policy["activationReady"],
+        )
         self.assertEqual(
             contract["stagingParticipantGatewayBoundary"]["trustedLiveFacts"],
             "protected-local-runner-out-of-band-only",
@@ -1196,12 +1218,14 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             VERIFIER.verify_participant_gateway_runtime_pin(pin)
 
     def test_participant_render_is_rejected_while_static_policy_is_not_ready(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
             "activation blocked: protected product, database and endpoint pins are incomplete",
         ):
             VERIFIER.verify_participant_gateway_static_policy(
-                ROOT,
+                candidate,
                 "reviewed-public-knowledge-participant-gateway",
             )
 
