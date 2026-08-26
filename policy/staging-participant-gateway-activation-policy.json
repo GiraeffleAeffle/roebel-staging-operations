@@ -83,6 +83,40 @@
       "prune": false,
       "unsuspend": "compare-and-swap-both-or-rollback"
     },
+    "dormantBootstrap": {
+      "adoption": "forbidden",
+      "civicAuthorityEffects": false,
+      "definite409": "hard-failure-never-discover-never-adopt",
+      "existingWorkbenchNetworkPolicyMutation": "forbidden",
+      "initialState": "all-eight-exact-names-absent",
+      "laterActivationReceiptRequired": true,
+      "objectOrder": [
+        "gateway.serviceAccount",
+        "workbenchIngress.serviceAccount",
+        "gateway.role",
+        "workbenchIngress.role",
+        "gateway.roleBinding",
+        "workbenchIngress.roleBinding",
+        "gateway.kustomization",
+        "workbenchIngress.kustomization"
+      ],
+      "operationNonce": {
+        "annotation": "stadtstack.io/participant-flux-bootstrap-nonce",
+        "encoding": "64-lower-hex",
+        "removalIntent": "exact-uid-intent-durably-receipted-before-cas",
+        "removal": "uid-resourceVersion-and-nonce-cas-after-all-eight-created",
+        "source": "runner-csprng-only",
+        "temporary": true
+      },
+      "receiptSchemaVersion": "roebel_staging_participant_flux_bootstrap_receipt_v1",
+      "recovery": "receipt-and-operation-nonce-bound-rollback-only-never-resume-create",
+      "rollback": "delete-only-exact-operation-owned-uids-kustomizations-first-then-prove-all-eight-absent",
+      "secretAccess": "forbidden",
+      "sharedSourceMutation": "forbidden",
+      "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+      "uncertainCreate": "discover-only-exact-operation-nonce-semantics-and-bind-uid-resourceVersion",
+      "webIngressMutation": "forbidden"
+    },
     "reconcilers": {
       "gateway": {
         "kustomization": {
@@ -158,17 +192,23 @@
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/posts", "status": 204},
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/comments", "status": 204},
       {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/nostr-post", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/promote-source-post", "status": 204},
+      {"case": "preflight", "method": "OPTIONS", "path": "/api/staging-participant/v1/sign-topic-suggestion", "status": 204},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/challenge", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/session", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/posts", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/comments", "status": 401},
       {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/nostr-post", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/promote-source-post", "status": 401},
+      {"case": "unauthenticated-post", "method": "POST", "path": "/api/staging-participant/v1/sign-topic-suggestion", "status": 401},
       {"case": "method-denied", "method": "POST", "path": "/api/staging-participant/v1/status", "status": 405},
       {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/challenge", "status": 405},
       {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/session", "status": 405},
       {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/posts", "status": 405},
       {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/comments", "status": 405},
       {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/nostr-post", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/promote-source-post", "status": 405},
+      {"case": "method-denied", "method": "GET", "path": "/api/staging-participant/v1/sign-topic-suggestion", "status": 405},
       {"case": "method-denied", "method": "HEAD", "path": "/api/staging-participant/v1/status", "status": 405},
       {"case": "method-denied", "method": "DELETE", "path": "/api/staging-participant/v1/status", "status": 405},
       {"case": "unknown", "method": "GET", "path": "/api/staging-participant/v1/unknown", "status": 404},
@@ -193,7 +233,9 @@
       {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/session"},
       {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/posts"},
       {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/comments"},
-      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/nostr-post"}
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/nostr-post"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/promote-source-post"},
+      {"methods": ["POST", "OPTIONS"], "path": "/api/staging-participant/v1/sign-topic-suggestion"}
     ],
     "timeoutsSeconds": {
       "deploymentRollout": 120,
@@ -264,18 +306,23 @@
       "path": "supabase/staging_participant_gateway_deactivate.sql",
       "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5"
     },
-    "imageManifestDigest": "sha256:23243a09a9035f10540e4612c481a188750c8a5d9006062a60423c1850b7d45f",
+    "imageManifestDigest": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
     "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
     "migration": {
       "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
       "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
     },
-    "sourceRevision": "7cb7e5b7b0f71c8072aefbec900cd229847d6dea",
+    "topicTracerMigration": {
+      "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
+      "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+    },
+    "topicTracerDatabaseSchemaSha256": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb",
+    "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
     "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
-    "sourceTreeSha256": "sha256:88544f383178e2b85ef031ae11295ec45917ee6df6ac117381b2f5e0854b6d4a",
+    "sourceTreeSha256": "sha256:7c537a038c84afe08740dabc1222c7b547a109a4a607b8bbab17bc6664a7bd47",
     "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
     "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
-    "workflowSha256": "sha256:a65d9ef0563e492c688f752a4b6604fe114eec0fc9e8807dc346660a0e327e2d"
+    "workflowSha256": "sha256:0446a7fbf64ea28d4098d79a86e75ae004e3f175eca09186b8c2f18f2ce36d09"
   },
   "render": {
     "createOrder": [
@@ -361,6 +408,11 @@
   "runtime": {
     "containerPort": 18085,
     "deploymentStrategy": "Recreate",
+    "topicPolicy": {
+      "municipalityId": "roebel-mueritz",
+      "sourceConversationTopic": "roebel-app-conversation",
+      "policyVersion": "staging-participant-topic-v1"
+    },
     "replicas": 1,
     "secretReferences": {
       "config": {
@@ -377,5 +429,5 @@
     "serviceAccountToken": false
   },
   "schemaVersion": "roebel_staging_participant_gateway_activation_policy_v4",
-  "trustedFactsReceiptSchemaVersion": "roebel_staging_participant_gateway_trusted_live_facts_v1"
+  "trustedFactsReceiptSchemaVersion": "roebel_staging_participant_gateway_trusted_live_facts_v2"
 }

@@ -970,6 +970,18 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             contract["stagingParticipantGatewayBoundary"]["trustedLiveFacts"],
             "protected-local-runner-out-of-band-only",
         )
+        self.assertEqual(
+            contract["stagingParticipantGatewayBoundary"]["exactGatewayPaths"],
+            list(VERIFIER.PARTICIPANT_POLICY.ROUTES),
+        )
+        self.assertEqual(
+            contract["stagingParticipantGatewayBoundary"]["methodPathMatrix"],
+            {
+                "GET": [VERIFIER.PARTICIPANT_POLICY.ROUTES[0]],
+                "OPTIONS": list(VERIFIER.PARTICIPANT_POLICY.ROUTES),
+                "POST": list(VERIFIER.PARTICIPANT_POLICY.POST_ROUTES),
+            },
+        )
 
     def test_participant_gateway_ingress_is_exact_and_rate_limited(self) -> None:
         expected = VERIFIER.PARTICIPANT_POLICY.ROUTES
@@ -1083,6 +1095,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": protected["productPins"]["imageManifestDigest"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256": protected["productPins"]["migration"]["sha256"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256": protected["productPins"]["databaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_MIGRATION_SHA256": protected["productPins"]["topicTracerMigration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_DATABASE_SCHEMA_SHA256": protected["productPins"]["topicTracerDatabaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID": protected["runtime"]["topicPolicy"]["municipalityId"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC": protected["runtime"]["topicPolicy"]["sourceConversationTopic"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION": protected["runtime"]["topicPolicy"]["policyVersion"],
         }
         for name, value in expected_literals.items():
             self.assertEqual(env[name], {"name": name, "value": value})
@@ -1125,10 +1142,47 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(VERIFIER.VerificationError, "key set invalid"):
             VERIFIER.verify_participant_gateway_secret_materialization({"config": config_without_mecky, "runtime": runtime}, "participant Secrets")
 
+    def test_participant_database_preflight_binds_both_topic_tracer_hashes(self) -> None:
+        policy = participant_ready_policy()
+        runtime_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        value = {
+            "databaseProject": "vdlksxpihmoumebjpeix",
+            "environment": "staging",
+            "vaultArm": "roebel_staging_participant_environment_arm=staging-only",
+            "migrationSha256": runtime_pin["migrationSha256"],
+            "schemaSha256": runtime_pin["databaseSchemaSha256"],
+            "topicTracerMigrationSha256": runtime_pin["topicTracerMigrationSha256"],
+            "topicTracerDatabaseSchemaSha256": runtime_pin["topicTracerDatabaseSchemaSha256"],
+            "observedAt": "2026-08-25T10:00:00Z",
+            "validUntil": "2026-08-25T10:05:00Z",
+            "maxAgeSeconds": 300,
+            "apiOutcome": "staging-schema-and-vault-arm-exact",
+        }
+        value["receiptCanonicalSha256"] = VERIFIER.digest(value)
+        self.assertEqual(
+            VERIFIER.verify_participant_gateway_database_preflight(
+                value,
+                runtime_pin,
+                "participant database preflight",
+            ),
+            value,
+        )
+        drifted = copy.deepcopy(value)
+        drifted["topicTracerMigrationSha256"] = "sha256:" + "0" * 64
+        drifted["receiptCanonicalSha256"] = VERIFIER.digest(
+            {key: item for key, item in drifted.items() if key != "receiptCanonicalSha256"},
+        )
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "pinned schema contract drift"):
+            VERIFIER.verify_participant_gateway_database_preflight(
+                drifted,
+                runtime_pin,
+                "participant database preflight",
+            )
+
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
         self.assertFalse(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
         pin = {
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
             "component": "staging-participant-gateway",
             "sourceRevision": "a" * 40,
             "imageRepository": VERIFIER.PARTICIPANT_GATEWAY_IMAGE,

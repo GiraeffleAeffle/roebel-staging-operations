@@ -1,0 +1,47 @@
+name: staging-participant-flux-bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      protected_revision:
+        description: Exact reviewed operations commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  guarded-dry-run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Deliberately no environment, OIDC permission, Secret, Kubernetes
+    # credential or live mode. The one-time cluster bootstrap is a protected
+    # local transaction after this exact dry plan is reviewed.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.protected_revision }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Test protected dormant Flux transaction
+        run: |
+          python3 -I scripts/test_staging_participant_gateway_policy.py -v
+          python3 -I scripts/test_staging_participant_flux_bootstrap.py -v
+          python3 -I scripts/test_activate_staging_participant_gateway.py -v
+          python3 -I scripts/test_verify_reviewed_render.py -v
+      - name: Verify protected repository
+        run: |
+          python3 -I scripts/verify-reviewed-render.py --root .
+          git diff --check
+      - name: Emit inert no-cluster bootstrap plan
+        run: >-
+          python3 -I scripts/bootstrap-staging-participant-flux.py
+          --dry-run
+          --expected-protected-revision '${{ inputs.protected_revision }}'
+          --receipt participant-flux-bootstrap-dry-run-receipt.json
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08
+        with:
+          name: participant-flux-bootstrap-dry-run-receipt
+          path: participant-flux-bootstrap-dry-run-receipt.json
+          if-no-files-found: error

@@ -9,6 +9,10 @@ MODULE.POLICY = MODULE.compile_verified_policy_module_v4(
     Path(__file__).with_name("staging_participant_gateway_policy.py").read_bytes(),
     REV,
 )
+MODULE.BOOTSTRAP = MODULE.compile_verified_bootstrap_module_v4(
+    Path(__file__).with_name("staging_participant_flux_bootstrap.py").read_bytes(),
+    REV,
+)
 def sha(x="a"): return "sha256:" + x * 64
 def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="10", **extra):
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
@@ -19,17 +23,66 @@ def ready_policy():
 def admitted(desired, uid="owned-uid", rv="10"):
     value = copy.deepcopy(desired); value.setdefault("metadata", {})["uid"] = uid; value["metadata"]["resourceVersion"] = rv
     return value
+def dormant_ownership():
+    return {
+        "schemaVersion": "roebel_staging_participant_flux_bootstrap_receipt_v1",
+        "status": "dormant-ready",
+        "receiptSha256": sha("b"),
+        "protectedRevision": REV,
+        "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(ready_policy()),
+        "objects": [
+            {
+                "logicalName": logical,
+                "target": {"apiVersion": "v1", "kind": "Fixture", "namespace": "fixture", "name": logical},
+                "uid": f"uid-{index}",
+                "resourceVersion": "10",
+                "desiredSemanticSha256": sha(str(index % 10)),
+            }
+            for index, logical in enumerate(MODULE.POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER)
+        ],
+        "bothKustomizationsSuspended": True,
+    }
+def valid_database_status(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid", before="10", after="11", image_id=None):
+    """A complete private readiness receipt, including provenance and RBAC."""
+    image = value["productPins"]["imageRepository"] + "@" + value["productPins"]["imageManifestDigest"]
+    return MODULE.expected_database_status_v4(value) | {
+        "probe": {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": pod_name,
+            "loopbackOnly": True,
+            "publicIngressUsed": False,
+            "serviceProxyUsed": False,
+            "redirectsAllowed": False,
+            "path": "/status",
+            "remotePort": MODULE.POLICY.GATEWAY_PORT,
+            "podUid": pod_uid,
+            "podImage": image,
+            "podImageId": image_id or "docker-pullable://" + image,
+            "podReadyAfter": True,
+            "podResourceVersionBefore": before,
+            "podResourceVersionAfter": after,
+        },
+        "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
+    }
 def valid_success_facts(value):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
     sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
     facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
     facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"], "verificationLevel": "anonymous-registry-manifest-digest-only", "cryptographicPublicationProvenanceVerified": False}
-    facts["database"] = {"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}
+    facts["database"] = valid_database_status(value)
     facts["operationReservation"] = {"operationNonce": nonce, "absencePreflight": {"status": "all-six-exact-target-names-absent", "targets": [{"absent": True}] * 6}}
     facts["objectCreateResults"] = [{"operationNonce": nonce, "temporaryNonceRemoved": True} for _ in range(6)]
     facts["semanticObjects"] = {str(i): {"ok": True} for i in range(6)}
     source = {"uid": "source-uid", "resourceVersion": "10", "artifactRevision": f"main@sha1:{REV}"}
-    facts["fluxTransaction"] = {"ready": {"gateway": {}, "workbenchIngress": {}}, "sourceBeforeCas": source, "sourceAfterReady": source | {"resourceVersion": "11"}}
+    ownership = dormant_ownership()
+    facts["fluxTransaction"] = {
+        "bootstrapReceiptSha256": ownership["receiptSha256"],
+        "bootstrapObjectIdentities": ownership["objects"],
+        "casUnsuspended": {"gateway": "11", "workbenchIngress": "21"},
+        "ready": {"gateway": {}, "workbenchIngress": {}},
+        "sourceBeforeCas": source,
+        "sourceAfterReady": source | {"resourceVersion": "11"},
+    }
     facts["preservation"] = {"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}
     secret = {"status": "exact", "secrets": {"config": {"uid": "s"}}}
     facts["secretMaterialization"] = {"beforeCreate": secret, "beforeIngress": copy.deepcopy(secret), "afterFlux": copy.deepcopy(secret)}
@@ -124,6 +177,69 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(MODULE.POLICY.validate_activation_policy(value), value)
         self.assertEqual(MODULE.POLICY.assert_activation_ready(value), value)
         self.assertEqual(MODULE.POLICY.activation_blockers(value), ())
+
+    def test_live_activation_requires_bootstrap_receipt_before_runner_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kubeconfig"
+            kube.write_text("not read")
+            with self.assertRaisesRegex(MODULE.ActivationError, "requires exact dormant Flux bootstrap receipt"):
+                MODULE.activate(
+                    ready_policy(),
+                    REV,
+                    str(kube),
+                    Fake(),
+                    True,
+                    Mock(),
+                    {"runner": sha()},
+                    None,
+                )
+
+    def test_flux_preflight_binds_all_eight_live_uids_to_bootstrap_receipt(self):
+        value = ready_policy()
+        objects = []
+        live = []
+        for owner, builder in (
+            ("gateway", MODULE.POLICY.gateway_flux_objects),
+            ("workbenchIngress", MODULE.POLICY.workbench_ingress_flux_objects),
+        ):
+            desired = builder(suspended=True)
+            for key in ("serviceAccount", "role", "roleBinding", "kustomization"):
+                observed = admitted(desired[key], f"{owner}-{key}-uid", "21")
+                live.append(observed)
+                objects.append({
+                    "logicalName": f"{owner}.{key}",
+                    "target": value["gitOps"]["reconcilers"][owner][key],
+                    "uid": observed["metadata"]["uid"],
+                    "resourceVersion": "20",
+                    "desiredSemanticSha256": MODULE.POLICY.semantic_sha256(desired[key]),
+                })
+        ownership = {
+            "status": "dormant-ready",
+            "receiptSha256": sha("b"),
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+            "objects": objects,
+            "bothKustomizationsSuspended": True,
+        }
+        source = {"metadata": {"uid": "source"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        with patch.object(MODULE, "shared_source_revision_v4", return_value=source), patch.object(
+            MODULE,
+            "_target_live",
+            side_effect=live,
+        ):
+            result = MODULE.flux_preflight_v4(Fake(), "/snapshot", value, REV, ownership)
+        self.assertEqual(result["bootstrapReceipt"]["receiptSha256"], sha("b"))
+        self.assertEqual(set(result["owners"]), {"gateway", "workbenchIngress"})
+
+        drifted = copy.deepcopy(ownership)
+        drifted["objects"][0]["uid"] = "foreign"
+        with patch.object(MODULE, "shared_source_revision_v4", return_value=source), patch.object(
+            MODULE,
+            "_target_live",
+            side_effect=live,
+        ):
+            with self.assertRaisesRegex(MODULE.ActivationError, "no longer matches bootstrap receipt identity"):
+                MODULE.flux_preflight_v4(Fake(), "/snapshot", value, REV, drifted)
 
     def test_duplicate_json_keys_are_rejected_at_every_object_boundary(self):
         with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):
@@ -466,7 +582,24 @@ class ExecutorTests(unittest.TestCase):
             return {"status": 404, "headers": {}, "body": ""}
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
             receipt = MODULE.route_matrix_v4(Fake(), value)
-        self.assertEqual(len(receipt), 25); self.assertEqual(request.call_count, 25)
+        expected_count = len(MODULE.POLICY.ROUTE_EXPECTATIONS)
+        self.assertEqual(len(receipt), expected_count); self.assertEqual(request.call_count, expected_count)
+        for path in (
+            prefix + "/promote-source-post",
+            prefix + "/sign-topic-suggestion",
+        ):
+            self.assertIn(
+                {"case": "preflight", "method": "OPTIONS", "path": path, "status": 204},
+                [{key: item[key] for key in ("case", "method", "path", "status")} for item in receipt],
+            )
+            self.assertIn(
+                {"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401},
+                [{key: item[key] for key in ("case", "method", "path", "status")} for item in receipt],
+            )
+            self.assertIn(
+                {"case": "method-denied", "method": "GET", "path": path, "status": 405},
+                [{key: item[key] for key in ("case", "method", "path", "status")} for item in receipt],
+            )
         with patch.object(MODULE, "_route_request_v4", return_value={"status": 200, "headers": cors | {"content-type": "application/json"}, "body": json.dumps(status_body)}), patch.object(MODULE.time, "monotonic", side_effect=[0, 0, 121]):
             with self.assertRaisesRegex(MODULE.ActivationError, "after request"):
                 MODULE.route_matrix_v4(Fake(), value)
@@ -510,7 +643,7 @@ class ExecutorTests(unittest.TestCase):
 
     def test_v4_internal_status_contract_is_closed_and_not_public_route(self):
         value = ready_policy(); pins = value["productPins"]
-        expected = {"schemaVersion": "roebel_staging_participant_gateway_status_v1", "status": "ready", "sourceRevision": pins["sourceRevision"], "manifestDigest": pins["imageManifestDigest"], "migrationSha256": pins["migration"]["sha256"], "databaseSchemaSha256": pins["databaseSchemaSha256"]}
+        expected = MODULE.expected_database_status_v4(value)
         selected = {"name": "gateway-pod-a", "uid": "pod-uid", "resourceVersion": "10", "imageId": "docker-pullable://image@" + pins["imageManifestDigest"]}
         runtime = {"readyPodCount": value["runtime"]["replicas"], "pods": [selected]}
         exact_image = pins["imageRepository"] + "@" + pins["imageManifestDigest"]
@@ -519,10 +652,19 @@ class ExecutorTests(unittest.TestCase):
             "spec": {"containers": [{"image": exact_image}]},
             "status": {"containerStatuses": [{"imageID": selected["imageId"], "ready": True}]},
         }
-        probe = {"transport": "authenticated-kubernetes-pod-port-forward", "publicIngressUsed": False}
+        probe = {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": selected["name"],
+            "loopbackOnly": True,
+            "publicIngressUsed": False,
+            "serviceProxyUsed": False,
+            "redirectsAllowed": False,
+            "path": "/status",
+            "remotePort": MODULE.POLICY.GATEWAY_PORT,
+        }
         with patch.object(MODULE, "checked", return_value="") as authorization, patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe)) as request, patch.object(MODULE, "live_obj", return_value=current):
             result = MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
-        self.assertEqual({key: result[key] for key in expected}, expected)
+        self.assertEqual(result, valid_database_status(value, image_id=selected["imageId"]))
         self.assertFalse(result["probe"]["publicIngressUsed"])
         self.assertEqual(result["probe"]["podUid"], "pod-uid")
         self.assertEqual(result["probe"]["podImage"], exact_image)
@@ -535,6 +677,27 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected | {"extra": True}), probe)), patch.object(MODULE, "live_obj", return_value=current):
             with self.assertRaisesRegex(MODULE.ActivationError, "contract drift"):
                 MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+        topic_drifts = {
+            "municipalityId": "other-town",
+            "sourceConversationTopic": "other-conversation",
+            "topicPolicyVersion": "other-topic-v1",
+            "topicTracerMigrationSha256": sha("0"),
+            "topicTracerDatabaseSchemaSha256": sha("1"),
+        }
+        for key, drift in topic_drifts.items():
+            with self.subTest(kind="drift", key=key), patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected | {key: drift}), probe)), patch.object(MODULE, "live_obj", return_value=current):
+                with self.assertRaisesRegex(MODULE.ActivationError, "contract drift"):
+                    MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+        for key in topic_drifts:
+            missing = copy.deepcopy(expected); missing.pop(key)
+            with self.subTest(kind="missing", key=key), patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(missing), probe)), patch.object(MODULE, "live_obj", return_value=current):
+                with self.assertRaisesRegex(MODULE.ActivationError, "contract drift"):
+                    MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+        for key in topic_drifts:
+            extra = expected | {"unexpected" + key[:1].upper() + key[1:]: "unexpected"}
+            with self.subTest(kind="extra", key=key), patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(extra), probe)), patch.object(MODULE, "live_obj", return_value=current):
+                with self.assertRaisesRegex(MODULE.ActivationError, "contract drift"):
+                    MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
         changed = copy.deepcopy(current); changed["status"]["containerStatuses"][0]["imageID"] = "docker-pullable://wrong@" + pins["imageManifestDigest"]
         with patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe)), patch.object(MODULE, "live_obj", return_value=changed):
             with self.assertRaisesRegex(MODULE.ActivationError, "runtime pin changed"):
@@ -760,7 +923,7 @@ class ExecutorTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 entered = [stack.enter_context(item) for item in patches]
                 with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
-                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()})
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
         failure = sink.commit.call_args.args[0]
         self.assertEqual(failure["status"], "rolled-back")
         self.assertEqual(failure["termination"], {"interrupted": True, "signal": MODULE.signal.SIGTERM, "signalsDeferredDuringRollback": True})
@@ -798,7 +961,7 @@ class ExecutorTests(unittest.TestCase):
             patch.object(MODULE, "secret_materialization_v4", return_value={"status": "same", "secrets": {"x": {}}}), patch.object(MODULE, "policy_union_v4", return_value={"ok": True}),
             patch.object(MODULE, "create_v4", side_effect=create), patch.object(MODULE, "remove_operation_nonce_v4", side_effect=remove),
             patch.object(MODULE, "health_v4", return_value=({}, {"ok": True})), patch.object(MODULE, "runtime_image_v4", return_value={"readyPodCount": 1, "pods": [{}]}),
-            patch.object(MODULE, "database_status_v4", return_value={"databaseSchemaSha256": value["productPins"]["databaseSchemaSha256"]}), patch.object(MODULE, "route_matrix_v4", return_value=[{}]),
+            patch.object(MODULE, "database_status_v4", return_value=valid_database_status(value)), patch.object(MODULE, "route_matrix_v4", return_value=[{}]),
             patch.object(MODULE, "shared_source_revision_v4", return_value=source), patch.object(MODULE, "unsuspend_both_v4", return_value={"gateway": {"metadata": {"resourceVersion": "2"}}, "workbenchIngress": {"metadata": {"resourceVersion": "2"}}}),
             patch.object(MODULE, "wait_both_ready_v4", return_value={"gateway": {}, "workbenchIngress": {}}), patch.object(MODULE, "semantic_postconditions_v4", return_value={str(i): {} for i in range(6)}),
             patch.object(MODULE, "verify_preservation_v4", return_value={"webIngress": {"byteIdenticalCanonicalJson": True}, "existingWorkbenchNetworkPolicy": {"byteIdenticalCanonicalJson": True}}),
@@ -809,7 +972,7 @@ class ExecutorTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 entered = [stack.enter_context(item) for item in patches]
                 with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
-                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()})
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
         self.assertEqual(sink.commit.call_count, 2)
         self.assertEqual(sink.commit.call_args_list[1].args[0]["status"], "rolled-back")
         entered[-1].assert_called_once(); snapshot.close.assert_called_once()

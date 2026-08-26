@@ -137,17 +137,41 @@ class StaticPolicyTests(unittest.TestCase):
             POLICY.trusted_live_facts_contract(approved),
             contract,
         )
+        self.assertEqual(
+            contract["schemaVersion"],
+            "roebel_staging_participant_gateway_trusted_live_facts_v2",
+        )
         with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
             POLICY.trusted_live_facts_contract(current)
 
     def test_route_and_rate_limit_boundary_is_exact(self):
         value = POLICY.activation_policy_descriptor()
         self.assertEqual(tuple(route["path"] for route in value["httpBoundary"]["routes"]), POLICY.ROUTES)
-        self.assertEqual(len(POLICY.ROUTES), 6)
+        self.assertEqual(len(POLICY.ROUTES), 8)
+        self.assertEqual(
+            POLICY.POST_ROUTES[-2:],
+            (
+                "/api/staging-participant/v1/promote-source-post",
+                "/api/staging-participant/v1/sign-topic-suggestion",
+            ),
+        )
         self.assertEqual(value["httpBoundary"]["routes"][0]["methods"], ["GET", "OPTIONS"])
         self.assertTrue(all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]))
         self.assertEqual(value["httpBoundary"]["expectations"], list(POLICY.ROUTE_EXPECTATIONS))
-        self.assertEqual(len(value["httpBoundary"]["expectations"]), 25)
+        self.assertEqual(len(value["httpBoundary"]["expectations"]), 31)
+        for path in POLICY.POST_ROUTES[-2:]:
+            self.assertIn(
+                {"case": "preflight", "method": "OPTIONS", "path": path, "status": 204},
+                value["httpBoundary"]["expectations"],
+            )
+            self.assertIn(
+                {"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401},
+                value["httpBoundary"]["expectations"],
+            )
+            self.assertIn(
+                {"case": "method-denied", "method": "GET", "path": path, "status": 405},
+                value["httpBoundary"]["expectations"],
+            )
         self.assertEqual(
             value["httpBoundary"]["haproxyRateLimit"],
             {
@@ -176,6 +200,35 @@ class StaticPolicyTests(unittest.TestCase):
             "./" + POLICY.WORKBENCH_INGRESS_ROOT,
         )
         self.assertFalse(POLICY.expected_shared_flux_source_projection()["spec"]["suspend"])
+
+    def test_dormant_flux_bootstrap_contract_is_exact_create_only_and_receipt_bound(self):
+        contract = POLICY.activation_policy_descriptor()["gitOps"]["dormantBootstrap"]
+        self.assertEqual(
+            contract["objectOrder"],
+            [
+                "gateway.serviceAccount",
+                "workbenchIngress.serviceAccount",
+                "gateway.role",
+                "workbenchIngress.role",
+                "gateway.roleBinding",
+                "workbenchIngress.roleBinding",
+                "gateway.kustomization",
+                "workbenchIngress.kustomization",
+            ],
+        )
+        self.assertEqual(contract["initialState"], "all-eight-exact-names-absent")
+        self.assertEqual(contract["successState"], "all-eight-exact-uids-present-both-kustomizations-suspended")
+        self.assertEqual(contract["adoption"], "forbidden")
+        self.assertEqual(contract["definite409"], "hard-failure-never-discover-never-adopt")
+        self.assertEqual(contract["operationNonce"]["annotation"], POLICY.DORMANT_BOOTSTRAP_NONCE_ANNOTATION)
+        self.assertEqual(
+            contract["operationNonce"]["removalIntent"],
+            "exact-uid-intent-durably-receipted-before-cas",
+        )
+        self.assertTrue(contract["laterActivationReceiptRequired"])
+        self.assertEqual(contract["receiptSchemaVersion"], POLICY.DORMANT_BOOTSTRAP_RECEIPT_SCHEMA)
+        self.assertEqual(contract["sharedSourceMutation"], "forbidden")
+        self.assertEqual(contract["secretAccess"], "forbidden")
 
     def test_reciprocal_network_policy_is_additive_and_does_not_adopt_workbench_policy(self):
         policy = POLICY.expected_workbench_ingress_network_policy()
@@ -302,11 +355,24 @@ class StaticPolicyTests(unittest.TestCase):
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": value["productPins"]["imageManifestDigest"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256": value["productPins"]["migration"]["sha256"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_DATABASE_SCHEMA_SHA256": value["productPins"]["databaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_MIGRATION_SHA256": value["productPins"]["topicTracerMigration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_TRACER_DATABASE_SCHEMA_SHA256": value["productPins"]["topicTracerDatabaseSchemaSha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID": value["runtime"]["topicPolicy"]["municipalityId"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC": value["runtime"]["topicPolicy"]["sourceConversationTopic"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION": value["runtime"]["topicPolicy"]["policyVersion"],
         }
         for name, expected in literal_pins.items():
             self.assertEqual(env[name], {"name": name, "value": expected})
             self.assertNotIn("valueFrom", env[name])
         self.assertNotIn("activationEvidence", resources["runtimePin"])
+        self.assertEqual(
+            resources["runtimePin"],
+            POLICY.expected_runtime_pin(value),
+        )
+        self.assertEqual(
+            resources["runtimePin"]["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v3",
+        )
 
 
 if __name__ == "__main__":

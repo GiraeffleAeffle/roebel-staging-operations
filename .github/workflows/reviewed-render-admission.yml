@@ -50,7 +50,7 @@ jobs:
       - name: Verify pull request with protected base policy
         if: github.event_name == 'pull_request_target'
         run: |
-          python3 -m unittest -v base/scripts/test_staging_participant_gateway_policy.py base/scripts/test_verify_reviewed_render.py base/tests/test_stadtstack_case_runtime_contract.py base/tests/test_stadtstack-case-recovery-composition-contract.py base/tests/test_stadtstack_case_image_resource_inventory_contract.py
+          python3 -m unittest -v base/scripts/test_staging_participant_gateway_policy.py base/scripts/test_staging_participant_flux_bootstrap.py base/scripts/test_activate_staging_participant_gateway.py base/scripts/test_verify_reviewed_render.py base/tests/test_stadtstack_case_runtime_contract.py base/tests/test_stadtstack-case-recovery-composition-contract.py base/tests/test_stadtstack_case_image_resource_inventory_contract.py
           python3 base/scripts/verify-reviewed-render.py --root candidate --base-root base
           python3 base/scripts/verify-stadtstack-case-recovery-composition-contract.py --root candidate
           python3 base/scripts/verify-stadtstack-case-image-resource-inventory-contract.py --root candidate
@@ -67,7 +67,7 @@ jobs:
       - name: Verify protected main
         if: github.event_name == 'push'
         run: |
-          python3 -m unittest -v candidate/scripts/test_staging_participant_gateway_policy.py candidate/scripts/test_verify_reviewed_render.py candidate/tests/test_stadtstack_case_runtime_contract.py candidate/tests/test_stadtstack-case-recovery-composition-contract.py candidate/tests/test_stadtstack_case_image_resource_inventory_contract.py
+          python3 -m unittest -v candidate/scripts/test_staging_participant_gateway_policy.py candidate/scripts/test_staging_participant_flux_bootstrap.py candidate/scripts/test_activate_staging_participant_gateway.py candidate/scripts/test_verify_reviewed_render.py candidate/tests/test_stadtstack_case_runtime_contract.py candidate/tests/test_stadtstack-case-recovery-composition-contract.py candidate/tests/test_stadtstack_case_image_resource_inventory_contract.py
           python3 candidate/scripts/verify-reviewed-render.py --root candidate
           python3 candidate/scripts/verify-stadtstack-case-recovery-composition-contract.py --root candidate
           python3 candidate/scripts/verify-stadtstack-case-image-resource-inventory-contract.py --root candidate

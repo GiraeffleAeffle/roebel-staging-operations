@@ -139,6 +139,7 @@ EXPECTED_FILES = {
     ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
     ".github/workflows/staging-participant-gateway-activation.yml",
+    ".github/workflows/staging-participant-flux-bootstrap.yml",
     ".gitignore",
     "LICENSE",
     "README.md",
@@ -149,9 +150,12 @@ EXPECTED_FILES = {
     "policy/staging-participant-gateway-activation-policy.json",
     "scripts/render-release-set-promotion.py",
     "scripts/activate-staging-participant-gateway.py",
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
     "scripts/test_automatic_promotion_workflow.py",
     "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
     "scripts/test_staging_participant_gateway_policy.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
@@ -595,7 +599,16 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
             "activationReady": participant_policy["activationReady"],
+            "activationRequiresDormantFluxBootstrapReceipt": True,
             "component": "staging-participant-gateway",
+            "dormantFluxBootstrap": {
+                "exactObjectCount": len(PARTICIPANT_POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER),
+                "initialState": "all-eight-exact-names-absent",
+                "runner": "scripts/bootstrap-staging-participant-flux.py",
+                "receiptSchemaVersion": PARTICIPANT_POLICY.DORMANT_BOOTSTRAP_RECEIPT_SCHEMA,
+                "successState": "all-eight-exact-uids-present-both-kustomizations-suspended",
+                "workflow": ".github/workflows/staging-participant-flux-bootstrap.yml",
+            },
             "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
             "methodPathMatrix": {
                 "GET": [PARTICIPANT_POLICY.ROUTES[0]],
@@ -605,7 +618,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "normalReleaseSetPromotionMayChange": False,
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v2",
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
             "singleReplicaRequired": True,
             "trustedLiveFacts": "protected-local-runner-out-of-band-only",
             "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
@@ -2931,16 +2944,46 @@ def verify_participant_gateway_secret_materialization(value: Any, label: str) ->
     return materialization
 
 
-def verify_participant_gateway_database_preflight(value: Any, label: str) -> dict[str, Any]:
+def verify_participant_gateway_database_preflight(
+    value: Any,
+    runtime_pin: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
     preflight = closed(
         value,
-        {"databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "observedAt", "validUntil", "maxAgeSeconds", "apiOutcome", "receiptCanonicalSha256"},
+        {
+            "databaseProject",
+            "environment",
+            "vaultArm",
+            "migrationSha256",
+            "schemaSha256",
+            "topicTracerMigrationSha256",
+            "topicTracerDatabaseSchemaSha256",
+            "observedAt",
+            "validUntil",
+            "maxAgeSeconds",
+            "apiOutcome",
+            "receiptCanonicalSha256",
+        },
         label,
     )
     require(isinstance(preflight["databaseProject"], str) and re.fullmatch(r"[a-z0-9]{20}", preflight["databaseProject"]), f"{label} database project invalid")
     require(preflight["environment"] == "staging" and preflight["vaultArm"] == "roebel_staging_participant_environment_arm=staging-only", f"{label} staging/Vault binding invalid")
-    for key in ("migrationSha256", "schemaSha256"):
-        require(isinstance(preflight[key], str) and SHA256.fullmatch(preflight[key]), f"{label} {key} invalid")
+    require(
+        {
+            "migrationSha256": preflight["migrationSha256"],
+            "schemaSha256": preflight["schemaSha256"],
+            "topicTracerMigrationSha256": preflight["topicTracerMigrationSha256"],
+            "topicTracerDatabaseSchemaSha256": preflight["topicTracerDatabaseSchemaSha256"],
+        }
+        == {
+            "migrationSha256": runtime_pin["migrationSha256"],
+            "schemaSha256": runtime_pin["databaseSchemaSha256"],
+            "topicTracerMigrationSha256": runtime_pin["topicTracerMigrationSha256"],
+            "topicTracerDatabaseSchemaSha256": runtime_pin["topicTracerDatabaseSchemaSha256"],
+        },
+        f"{label} pinned schema contract drift",
+    )
     observed = utc_timestamp(preflight["observedAt"], f"{label} observedAt")
     valid_until = utc_timestamp(preflight["validUntil"], f"{label} validUntil")
     require(preflight["maxAgeSeconds"] == 300 and 0 < duration_seconds(observed, valid_until) <= 300, f"{label} freshness invalid")
@@ -3155,7 +3198,11 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
     application = verify_participant_gateway_application_bootstrap(evidence["applicationBootstrap"], runtime_pin)
     ingress = verify_participant_gateway_ingress_cas(evidence["ingressCas"], rollback, "participant gateway Ingress CAS")
     secrets = verify_participant_gateway_secret_materialization(evidence["secretMaterialization"], "participant gateway Secret materialization")
-    database = verify_participant_gateway_database_preflight(evidence["databaseVaultPreflight"], "participant gateway database/Vault preflight")
+    database = verify_participant_gateway_database_preflight(
+        evidence["databaseVaultPreflight"],
+        runtime_pin,
+        "participant gateway database/Vault preflight",
+    )
     chain = verify_participant_gateway_gnosis_chain(evidence["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway Gnosis chain check")
     initial_dns = closed(evidence["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway DNS/TLS evidence")
     initial_dns = {
@@ -3190,7 +3237,11 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
     require(recheck["applicationStates"] == application["postconditions"], "participant gateway activation application ownership drift")
     recheck_ingress = verify_participant_gateway_ingress_cas(recheck["ingressCas"], rollback, "participant gateway activation Ingress CAS")
     recheck_secrets = verify_participant_gateway_secret_materialization(recheck["secretMaterialization"], "participant gateway activation Secret materialization")
-    recheck_database = verify_participant_gateway_database_preflight(recheck["databaseVaultPreflight"], "participant gateway activation database/Vault preflight")
+    recheck_database = verify_participant_gateway_database_preflight(
+        recheck["databaseVaultPreflight"],
+        runtime_pin,
+        "participant gateway activation database/Vault preflight",
+    )
     recheck_chain = verify_participant_gateway_gnosis_chain(recheck["gnosisChainCheck"], egress["gnosis"]["httpsOrigin"], "participant gateway activation Gnosis chain check")
     recheck_dns_value = closed(recheck["dnsTlsEvidence"], {"gnosis", "supabase"}, "participant gateway activation DNS/TLS recheck")
     for name in ("gnosis", "supabase"):
@@ -3212,8 +3263,32 @@ def _legacy_verify_participant_gateway_activation_evidence(value: Any, runtime_p
         )
     covers_checked(recheck_database["observedAt"], recheck_database["validUntil"], "participant gateway activation database/Vault preflight")
     require(
-        {key: recheck_database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")}
-        == {key: database[key] for key in ("databaseProject", "environment", "vaultArm", "migrationSha256", "schemaSha256", "apiOutcome")},
+        {
+            key: recheck_database[key]
+            for key in (
+                "databaseProject",
+                "environment",
+                "vaultArm",
+                "migrationSha256",
+                "schemaSha256",
+                "topicTracerMigrationSha256",
+                "topicTracerDatabaseSchemaSha256",
+                "apiOutcome",
+            )
+        }
+        == {
+            key: database[key]
+            for key in (
+                "databaseProject",
+                "environment",
+                "vaultArm",
+                "migrationSha256",
+                "schemaSha256",
+                "topicTracerMigrationSha256",
+                "topicTracerDatabaseSchemaSha256",
+                "apiOutcome",
+            )
+        },
         "participant gateway activation database/Vault binding drift",
     )
     covers_checked(recheck_chain["observedAt"], recheck_chain["validUntil"], "participant gateway activation Gnosis chain check")
