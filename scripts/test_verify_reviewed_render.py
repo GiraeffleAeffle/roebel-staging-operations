@@ -40,11 +40,136 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = None
 
     def repository_shape(self, root: Path) -> str:
+        participant = (root / VERIFIER.PARTICIPANT_GATEWAY_ROOT).is_dir()
         signed_nostr = root / "reviewed-render/roebel-staging/signed-nostr"
         if signed_nostr.is_dir():
-            return "signed-nostr"
+            return "signed-nostr-participant-gateway" if participant else "signed-nostr"
         future = root / "reviewed-render/roebel-staging/reviewed-public-knowledge"
-        return "reviewed-public-knowledge" if future.is_dir() else "current"
+        if future.is_dir():
+            return (
+                "reviewed-public-knowledge-participant-gateway"
+                if participant
+                else "reviewed-public-knowledge"
+            )
+        return "current"
+
+    def current_boundary_receipt(
+        self,
+        web_network_policy: dict[str, object],
+        web_ingress: dict[str, object],
+    ) -> dict[str, object]:
+        """Build the exact legacy, non-participant boundary fixture."""
+        return {
+            "authority": "none",
+            "boundary": {
+                "ingress": {
+                    "allowedMethods": ["GET", "HEAD", "POST"],
+                    "exactPostPath": "/api/chat/mecky",
+                    "otherApiPaths": "404_except_public_feed_notifications_and_exact_mecky_path",
+                    "otherMethods": "405",
+                    "otherPostPaths": "405",
+                    "resource": {
+                        "kind": "Ingress",
+                        "name": "roebel-web-presentation",
+                        "namespace": "stadtstack-roebel-web-preview",
+                    },
+                },
+                "webEgress": {
+                    "destinationNamespace": "stadtstack-roebel-staging-lab",
+                    "destinationPodLabels": {
+                        "app.kubernetes.io/component": "public-mecky",
+                        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                    },
+                    "port": 18084,
+                    "protocol": "TCP",
+                    "resource": {
+                        "kind": "NetworkPolicy",
+                        "name": "roebel-web-presentation",
+                        "namespace": "stadtstack-roebel-web-preview",
+                    },
+                },
+            },
+            "effects": {
+                "civicMutation": False,
+                "clusterMutation": False,
+                "secretRead": False,
+                "secretWrite": False,
+            },
+            "objects": [
+                {
+                    "kind": "NetworkPolicy",
+                    "name": "roebel-web-presentation",
+                    "namespace": "stadtstack-roebel-web-preview",
+                    "sha256": VERIFIER.digest(web_network_policy),
+                },
+                {
+                    "kind": "Ingress",
+                    "name": "roebel-web-presentation",
+                    "namespace": "stadtstack-roebel-web-preview",
+                    "sha256": VERIFIER.digest(web_ingress),
+                },
+            ],
+            "rbacBootstrap": {
+                "createAllowed": False,
+                "deleteAllowed": False,
+                "listAllowed": False,
+                "required": True,
+                "roleNamespace": "stadtstack-roebel-web-preview",
+                "serviceAccount": {
+                    "name": "roebel-web-reconciler",
+                    "namespace": "flux-roebel-staging",
+                },
+                "watchAllowed": False,
+                "rules": [
+                    {
+                        "apiGroups": ["networking.k8s.io"],
+                        "resourceNames": ["roebel-web-presentation"],
+                        "resources": ["networkpolicies"],
+                        "verbs": ["get", "patch", "update"],
+                    },
+                    {
+                        "apiGroups": ["networking.k8s.io"],
+                        "resourceNames": ["roebel-web-presentation"],
+                        "resources": ["ingresses"],
+                        "verbs": ["get", "patch", "update"],
+                    },
+                ],
+                "liveMutationPerformed": False,
+            },
+            "schemaVersion": "roebel_staging_network_boundary_bootstrap_v1",
+            "status": "local_candidate_ready_for_one_time_policy_bootstrap",
+        }
+
+    def refresh_current_integrity(self, destination: Path) -> None:
+        """Restore the exact legacy boundary and checksum after fixture normalization."""
+        render = destination / "reviewed-render/roebel-staging"
+        web_ingress = VERIFIER.expected_web_ingress(False, False)
+        (render / "web/ingress.json").write_text(
+            json.dumps(web_ingress, indent=2) + "\n",
+        )
+        web_network_policy = json.loads((render / "web/networkpolicy.json").read_text())
+        boundary = self.current_boundary_receipt(web_network_policy, web_ingress)
+        (render / "network-boundary-migration.json").write_text(
+            json.dumps(boundary, indent=2) + "\n",
+        )
+
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(
+            {
+                "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+                "objects": [
+                    json.loads((render / "public-mecky/deployment.json").read_text()),
+                    json.loads((render / "public-mecky/service.json").read_text()),
+                    json.loads((render / "public-mecky/networkpolicy.json").read_text()),
+                    json.loads((render / "web/deployment.json").read_text()),
+                    web_network_policy,
+                    web_ingress,
+                ],
+            }
+        )
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(boundary)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
     def normalize_current_seed(self, destination: Path) -> None:
         """Make mutation fixtures current-shaped even when ROOT is future-shaped."""
@@ -92,23 +217,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             indent=2,
         ) + "\n")
 
-        integrity_path = render / "integrity.json"
-        integrity = json.loads(integrity_path.read_text())
-        integrity["desiredRenderSha256"] = VERIFIER.digest(
-            {
-                "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
-                "objects": [
-                    public,
-                    json.loads((render / "public-mecky/service.json").read_text()),
-                    json.loads((render / "public-mecky/networkpolicy.json").read_text()),
-                    json.loads((render / "web/deployment.json").read_text()),
-                    json.loads((render / "web/networkpolicy.json").read_text()),
-                    json.loads((render / "web/ingress.json").read_text()),
-                ],
-            }
-        )
-        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
         shutil.rmtree(future)
+        self.refresh_current_integrity(destination)
 
     def candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         temp = tempfile.TemporaryDirectory()
@@ -116,7 +226,16 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         shutil.copytree(ROOT, destination, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
         self.normalize_current_seed(destination)
         self.normalize_inert_participant_seed(destination)
+        self.normalize_no_participant_gateway_seed(destination)
         return temp, destination
+
+    def normalize_no_participant_gateway_seed(self, destination: Path) -> None:
+        """Remove only the closed participant subtree from copied mutation fixtures."""
+        participant = destination / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+        if not participant.is_dir():
+            return
+        shutil.rmtree(participant)
+        self.refresh_current_integrity(destination)
 
     def normalize_inert_participant_seed(self, destination: Path) -> None:
         """Keep transition fixtures anchored to the immutable inert predecessor."""
@@ -961,10 +1080,19 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def test_participant_gateway_policy_reserves_a_closed_composable_subtree(self) -> None:
         self.assertEqual(len(VERIFIER.PARTICIPANT_GATEWAY_FILES), 9)
-        self.assertNotIn(
-            "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
-            VERIFIER.repository_files(ROOT),
+        committed = VERIFIER.PARTICIPANT_GATEWAY_FILES & VERIFIER.repository_files(ROOT)
+        self.assertTrue(
+            not committed or committed == VERIFIER.PARTICIPANT_GATEWAY_FILES,
+            "participant gateway subtree must be entirely absent or entirely committed",
         )
+        if committed:
+            self.assertIn(
+                self.repository_shape(ROOT),
+                {
+                    "reviewed-public-knowledge-participant-gateway",
+                    "signed-nostr-participant-gateway",
+                },
+            )
         self.assertTrue(VERIFIER.FUTURE_EXPECTED_FILES < VERIFIER.PARTICIPANT_GATEWAY_EXPECTED_FILES)
         self.assertTrue(
             VERIFIER.SIGNED_NOSTR_EXPECTED_FILES
