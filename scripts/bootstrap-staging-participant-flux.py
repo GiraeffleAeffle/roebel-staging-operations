@@ -355,6 +355,7 @@ class KubernetesAdapter:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=self.activation.kubernetes_subprocess_environment_v4(),
         )
         selector = selectors.DefaultSelector()
         try:

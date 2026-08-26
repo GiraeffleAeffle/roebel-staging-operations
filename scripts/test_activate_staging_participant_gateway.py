@@ -68,6 +68,8 @@ def valid_success_facts(value):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
     sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
     facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
+    cluster = {"apiOrigin": value["clusterIdentity"]["apiOrigin"], "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"], "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"], "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"]}
+    facts["clusterBinding"] = {name: copy.deepcopy(cluster) for name in ("initial", "beforeMutation", "beforeIngress", "beforeFluxUnsuspend", "beforeSuccess")}
     facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"], "verificationLevel": "anonymous-registry-manifest-digest-only", "cryptographicPublicationProvenanceVerified": False}
     facts["database"] = valid_database_status(value)
     facts["operationReservation"] = {"operationNonce": nonce, "absencePreflight": {"status": "all-six-exact-target-names-absent", "targets": [{"absent": True}] * 6}}
@@ -262,10 +264,12 @@ class ExecutorTests(unittest.TestCase):
 
     def test_kubeconfig_snapshot_is_single_flattened_0600_file_and_rejects_url_tricks(self):
         pem = b"-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"
-        def flattened(server):
+        def flattened(server, proxy=None):
+            cluster = {"server": server, "certificate-authority-data": base64.b64encode(pem).decode()}
+            if proxy is not None: cluster["proxy-url"] = proxy
             return json.dumps({
                 "apiVersion": "v1", "kind": "Config", "current-context": "ctx",
-                "clusters": [{"name": "cluster", "cluster": {"server": server, "certificate-authority-data": base64.b64encode(pem).decode()}}],
+                "clusters": [{"name": "cluster", "cluster": cluster}],
                 "contexts": [{"name": "ctx", "context": {"cluster": "cluster", "user": "user"}}],
                 "users": [{"name": "user", "user": {"token": "secret-never-receipted"}}],
             })
@@ -278,14 +282,43 @@ class ExecutorTests(unittest.TestCase):
             snapshot = MODULE.snapshot_kubeconfig_v4(str(original), runner)
             try:
                 self.assertEqual(snapshot.api_origin, "https://api.example.test:6443")
+                self.assertIsNone(snapshot.connect_proxy)
                 self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o600)
                 self.assertEqual(len(runner.calls), 1)
                 self.assertIn("--flatten", runner.calls[0]); self.assertIn("--raw", runner.calls[0])
             finally: snapshot.close()
             self.assertFalse(snapshot.path.exists())
+            proxy_password = "a" * 64
+            proxy_url = f"http://stadtstack-participant:{proxy_password}@127.0.0.1:16443"
+            proxied = MODULE.snapshot_kubeconfig_v4(
+                str(original),
+                Flatten(flattened("https://api.example.test:6443", proxy_url)),
+            )
+            try:
+                self.assertEqual(proxied.api_origin, "https://api.example.test:6443")
+                self.assertEqual(proxied.connect_proxy.host, "127.0.0.1")
+                self.assertEqual(proxied.connect_proxy.port, 16443)
+                self.assertEqual(proxied.connect_proxy.origin, proxy_url)
+                stored = json.loads(proxied.path.read_text())
+                self.assertEqual(stored["clusters"][0]["cluster"]["proxy-url"], proxy_url)
+            finally: proxied.close()
             for bad in ("https://user@api.example.test:6443", "https://api.example.test:6443/path", "https://api.example.test:6443?x=1", "https://api.example.test:6443#x"):
                 with self.assertRaisesRegex(MODULE.ActivationError, "HTTPS origin"):
                     MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened(bad)))
+            for bad_proxy in (
+                "http://127.0.0.1:16443", "https://127.0.0.1:16443", "http://localhost:16443", "http://127.0.0.2:16443",
+                "http://[::1]:16443", "http://127.0.0.1", "http://127.0.0.1:0",
+                "http://user@127.0.0.1:16443", "http://127.0.0.1:16443/",
+                "http://127.0.0.1:16443?x=1", "http://127.0.0.1:16443#x",
+                f"http://stadtstack-participant:{'b' * 63}@127.0.0.1:16443",
+                f"http://wrong-user:{'b' * 64}@127.0.0.1:16443",
+                123,
+            ):
+                with self.subTest(proxy=bad_proxy), self.assertRaisesRegex(MODULE.ActivationError, "loopback HTTP CONNECT proxy"):
+                    MODULE.snapshot_kubeconfig_v4(
+                        str(original),
+                        Flatten(flattened("https://api.example.test:6443", bad_proxy)),
+                    )
 
             failed_snapshot = Path(directory) / "failed-snapshot"
             def make_failed_snapshot(*_args, **_kwargs):
@@ -295,6 +328,99 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "injected fsync failure"):
                     MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened("https://api.example.test:6443")))
             self.assertFalse(failed_snapshot.exists(), "failed credential snapshot must be removed")
+
+    def test_api_spki_probe_uses_exact_connect_authority_then_end_to_end_tls(self):
+        class Connection:
+            def __init__(self, response): self.response = bytearray(response); self.sent = b""; self.closed = False
+            def sendall(self, value): self.sent += value
+            def recv(self, size):
+                self.asserted_size = size
+                if not self.response: return b""
+                value = bytes(self.response[:1]); del self.response[:1]; return value
+            def close(self): self.closed = True
+            def __enter__(self): return self
+            def __exit__(self, *_args): self.close(); return False
+        class Secured:
+            def getpeercert(self, binary_form=False):
+                self.binary_form = binary_form; return b"certificate-der"
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+        class Context:
+            def __init__(self): self.wrapped = []
+            def wrap_socket(self, connection, server_hostname):
+                self.wrapped.append((connection, server_hostname)); return Secured()
+        connection = Connection(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: wireproxy\r\n\r\n")
+        context = Context()
+        snapshot = Mock(
+            hostname="10.255.240.11", port=6443, tls_server_name="kubernetes",
+            ca_pem=b"-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n",
+            connect_proxy=MODULE.LoopbackConnectProxy(
+                f"http://stadtstack-participant:{'c' * 64}@127.0.0.1:53161",
+                "127.0.0.1", 53161, "stadtstack-participant", "c" * 64,
+            ),
+        )
+        openssl = [
+            subprocess.CompletedProcess([], 0, b"public-key-pem", b""),
+            subprocess.CompletedProcess([], 0, b"public-key-der", b""),
+        ]
+        with patch.object(MODULE.socket, "create_connection", return_value=connection) as connect, patch.object(
+            MODULE.ssl, "create_default_context", return_value=context,
+        ) as create_context, patch.object(MODULE.subprocess, "run", side_effect=openssl):
+            result = MODULE._api_server_spki_v4(snapshot, 3)
+        connect.assert_called_once_with(("127.0.0.1", 53161), timeout=3)
+        proxy_authorization = base64.b64encode(("stadtstack-participant:" + "c" * 64).encode("ascii"))
+        self.assertEqual(
+            connection.sent,
+            b"CONNECT 10.255.240.11:6443 HTTP/1.1\r\nHost: 10.255.240.11:6443\r\n"
+            + b"Proxy-Authorization: Basic " + proxy_authorization + b"\r\n\r\n",
+        )
+        self.assertEqual(context.wrapped, [(connection, "kubernetes")])
+        create_context.assert_called_once_with(cadata=snapshot.ca_pem.decode("ascii"))
+        self.assertEqual(result, MODULE.bytes_digest(b"public-key-der"))
+        self.assertTrue(connection.closed)
+
+    def test_api_connect_proxy_rejects_non_success_incomplete_and_oversized_responses(self):
+        class Connection:
+            def __init__(self, response): self.response = bytearray(response); self.closed = False
+            def sendall(self, _value): pass
+            def recv(self, _size):
+                if not self.response: return b""
+                value = bytes(self.response[:1]); del self.response[:1]; return value
+            def close(self): self.closed = True
+        snapshot = Mock(
+            hostname="10.255.240.11", port=6443,
+            connect_proxy=MODULE.LoopbackConnectProxy(
+                f"http://stadtstack-participant:{'d' * 64}@127.0.0.1:53161",
+                "127.0.0.1", 53161, "stadtstack-participant", "d" * 64,
+            ),
+        )
+        cases = (
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n",
+            b"HTTP/1.1 301 Moved Permanently\r\n\r\n",
+            b"HTTP/1.1 200 Connection Established\r\n",
+            b"NOT HTTP\r\n\r\n",
+            b"HTTP/1.1 2000 Not A Status\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nMalformed-Header\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nX:" + b"a" * 8192 + b"\r\n\r\n",
+        )
+        for response in cases:
+            connection = Connection(response)
+            with self.subTest(response=response[:40]), patch.object(MODULE.socket, "create_connection", return_value=connection), self.assertRaises(MODULE.ActivationError):
+                MODULE._api_tcp_transport_v4(snapshot, 3)
+            self.assertTrue(connection.closed)
+
+    def test_kubectl_subprocesses_ignore_ambient_proxy_environment(self):
+        hostile = {
+            "PATH": "/usr/bin", "HTTPS_PROXY": "http://attacker.invalid:8080",
+            "http_proxy": "http://attacker.invalid:8080", "ALL_PROXY": "socks5://attacker.invalid:1080",
+            "no_proxy": "*", "SAFE_MARKER": "retained",
+        }
+        completed = subprocess.CompletedProcess([], 0, "ok", "")
+        with patch.dict(MODULE.os.environ, hostile, clear=True), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+            result = MODULE.Runner().run(["kubectl", "version"])
+        self.assertEqual(result.out, "ok")
+        child_env = run.call_args.kwargs["env"]
+        self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
 
     def test_raw_delete_proxy_exposes_only_the_exact_escaped_resource_path(self):
         class Response:
@@ -322,6 +448,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("--address=127.0.0.1", command)
         self.assertIn("--accept-hosts=^127\\.0\\.0\\.1$", command)
         self.assertIn("--accept-paths=^" + resource_path.replace(".", r"\.") + "$", command)
+        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in popen.call_args.kwargs["env"]})
         self.assertEqual(opener.request.full_url, "http://127.0.0.1:41777" + resource_path)
         self.assertEqual(opener.request.method, "DELETE"); self.assertTrue(process.terminated); self.assertTrue(process.stdout.closed)
         with patch.object(MODULE.subprocess, "Popen") as forbidden:
@@ -748,6 +875,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(receipt["loopbackOnly"]); self.assertFalse(receipt["publicIngressUsed"]); self.assertFalse(receipt["serviceProxyUsed"])
         command = popen.call_args.args[0]
         self.assertIn("--address=127.0.0.1", command); self.assertIn("pod/pod-a", command); self.assertIn(":18085", command)
+        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in popen.call_args.kwargs["env"]})
         self.assertTrue(popen.call_args.kwargs["start_new_session"]); self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
 
     def test_v4_manual_policy_named_ports_and_ranges_are_conflicts(self):

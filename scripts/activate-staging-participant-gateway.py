@@ -32,9 +32,11 @@ POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
 BOOTSTRAP_RUNNER_PATH = "scripts/bootstrap-staging-participant-flux.py"
+LIVE_WRAPPER_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
 BOOTSTRAP_PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
+    LIVE_WRAPPER_PATH,
     BOOTSTRAP_MODULE_PATH,
     POLICY_MODULE_PATH,
     POLICY_PATH,
@@ -160,9 +162,19 @@ def protected_checkout(rev: str) -> dict[str, str]:
 
 @dataclass
 class Result: code: int = 0; out: str = ""; err: str = ""
+def kubernetes_subprocess_environment_v4() -> dict[str, str]:
+    """Keep caller state except ambient proxy routing for Kubernetes clients.
+
+    The only permitted Kubernetes proxy is the validated ``proxy-url`` inside
+    the snapshotted kubeconfig.  Inherited proxy variables would otherwise add
+    a second, unreviewed transport path.
+    """
+    proxy_names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    return {key: value for key, value in os.environ.items() if key.lower() not in proxy_names}
 class Runner:
     def run(self, args: list[str], *, input_text: str | None = None, timeout: int | float = 10) -> Result:
-        try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout)
+        environment = kubernetes_subprocess_environment_v4() if args and args[0] == "kubectl" else None
+        try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout, env=environment)
         except subprocess.TimeoutExpired as exc: return Result(124, "", f"timeout after {timeout}s: {exc}")
         return Result(p.returncode, p.stdout, p.stderr)
 def checked(r: Runner, args: list[str], label: str, input_text: str | None = None, timeout: int | float | None = None) -> str:
@@ -297,6 +309,14 @@ class ReceiptSink:
             try: tmp.unlink()
             except FileNotFoundError: pass
 
+@dataclass(frozen=True)
+class LoopbackConnectProxy:
+    origin: str
+    host: str
+    port: int
+    username: str
+    password: str
+
 @dataclass
 class KubeconfigSnapshot:
     path: Path
@@ -307,6 +327,7 @@ class KubeconfigSnapshot:
     tls_server_name: str
     ca_pem: bytes
     ca_sha256: str
+    connect_proxy: LoopbackConnectProxy | None
 
     def close(self) -> None:
         try: self.path.unlink()
@@ -328,6 +349,26 @@ def _api_origin(server: str) -> tuple[str, str, int]:
     host = parsed.hostname.lower(); bracketed = f"[{host}]" if ":" in host else host
     return f"https://{bracketed}" + ("" if port == 443 else f":{port}"), host, port
 
+def _loopback_connect_proxy_v4(value: Any) -> LoopbackConnectProxy:
+    """Validate the sole rootless transport adapter accepted by the runner."""
+    require(isinstance(value, str) and value.isascii(), "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    try: parsed = urllib.parse.urlsplit(value)
+    except ValueError as exc: raise ActivationError("Kubernetes proxy must be an exact loopback HTTP CONNECT proxy") from exc
+    require(
+        parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+        and parsed.username == "stadtstack-participant"
+        and isinstance(parsed.password, str) and re.fullmatch(r"[0-9a-f]{64}", parsed.password) is not None
+        and parsed.path == "" and parsed.query == "" and parsed.fragment == ""
+        and parsed.netloc.startswith("stadtstack-participant:"),
+        "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy",
+    )
+    try: port = parsed.port
+    except ValueError as exc: raise ActivationError("Kubernetes proxy must be an exact loopback HTTP CONNECT proxy") from exc
+    require(isinstance(port, int) and 1024 <= port <= 65535, "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    origin = f"http://stadtstack-participant:{parsed.password}@127.0.0.1:{port}"
+    require(value == origin, "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    return LoopbackConnectProxy(origin, "127.0.0.1", port, "stadtstack-participant", parsed.password)
+
 def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
     """Flatten one explicit kubeconfig into an owned 0600 one-use snapshot."""
     source = Path(explicit).absolute(); info = os.lstat(source)
@@ -340,15 +381,16 @@ def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
     require(all(isinstance(value, list) and len(value) == 1 for value in (clusters, contexts, users)), "flattened kubeconfig must contain exactly one cluster, context, and user")
     require(config.get("current-context") == contexts[0].get("name"), "flattened kubeconfig current context drift")
     cluster = clusters[0].get("cluster", {}); require(isinstance(cluster, dict), "flattened kubeconfig cluster absent")
-    require(not cluster.get("insecure-skip-tls-verify") and "proxy-url" not in cluster, "insecure or proxied Kubernetes API configuration forbidden")
+    require(not cluster.get("insecure-skip-tls-verify"), "insecure Kubernetes API configuration forbidden")
+    connect_proxy = _loopback_connect_proxy_v4(cluster["proxy-url"]) if "proxy-url" in cluster else None
     origin, hostname, port = _api_origin(cluster.get("server", ""))
     encoded_ca = cluster.get("certificate-authority-data")
     require(isinstance(encoded_ca, str) and encoded_ca and "certificate-authority" not in cluster, "flattened kubeconfig must embed its CA")
     try: ca_pem = base64.b64decode(encoded_ca, validate=True)
     except (ValueError, TypeError) as exc: raise ActivationError("flattened kubeconfig CA data invalid") from exc
     require(b"BEGIN CERTIFICATE" in ca_pem and len(ca_pem) <= 1024 * 1024, "flattened kubeconfig CA certificate invalid")
-    tls_name = cluster.get("tls-server-name", hostname)
-    require(isinstance(tls_name, str) and tls_name and not any(ch.isspace() for ch in tls_name), "Kubernetes TLS server name invalid")
+    require("tls-server-name" not in cluster, "Kubernetes TLS server name override forbidden")
+    tls_name = hostname
     user = users[0].get("user", {}); require(isinstance(user, dict) and user, "flattened kubeconfig user absent")
     forbidden_user_fields = {"exec", "auth-provider", "client-certificate", "client-key", "tokenFile"}
     require(not (forbidden_user_fields & set(user)), "flattened kubeconfig still depends on external credential execution or files")
@@ -376,11 +418,46 @@ def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
         except OSError as cleanup_error:
             raise ActivationError("failed to remove incomplete kubeconfig snapshot") from cleanup_error
         raise
-    return KubeconfigSnapshot(path, directory, origin, hostname, port, tls_name, ca_pem, bytes_digest(ca_pem))
+    return KubeconfigSnapshot(path, directory, origin, hostname, port, tls_name, ca_pem, bytes_digest(ca_pem), connect_proxy)
+
+def _api_tcp_transport_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> socket.socket:
+    """Open the protected API stream directly or through the local adapter."""
+    target = (snapshot.hostname, snapshot.port)
+    if snapshot.connect_proxy is None:
+        return socket.create_connection(target, timeout=timeout)
+    proxy = snapshot.connect_proxy
+    connection = socket.create_connection((proxy.host, proxy.port), timeout=timeout)
+    try:
+        host = f"[{snapshot.hostname}]" if ":" in snapshot.hostname else snapshot.hostname
+        authority = f"{host}:{snapshot.port}"
+        authorization = base64.b64encode(f"{proxy.username}:{proxy.password}".encode("ascii")).decode("ascii")
+        connection.sendall(
+            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+            f"Proxy-Authorization: Basic {authorization}\r\n\r\n".encode("ascii")
+        )
+        header = bytearray()
+        while not header.endswith(b"\r\n\r\n"):
+            chunk = connection.recv(1)
+            require(chunk != b"", "Kubernetes loopback CONNECT proxy response incomplete")
+            header.extend(chunk)
+            require(len(header) <= 8192, "Kubernetes loopback CONNECT proxy response too large")
+        lines = bytes(header[:-4]).split(b"\r\n")
+        require(
+            bool(lines) and re.fullmatch(rb"HTTP/1\.[01] 200(?: [\x20-\x7e]*)?", lines[0]) is not None,
+            "Kubernetes loopback CONNECT proxy refused or malformed the tunnel",
+        )
+        require(
+            all(re.fullmatch(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+:[\x20-\x7e]*", line) is not None for line in lines[1:]),
+            "Kubernetes loopback CONNECT proxy headers malformed",
+        )
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 def _api_server_spki_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> str:
     context = ssl.create_default_context(cadata=snapshot.ca_pem.decode("ascii"))
-    with socket.create_connection((snapshot.hostname, snapshot.port), timeout=timeout) as connection:
+    with _api_tcp_transport_v4(snapshot, timeout) as connection:
         with context.wrap_socket(connection, server_hostname=snapshot.tls_server_name) as secured:
             certificate = secured.getpeercert(binary_form=True)
     require(isinstance(certificate, bytes) and certificate, "Kubernetes API TLS certificate absent")
@@ -419,6 +496,7 @@ def raw_delete(kube: str, resource_path: str, payload: str) -> None:
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        env=kubernetes_subprocess_environment_v4(),
     )
     selector = selectors.DefaultSelector()
     try:
@@ -1017,6 +1095,7 @@ def _pod_port_forward_get_v4(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         start_new_session=True,
+        env=kubernetes_subprocess_environment_v4(),
     )
     selector = selectors.DefaultSelector()
     try:
@@ -1606,6 +1685,12 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     secrets_receipt = facts["secretMaterialization"]
     require(set(secrets_receipt) == {"beforeCreate", "beforeIngress", "afterFlux"} and secrets_receipt["beforeCreate"] == secrets_receipt["beforeIngress"] == secrets_receipt["afterFlux"], "trusted Secret recheck receipt incomplete")
     require(set(facts["networkPolicyConflictScan"]) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted policy-union recheck receipt incomplete")
+    cluster_bindings = facts["clusterBinding"]
+    require(
+        set(cluster_bindings) == {"initial", "beforeMutation", "beforeIngress", "beforeFluxUnsuspend", "beforeSuccess"}
+        and all(value == cluster_bindings["initial"] for value in cluster_bindings.values()),
+        "trusted cluster identity recheck sequence drift",
+    )
     require(facts["rollback"] == {"status": "not-required", "finalizersRemovedByRunner": False}, "trusted success rollback receipt drift")
 
 def activate(
@@ -1651,6 +1736,7 @@ def activate(
         secret_before_ingress = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_before_ingress, "before Ingress")
         policy_before_ingress = policy_union_v4(r, snapshot_path, owned)
         partial["database"] = database_status_v4(r, snapshot_path, p, partial["publication"]["runtime"])
+        cluster_before_ingress = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_ingress, "before Ingress")
         uncertain = "gateway.ingress"
         try: ingress = create_v4(r, snapshot_path, uncertain, rendered[uncertain], operation_nonce)
         except CreateConflictError: uncertain = None; raise
@@ -1659,6 +1745,7 @@ def activate(
         created.append(ingress); remove_operation_nonce_v4(r, snapshot_path, ingress, operation_nonce); uncertain = None
         partial["routeMatrix"] = route_matrix_v4(r, p)
         source_before_cas = shared_source_revision_v4(r, snapshot_path, rev)
+        cluster_before_flux = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_flux, "before Flux unsuspend")
         changed = unsuspend_both_v4(r, snapshot_path, p, bootstrap); ready = wait_both_ready_v4(r, snapshot_path, p, bootstrap, rev)
         source_after_ready = shared_source_revision_v4(r, snapshot_path, rev)
         secret_after_flux = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_after_flux, "after Flux")
@@ -1667,7 +1754,7 @@ def activate(
         preservation = verify_preservation_v4(r, snapshot_path, preserved)
         final_cluster = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], final_cluster, "before success")
         valid_until = started + dt.timedelta(seconds=300)
-        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
+        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeIngress": cluster_before_ingress, "beforeFluxUnsuspend": cluster_before_flux, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
         validate_success_facts_v4(facts, p, rev)
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
         success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}

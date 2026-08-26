@@ -717,8 +717,9 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
     def test_protected_cli_and_workflow_accept_no_manifest_evidence_or_cluster_credentials(self) -> None:
         source = (ROOT / "scripts/bootstrap-staging-participant-flux.py").read_text()
         workflow = (ROOT / ".github/workflows/staging-participant-flux-bootstrap.yml").read_text()
-        for forbidden in ("--manifest", "--evidence", "--target", "--allowlist", "--secret"):
+        for forbidden in ("--manifest", "--evidence", "--target", "--allowlist", "--secret", "--proxy"):
             self.assertNotIn(forbidden, source)
+        self.assertIn("env=self.activation.kubernetes_subprocess_environment_v4()", source)
         self.assertIn('modes.add_argument("--dry-run"', source)
         self.assertIn('modes.add_argument("--live"', source)
         self.assertIn('modes.add_argument("--recover"', source)
