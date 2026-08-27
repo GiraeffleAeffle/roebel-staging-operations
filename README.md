@@ -82,6 +82,32 @@ exact reviewed commit once, restore branch enforcement immediately, and wait
 for the protected `main` verification before running the handover. Later
 promotions cannot alter this runner, contract, or baseline render.
 
+### Private live transport for the handover
+
+The one-time handover is not a participant-gateway activation.  The existing
+`scripts/run-staging-participant-gateway-live.py` wrapper has an explicit,
+mutually exclusive `--workbench-baseline-handover` mode for it.  That mode
+binds only the workbench handover wrapper, implementation, verifier, contract,
+baseline render, and reviewed-admission workflow at the exact protected
+revision.  It does not load, bind, bootstrap, activate, or tear down any
+participant-gateway runner.
+
+It reuses the short-lived fixed-target WireGuard transport and temporary
+administrator kubeconfig, but all four binaries are copied and hash-pinned.
+For the path-only frozen workbench `KubernetesAdapter`, the local macOS
+snapshot is additionally `UF_IMMUTABLE` while the handover runs; the inherited
+descriptor and immutable path are checked before execution.  A host without
+that primitive is rejected rather than falling back to a mutable kubectl path.
+
+The operator must provide three distinct private output locations: a fresh
+`--receipt-directory` for this non-overwriting transport-attempt receipt, and
+explicit `--workbench-handover-receipt` plus `--workbench-handover-journal`.
+On a resume, reuse exactly the same handover receipt and journal, choose a new
+receipt directory, and use the same protected revision.  The wrapper never
+retries automatically.  A success receipt proves the original NetworkPolicy
+UID/spec, the exact four Flux UIDs, exact Ready revision/inventory, absence of
+Deployment/Service/Secret/civic-authority effects, and complete local cleanup.
+
 ## Inert Case staging runtime gate
 
 `case-staging-topology/` is a closed-world `runtime_gate_v1` review contract

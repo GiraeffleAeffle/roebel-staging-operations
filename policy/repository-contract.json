@@ -164,6 +164,15 @@
     },
     "handoverRunner": "scripts/handover-staging-workbench-baseline.py",
     "implementation": "scripts/workbench_baseline_handover.py",
+    "liveTransport": {
+      "modeFlag": "--workbench-baseline-handover",
+      "runner": "scripts/run-staging-participant-gateway-live.py",
+      "transportAttemptReceipt": "workbench-baseline-transport-attempt.json",
+      "explicitReceiptAndJournalRequired": true,
+      "automaticRetry": false,
+      "pinnedKubectl": "immutable-owner-only-snapshot-with-inherited-descriptor-proof",
+      "participantRunners": "forbidden"
+    },
     "journal": {
       "schemaVersion": "roebel_staging_workbench_baseline_journal_v1",
       "defaultPath": "<receipt>.journal",
