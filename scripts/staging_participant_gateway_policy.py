@@ -255,7 +255,7 @@ def _static_descriptor() -> dict[str, Any]:
                 "aggregateClaimAllowed": False,
             },
             "timeoutsSeconds": {
-                "kubernetesRequest": 10,
+                "kubernetesRequest": 30,
                 "routeRequest": 10,
                 "routeMatrixTotal": 120,
                 "deploymentRollout": 120,
@@ -909,7 +909,7 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
     )
     _require(
         value["httpBoundary"]["timeoutsSeconds"] == {
-            "kubernetesRequest": 10,
+            "kubernetesRequest": 30,
             "routeRequest": 10,
             "routeMatrixTotal": 120,
             "deploymentRollout": 120,
