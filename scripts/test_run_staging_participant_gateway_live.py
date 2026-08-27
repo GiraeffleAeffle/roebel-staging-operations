@@ -248,6 +248,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         source = inspect.getsource(MODULE.main)
         for check in ("bootstrap.returncode != 0", "teardown_returncode != 0", "activation.returncode != 0"):
             self.assertIn(check, source)
+        failed_cleanup = Mock(pid=4242, cleanup_error="immutable invocation remained")
+        failed_cleanup.poll.return_value = -15
+        failed_cleanup.wait.return_value = -15
+        with patch.object(MODULE, "process_group_gone", return_value=True):
+            self.assertFalse(MODULE.stop_process(failed_cleanup, timeout=0.01))
         self.assertLess(source.index("activation_projection = verify_receipt_with_protected_cli("), source.index("activation_logging_error = best_effort_print_child(activation)"))
         self.assertLess(source.index("bootstrap_projection = verify_receipt_with_protected_cli("), source.index("bootstrap_logging_error = best_effort_print_child(bootstrap)"))
         with patch("builtins.print", side_effect=BrokenPipeError):

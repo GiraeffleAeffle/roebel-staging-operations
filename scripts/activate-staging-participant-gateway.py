@@ -261,6 +261,11 @@ def executable_binding_from_environment(prefix: str) -> ExecutableBinding:
     )
     return ExecutableBinding(path, fd, device, inode, size, expected, owns_fd=False)
 
+def _set_descriptor_flags(fd: int, flags: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    code = libc.fchflags(ctypes.c_int(fd), ctypes.c_uint(flags))
+    require(code == 0, f"descriptor flags update failed: errno {ctypes.get_errno()}")
+
 class VerifiedProcess:
     def __init__(
         self,
@@ -290,17 +295,22 @@ class VerifiedProcess:
         self.cleanup_binding = None
         try:
             info = os.lstat(binding.path)
+            opened = os.fstat(binding.fd)
             if (
                 (info.st_dev, info.st_ino, info.st_size) != (binding.device, binding.inode, binding.size)
-                or not (info.st_flags & stat.UF_IMMUTABLE)
+                or (opened.st_dev, opened.st_ino, opened.st_size) != (binding.device, binding.inode, binding.size)
+                or not (opened.st_flags & stat.UF_IMMUTABLE)
                 or bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) != binding.sha256
             ):
                 raise ActivationError("per-spawn executable path or content changed")
-            os.chflags(binding.path, 0)
+            _set_descriptor_flags(binding.fd, 0)
             binding.path.unlink()
+            parent = os.open(binding.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try: os.fsync(parent)
+            finally: os.close(parent)
         except BaseException as exc:
             self.cleanup_error = str(exc)
-            if self.returncode == 0: self.returncode = 125
+            self.returncode = 125
         finally:
             binding.close()
 
@@ -413,11 +423,15 @@ def _materialize_bound_executable(binding: ExecutableBinding) -> ExecutableBindi
             and observed == binding.sha256,
             "per-spawn executable materialization drift",
         )
+        _set_descriptor_flags(fd, stat.UF_IMMUTABLE)
+        require(os.fstat(fd).st_flags & stat.UF_IMMUTABLE, "per-spawn executable immutable descriptor flag absent")
         parent = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try: os.fsync(parent)
         finally: os.close(parent)
         return ExecutableBinding(destination, fd, info.st_dev, info.st_ino, info.st_size, observed)
     except BaseException:
+        try: _set_descriptor_flags(fd, 0)
+        except BaseException: pass
         os.close(fd)
         try: destination.unlink()
         except FileNotFoundError: pass
@@ -513,13 +527,19 @@ def verified_popen(
                 for inherited_fd, was_inheritable in inherited_states.items():
                     os.set_inheritable(inherited_fd, was_inheritable)
         _verified_text_vnode(spawned_pid, invocation)
+        opened_invocation = os.fstat(invocation.fd)
+        path_invocation = os.lstat(invocation.path)
         require(
-            bytes_digest(os.pread(invocation.fd, invocation.size + 1, 0)) == invocation.sha256,
-            "spawned executable changed before resume",
+            (opened_invocation.st_dev, opened_invocation.st_ino, opened_invocation.st_size)
+            == (invocation.device, invocation.inode, invocation.size)
+            and (path_invocation.st_dev, path_invocation.st_ino, path_invocation.st_size)
+            == (invocation.device, invocation.inode, invocation.size)
+            and opened_invocation.st_flags & stat.UF_IMMUTABLE
+            and bytes_digest(os.pread(invocation.fd, invocation.size + 1, 0)) == invocation.sha256,
+            "spawned executable binding changed before resume",
         )
+        _verified_text_vnode(spawned_pid, invocation)
         for child_fd in child_fds: os.close(child_fd)
-        os.chflags(invocation.path, stat.UF_IMMUTABLE)
-        require(os.lstat(invocation.path).st_flags & stat.UF_IMMUTABLE, "per-spawn executable immutable flag absent")
         child_fds.clear()
         os.kill(spawned_pid, signal.SIGCONT)
         process = VerifiedProcess(
@@ -554,8 +574,8 @@ def verified_popen(
         if actions_ready: libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
         if attributes_ready: libc.posix_spawnattr_destroy(ctypes.byref(attributes))
         if invocation is not None:
-            try: os.chflags(invocation.path, 0)
-            except FileNotFoundError: pass
+            try: _set_descriptor_flags(invocation.fd, 0)
+            except BaseException: pass
             try: invocation.path.unlink()
             except FileNotFoundError: pass
             invocation.close()
@@ -1075,14 +1095,15 @@ def raw_delete(snapshot: KubeconfigSnapshot, resource_path: str, payload: str, t
 
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
     """Bounded cleanup for a subprocess created with ``start_new_session``."""
-    if process.poll() is not None: return
-    try: os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError: return
-    try: process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try: os.killpg(process.pid, signal.SIGKILL)
+    if process.poll() is None:
+        try: os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError: pass
-        process.wait(timeout=5)
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.wait(timeout=5)
+    require(getattr(process, "cleanup_error", None) is None, "verified subprocess materialization cleanup failed")
 
 @dataclass
 class CreatedV4:

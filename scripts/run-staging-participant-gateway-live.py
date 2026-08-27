@@ -422,7 +422,11 @@ def stop_process(process: subprocess.Popen[Any] | None, timeout: float = 5) -> b
     except subprocess.TimeoutExpired: pass
     deadline = time.monotonic() + timeout
     while not process_group_gone(process) and time.monotonic() < deadline: time.sleep(0.05)
-    return process.poll() is not None and process_group_gone(process)
+    return (
+        process.poll() is not None
+        and process_group_gone(process)
+        and getattr(process, "cleanup_error", None) is None
+    )
 
 @dataclass
 class ProcessResult:

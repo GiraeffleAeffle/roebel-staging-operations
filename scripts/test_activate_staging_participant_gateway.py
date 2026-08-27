@@ -485,6 +485,23 @@ class ExecutorTests(unittest.TestCase):
             finally:
                 binding.close()
 
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin immutable-flag contract")
+    def test_verified_process_cleanup_failure_overrides_signal_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path = root / "invocation"; path.write_bytes(b"exact")
+            fd = os.open(path, os.O_RDWR); path.chmod(0o500); info = os.fstat(fd)
+            MODULE._set_descriptor_flags(fd, stat.UF_IMMUTABLE)
+            binding = MODULE.ExecutableBinding(path, fd, info.st_dev, info.st_ino, info.st_size, MODULE.bytes_digest(b"exact"))
+            process = MODULE.VerifiedProcess(4242, ["fixture"], None, None, None, text=False, cleanup_binding=binding)
+            process.returncode = -15
+            MODULE._set_descriptor_flags(fd, 0)
+            moved = root / "moved"; path.rename(moved)
+            path.write_bytes(b"other")
+            process._cleanup_materialization()
+            self.assertEqual(process.returncode, 125)
+            self.assertIsNotNone(process.cleanup_error)
+            moved.unlink()
+
     def test_raw_delete_uses_direct_authenticated_tls_without_loopback_listener(self):
         class Secured:
             def __init__(self): self.sent = b""; self.closed = False
