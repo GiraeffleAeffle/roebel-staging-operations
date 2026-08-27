@@ -165,6 +165,8 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(value["httpBoundary"]["routes"][0]["methods"], ["GET", "OPTIONS"])
         self.assertTrue(all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]))
         self.assertEqual(value["httpBoundary"]["expectations"], list(POLICY.ROUTE_EXPECTATIONS))
+        self.assertEqual(value["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"], 30)
+        self.assertEqual(value["httpBoundary"]["timeoutsSeconds"]["routeRequest"], 10)
         self.assertEqual(len(value["httpBoundary"]["expectations"]), 31)
         for path in POLICY.POST_ROUTES[-2:]:
             self.assertIn(
