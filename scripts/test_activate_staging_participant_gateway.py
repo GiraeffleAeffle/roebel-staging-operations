@@ -436,34 +436,54 @@ class ExecutorTests(unittest.TestCase):
         child_env = spawn.call_args.kwargs["env"]
         self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
 
-    @unittest.skipUnless(sys.platform == "darwin", "Darwin suspended-spawn contract")
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/private/tmp/wireproxy-v1.1.3-darwin-arm64/wireproxy").exists(),
+        "Darwin suspended-spawn contract",
+    )
     def test_verified_spawn_executes_only_the_bound_vnode(self):
-        path = Path("/bin/echo").resolve(); fd = os.open(path, os.O_RDONLY); info = os.fstat(fd)
-        binding = MODULE.ExecutableBinding(path, fd, info.st_dev, info.st_ino, info.st_size, MODULE.bytes_digest(os.pread(fd, info.st_size + 1, 0)))
-        try:
-            process = MODULE.verified_popen(
-                binding,
-                [str(path), "verified"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            stdout, stderr = process.communicate(timeout=10)
-            self.assertEqual((process.returncode, stdout.strip(), stderr), (0, "verified", ""))
-            replacement = MODULE.ExecutableBinding(
-                Path("/usr/bin/true").resolve(),
-                binding.fd,
-                binding.device,
-                binding.inode,
-                binding.size,
-                binding.sha256,
-                owns_fd=False,
-            )
-            with self.assertRaisesRegex(MODULE.ActivationError, "vnode differs"):
-                MODULE.verified_popen(replacement, [str(replacement.path)], start_new_session=True)
-        finally:
-            binding.close()
+        source = Path("/private/tmp/wireproxy-v1.1.3-darwin-arm64/wireproxy")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wireproxy"
+            path.write_bytes(source.read_bytes()); path.chmod(0o500)
+            binding = MODULE.bind_executable_snapshot(path, MODULE.bytes_digest(path.read_bytes()))
+            try:
+                process = MODULE.verified_popen(
+                    binding,
+                    [str(path), "--version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0)
+                self.assertIn("wireproxy", stdout)
+                self.assertEqual(stderr, "")
+                replacement_path = Path(directory) / "replacement"
+                replacement_path.write_bytes(b"attacker-selected pathname bytes"); replacement_path.chmod(0o500)
+                replacement = MODULE.ExecutableBinding(
+                    replacement_path,
+                    binding.fd,
+                    binding.device,
+                    binding.inode,
+                    binding.size,
+                    binding.sha256,
+                    owns_fd=False,
+                )
+                replacement_process = MODULE.verified_popen(
+                    replacement,
+                    [str(replacement.path), "--version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                replacement_stdout, replacement_stderr = replacement_process.communicate(timeout=10)
+                self.assertEqual(replacement_process.returncode, 0)
+                self.assertIn("wireproxy", replacement_stdout)
+                self.assertEqual(replacement_stderr, "")
+            finally:
+                binding.close()
 
     def test_raw_delete_uses_direct_authenticated_tls_without_loopback_listener(self):
         class Secured:

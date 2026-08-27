@@ -271,21 +271,44 @@ class VerifiedProcess:
         stderr: Any,
         *,
         text: bool,
+        cleanup_binding: ExecutableBinding | None = None,
     ):
         self.pid, self.args = pid, args
         self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
         self.text = text
         self.returncode: int | None = None
+        self.cleanup_binding = cleanup_binding
+        self.cleanup_error: str | None = None
 
     @staticmethod
     def _exitcode(status: int) -> int:
         return os.waitstatus_to_exitcode(status)
 
+    def _cleanup_materialization(self) -> None:
+        binding = self.cleanup_binding
+        if binding is None: return
+        self.cleanup_binding = None
+        try:
+            info = os.lstat(binding.path)
+            if (info.st_dev, info.st_ino, info.st_size) != (binding.device, binding.inode, binding.size):
+                raise ActivationError("per-spawn executable path identity changed")
+            binding.path.unlink()
+            parent = os.open(binding.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try: os.fsync(parent)
+            finally: os.close(parent)
+        except BaseException as exc:
+            self.cleanup_error = str(exc)
+            if self.returncode == 0: self.returncode = 125
+        finally:
+            binding.close()
+
     def poll(self) -> int | None:
         if self.returncode is not None: return self.returncode
         try: pid, status = os.waitpid(self.pid, os.WNOHANG)
         except ChildProcessError: return self.returncode
-        if pid == self.pid: self.returncode = self._exitcode(status)
+        if pid == self.pid:
+            self.returncode = self._exitcode(status)
+            self._cleanup_materialization()
         return self.returncode
 
     def wait(self, timeout: float | None = None) -> int:
@@ -364,6 +387,40 @@ def _verified_text_vnode(pid: int, binding: ExecutableBinding) -> None:
 
 VERIFIED_SPAWN_LOCK = threading.Lock()
 
+def _materialize_bound_executable(binding: ExecutableBinding) -> ExecutableBinding:
+    destination = binding.path.parent / f".bound-exec-{secrets.token_hex(16)}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+    fd = os.open(destination, flags, 0o500)
+    try:
+        digest = hashlib.sha256(); offset = 0
+        while offset < binding.size:
+            chunk = os.pread(binding.fd, min(1024 * 1024, binding.size - offset), offset)
+            require(bool(chunk), "bound executable source read was incomplete")
+            pending = memoryview(chunk)
+            while pending:
+                written = os.write(fd, pending)
+                pending = pending[written:]
+            digest.update(chunk); offset += len(chunk)
+        os.fchmod(fd, 0o500); os.fsync(fd)
+        info = os.fstat(fd); observed = "sha256:" + digest.hexdigest()
+        require(
+            offset == binding.size
+            and info.st_size == binding.size
+            and info.st_nlink == 1
+            and observed == binding.sha256,
+            "per-spawn executable materialization drift",
+        )
+        parent = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(parent)
+        finally: os.close(parent)
+        return ExecutableBinding(destination, fd, info.st_dev, info.st_ino, info.st_size, observed)
+    except BaseException:
+        os.close(fd)
+        try: destination.unlink()
+        except FileNotFoundError: pass
+        raise
+
 def verified_popen(
     binding: ExecutableBinding,
     args: list[str],
@@ -384,22 +441,25 @@ def verified_popen(
         and bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) == binding.sha256,
         "executable binding changed before spawn",
     )
+    invocation: ExecutableBinding | None = _materialize_bound_executable(binding)
     libc = ctypes.CDLL(None, use_errno=True)
     actions = ctypes.c_void_p(); attributes = ctypes.c_void_p()
-    require(libc.posix_spawn_file_actions_init(ctypes.byref(actions)) == 0, "posix_spawn file actions unavailable")
-    require(libc.posix_spawnattr_init(ctypes.byref(attributes)) == 0, "posix_spawn attributes unavailable")
+    actions_ready = attributes_ready = False
     parent_stdin = parent_stdout = parent_stderr = None
-    child_fds: list[int] = []; parent_close: list[int] = []
-    def fileno(value: Any) -> int:
-        return value if isinstance(value, int) else value.fileno()
-    def pipe_for(target: int, reading_in_parent: bool) -> Any:
-        read_fd, write_fd = os.pipe()
-        child_fd, parent_fd = (write_fd, read_fd) if reading_in_parent else (read_fd, write_fd)
-        require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), child_fd, target) == 0, "posix_spawn pipe action failed")
-        child_fds.append(child_fd); parent_close.append(parent_fd)
-        return os.fdopen(parent_fd, "rb" if reading_in_parent else "wb", buffering=0)
-    devnull_fd: int | None = None
+    child_fds: list[int] = []; devnull_fd: int | None = None; spawned_pid: int | None = None
     try:
+        require(libc.posix_spawn_file_actions_init(ctypes.byref(actions)) == 0, "posix_spawn file actions unavailable")
+        actions_ready = True
+        require(libc.posix_spawnattr_init(ctypes.byref(attributes)) == 0, "posix_spawn attributes unavailable")
+        attributes_ready = True
+        def fileno(value: Any) -> int:
+            return value if isinstance(value, int) else value.fileno()
+        def pipe_for(target: int, reading_in_parent: bool) -> Any:
+            read_fd, write_fd = os.pipe()
+            child_fd, parent_fd = (write_fd, read_fd) if reading_in_parent else (read_fd, write_fd)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), child_fd, target) == 0, "posix_spawn pipe action failed")
+            child_fds.append(child_fd)
+            return os.fdopen(parent_fd, "rb" if reading_in_parent else "wb", buffering=0)
         if stdin == subprocess.PIPE:
             parent_stdin = pipe_for(0, False)
         elif stdin == subprocess.DEVNULL:
@@ -427,7 +487,7 @@ def verified_popen(
         require(libc.posix_spawnattr_setsigmask(ctypes.byref(attributes), ctypes.byref(empty_mask)) == 0, "spawn signal mask setup failed")
         flags = 0x0080 | 0x0400 | 0x0008
         require(libc.posix_spawnattr_setflags(ctypes.byref(attributes), ctypes.c_short(flags)) == 0, "suspended spawn flags unavailable")
-        encoded_args = [str(binding.path), *args[1:]]
+        encoded_args = [str(invocation.path), *args[1:]]
         argv = (ctypes.c_char_p * (len(encoded_args) + 1))(*[value.encode() for value in encoded_args], None)
         environment = os.environ.copy() if env is None else env
         encoded_environment = [f"{key}={value}".encode() for key, value in environment.items()]
@@ -439,29 +499,42 @@ def verified_popen(
                 pid = ctypes.c_int()
                 code = libc.posix_spawn(
                     ctypes.byref(pid),
-                    str(binding.path).encode(),
+                    str(invocation.path).encode(),
                     ctypes.byref(actions),
                     ctypes.byref(attributes),
                     argv,
                     envp,
                 )
+                require(code == 0, f"verified executable spawn failed: errno {code}")
+                spawned_pid = pid.value
             finally:
                 for inherited_fd, was_inheritable in inherited_states.items():
                     os.set_inheritable(inherited_fd, was_inheritable)
-        require(code == 0, f"verified executable spawn failed: errno {code}")
+        _verified_text_vnode(spawned_pid, invocation)
+        require(
+            bytes_digest(os.pread(invocation.fd, invocation.size + 1, 0)) == invocation.sha256,
+            "spawned executable changed before resume",
+        )
         for child_fd in child_fds: os.close(child_fd)
         child_fds.clear()
-        try:
-            _verified_text_vnode(pid.value, binding)
-        except BaseException:
-            try: os.kill(pid.value, signal.SIGKILL)
-            except ProcessLookupError: pass
-            try: os.waitpid(pid.value, 0)
-            except ChildProcessError: pass
-            raise
-        os.kill(pid.value, signal.SIGCONT)
-        return VerifiedProcess(pid.value, encoded_args, parent_stdin, parent_stdout, parent_stderr, text=text)
+        os.kill(spawned_pid, signal.SIGCONT)
+        process = VerifiedProcess(
+            spawned_pid,
+            encoded_args,
+            parent_stdin,
+            parent_stdout,
+            parent_stderr,
+            text=text,
+            cleanup_binding=invocation,
+        )
+        invocation = None
+        return process
     except BaseException:
+        if spawned_pid is not None:
+            try: os.kill(spawned_pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: os.waitpid(spawned_pid, 0)
+            except ChildProcessError: pass
         for stream in (parent_stdin, parent_stdout, parent_stderr):
             if stream is not None:
                 try: stream.close()
@@ -474,8 +547,12 @@ def verified_popen(
         if devnull_fd is not None:
             try: os.close(devnull_fd)
             except OSError: pass
-        libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
-        libc.posix_spawnattr_destroy(ctypes.byref(attributes))
+        if actions_ready: libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
+        if attributes_ready: libc.posix_spawnattr_destroy(ctypes.byref(attributes))
+        if invocation is not None:
+            try: invocation.path.unlink()
+            except FileNotFoundError: pass
+            invocation.close()
 
 def kubectl_binding_v4() -> ExecutableBinding:
     return executable_binding_from_environment("ROEBEL_PINNED_KUBECTL")

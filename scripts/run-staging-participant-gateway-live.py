@@ -194,6 +194,8 @@ class PinnedExecutableSnapshot:
 
     def to_binding(self, module: Any) -> Any:
         require(self.fd >= 0, "pinned executable binding already transferred")
+        self.path.unlink()
+        fsync_directory(self.path.parent)
         binding = module.ExecutableBinding(
             self.path,
             self.fd,
@@ -1126,6 +1128,7 @@ def main(argv: list[str] | None = None) -> int:
     receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
     temp: Path | None = None; session: LiveSession | None = None
     cancellation = CancellationState(); cancellation_installed = False
+    pinned_snapshots: dict[str, PinnedExecutableSnapshot] = {}
     revision: str | None = None; protected_hashes: dict[str, str] = {}; protected_blobs: dict[str, bytes] = {}
     snapshot_hashes: dict[str, str] = {}; credentials: list[str] = []
     bound_runners: dict[str, BoundRunner] = {}; bound_receipts: list[BoundBlob] = []
@@ -1210,10 +1213,9 @@ def main(argv: list[str] | None = None) -> int:
             "talosctl": args.talosctl_bin,
             "wireproxy": args.wireproxy_bin,
         }
-        snapshots: dict[str, PinnedExecutableSnapshot] = {}
         for label in sorted(binary_sources):
             snapshot = snapshot_binary(binary_sources[label], label, executable_dir / label)
-            snapshots[label] = snapshot
+            pinned_snapshots[label] = snapshot
             snapshot_hashes[label] = snapshot.sha256
             executable_bindings[label] = snapshot.to_binding(verified_spawn_module)
             cancellation.checkpoint()
@@ -1486,6 +1488,10 @@ def main(argv: list[str] | None = None) -> int:
             cleanup_errors.append(f"process-group cleanup: {exc}")
             process_cleanup["ownedProcessGroupsStopped"] = False
     bindings_closed = True
+    for snapshot in pinned_snapshots.values():
+        try: snapshot.close()
+        except BaseException as exc:
+            bindings_closed = False; cleanup_errors.append(f"pinned snapshot cleanup: {exc}")
     for receipt in bound_receipts:
         try: receipt.close()
         except BaseException as exc:
