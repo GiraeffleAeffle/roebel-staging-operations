@@ -1,0 +1,131 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "annotations": {
+      "kustomize.toolkit.fluxcd.io/ssa": "Override"
+    },
+    "labels": {
+      "app.kubernetes.io/component": "e2e-workbench",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/owner": "roebel-staging-operations",
+      "stadtstack.io/purpose": "workbench-baseline"
+    },
+    "name": "e2e-workbench",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "egress": [
+      {
+        "ports": [
+          {
+            "port": 53,
+            "protocol": "UDP"
+          },
+          {
+            "port": 53,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "kube-system"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "k8s-app": "kube-dns"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "ports": [
+          {
+            "port": 18081,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "citizen-relay",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "ports": [
+          {
+            "port": 18081,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "agent-relay",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "ports": [
+          {
+            "port": 18080,
+            "protocol": "TCP"
+          },
+          {
+            "port": 18081,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "stadtstack-runtime",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "ports": [
+          {
+            "port": 443,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "ipBlock": {
+              "cidr": "34.111.230.52/32"
+            }
+          }
+        ]
+      }
+    ],
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "e2e-workbench",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      }
+    },
+    "policyTypes": [
+      "Ingress",
+      "Egress"
+    ]
+  }
+}

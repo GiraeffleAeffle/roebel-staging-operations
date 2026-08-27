@@ -279,5 +279,81 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(set(MODULE.EXPECTED_BINARIES), {"age", "kubectl", "talosctl", "wireproxy"})
         self.assertTrue(all(MODULE.SHA256.fullmatch(value) for value in MODULE.EXPECTED_BINARIES.values()))
 
+    def test_workbench_mode_is_explicitly_isolated_from_participant_runners(self):
+        arguments = [
+            "--workbench-baseline-handover", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt", "--workbench-handover-receipt", "/private/handover.json",
+            "--workbench-handover-journal", "/private/handover.journal",
+        ]
+        parsed = MODULE.parse_args(arguments)
+        self.assertTrue(parsed.workbench_baseline_handover)
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args(["--participant-gateway", *arguments])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires explicit receipt and journal"):
+            MODULE.parse_args([value for value in arguments if value not in {"--workbench-handover-receipt", "/private/handover.json", "--workbench-handover-journal", "/private/handover.journal"}])
+        self.assertNotIn(MODULE.BOOTSTRAP_RUNNER, MODULE.WORKBENCH_PROTECTED_PATHS)
+        self.assertNotIn(MODULE.ACTIVATION_RUNNER, MODULE.WORKBENCH_PROTECTED_PATHS)
+        source = inspect.getsource(MODULE.run_workbench_baseline_handover_transport)
+        for forbidden in ("bootstrap_runner", "activation_runner", "run_dormant_teardown", "--teardown"):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("workbench_implementation_command", source)
+
+    @unittest.skipUnless(hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"), "requires macOS immutable file flags")
+    def test_workbench_pinned_kubectl_path_cannot_be_replaced_between_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); source = root / "source"; source.write_bytes(b"immutable kubectl fixture"); source.chmod(0o700)
+            snapshot_path = root / "snapshot"; expected = MODULE.bytes_sha256(source.read_bytes())
+            with patch.dict(MODULE.EXPECTED_BINARIES, {"fixture": expected}, clear=False):
+                snapshot = MODULE.snapshot_binary(source, "fixture", snapshot_path)
+                try:
+                    MODULE.seal_pinned_snapshot(snapshot)
+                    binding = MODULE.PersistentPinnedExecutable(snapshot)
+                    binding._verify()  # first simulated KubernetesAdapter call
+                    replacement = root / "replacement"; replacement.write_bytes(b"attacker replacement"); replacement.chmod(0o500)
+                    with self.assertRaises(OSError):
+                        os.replace(replacement, snapshot.path)
+                    binding._verify()  # second call observes the original bound bytes
+                finally:
+                    MODULE.unseal_pinned_snapshot(snapshot)
+                    snapshot.close()
+
+    def test_workbench_receipt_and_terminal_journal_must_be_separate_and_complete(self):
+        revision = "a" * 40
+        protected = {path: MODULE.bytes_sha256(path.encode()) for path in MODULE.WORKBENCH_PROTECTED_PATHS}
+        payload = {
+            "schemaVersion": "roebel_staging_workbench_baseline_handover_receipt_v1", "status": "completed", "mode": "live",
+            "protectedRevision": revision, "protectedFileSha256": protected,
+            "baseline": {"uid": "298b0f92-0d6b-4563-b141-f93aa8c8fd8f"},
+            "effects": {"networkPolicySpecChanged": False, "existingDeploymentChanged": False, "existingServiceChanged": False, "secretAccess": False, "civicAuthorityEffects": False, "fluxReady": True, "networkPolicyReconciled": True},
+            "objects": [{"objectId": name, "uid": f"uid-{name}"} for name in ("serviceAccount", "role", "roleBinding", "kustomization")],
+            "flux": {"ready": {}, "networkPolicyReconciled": {}},
+        }
+        journal = {"schemaVersion": "roebel_staging_workbench_baseline_journal_v1", "status": "completed", "protectedRevision": revision}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "receipt")
+            state = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "journal")
+            try:
+                proof = MODULE.verify_workbench_handover_evidence(receipt, state, revision, protected)
+                self.assertEqual(proof["networkPolicyUid"], payload["baseline"]["uid"])
+                journal["status"] = "in-progress"
+                changed = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "changed.bound", "changed")
+                try:
+                    with self.assertRaisesRegex(MODULE.LiveTransportError, "journal is not terminal"):
+                        MODULE.verify_workbench_handover_evidence(receipt, changed, revision, protected)
+                finally:
+                    changed.close()
+            finally:
+                receipt.close(); state.close()
+
+    def test_workbench_launcher_rechecks_pinned_kubectl_for_each_adapter_call(self):
+        source = MODULE.WORKBENCH_IMPLEMENTATION_LAUNCHER
+        self.assertIn("class _PinnedKubernetesAdapter", source)
+        self.assertGreaterEqual(source.count("_verify_pinned_kubectl()"), 4)
+        self.assertIn("bool(current.st_flags & stat.UF_IMMUTABLE)", source)
+        self.assertIn("result=super()._run(args,input_text=input_text)", source)
+
 
 if __name__ == "__main__": unittest.main()

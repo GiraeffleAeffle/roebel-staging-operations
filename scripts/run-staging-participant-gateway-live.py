@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parent.parent
 SELF_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_RUNNER = "scripts/bootstrap-staging-participant-flux.py"
 ACTIVATION_RUNNER = "scripts/activate-staging-participant-gateway.py"
+WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
+WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
 PROTECTED_PATHS = (
     SELF_PATH,
     BOOTSTRAP_RUNNER,
@@ -32,6 +34,22 @@ PROTECTED_PATHS = (
     ".github/workflows/staging-participant-gateway-activation.yml",
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
+)
+# This is deliberately a separate protected closure.  Workbench baseline
+# transport must never load, bind, or invoke a participant transaction runner.
+# The handover runner is retained as a separately bound review identity; the
+# implementation blob is executed directly below so its KubernetesAdapter can
+# receive the inherited pinned kubectl snapshot rather than its mutable default
+# path.
+WORKBENCH_PROTECTED_PATHS = (
+    SELF_PATH,
+    WORKBENCH_RUNNER,
+    WORKBENCH_IMPLEMENTATION,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+    "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+    "reviewed-render/roebel-staging/workbench-baseline/kustomization.yaml",
+    ".github/workflows/reviewed-render-admission.yml",
 )
 API_HOST, API_PORT, TALOS_PORT = "10.255.240.11", 6443, 50000
 PROXY_USERNAME = "stadtstack-participant"
@@ -47,6 +65,7 @@ scope={'__name__':'__main__','__file__':path,'__package__':None,'__cached__':Non
 exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v2"
+WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
@@ -155,12 +174,17 @@ def git_blob(revision: str, path: str) -> bytes:
     require(result.returncode == 0, f"protected Git blob unavailable: {path}")
     return result.stdout
 
-def bind_protected_checkout(revision: str) -> tuple[dict[str, str], dict[str, bytes]]:
+def bind_protected_checkout(
+    revision: str,
+    *,
+    paths: tuple[str, ...] = PROTECTED_PATHS,
+) -> tuple[dict[str, str], dict[str, bytes]]:
     require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
     head = trusted_git(["-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False)
     require(head.returncode == 0 and head.stdout.strip() == revision, "checkout is not the expected protected revision")
     hashes: dict[str, str] = {}; blobs: dict[str, bytes] = {}
-    for path in PROTECTED_PATHS:
+    require(paths and len(paths) == len(set(paths)), "protected path closure is invalid")
+    for path in paths:
         local = ROOT / path
         info = os.lstat(local)
         require(stat.S_ISREG(info.st_mode) and not local.is_symlink(), f"protected file is not a regular Git blob: {path}")
@@ -191,6 +215,7 @@ class PinnedExecutableSnapshot:
     inode: int
     size: int
     sha256: str
+    immutable: bool = False
 
     def to_binding(self, module: Any) -> Any:
         require(self.fd >= 0, "pinned executable binding already transferred")
@@ -211,6 +236,85 @@ class PinnedExecutableSnapshot:
     def close(self) -> None:
         if self.fd >= 0:
             os.close(self.fd); self.fd = -1
+
+
+def seal_pinned_snapshot(snapshot: PinnedExecutableSnapshot) -> None:
+    """Make a private snapshot path non-replaceable for path-only consumers.
+
+    The frozen workbench KubernetesAdapter intentionally accepts a Path.  On
+    the local macOS operator host, UF_IMMUTABLE closes the lstat-to-exec swap
+    window while the inherited descriptor remains open for byte proof.  A host
+    without this primitive is not an admissible live transport host.
+    """
+    require(hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"), "workbench transport requires immutable-file support")
+    snapshot_info = os.lstat(snapshot.path); opened = os.fstat(snapshot.fd)
+    require(
+        (snapshot_info.st_dev, snapshot_info.st_ino, snapshot_info.st_size) == (snapshot.device, snapshot.inode, snapshot.size)
+        and (opened.st_dev, opened.st_ino, opened.st_size) == (snapshot.device, snapshot.inode, snapshot.size),
+        "pinned snapshot identity drift before sealing",
+    )
+    os.chflags(snapshot.path, snapshot_info.st_flags | stat.UF_IMMUTABLE)
+    sealed = os.lstat(snapshot.path)
+    require(bool(sealed.st_flags & stat.UF_IMMUTABLE), "pinned snapshot immutable seal unavailable")
+    snapshot.immutable = True
+
+
+def unseal_pinned_snapshot(snapshot: PinnedExecutableSnapshot) -> None:
+    if not snapshot.immutable:
+        return
+    require(hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"), "pinned snapshot unseal unavailable")
+    info = os.lstat(snapshot.path)
+    require((info.st_dev, info.st_ino, info.st_size) == (snapshot.device, snapshot.inode, snapshot.size), "pinned snapshot identity drift before unseal")
+    os.chflags(snapshot.path, info.st_flags & ~stat.UF_IMMUTABLE)
+    require(not bool(os.lstat(snapshot.path).st_flags & stat.UF_IMMUTABLE), "pinned snapshot immutable unseal failed")
+    snapshot.immutable = False
+
+
+class PersistentPinnedExecutable:
+    """A path-backed pinned snapshot for the workbench-only transport setup.
+
+    Unlike the participant runner's descriptor-executed binding, the frozen
+    workbench implementation accepts a ``Path`` in its KubernetesAdapter.
+    This adapter therefore keeps the private snapshot present until the inner
+    transaction is finished and rechecks descriptor identity and bytes before
+    every outer transport process spawn.  The snapshot directory is owner-only
+    and is removed as part of the single wrapper cleanup path.
+    """
+    def __init__(self, snapshot: PinnedExecutableSnapshot):
+        self.snapshot = snapshot
+        self.path = snapshot.path
+        self.fd = snapshot.fd
+
+    def _verify(self) -> None:
+        snapshot = self.snapshot
+        require(snapshot.fd >= 0, "pinned executable descriptor closed")
+        info = os.lstat(snapshot.path); opened = os.fstat(snapshot.fd)
+        require(
+            stat.S_ISREG(info.st_mode)
+            and not snapshot.path.is_symlink()
+            and (info.st_dev, info.st_ino, info.st_size) == (snapshot.device, snapshot.inode, snapshot.size)
+            and (opened.st_dev, opened.st_ino, opened.st_size) == (snapshot.device, snapshot.inode, snapshot.size)
+            and (not snapshot.immutable or bool(info.st_flags & stat.UF_IMMUTABLE))
+            and bytes_sha256(os.pread(snapshot.fd, snapshot.size + 1, 0)) == snapshot.sha256,
+            "pinned executable snapshot drift",
+        )
+
+    def popen(self, arguments: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
+        self._verify()
+        require(arguments and arguments[0] == str(self.path), "pinned executable command path drift")
+        return subprocess.Popen(arguments, **kwargs)
+
+    def environment(self, prefix: str) -> dict[str, str]:
+        self._verify()
+        snapshot = self.snapshot
+        return {
+            f"{prefix}_PATH": str(snapshot.path),
+            f"{prefix}_FD": str(snapshot.fd),
+            f"{prefix}_DEVICE": str(snapshot.device),
+            f"{prefix}_INODE": str(snapshot.inode),
+            f"{prefix}_SIZE": str(snapshot.size),
+            f"{prefix}_SHA256": snapshot.sha256,
+        }
 
 def snapshot_binary(source_path: Path, label: str, destination: Path) -> PinnedExecutableSnapshot:
     resolved = Path(source_path).expanduser().resolve(strict=True)
@@ -342,6 +446,72 @@ class BoundRunner:
 
     def close(self) -> None:
         self.blob.close()
+
+# This launcher is part of this protected wrapper.  It never imports the
+# worktree implementation: it reads the already-bound Git blob from an
+# inherited descriptor, verifies it again, injects only the already-pinned
+# kubectl snapshot into the exact implementation module, and calls its narrow
+# ``main`` entry point.  The implementation's own KubernetesAdapter retains
+# ownership of the allowed resource/verb validation.
+WORKBENCH_IMPLEMENTATION_LAUNCHER = """import hashlib,os,stat,sys
+from pathlib import Path
+path,fd_text,size_text,expected,kubectl_path,kubectl_fd_text,kubectl_dev_text,kubectl_inode_text,kubectl_size_text,kubectl_expected=sys.argv[1:11]
+fd,size=int(fd_text),int(size_text)
+source=os.pread(fd,size+1,0)
+if len(source)!=size or 'sha256:'+hashlib.sha256(source).hexdigest()!=expected:
+    raise SystemExit('bound workbench implementation bytes differ')
+kubectl_fd,kubectl_dev,kubectl_inode,kubectl_size=(int(kubectl_fd_text),int(kubectl_dev_text),int(kubectl_inode_text),int(kubectl_size_text))
+opened=os.fstat(kubectl_fd)
+info=os.lstat(kubectl_path)
+if not (stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and stat.S_ISREG(opened.st_mode) and bool(info.st_flags & stat.UF_IMMUTABLE) and (info.st_dev,info.st_ino,info.st_size)==(kubectl_dev,kubectl_inode,kubectl_size) and (opened.st_dev,opened.st_ino,opened.st_size)==(kubectl_dev,kubectl_inode,kubectl_size) and 'sha256:'+hashlib.sha256(os.pread(kubectl_fd,kubectl_size+1,0)).hexdigest()==kubectl_expected):
+    raise SystemExit('pinned kubectl snapshot differs before workbench execution')
+scope={'__name__':'protected_workbench_baseline_handover','__file__':path,'__package__':None,'__cached__':None}
+exec(compile(source,path,'exec',dont_inherit=True),scope)
+scope['KUBECTL_BIN']=Path(kubectl_path)
+def _verify_pinned_kubectl():
+    current=os.lstat(kubectl_path); current_fd=os.fstat(kubectl_fd)
+    if not (stat.S_ISREG(current.st_mode) and not stat.S_ISLNK(current.st_mode) and bool(current.st_flags & stat.UF_IMMUTABLE) and (current.st_dev,current.st_ino,current.st_size)==(kubectl_dev,kubectl_inode,kubectl_size) and (current_fd.st_dev,current_fd.st_ino,current_fd.st_size)==(kubectl_dev,kubectl_inode,kubectl_size) and 'sha256:'+hashlib.sha256(os.pread(kubectl_fd,kubectl_size+1,0)).hexdigest()==kubectl_expected):
+        raise scope['HandoverError']('pinned kubectl snapshot drift')
+_BaseKubernetesAdapter=scope['KubernetesAdapter']
+class _PinnedKubernetesAdapter(_BaseKubernetesAdapter):
+    def __init__(self,kubeconfig,*,kubectl=scope['KUBECTL_BIN']):
+        if Path(kubectl)!=Path(kubectl_path):
+            raise scope['HandoverError']('workbench KubernetesAdapter kubectl override forbidden')
+        _verify_pinned_kubectl()
+        super().__init__(kubeconfig,kubectl=Path(kubectl_path))
+    def _run(self,args,*,input_text=None):
+        _verify_pinned_kubectl()
+        result=super()._run(args,input_text=input_text)
+        _verify_pinned_kubectl()
+        return result
+scope['KubernetesAdapter']=_PinnedKubernetesAdapter
+raise SystemExit(int(scope['main'](sys.argv[11:])))
+"""
+
+def workbench_implementation_command(
+    implementation: BoundRunner,
+    kubectl: PinnedExecutableSnapshot,
+    arguments: list[str],
+) -> list[str]:
+    """Return the only command shape admitted for workbench handover mode."""
+    require(kubectl.fd >= 0 and kubectl.path.exists(), "pinned workbench kubectl snapshot unavailable")
+    return [
+        sys.executable,
+        "-I",
+        "-c",
+        WORKBENCH_IMPLEMENTATION_LAUNCHER,
+        str(ROOT / implementation.logical_path),
+        str(implementation.blob.fd),
+        str(implementation.blob.size),
+        implementation.blob.sha256,
+        str(kubectl.path),
+        str(kubectl.fd),
+        str(kubectl.device),
+        str(kubectl.inode),
+        str(kubectl.size),
+        kubectl.sha256,
+        *arguments,
+    ]
 
 def bind_bytes_to_fd(value: bytes, destination: Path, label: str) -> BoundBlob:
     require(isinstance(value, bytes) and 0 < len(value) <= MAX_RECEIPT_BYTES, f"{label} byte size invalid")
@@ -1045,8 +1215,99 @@ def receipt_record(projection: dict[str, Any] | None, receipt: BoundBlob | None)
         "fileSha256": receipt.sha256 if receipt is not None else None,
     }
 
+
+def private_workbench_output(path: Path, label: str) -> Path:
+    """Accept one explicit, private durable workbench output target.
+
+    The inner protected runner owns its receipt/journal reservation semantics;
+    this outer check only makes the transport contract explicit and rejects
+    symlinked, shared, or non-private targets before any tunnel exists.
+    """
+    selected = Path(os.path.abspath(path))
+    require(selected.is_absolute() and not selected.is_symlink(), f"{label} must be an absolute non-symlink path")
+    parent = selected.parent
+    parent_info = os.lstat(parent)
+    require(
+        stat.S_ISDIR(parent_info.st_mode)
+        and parent_info.st_uid == os.geteuid()
+        and stat.S_IMODE(parent_info.st_mode) & 0o077 == 0,
+        f"{label} parent must be private and owned",
+    )
+    if selected.exists():
+        info = os.lstat(selected)
+        require(
+            stat.S_ISREG(info.st_mode)
+            and not selected.is_symlink()
+            and info.st_uid == os.geteuid()
+            and info.st_nlink == 1
+            and stat.S_IMODE(info.st_mode) == 0o600
+            and info.st_size <= MAX_RECEIPT_BYTES,
+            f"{label} existing file must be bounded private and owned",
+        )
+    return selected
+
+
+def read_bound_json(receipt: BoundBlob, label: str) -> dict[str, Any]:
+    raw = os.pread(receipt.fd, receipt.size + 1, 0)
+    require(len(raw) == receipt.size, f"{label} bound receipt size drift")
+    return json_object(raw.decode("utf-8"), label)
+
+
+def verify_workbench_handover_evidence(
+    receipt: BoundBlob,
+    journal: BoundBlob,
+    revision: str,
+    protected_hashes: dict[str, str],
+) -> dict[str, Any]:
+    """Validate the value-free proof the frozen runner leaves behind."""
+    evidence = read_bound_json(receipt, "workbench handover receipt")
+    state = read_bound_json(journal, "workbench handover journal")
+    require(evidence.get("schemaVersion") == "roebel_staging_workbench_baseline_handover_receipt_v1", "workbench handover receipt schema drift")
+    require(evidence.get("status") == "completed", "workbench handover did not complete")
+    require(evidence.get("mode") == "live", "workbench handover receipt mode drift")
+    require(evidence.get("protectedRevision") == revision, "workbench handover receipt revision drift")
+    protected = evidence.get("protectedFileSha256")
+    require(isinstance(protected, dict), "workbench handover protected file proof absent")
+    for path in (WORKBENCH_RUNNER, WORKBENCH_IMPLEMENTATION, "scripts/verify-reviewed-render.py", "policy/repository-contract.json"):
+        require(protected.get(path) == protected_hashes.get(path), f"workbench handover protected blob drift: {path}")
+    baseline = evidence.get("baseline")
+    require(isinstance(baseline, dict) and baseline.get("uid") == "298b0f92-0d6b-4563-b141-f93aa8c8fd8f", "workbench NetworkPolicy UID proof drift")
+    effects = evidence.get("effects")
+    require(isinstance(effects, dict), "workbench handover effects absent")
+    require(
+        effects.get("networkPolicySpecChanged") is False
+        and effects.get("existingDeploymentChanged") is False
+        and effects.get("existingServiceChanged") is False
+        and effects.get("secretAccess") is False
+        and effects.get("civicAuthorityEffects") is False
+        and effects.get("fluxReady") is True
+        and effects.get("networkPolicyReconciled") is True,
+        "workbench handover effect boundary drift",
+    )
+    objects = evidence.get("objects")
+    expected_ids = {"serviceAccount", "role", "roleBinding", "kustomization"}
+    require(isinstance(objects, list) and {entry.get("objectId") for entry in objects if isinstance(entry, dict)} == expected_ids, "workbench Flux UID inventory drift")
+    require(all(isinstance(entry, dict) and isinstance(entry.get("uid"), str) for entry in objects), "workbench Flux UID proof absent")
+    flux = evidence.get("flux")
+    require(isinstance(flux, dict) and isinstance(flux.get("ready"), dict) and isinstance(flux.get("networkPolicyReconciled"), dict), "workbench Flux Ready proof absent")
+    require(state.get("schemaVersion") == "roebel_staging_workbench_baseline_journal_v1", "workbench journal schema drift")
+    require(state.get("status") == "completed" and state.get("protectedRevision") == revision, "workbench journal is not terminal for this revision")
+    return {
+        "receiptSha256": receipt.sha256,
+        "journalSha256": journal.sha256,
+        "networkPolicyUid": baseline["uid"],
+        "fluxObjectUids": {entry["objectId"]: entry["uid"] for entry in objects},
+        "ready": True,
+    }
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group()
+    # Omission preserves the pre-existing participant transaction CLI.  The
+    # explicit participant flag is useful only when automation wants a fully
+    # self-documenting mode selection.
+    mode.add_argument("--participant-gateway", action="store_true")
+    mode.add_argument("--workbench-baseline-handover", action="store_true")
     parser.add_argument("--expected-protected-revision", required=True)
     parser.add_argument("--age-bin", required=True, type=Path)
     parser.add_argument("--age-identity", required=True, type=Path)
@@ -1056,8 +1317,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--kubectl-bin", required=True, type=Path)
     parser.add_argument("--receipt-directory", required=True, type=Path)
     parser.add_argument("--teardown-dormant-receipt", type=Path)
+    parser.add_argument("--workbench-handover-receipt", type=Path)
+    parser.add_argument("--workbench-handover-journal", type=Path)
     parser.add_argument("--live", action="store_true")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.workbench_baseline_handover:
+        require(args.teardown_dormant_receipt is None, "workbench handover may not request participant teardown")
+        require(args.workbench_handover_receipt is not None and args.workbench_handover_journal is not None, "workbench handover requires explicit receipt and journal paths for resume")
+    else:
+        require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "participant mode may not receive workbench handover paths")
+    return args
 
 def run_dormant_teardown(
     session: LiveSession,
@@ -1128,6 +1397,165 @@ def classify_final_status(
     return base_status, 2
 
 
+def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
+    """Run only the reviewed E2E-workbench handover over private transport.
+
+    This is intentionally not a branch inside the participant transaction:
+    its protected closure contains no participant bootstrap, activation, or
+    teardown code, and its receipt does not claim any participant state.
+    """
+    receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
+    temp: Path | None = None; session: LiveSession | None = None
+    cancellation = CancellationState(); installed = False
+    snapshots: dict[str, PinnedExecutableSnapshot] = {}; bindings: dict[str, PersistentPinnedExecutable] = {}
+    bound: list[BoundRunner] = []; evidence: list[BoundBlob] = []
+    protected_hashes: dict[str, str] = {}; credentials: list[str] = []
+    cleanup_errors: list[str] = []; error: str | None = None; completed = False
+    listener_verified = False; proof: dict[str, Any] | None = None
+    revision = args.expected_protected_revision
+    handover_receipt: Path | None = None; handover_journal: Path | None = None
+    try:
+        require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
+        require(args.live is True and args.workbench_baseline_handover is True, "workbench transport requires explicit --workbench-baseline-handover --live")
+        require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
+        handover_receipt = private_workbench_output(args.workbench_handover_receipt, "workbench handover receipt")
+        handover_journal = private_workbench_output(args.workbench_handover_journal, "workbench handover journal")
+        require(
+            os.path.normcase(os.path.normpath(os.fspath(handover_receipt))) != os.path.normcase(os.path.normpath(os.fspath(handover_journal))),
+            "workbench handover receipt and journal paths must be distinct",
+        )
+        cancellation.install(); installed = True
+        receipt_dir = reserve_output_directory(args.receipt_directory)
+        attempt_path = receipt_dir / "workbench-baseline-transport-attempt.json"
+        receipt_sink = WrapperReceiptSink.reserve(attempt_path)
+        cancellation.checkpoint()
+        protected_hashes, protected_blobs = bind_protected_checkout(revision, paths=WORKBENCH_PROTECTED_PATHS)
+        identity = private_file(args.age_identity, "age identity")
+        bundle_source = Path(os.path.abspath(args.bootstrap_bundle)); bundle_source_info = os.lstat(bundle_source)
+        require(not stat.S_ISLNK(bundle_source_info.st_mode), "bootstrap bundle must not be a symlink")
+        bundle = Path(os.path.realpath(bundle_source))
+        bundle_info = os.lstat(bundle)
+        require(bundle == bundle_source and stat.S_ISDIR(bundle_info.st_mode) and bundle_info.st_uid == os.geteuid() and stat.S_IMODE(bundle_info.st_mode) & 0o077 == 0, "bootstrap bundle must be a private owned directory")
+        encrypted_wg = private_file(bundle / "wireguard-daily.conf.age", "encrypted WireGuard input")
+        encrypted_talos = private_file(bundle / "talosconfig.yaml.age", "encrypted Talos input")
+        temp = Path(tempfile.mkdtemp(prefix="roebel-workbench-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
+        binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
+        # Bind both blobs.  Only the implementation blob is executed; the
+        # companion runner blob is a separately retained review identity.
+        for logical_path in (WORKBENCH_RUNNER, WORKBENCH_IMPLEMENTATION):
+            blob = bind_bytes_to_fd(protected_blobs[logical_path], binding_dir / (Path(logical_path).name + ".bound"), f"protected workbench blob {logical_path}")
+            bound.append(BoundRunner(logical_path, blob))
+        implementation = next(item for item in bound if item.logical_path == WORKBENCH_IMPLEMENTATION)
+        executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
+        for label, source in sorted({"age": args.age_bin, "kubectl": args.kubectl_bin, "talosctl": args.talosctl_bin, "wireproxy": args.wireproxy_bin}.items()):
+            snapshot = snapshot_binary(source, label, executable_dir / label)
+            seal_pinned_snapshot(snapshot)
+            snapshots[label] = snapshot; bindings[label] = PersistentPinnedExecutable(snapshot)
+            cancellation.checkpoint()
+        fsync_directory(executable_dir)
+        wireguard = temp / "wireguard.conf"; talosconfig = temp / "talosconfig.yaml"
+        decrypt(cancellation, bindings["age"], identity, encrypted_wg, wireguard)
+        decrypt(cancellation, bindings["age"], identity, encrypted_talos, talosconfig)
+        wireguard_bytes = wireguard.read_bytes(); wireguard.unlink(); fsync_directory(wireguard.parent)
+        api_config = wireproxy_config(f"{API_HOST}:{API_PORT}", wireguard_bytes)
+        talos_config = wireproxy_config(f"{API_HOST}:{TALOS_PORT}", wireguard_bytes)
+        api_password = secrets.token_hex(32); talos_password = secrets.token_hex(32); credentials = [api_password, talos_password]
+        for index, config in enumerate((api_config, talos_config)):
+            config_blob = bind_bytes_to_fd(config, binding_dir / f"wireproxy-config-{index}.bound", f"workbench fixed-target wireproxy config {index}")
+            try:
+                checked = cancellation.run(
+                    [str(bindings["wireproxy"].path), "-n", "-c", f"/dev/fd/{config_blob.fd}"],
+                    timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=sanitized_environment(), pass_fds=(config_blob.fd,), executable_binding=bindings["wireproxy"],
+                )
+                require(checked.returncode == 0, f"wireproxy rejected protected fixed-target config {index}")
+            finally:
+                config_blob.close()
+        session = LiveSession(bindings["wireproxy"], api_config, talos_config, binding_dir, api_password, talos_password, cancellation)
+        api_port, talos_port = session.start_proxy(); listener_verified = session.listener_verified
+        kubeconfig = temp / "admin-kubeconfig.json"
+        create_admin_kubeconfig(
+            session, bindings["talosctl"], bindings["kubectl"], talosconfig, kubeconfig,
+            proxy_url(talos_password, talos_port), proxy_url(api_password, api_port), temp,
+        )
+        child_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
+        child = session.run_child(
+            workbench_implementation_command(
+                implementation,
+                snapshots["kubectl"],
+                ["--expected-protected-revision", revision, "--kubeconfig", str(kubeconfig), "--receipt", str(handover_receipt), "--journal", str(handover_journal)],
+            ),
+            child_environment,
+            receipt_pending=True,
+            pass_fds=(implementation.blob.fd, snapshots["kubectl"].fd),
+        )
+        try:
+            require(child.returncode == 0, f"protected workbench handover exited {child.returncode}")
+            receipt_bound = snapshot_owned_receipt(handover_receipt, binding_dir / "workbench-handover-receipt.bound", "workbench handover receipt")
+            journal_bound = snapshot_owned_receipt(handover_journal, binding_dir / "workbench-handover-journal.bound", "workbench handover journal")
+            evidence.extend((receipt_bound, journal_bound))
+            proof = verify_workbench_handover_evidence(receipt_bound, journal_bound, revision, protected_hashes)
+            bindings["kubectl"]._verify()
+            logging_error = best_effort_print_child(child)
+            require(logging_error is None, logging_error or "protected child output forwarding failed")
+            completed = True
+        finally:
+            session.receipt_reconciled()
+    except BaseException as exc:
+        error = str(exc) or type(exc).__name__
+        best_effort_stderr(f"workbench live wrapper blocked: {error}")
+    if installed: cancellation.begin_finalization()
+    session_cleanup: dict[str, Any] = {"wireproxyProcessGroupStopped": True, "allGuardWorkersStopped": True}
+    if session is not None:
+        try: session_cleanup = session.close()
+        except BaseException as exc: cleanup_errors.append(f"transport cleanup: {exc}")
+    process_cleanup = {"ownedProcessGroupsStopped": True, "ownedProcessGroupCount": 0}
+    if installed:
+        try: process_cleanup = cancellation.cleanup_processes()
+        except BaseException as exc: cleanup_errors.append(f"process cleanup: {exc}")
+    for snapshot in snapshots.values():
+        try: unseal_pinned_snapshot(snapshot)
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot unseal: {exc}")
+        try: snapshot.close()
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot close: {exc}")
+    for item in evidence:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"evidence close: {exc}")
+    for item in bound:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"protected blob close: {exc}")
+    plaintext_removed = temp is None
+    if temp is not None:
+        try: shutil.rmtree(temp)
+        except BaseException as exc: cleanup_errors.append(f"private temp cleanup: {exc}")
+        plaintext_removed = not temp.exists()
+    cleanup_complete = not cleanup_errors and session_cleanup.get("wireproxyProcessGroupStopped") is True and session_cleanup.get("allGuardWorkersStopped") is True and process_cleanup["ownedProcessGroupsStopped"] is True and plaintext_removed
+    status = "completed" if completed and cleanup_complete else ("completed-cleanup-incomplete" if completed else "blocked")
+    payload = {
+        "schemaVersion": WORKBENCH_TRANSPORT_RECEIPT_SCHEMA,
+        "status": status,
+        "protectedRevision": revision,
+        "protectedGitBlobSha256": protected_hashes,
+        "binarySha256": {name: snapshot.sha256 for name, snapshot in sorted(snapshots.items())},
+        "transport": {"mode": "authenticated-exact-connect-guards-spawning-fixed-wireproxy-stdio-tunnels", "apiAuthority": f"{API_HOST}:{API_PORT}", "talosAuthority": f"{API_HOST}:{TALOS_PORT}", "listenerOwnershipAndAuthenticationVerified": listener_verified, "temporaryTransportStopped": session_cleanup.get("wireproxyProcessGroupStopped") is True, "plaintextTransportInputsRemoved": plaintext_removed},
+        "handover": proof or {"receiptSha256": None, "journalSha256": None, "networkPolicyUid": None, "fluxObjectUids": {}, "ready": False},
+        "resume": {"explicitReceiptAndJournalRequired": True, "automaticRetry": False, "sameProtectedRevisionRequired": True},
+        "cleanup": {"complete": cleanup_complete, "errors": cleanup_errors, "processes": process_cleanup},
+        "failure": error,
+        "containsSecretMaterial": False,
+        "civicAuthorityEffects": False,
+        "automaticRetry": False,
+    }
+    committed = False
+    if receipt_sink is not None:
+        try:
+            encoded = canonical(payload); require(not any(value in encoded for value in credentials), "workbench wrapper receipt contains transport credential")
+            receipt_sink.commit(payload); committed = True
+        except BaseException as exc:
+            best_effort_stderr(f"workbench live wrapper receipt-incomplete: {exc}")
+    if installed: cancellation.restore()
+    return 0 if completed and cleanup_complete and committed else 3 if completed else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
     temp: Path | None = None; session: LiveSession | None = None
@@ -1152,8 +1580,11 @@ def main(argv: list[str] | None = None) -> int:
     activation_committed = False; operation_succeeded = False
     listener_verified = False
     try:
+        args = parse_args(argv)
+        if args.workbench_baseline_handover:
+            return run_workbench_baseline_handover_transport(args)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
-        args = parse_args(argv); require(args.live is True, "wrapper requires explicit --live")
+        require(args.live is True, "wrapper requires explicit --live")
         revision = args.expected_protected_revision
         require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
 
