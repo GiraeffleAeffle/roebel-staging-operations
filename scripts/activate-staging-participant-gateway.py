@@ -290,12 +290,14 @@ class VerifiedProcess:
         self.cleanup_binding = None
         try:
             info = os.lstat(binding.path)
-            if (info.st_dev, info.st_ino, info.st_size) != (binding.device, binding.inode, binding.size):
-                raise ActivationError("per-spawn executable path identity changed")
+            if (
+                (info.st_dev, info.st_ino, info.st_size) != (binding.device, binding.inode, binding.size)
+                or not (info.st_flags & stat.UF_IMMUTABLE)
+                or bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) != binding.sha256
+            ):
+                raise ActivationError("per-spawn executable path or content changed")
+            os.chflags(binding.path, 0)
             binding.path.unlink()
-            parent = os.open(binding.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try: os.fsync(parent)
-            finally: os.close(parent)
         except BaseException as exc:
             self.cleanup_error = str(exc)
             if self.returncode == 0: self.returncode = 125
@@ -516,6 +518,8 @@ def verified_popen(
             "spawned executable changed before resume",
         )
         for child_fd in child_fds: os.close(child_fd)
+        os.chflags(invocation.path, stat.UF_IMMUTABLE)
+        require(os.lstat(invocation.path).st_flags & stat.UF_IMMUTABLE, "per-spawn executable immutable flag absent")
         child_fds.clear()
         os.kill(spawned_pid, signal.SIGCONT)
         process = VerifiedProcess(
@@ -550,6 +554,8 @@ def verified_popen(
         if actions_ready: libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
         if attributes_ready: libc.posix_spawnattr_destroy(ctypes.byref(attributes))
         if invocation is not None:
+            try: os.chflags(invocation.path, 0)
+            except FileNotFoundError: pass
             try: invocation.path.unlink()
             except FileNotFoundError: pass
             invocation.close()
