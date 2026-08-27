@@ -39,9 +39,11 @@ POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
 ACTIVATION_RUNNER_PATH = "scripts/activate-staging-participant-gateway.py"
 BOOTSTRAP_RUNNER_PATH = "scripts/bootstrap-staging-participant-flux.py"
+LIVE_WRAPPER_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
 PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
+    LIVE_WRAPPER_PATH,
     BOOTSTRAP_MODULE_PATH,
     POLICY_MODULE_PATH,
     POLICY_PATH,

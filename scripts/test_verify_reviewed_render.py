@@ -1070,6 +1070,20 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(fixture["status"], "passed")
         self.assertEqual(fixture["renderFileSet"], "current")
 
+    def test_live_participant_wrapper_is_pinned_in_every_repository_shape(self) -> None:
+        live_wrapper_files = {
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+        }
+        for expected_files in (
+            VERIFIER.EXPECTED_FILES,
+            VERIFIER.FUTURE_EXPECTED_FILES,
+            VERIFIER.PARTICIPANT_GATEWAY_EXPECTED_FILES,
+            VERIFIER.SIGNED_NOSTR_EXPECTED_FILES,
+            VERIFIER.SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES,
+        ):
+            self.assertTrue(live_wrapper_files <= expected_files)
+
     def test_signed_nostr_policy_reserves_exactly_sixteen_files(self) -> None:
         self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 16)
         self.assertNotIn(
