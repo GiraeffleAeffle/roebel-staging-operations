@@ -291,6 +291,24 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
             "kustomization": read_text(reviewed_knowledge_root / "kustomization.yaml"),
             "runtimePin": load(reviewed_knowledge_root / "runtime-pin.json"),
         }
+    participant_gateway_root = render_root / "staging-participant-gateway"
+    if participant_gateway_root.is_dir() and not participant_gateway_root.is_symlink():
+        workbench_ingress_root = participant_gateway_root / "workbench-ingress"
+        checksum_payload["stagingParticipantGateway"] = {
+            "runtimePin": load(participant_gateway_root / "runtime-pin.json"),
+            "deployment": load(participant_gateway_root / "deployment.json"),
+            "service": load(participant_gateway_root / "service.json"),
+            "networkPolicy": load(participant_gateway_root / "networkpolicy.json"),
+            "serviceAccount": load(participant_gateway_root / "serviceaccount.json"),
+            "ingress": load(participant_gateway_root / "ingress.json"),
+            "kustomization": read_text(participant_gateway_root / "kustomization.yaml"),
+            "workbenchIngressNetworkPolicy": load(
+                workbench_ingress_root / "networkpolicy.json"
+            ),
+            "workbenchIngressKustomization": read_text(
+                workbench_ingress_root / "kustomization.yaml"
+            ),
+        }
     integrity = {
         "desiredRenderSha256": digest_bytes(canonical_render(checksum_payload)),
         "networkBoundaryMigrationSha256": digest_bytes(

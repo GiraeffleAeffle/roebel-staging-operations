@@ -17,7 +17,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("activation blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, copy, datetime as dt, hashlib, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, types, urllib.error, urllib.parse, urllib.request
+import argparse, base64, copy, ctypes, datetime as dt, hashlib, http.client, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, threading, time, types, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,13 +28,16 @@ NAME, SOURCE = "roebel-staging-participant-gateway", "roebel-staging-operations"
 WORKBENCH_NAMESPACE, WORKBENCH_POLICY_NAME = "stadtstack-roebel-staging-lab", "roebel-staging-participant-workbench-ingress"
 RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 ROOT = Path(__file__).resolve().parent.parent
+GIT_BIN = Path("/usr/bin/git")
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
 BOOTSTRAP_RUNNER_PATH = "scripts/bootstrap-staging-participant-flux.py"
+LIVE_WRAPPER_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
 BOOTSTRAP_PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
+    LIVE_WRAPPER_PATH,
     BOOTSTRAP_MODULE_PATH,
     POLICY_MODULE_PATH,
     POLICY_PATH,
@@ -143,6 +146,28 @@ def revision(v: Any) -> str:
     require(isinstance(v, str) and len(v) == 40 and all(c in "0123456789abcdef" for c in v), "expected revision must be 40 lowercase hex")
     return v
 
+def trusted_git_v4(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    info = os.lstat(GIT_BIN)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not GIT_BIN.is_symlink()
+        and info.st_uid == 0
+        and stat.S_IMODE(info.st_mode) & 0o022 == 0
+        and os.access(GIT_BIN, os.X_OK),
+        "trusted Git executable metadata invalid",
+    )
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "HOME": "/dev/null",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    return subprocess.run([str(GIT_BIN), "--no-replace-objects", *args], env=environment, **kwargs)
+
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
     paths = tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, WORKFLOW_PATH)))
@@ -153,15 +178,446 @@ def protected_checkout(rev: str) -> dict[str, str]:
         expected = git_blob(rev, path)
         require(local.read_bytes() == expected, f"protected executable differs from exact Git blob: {path}")
         hashes[path] = bytes_digest(expected)
-    diff = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", rev, "--", *paths], check=False)
-    cached = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *paths], check=False)
-    require(diff.returncode == 0 and cached.returncode == 0, "protected executable checkout is dirty")
     return hashes
 
 @dataclass
 class Result: code: int = 0; out: str = ""; err: str = ""
+
+@dataclass
+class ExecutableBinding:
+    path: Path
+    fd: int
+    device: int
+    inode: int
+    size: int
+    sha256: str
+    owns_fd: bool = True
+
+    def close(self) -> None:
+        if self.owns_fd and self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+    def environment(self, prefix: str) -> dict[str, str]:
+        return {
+            f"{prefix}_PATH": str(self.path),
+            f"{prefix}_FD": str(self.fd),
+            f"{prefix}_DEVICE": str(self.device),
+            f"{prefix}_INODE": str(self.inode),
+            f"{prefix}_SIZE": str(self.size),
+            f"{prefix}_SHA256": self.sha256,
+        }
+
+    def popen(self, args: list[str], **kwargs: Any) -> "VerifiedProcess":
+        return verified_popen(self, args, **kwargs)
+
+def bind_executable_snapshot(path: Path, expected_sha256: str) -> ExecutableBinding:
+    selected = Path(os.path.abspath(path)); info = os.lstat(selected)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not selected.is_symlink()
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o500
+        and info.st_size > 0,
+        "executable snapshot metadata invalid",
+    )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+    fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(fd)
+        raw = os.pread(fd, opened.st_size + 1, 0)
+        observed = bytes_digest(raw)
+        require(
+            (opened.st_dev, opened.st_ino, opened.st_size)
+            == (info.st_dev, info.st_ino, info.st_size)
+            and len(raw) == opened.st_size
+            and observed == expected_sha256,
+            "executable snapshot binding drift",
+        )
+        return ExecutableBinding(selected, fd, opened.st_dev, opened.st_ino, opened.st_size, observed)
+    except BaseException:
+        os.close(fd)
+        raise
+
+def executable_binding_from_environment(prefix: str) -> ExecutableBinding:
+    try:
+        path = Path(os.environ[f"{prefix}_PATH"])
+        fd = int(os.environ[f"{prefix}_FD"])
+        device = int(os.environ[f"{prefix}_DEVICE"])
+        inode = int(os.environ[f"{prefix}_INODE"])
+        size = int(os.environ[f"{prefix}_SIZE"])
+        expected = os.environ[f"{prefix}_SHA256"]
+    except (KeyError, ValueError) as exc:
+        raise ActivationError(f"{prefix} executable binding environment invalid") from exc
+    info = os.fstat(fd)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and (info.st_dev, info.st_ino, info.st_size) == (device, inode, size)
+        and bytes_digest(os.pread(fd, size + 1, 0)) == expected,
+        f"{prefix} inherited executable binding drift",
+    )
+    return ExecutableBinding(path, fd, device, inode, size, expected, owns_fd=False)
+
+def _set_descriptor_flags(fd: int, flags: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    code = libc.fchflags(ctypes.c_int(fd), ctypes.c_uint(flags))
+    require(code == 0, f"descriptor flags update failed: errno {ctypes.get_errno()}")
+
+class VerifiedProcess:
+    def __init__(
+        self,
+        pid: int,
+        args: list[str],
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        *,
+        text: bool,
+        cleanup_binding: ExecutableBinding | None = None,
+    ):
+        self.pid, self.args = pid, args
+        self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
+        self.text = text
+        self.returncode: int | None = None
+        self.cleanup_binding = cleanup_binding
+        self.cleanup_error: str | None = None
+
+    @staticmethod
+    def _exitcode(status: int) -> int:
+        return os.waitstatus_to_exitcode(status)
+
+    def _cleanup_materialization(self) -> None:
+        binding = self.cleanup_binding
+        if binding is None: return
+        self.cleanup_binding = None
+        try:
+            info = os.lstat(binding.path)
+            opened = os.fstat(binding.fd)
+            if (
+                (info.st_dev, info.st_ino, info.st_size) != (binding.device, binding.inode, binding.size)
+                or (opened.st_dev, opened.st_ino, opened.st_size) != (binding.device, binding.inode, binding.size)
+                or not (opened.st_flags & stat.UF_IMMUTABLE)
+                or bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) != binding.sha256
+            ):
+                raise ActivationError("per-spawn executable path or content changed")
+            _set_descriptor_flags(binding.fd, 0)
+            binding.path.unlink()
+            parent = os.open(binding.path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try: os.fsync(parent)
+            finally: os.close(parent)
+        except BaseException as exc:
+            self.cleanup_error = str(exc)
+            self.returncode = 125
+        finally:
+            binding.close()
+
+    def poll(self) -> int | None:
+        if self.returncode is not None: return self.returncode
+        try: pid, status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError: return self.returncode
+        if pid == self.pid:
+            self.returncode = self._exitcode(status)
+            self._cleanup_materialization()
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(0.01)
+        return int(self.returncode)
+
+    def terminate(self) -> None:
+        try: os.killpg(self.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+
+    def kill(self) -> None:
+        try: os.killpg(self.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+
+    def communicate(self, input: str | bytes | None = None, timeout: float | None = None) -> tuple[Any, Any]:
+        input_bytes = input.encode() if isinstance(input, str) else input
+        outputs: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+        threads: list[threading.Thread] = []
+        def read_stream(name: str, stream: Any) -> None:
+            try: outputs[name] = stream.read()
+            finally: stream.close()
+        def write_stream(stream: Any) -> None:
+            try:
+                if input_bytes: stream.write(input_bytes); stream.flush()
+            finally: stream.close()
+        for name, stream in (("stdout", self.stdout), ("stderr", self.stderr)):
+            if stream is not None:
+                thread = threading.Thread(target=read_stream, args=(name, stream), daemon=False)
+                threads.append(thread); thread.start()
+        if self.stdin is not None:
+            thread = threading.Thread(target=write_stream, args=(self.stdin,), daemon=False)
+            threads.append(thread); thread.start()
+        try:
+            self.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            try: self.wait(5)
+            except subprocess.TimeoutExpired: pass
+            for thread in threads: thread.join(timeout=5)
+            raise
+        for thread in threads: thread.join(timeout=5)
+        stdout, stderr = outputs["stdout"], outputs["stderr"]
+        if self.text:
+            return stdout.decode(errors="replace"), stderr.decode(errors="replace")
+        return stdout, stderr
+
+def _verified_text_vnode(pid: int, binding: ExecutableBinding) -> None:
+    lsof = Path("/usr/sbin/lsof"); info = os.lstat(lsof)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == 0
+        and stat.S_IMODE(info.st_mode) & 0o022 == 0
+        and os.access(lsof, os.X_OK),
+        "trusted lsof executable metadata invalid",
+    )
+    result = subprocess.run(
+        [str(lsof), "-a", "-p", str(pid), "-d", "txt", "-F0"],
+        capture_output=True,
+        check=False,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        timeout=10,
+    )
+    require(result.returncode == 0, "suspended executable identity unavailable")
+    expected_device = f"D0x{binding.device:x}".encode()
+    expected_inode = f"i{binding.inode}".encode()
+    expected_size = f"s{binding.size}".encode()
+    records = [set(record.split(b"\0")) for record in result.stdout.split(b"\n") if record]
+    require(
+        any(b"ftxt" in record and expected_device in record and expected_inode in record and expected_size in record for record in records),
+        "spawned executable vnode differs from verified binding",
+    )
+
+def _verified_code_signature(pid: int) -> None:
+    flags = ctypes.c_uint32(0)
+    libc = ctypes.CDLL(None, use_errno=True)
+    code = libc.csops(ctypes.c_int(pid), ctypes.c_uint(0), ctypes.byref(flags), ctypes.sizeof(flags))
+    require(code == 0, f"spawned code-sign status unavailable: errno {ctypes.get_errno()}")
+    required = 0x00000001 | 0x00000200 | 0x00020000
+    require(flags.value & required == required, "spawned executable lacks valid kill-on-invalid linker signature")
+
+VERIFIED_SPAWN_LOCK = threading.Lock()
+
+def _materialize_bound_executable(binding: ExecutableBinding) -> ExecutableBinding:
+    destination = binding.path.parent / f".bound-exec-{secrets.token_hex(16)}"
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+    fd = os.open(destination, flags, 0o500)
+    try:
+        digest = hashlib.sha256(); offset = 0
+        while offset < binding.size:
+            chunk = os.pread(binding.fd, min(1024 * 1024, binding.size - offset), offset)
+            require(bool(chunk), "bound executable source read was incomplete")
+            pending = memoryview(chunk)
+            while pending:
+                written = os.write(fd, pending)
+                pending = pending[written:]
+            digest.update(chunk); offset += len(chunk)
+        os.fchmod(fd, 0o500); os.fsync(fd)
+        info = os.fstat(fd); observed = "sha256:" + digest.hexdigest()
+        require(
+            offset == binding.size
+            and info.st_size == binding.size
+            and info.st_nlink == 1
+            and observed == binding.sha256,
+            "per-spawn executable materialization drift",
+        )
+        _set_descriptor_flags(fd, stat.UF_IMMUTABLE)
+        require(os.fstat(fd).st_flags & stat.UF_IMMUTABLE, "per-spawn executable immutable descriptor flag absent")
+        parent = os.open(destination.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try: os.fsync(parent)
+        finally: os.close(parent)
+        return ExecutableBinding(destination, fd, info.st_dev, info.st_ino, info.st_size, observed)
+    except BaseException:
+        try: _set_descriptor_flags(fd, 0)
+        except BaseException: pass
+        os.close(fd)
+        try: destination.unlink()
+        except FileNotFoundError: pass
+        raise
+
+def verified_popen(
+    binding: ExecutableBinding,
+    args: list[str],
+    *,
+    stdin: Any = None,
+    stdout: Any = None,
+    stderr: Any = None,
+    text: bool = False,
+    env: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    start_new_session: bool = True,
+) -> VerifiedProcess:
+    require(sys.platform == "darwin", "verified executable spawn requires Darwin suspended spawn")
+    require(start_new_session, "verified executable spawn requires a separate session")
+    opened = os.fstat(binding.fd)
+    require(
+        (opened.st_dev, opened.st_ino, opened.st_size) == (binding.device, binding.inode, binding.size)
+        and bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) == binding.sha256,
+        "executable binding changed before spawn",
+    )
+    invocation: ExecutableBinding | None = _materialize_bound_executable(binding)
+    libc = ctypes.CDLL(None, use_errno=True)
+    actions = ctypes.c_void_p(); attributes = ctypes.c_void_p()
+    actions_ready = attributes_ready = False
+    parent_stdin = parent_stdout = parent_stderr = None
+    child_fds: list[int] = []; devnull_fd: int | None = None; spawned_pid: int | None = None
+    try:
+        require(libc.posix_spawn_file_actions_init(ctypes.byref(actions)) == 0, "posix_spawn file actions unavailable")
+        actions_ready = True
+        require(libc.posix_spawnattr_init(ctypes.byref(attributes)) == 0, "posix_spawn attributes unavailable")
+        attributes_ready = True
+        def fileno(value: Any) -> int:
+            return value if isinstance(value, int) else value.fileno()
+        def pipe_for(target: int, reading_in_parent: bool) -> Any:
+            read_fd, write_fd = os.pipe()
+            child_fd, parent_fd = (write_fd, read_fd) if reading_in_parent else (read_fd, write_fd)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), child_fd, target) == 0, "posix_spawn pipe action failed")
+            child_fds.append(child_fd)
+            return os.fdopen(parent_fd, "rb" if reading_in_parent else "wb", buffering=0)
+        if stdin == subprocess.PIPE:
+            parent_stdin = pipe_for(0, False)
+        elif stdin == subprocess.DEVNULL:
+            devnull_fd = os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 0) == 0, "stdin action failed")
+        elif stdin is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stdin), 0) == 0, "stdin action failed")
+        if stdout == subprocess.PIPE:
+            parent_stdout = pipe_for(1, True)
+        elif stdout == subprocess.DEVNULL:
+            devnull_fd = devnull_fd if devnull_fd is not None else os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 1) == 0, "stdout action failed")
+        elif stdout is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stdout), 1) == 0, "stdout action failed")
+        if stderr == subprocess.PIPE:
+            parent_stderr = pipe_for(2, True)
+        elif stderr == subprocess.STDOUT:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), 1, 2) == 0, "stderr redirect action failed")
+        elif stderr == subprocess.DEVNULL:
+            devnull_fd = devnull_fd if devnull_fd is not None else os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 2) == 0, "stderr action failed")
+        elif stderr is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stderr), 2) == 0, "stderr action failed")
+        empty_mask = ctypes.c_uint32(0)
+        require(libc.posix_spawnattr_setsigmask(ctypes.byref(attributes), ctypes.byref(empty_mask)) == 0, "spawn signal mask setup failed")
+        flags = 0x0080 | 0x0400 | 0x0008
+        require(libc.posix_spawnattr_setflags(ctypes.byref(attributes), ctypes.c_short(flags)) == 0, "suspended spawn flags unavailable")
+        encoded_args = [str(invocation.path), *args[1:]]
+        argv = (ctypes.c_char_p * (len(encoded_args) + 1))(*[value.encode() for value in encoded_args], None)
+        environment = os.environ.copy() if env is None else env
+        encoded_environment = [f"{key}={value}".encode() for key, value in environment.items()]
+        envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(*encoded_environment, None)
+        inherited_states = {fd: os.get_inheritable(fd) for fd in dict.fromkeys(pass_fds)}
+        with VERIFIED_SPAWN_LOCK:
+            try:
+                for inherited_fd in inherited_states: os.set_inheritable(inherited_fd, True)
+                pid = ctypes.c_int()
+                code = libc.posix_spawn(
+                    ctypes.byref(pid),
+                    str(invocation.path).encode(),
+                    ctypes.byref(actions),
+                    ctypes.byref(attributes),
+                    argv,
+                    envp,
+                )
+                require(code == 0, f"verified executable spawn failed: errno {code}")
+                spawned_pid = pid.value
+            finally:
+                for inherited_fd, was_inheritable in inherited_states.items():
+                    os.set_inheritable(inherited_fd, was_inheritable)
+        _verified_text_vnode(spawned_pid, invocation)
+        opened_invocation = os.fstat(invocation.fd)
+        path_invocation = os.lstat(invocation.path)
+        require(
+            (opened_invocation.st_dev, opened_invocation.st_ino, opened_invocation.st_size)
+            == (invocation.device, invocation.inode, invocation.size)
+            and (path_invocation.st_dev, path_invocation.st_ino, path_invocation.st_size)
+            == (invocation.device, invocation.inode, invocation.size)
+            and opened_invocation.st_flags & stat.UF_IMMUTABLE
+            and bytes_digest(os.pread(invocation.fd, invocation.size + 1, 0)) == invocation.sha256,
+            "spawned executable binding changed before resume",
+        )
+        _verified_text_vnode(spawned_pid, invocation)
+        _verified_code_signature(spawned_pid)
+        for child_fd in child_fds: os.close(child_fd)
+        child_fds.clear()
+        os.kill(spawned_pid, signal.SIGCONT)
+        process = VerifiedProcess(
+            spawned_pid,
+            encoded_args,
+            parent_stdin,
+            parent_stdout,
+            parent_stderr,
+            text=text,
+            cleanup_binding=invocation,
+        )
+        invocation = None
+        return process
+    except BaseException:
+        if spawned_pid is not None:
+            try: os.kill(spawned_pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: os.waitpid(spawned_pid, 0)
+            except ChildProcessError: pass
+        for stream in (parent_stdin, parent_stdout, parent_stderr):
+            if stream is not None:
+                try: stream.close()
+                except OSError: pass
+        raise
+    finally:
+        for child_fd in child_fds:
+            try: os.close(child_fd)
+            except OSError: pass
+        if devnull_fd is not None:
+            try: os.close(devnull_fd)
+            except OSError: pass
+        if actions_ready: libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
+        if attributes_ready: libc.posix_spawnattr_destroy(ctypes.byref(attributes))
+        if invocation is not None:
+            try: _set_descriptor_flags(invocation.fd, 0)
+            except BaseException: pass
+            try: invocation.path.unlink()
+            except FileNotFoundError: pass
+            invocation.close()
+
+def kubectl_binding_v4() -> ExecutableBinding:
+    return executable_binding_from_environment("ROEBEL_PINNED_KUBECTL")
+def kubernetes_subprocess_environment_v4() -> dict[str, str]:
+    """Keep caller state except ambient proxy routing for Kubernetes clients.
+
+    The only permitted Kubernetes proxy is the validated ``proxy-url`` inside
+    the snapshotted kubeconfig.  Inherited proxy variables would otherwise add
+    a second, unreviewed transport path.
+    """
+    proxy_names = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
+    return {key: value for key, value in os.environ.items() if key.lower() not in proxy_names}
 class Runner:
     def run(self, args: list[str], *, input_text: str | None = None, timeout: int | float = 10) -> Result:
+        if args and args[0] == "kubectl":
+            binding = kubectl_binding_v4()
+            process = verified_popen(
+                binding,
+                [str(binding.path), *args[1:]],
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=kubernetes_subprocess_environment_v4(),
+            )
+            try:
+                stdout, stderr = process.communicate(input_text, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                return Result(124, "", f"timeout after {timeout}s: {exc}")
+            return Result(int(process.returncode), stdout, stderr)
         try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired as exc: return Result(124, "", f"timeout after {timeout}s: {exc}")
         return Result(p.returncode, p.stdout, p.stderr)
@@ -188,13 +644,68 @@ def obj(raw: str, label: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc: raise ActivationError(f"{label}: invalid JSON") from exc
     except ValueError as exc: raise ActivationError(f"{label}: duplicate JSON key") from exc
     require(isinstance(value, dict), f"{label}: JSON object required"); return value
+
+def load_owned_receipt_v4(path: Path, label: str) -> dict[str, Any]:
+    """Read one bounded owned receipt without following or racing links."""
+    selected = Path(os.path.abspath(path))
+    info = os.lstat(selected)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not selected.is_symlink()
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and 0 < info.st_size <= 8 * 1024 * 1024,
+        f"{label} must be an owned 0600 regular non-symlink nlink-one file under 8 MiB",
+    )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(fd)
+        require(
+            opened.st_dev == info.st_dev
+            and opened.st_ino == info.st_ino
+            and opened.st_size == info.st_size,
+            f"{label} identity changed while opening",
+        )
+        raw = os.read(fd, 8 * 1024 * 1024 + 1)
+    finally:
+        os.close(fd)
+    require(len(raw) <= 8 * 1024 * 1024, f"{label} exceeds 8 MiB")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ActivationError(f"{label} must be UTF-8 JSON") from exc
+    return obj(text, label)
+
+def load_owned_receipt_fd_v4(fd: int, label: str) -> dict[str, Any]:
+    """Read one inherited immutable regular-file receipt descriptor."""
+    require(isinstance(fd, int) and fd >= 3, f"{label} descriptor invalid")
+    info = os.fstat(fd)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_nlink in {0, 1}
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and 0 < info.st_size <= 8 * 1024 * 1024,
+        f"{label} descriptor must reference a bounded owned 0600 regular file",
+    )
+    raw = os.pread(fd, info.st_size + 1, 0)
+    require(len(raw) == info.st_size, f"{label} descriptor read was incomplete")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ActivationError(f"{label} must be UTF-8 JSON") from exc
+    return obj(text, label)
 def kb(kubeconfig: str) -> list[str]: return ["kubectl", "--kubeconfig", kubeconfig]
 def get(r: Runner, args: list[str], label: str) -> dict[str, Any]: return obj(checked(r, args + ["-o", "json"], label), label)
 def git_blob(rev: str, path: str) -> bytes:
     # Both revision and path originate in fixed code/policy, never CLI/evidence.
     try:
-        p = subprocess.run(
-            ["git", "-C", str(ROOT), "show", f"{rev}:{path}"],
+        p = trusted_git_v4(
+            ["-C", str(ROOT), "show", f"{rev}:{path}"],
             capture_output=True,
             check=False,
             timeout=10,
@@ -252,6 +763,21 @@ def bind_flux_bootstrap_receipt_v4(
     except (BOOTSTRAP.BootstrapError, OSError) as exc:
         raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
 
+def bind_flux_bootstrap_receipt_value_v4(
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind an already snapshotted dormant receipt before Kubernetes access."""
+    require(BOOTSTRAP is not None, "protected dormant Flux bootstrap binder unavailable")
+    bootstrap_hashes = {path: runner_hashes[path] for path in BOOTSTRAP_PROTECTED_PATHS}
+    try:
+        plan = BOOTSTRAP.build_plan(POLICY, p, rev, bootstrap_hashes)
+        return BOOTSTRAP.bind_success_receipt(plan, receipt)
+    except BOOTSTRAP.BootstrapError as exc:
+        raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
+
 class ReceiptSink:
     """A pre-reserved, non-overwriting, durably committed receipt target."""
     def __init__(self, path: Path, device: int, inode: int):
@@ -297,6 +823,14 @@ class ReceiptSink:
             try: tmp.unlink()
             except FileNotFoundError: pass
 
+@dataclass(frozen=True)
+class LoopbackConnectProxy:
+    origin: str
+    host: str
+    port: int
+    username: str
+    password: str
+
 @dataclass
 class KubeconfigSnapshot:
     path: Path
@@ -307,10 +841,16 @@ class KubeconfigSnapshot:
     tls_server_name: str
     ca_pem: bytes
     ca_sha256: str
+    connect_proxy: LoopbackConnectProxy | None
+    client_certificate_path: Path | None
+    client_key_path: Path | None
+    bearer_token: str | None
 
     def close(self) -> None:
-        try: self.path.unlink()
-        except FileNotFoundError: pass
+        for value in (self.client_key_path, self.client_certificate_path, self.path):
+            if value is None: continue
+            try: value.unlink()
+            except FileNotFoundError: pass
         try: self.directory.rmdir()
         except FileNotFoundError: pass
 
@@ -328,6 +868,26 @@ def _api_origin(server: str) -> tuple[str, str, int]:
     host = parsed.hostname.lower(); bracketed = f"[{host}]" if ":" in host else host
     return f"https://{bracketed}" + ("" if port == 443 else f":{port}"), host, port
 
+def _loopback_connect_proxy_v4(value: Any) -> LoopbackConnectProxy:
+    """Validate the sole rootless transport adapter accepted by the runner."""
+    require(isinstance(value, str) and value.isascii(), "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    try: parsed = urllib.parse.urlsplit(value)
+    except ValueError as exc: raise ActivationError("Kubernetes proxy must be an exact loopback HTTP CONNECT proxy") from exc
+    require(
+        parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
+        and parsed.username == "stadtstack-participant"
+        and isinstance(parsed.password, str) and re.fullmatch(r"[0-9a-f]{64}", parsed.password) is not None
+        and parsed.path == "" and parsed.query == "" and parsed.fragment == ""
+        and parsed.netloc.startswith("stadtstack-participant:"),
+        "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy",
+    )
+    try: port = parsed.port
+    except ValueError as exc: raise ActivationError("Kubernetes proxy must be an exact loopback HTTP CONNECT proxy") from exc
+    require(isinstance(port, int) and 1024 <= port <= 65535, "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    origin = f"http://stadtstack-participant:{parsed.password}@127.0.0.1:{port}"
+    require(value == origin, "Kubernetes proxy must be an exact loopback HTTP CONNECT proxy")
+    return LoopbackConnectProxy(origin, "127.0.0.1", port, "stadtstack-participant", parsed.password)
+
 def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
     """Flatten one explicit kubeconfig into an owned 0600 one-use snapshot."""
     source = Path(explicit).absolute(); info = os.lstat(source)
@@ -340,28 +900,64 @@ def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
     require(all(isinstance(value, list) and len(value) == 1 for value in (clusters, contexts, users)), "flattened kubeconfig must contain exactly one cluster, context, and user")
     require(config.get("current-context") == contexts[0].get("name"), "flattened kubeconfig current context drift")
     cluster = clusters[0].get("cluster", {}); require(isinstance(cluster, dict), "flattened kubeconfig cluster absent")
-    require(not cluster.get("insecure-skip-tls-verify") and "proxy-url" not in cluster, "insecure or proxied Kubernetes API configuration forbidden")
+    require(not cluster.get("insecure-skip-tls-verify"), "insecure Kubernetes API configuration forbidden")
+    connect_proxy = _loopback_connect_proxy_v4(cluster["proxy-url"]) if "proxy-url" in cluster else None
     origin, hostname, port = _api_origin(cluster.get("server", ""))
     encoded_ca = cluster.get("certificate-authority-data")
     require(isinstance(encoded_ca, str) and encoded_ca and "certificate-authority" not in cluster, "flattened kubeconfig must embed its CA")
     try: ca_pem = base64.b64decode(encoded_ca, validate=True)
     except (ValueError, TypeError) as exc: raise ActivationError("flattened kubeconfig CA data invalid") from exc
     require(b"BEGIN CERTIFICATE" in ca_pem and len(ca_pem) <= 1024 * 1024, "flattened kubeconfig CA certificate invalid")
-    tls_name = cluster.get("tls-server-name", hostname)
-    require(isinstance(tls_name, str) and tls_name and not any(ch.isspace() for ch in tls_name), "Kubernetes TLS server name invalid")
+    require("tls-server-name" not in cluster, "Kubernetes TLS server name override forbidden")
+    tls_name = hostname
     user = users[0].get("user", {}); require(isinstance(user, dict) and user, "flattened kubeconfig user absent")
-    forbidden_user_fields = {"exec", "auth-provider", "client-certificate", "client-key", "tokenFile"}
-    require(not (forbidden_user_fields & set(user)), "flattened kubeconfig still depends on external credential execution or files")
-    directory = Path(tempfile.mkdtemp(prefix="participant-kubeconfig-")); path = directory / "config"; fd = -1
+    forbidden_user_fields = {"exec", "auth-provider", "client-certificate", "client-key", "tokenFile", "username", "password"}
+    require(not (forbidden_user_fields & set(user)), "flattened kubeconfig still depends on external or forbidden credentials")
+    bearer_token: str | None = None
+    client_certificate_pem: bytes | None = None
+    client_key_pem: bytes | None = None
+    if set(user) == {"token"}:
+        bearer_token = user["token"]
+        require(
+            isinstance(bearer_token, str)
+            and 0 < len(bearer_token) <= 64 * 1024
+            and bearer_token.isascii()
+            and all(character not in bearer_token for character in "\r\n"),
+            "flattened kubeconfig bearer token invalid",
+        )
+    else:
+        require(
+            set(user) == {"client-certificate-data", "client-key-data"},
+            "flattened kubeconfig must contain exactly one supported credential form",
+        )
+        try:
+            client_certificate_pem = base64.b64decode(user["client-certificate-data"], validate=True)
+            client_key_pem = base64.b64decode(user["client-key-data"], validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ActivationError("flattened kubeconfig client credential data invalid") from exc
+        require(
+            b"BEGIN CERTIFICATE" in client_certificate_pem
+            and b"PRIVATE KEY" in client_key_pem
+            and len(client_certificate_pem) <= 1024 * 1024
+            and len(client_key_pem) <= 1024 * 1024,
+            "flattened kubeconfig client credential PEM invalid",
+        )
+    directory = Path(tempfile.mkdtemp(prefix="participant-kubeconfig-"))
+    path = directory / "config"; certificate_path = directory / "client.crt"; key_path = directory / "client.key"
+    created: list[Path] = []; fd = -1
     try:
         os.chmod(directory, 0o700)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags, 0o600)
-        os.fchmod(fd, 0o600)
-        raw = canonical(config).encode() + b"\n"
-        stream = os.fdopen(fd, "wb", closefd=True); fd = -1
-        with stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        values = [(path, canonical(config).encode() + b"\n")]
+        if client_certificate_pem is not None and client_key_pem is not None:
+            values.extend(((certificate_path, client_certificate_pem), (key_path, client_key_pem)))
+        for destination, raw in values:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+            fd = os.open(destination, flags, 0o600)
+            created.append(destination)
+            os.fchmod(fd, 0o600)
+            stream = os.fdopen(fd, "wb", closefd=True); fd = -1
+            with stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
         parent = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try: os.fsync(parent)
         finally: os.close(parent)
@@ -369,18 +965,67 @@ def snapshot_kubeconfig_v4(explicit: str, r: Runner) -> KubeconfigSnapshot:
         if fd >= 0:
             try: os.close(fd)
             except OSError: pass
-        try: path.unlink()
-        except FileNotFoundError: pass
+        for created_path in reversed(created):
+            try: created_path.unlink()
+            except FileNotFoundError: pass
         try: directory.rmdir()
         except FileNotFoundError: pass
         except OSError as cleanup_error:
             raise ActivationError("failed to remove incomplete kubeconfig snapshot") from cleanup_error
         raise
-    return KubeconfigSnapshot(path, directory, origin, hostname, port, tls_name, ca_pem, bytes_digest(ca_pem))
+    return KubeconfigSnapshot(
+        path,
+        directory,
+        origin,
+        hostname,
+        port,
+        tls_name,
+        ca_pem,
+        bytes_digest(ca_pem),
+        connect_proxy,
+        certificate_path if client_certificate_pem is not None else None,
+        key_path if client_key_pem is not None else None,
+        bearer_token,
+    )
+
+def _api_tcp_transport_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> socket.socket:
+    """Open the protected API stream directly or through the local adapter."""
+    target = (snapshot.hostname, snapshot.port)
+    if snapshot.connect_proxy is None:
+        return socket.create_connection(target, timeout=timeout)
+    proxy = snapshot.connect_proxy
+    connection = socket.create_connection((proxy.host, proxy.port), timeout=timeout)
+    try:
+        host = f"[{snapshot.hostname}]" if ":" in snapshot.hostname else snapshot.hostname
+        authority = f"{host}:{snapshot.port}"
+        authorization = base64.b64encode(f"{proxy.username}:{proxy.password}".encode("ascii")).decode("ascii")
+        connection.sendall(
+            f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n"
+            f"Proxy-Authorization: Basic {authorization}\r\n\r\n".encode("ascii")
+        )
+        header = bytearray()
+        while not header.endswith(b"\r\n\r\n"):
+            chunk = connection.recv(1)
+            require(chunk != b"", "Kubernetes loopback CONNECT proxy response incomplete")
+            header.extend(chunk)
+            require(len(header) <= 8192, "Kubernetes loopback CONNECT proxy response too large")
+        lines = bytes(header[:-4]).split(b"\r\n")
+        require(
+            bool(lines) and re.fullmatch(rb"HTTP/1\.[01] 200(?: [\x20-\x7e]*)?", lines[0]) is not None,
+            "Kubernetes loopback CONNECT proxy refused or malformed the tunnel",
+        )
+        require(
+            all(re.fullmatch(rb"[!#$%&'*+\-.^_`|~0-9A-Za-z]+:[\x20-\x7e]*", line) is not None for line in lines[1:]),
+            "Kubernetes loopback CONNECT proxy headers malformed",
+        )
+        return connection
+    except BaseException:
+        connection.close()
+        raise
 
 def _api_server_spki_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> str:
     context = ssl.create_default_context(cadata=snapshot.ca_pem.decode("ascii"))
-    with socket.create_connection((snapshot.hostname, snapshot.port), timeout=timeout) as connection:
+    with _api_tcp_transport_v4(snapshot, timeout) as connection:
         with context.wrap_socket(connection, server_hostname=snapshot.tls_server_name) as secured:
             certificate = secured.getpeercert(binary_form=True)
     require(isinstance(certificate, bytes) and certificate, "Kubernetes API TLS certificate absent")
@@ -389,80 +1034,85 @@ def _api_server_spki_v4(snapshot: KubeconfigSnapshot, timeout: int | float) -> s
     second = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "DER"], input=first.stdout, capture_output=True, check=False, timeout=timeout)
     require(second.returncode == 0 and second.stdout, "Kubernetes API SPKI normalization failed")
     return bytes_digest(second.stdout)
-def raw_delete(kube: str, resource_path: str, payload: str) -> None:
-    """Issue a real Kubernetes HTTP DELETE through a short-lived kubectl proxy.
-
-    ``kubectl delete`` has no UID+resourceVersion DeleteOptions transport.
-    The proxy authenticates with the explicit kubeconfig; urllib sends the raw
-    DELETE body unchanged and Kubernetes enforces its preconditions.
-    """
-    # Let kubectl choose the port atomically; parsing its loopback-only startup
-    # line avoids reserving and releasing a raceable port in this process.  The
-    # proxy is credentialed, so expose only this exact escaped resource path to
-    # other loopback processes during its bounded lifetime.
-    allowed = re.fullmatch(
-        r"/(?:api/v1|apis/(?:apps|networking\.k8s\.io)/v1)/namespaces/"
-        r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?/(?:ingresses|networkpolicies|deployments|services|serviceaccounts)/"
-        r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?",
-        resource_path,
+def raw_delete(snapshot: KubeconfigSnapshot, resource_path: str, payload: str, timeout: int | float = 15) -> None:
+    """Send one exact UID/resourceVersion DELETE over authenticated API TLS."""
+    name = r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?"
+    allowed_patterns = (
+        rf"/api/v1/namespaces/{name}/(?:services|serviceaccounts)/{name}",
+        rf"/apis/apps/v1/namespaces/{name}/deployments/{name}",
+        rf"/apis/networking\.k8s\.io/v1/namespaces/{name}/(?:ingresses|networkpolicies)/{name}",
+        rf"/apis/rbac\.authorization\.k8s\.io/v1/namespaces/{name}/(?:roles|rolebindings)/{name}",
+        rf"/apis/kustomize\.toolkit\.fluxcd\.io/v1/namespaces/{name}/kustomizations/{name}",
     )
-    require(allowed is not None, "raw rollback delete resource path outside closed policy")
-    # The closed path grammar above contains no regexp metacharacters except
-    # dots. Avoid Python's ``re.escape`` because its ``\-`` escape is not
-    # portable to kubectl proxy's Go/RE2 regexp parser.
-    accept_paths = "^" + resource_path.replace(".", r"\.") + "$"
-    process = subprocess.Popen(
-        kb(kube) + [
-            "proxy", "--port=0", "--address=127.0.0.1",
-            "--accept-hosts=^127\\.0\\.0\\.1$",
-            f"--accept-paths={accept_paths}",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    require(any(re.fullmatch(pattern, resource_path) is not None for pattern in allowed_patterns), "raw rollback delete resource path outside closed policy")
+    options = obj(payload, "raw rollback DeleteOptions")
+    require(
+        set(options) in (
+            {"apiVersion", "kind", "preconditions"},
+            {"apiVersion", "kind", "preconditions", "propagationPolicy"},
+        )
+        and options.get("apiVersion") == "v1"
+        and options.get("kind") == "DeleteOptions"
+        and isinstance(options.get("preconditions"), dict)
+        and set(options["preconditions"]) == {"uid", "resourceVersion"}
+        and isinstance(options["preconditions"]["uid"], str)
+        and bool(options["preconditions"]["uid"])
+        and isinstance(options["preconditions"]["resourceVersion"], str)
+        and options["preconditions"]["resourceVersion"].isdigit()
+        and ("propagationPolicy" not in options or options["propagationPolicy"] == "Foreground")
+        and canonical(options) == payload,
+        "raw rollback DeleteOptions outside closed UID/resourceVersion policy",
     )
-    selector = selectors.DefaultSelector()
+    context = ssl.create_default_context(cadata=snapshot.ca_pem.decode("ascii"))
+    if snapshot.client_certificate_path is not None or snapshot.client_key_path is not None:
+        require(
+            snapshot.client_certificate_path is not None and snapshot.client_key_path is not None,
+            "Kubernetes client certificate snapshot incomplete",
+        )
+        context.load_cert_chain(str(snapshot.client_certificate_path), str(snapshot.client_key_path))
+    raw = _api_tcp_transport_v4(snapshot, timeout)
+    secured: ssl.SSLSocket | None = None
     try:
-        require(process.stdout is not None, "kubectl proxy output pipe unavailable")
-        selector.register(process.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + 10; port: int | None = None; output = b""
-        while time.monotonic() < deadline:
-            if process.poll() is not None: raise ActivationError("kubectl proxy terminated before raw rollback delete")
-            remaining = max(0.0, deadline - time.monotonic())
-            events = selector.select(timeout=min(0.25, remaining))
-            if not events: continue
-            chunk = os.read(process.stdout.fileno(), 4096)
-            if not chunk: continue
-            output = (output + chunk)[-16384:]
-            match = re.search(rb"Starting to serve on 127\.0\.0\.1:(\d+)", output)
-            if match:
-                try: port = int(match.group(1))
-                except ValueError as exc: raise ActivationError("kubectl proxy emitted malformed loopback port") from exc
-                break
-        require(port is not None, "kubectl proxy did not become ready for raw rollback delete")
-        request = urllib.request.Request(f"http://127.0.0.1:{port}{resource_path}", data=payload.encode(), headers={"Content-Type": "application/json"}, method="DELETE")
-        try:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            with opener.open(request, timeout=15) as response: require(200 <= response.status < 300, "raw rollback delete did not return success")
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404: raise ActivationError(f"raw rollback delete rejected by Kubernetes: HTTP {exc.code}") from exc
+        secured = context.wrap_socket(raw, server_hostname=snapshot.tls_server_name)
+        host = f"[{snapshot.hostname}]" if ":" in snapshot.hostname else snapshot.hostname
+        authority = host if snapshot.port == 443 else f"{host}:{snapshot.port}"
+        body = payload.encode("ascii")
+        headers = [
+            f"DELETE {resource_path} HTTP/1.1",
+            f"Host: {authority}",
+            "Accept: application/json",
+            "Content-Type: application/json",
+            f"Content-Length: {len(body)}",
+            "Connection: close",
+        ]
+        if snapshot.bearer_token is not None:
+            headers.append(f"Authorization: Bearer {snapshot.bearer_token}")
+        secured.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body)
+        response = http.client.HTTPResponse(secured)
+        response.begin()
+        response_body = response.read(1024 * 1024 + 1)
+        require(len(response_body) <= 1024 * 1024, "Kubernetes DELETE response exceeds 1 MiB")
+        require(200 <= response.status < 300 or response.status == 404, f"raw rollback delete rejected by Kubernetes: HTTP {response.status}")
     finally:
-        selector.close()
-        process.terminate()
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
-        if process.stdout is not None: process.stdout.close()
+        if secured is not None:
+            try: secured.close()
+            except OSError: pass
+        else:
+            try: raw.close()
+            except OSError: pass
 
 
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
     """Bounded cleanup for a subprocess created with ``start_new_session``."""
-    if process.poll() is not None: return
-    try: os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError: return
-    try: process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try: os.killpg(process.pid, signal.SIGKILL)
+    if process.poll() is None:
+        try: os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError: pass
-        process.wait(timeout=5)
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.wait(timeout=5)
+    require(getattr(process, "cleanup_error", None) is None, "verified subprocess materialization cleanup failed")
 
 @dataclass
 class CreatedV4:
@@ -1012,11 +1662,14 @@ def _pod_port_forward_get_v4(
         "-n", NAMESPACE, "port-forward", "--address=127.0.0.1",
         f"pod/{pod_name}", f":{remote_port}",
     ]
-    process = subprocess.Popen(
-        command,
+    binding = kubectl_binding_v4()
+    process = verified_popen(
+        binding,
+        [str(binding.path), *command[1:]],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        start_new_session=True,
+        env=kubernetes_subprocess_environment_v4(),
     )
     selector = selectors.DefaultSelector()
     try:
@@ -1325,7 +1978,7 @@ def semantic_postconditions_v4(r: Runner, kubeconfig: str, created: list[Created
         result[item.logical_name] = {"uid": live["metadata"]["uid"], "resourceVersion": live["metadata"]["resourceVersion"], "semanticSha256": POLICY.canonical_sha256(normalized)}
     return result
 
-def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4, timeout: int = 120) -> dict[str, Any]:
+def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4, timeout: int = 120, snapshot: KubeconfigSnapshot | None = None) -> dict[str, Any]:
     desired, admitted = created.desired, created.observed; metadata = desired["metadata"]
     current = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
     if current is None: return {"logicalName": created.logical_name, "absent": True, "alreadyAbsent": True}
@@ -1352,7 +2005,8 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
     api, plural = {"ingress": ("networking.k8s.io/v1", "ingresses"), "networkpolicy": ("networking.k8s.io/v1", "networkpolicies"), "deployment": ("apps/v1", "deployments"), "service": ("v1", "services"), "serviceaccount": ("v1", "serviceaccounts")}[kind]
     prefix = "/api" if api == "v1" else "/apis"
     resource_path = f"{prefix}/{api}/namespaces/{metadata['namespace']}/{plural}/{metadata['name']}"
-    raw_delete(kubeconfig, resource_path, payload)
+    require(snapshot is not None, "authenticated Kubernetes DELETE snapshot absent")
+    raw_delete(snapshot, resource_path, payload, min(15, timeout))
     deadline = time.monotonic() + timeout
     while True:
         after = get_optional(r, kubeconfig, kind, metadata["name"], metadata["namespace"])
@@ -1452,7 +2106,7 @@ def rollback_v4(
     ingress_absence_proved = False
     if ingress and rollback_authorized:
         try:
-            ingress_result = delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic())))
+            ingress_result = delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic())), snapshot)
             deleted.append(ingress_result); ingress_absence_proved = ingress_result.get("absent") is True
         except Exception as exc: errors.append(str(exc))
     # A 409 or unbindable create response is never authority to touch an
@@ -1461,7 +2115,7 @@ def rollback_v4(
     # with a new UID before a failing reconciler becomes quiescent.
     if rollback_authorized and exposure_service is not None:
         try:
-            service_result = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())))
+            service_result = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())), snapshot)
             deleted.append(service_result); exposure_service_deleted = service_result.get("absent") is True
             require(exposure_service_deleted, "participant Service exposure-break absence was not proved")
             final_checks["exposureBreak"] = {
@@ -1490,7 +2144,7 @@ def rollback_v4(
             current = get_optional(r, kubeconfig, "ingress", metadata["name"], metadata["namespace"])
             if current is not None:
                 require(current.get("metadata", {}).get("uid") == ingress.observed.get("metadata", {}).get("uid"), "participant Ingress reappeared with unowned UID")
-                deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic()))))
+                deleted.append(delete_with_preconditions_v4(r, kubeconfig, ingress, max(1, int(deadline - time.monotonic())), snapshot))
         except Exception as exc: errors.append(str(exc))
     # Re-prove the exposure breaker after the Flux/reappearance phase even
     # when that phase produced an error. A controller may have recreated the
@@ -1498,7 +2152,7 @@ def rollback_v4(
     # protected semantics remain deletable by this transaction.
     if rollback_authorized and exposure_service is not None and bootstrap is not None:
         try:
-            service_after_flux = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())))
+            service_after_flux = delete_with_preconditions_v4(r, kubeconfig, exposure_service, max(1, int(deadline - time.monotonic())), snapshot)
             deleted.append(service_after_flux)
             require(service_after_flux.get("absent") is True, "participant Service exposure-break post-Flux absence was not proved")
             final_checks["exposureBreakAfterFlux"] = {
@@ -1534,13 +2188,13 @@ def rollback_v4(
         deployment = next((entry for entry in remaining if entry.logical_name == "gateway.deployment"), None)
         if deployment is not None:
             try:
-                deleted.append(delete_with_preconditions_v4(r, kubeconfig, deployment, max(1, int(deadline - time.monotonic()))))
+                deleted.append(delete_with_preconditions_v4(r, kubeconfig, deployment, max(1, int(deadline - time.monotonic())), snapshot))
                 final_checks["deploymentDependents"] = deployment_dependents_absent_v4(r, kubeconfig)
                 remaining.remove(deployment)
             except Exception as exc: errors.append(str(exc))
         if not errors:
             for item in reversed(remaining):
-                try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, max(1, int(deadline - time.monotonic()))))
+                try: deleted.append(delete_with_preconditions_v4(r, kubeconfig, item, max(1, int(deadline - time.monotonic())), snapshot))
                 except Exception as exc: errors.append(str(exc)); break
     if not errors and rendered is not None:
         try:
@@ -1606,7 +2260,79 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     secrets_receipt = facts["secretMaterialization"]
     require(set(secrets_receipt) == {"beforeCreate", "beforeIngress", "afterFlux"} and secrets_receipt["beforeCreate"] == secrets_receipt["beforeIngress"] == secrets_receipt["afterFlux"], "trusted Secret recheck receipt incomplete")
     require(set(facts["networkPolicyConflictScan"]) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted policy-union recheck receipt incomplete")
+    cluster_bindings = facts["clusterBinding"]
+    expected_cluster = p["clusterIdentity"]
+    expected_binding_fields = {
+        "apiOrigin",
+        "caCertificateSha256",
+        "apiServerSpkiSha256",
+        "kubeSystemNamespaceUid",
+        "kubeSystemNamespaceResourceVersion",
+        "credentialsIncluded",
+        "kubeconfigPathIncluded",
+    }
+    require(
+        set(cluster_bindings) == {"initial", "beforeMutation", "beforeIngress", "beforeFluxUnsuspend", "beforeSuccess"}
+        and all(value == cluster_bindings["initial"] for value in cluster_bindings.values())
+        and all(
+            isinstance(value, dict)
+            and set(value) == expected_binding_fields
+            and {key: value[key] for key in expected_cluster} == expected_cluster
+            and isinstance(value["kubeSystemNamespaceResourceVersion"], str)
+            and value["kubeSystemNamespaceResourceVersion"].isdigit()
+            and value["credentialsIncluded"] is False
+            and value["kubeconfigPathIncluded"] is False
+            for value in cluster_bindings.values()
+        ),
+        "trusted cluster identity recheck sequence or protected binding drift",
+    )
     require(facts["rollback"] == {"status": "not-required", "finalizersRemovedByRunner": False}, "trusted success rollback receipt drift")
+
+def bind_success_receipt_v4(
+    receipt: dict[str, Any],
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+) -> dict[str, Any]:
+    """Deep-verify the durable activation commit without contacting Kubernetes."""
+    require(isinstance(receipt, dict), "activation success receipt must be an object")
+    expected_fields = {
+        "schemaVersion",
+        "status",
+        "protectedRevision",
+        "activationPolicySha256",
+        "protectedRunnerFileSha256",
+        "trustedLiveFacts",
+        "civicAuthorityEffects",
+        "canonicalSha256",
+    }
+    require(set(receipt) == expected_fields, "activation success receipt field set drift")
+    checksum = receipt["canonicalSha256"]
+    require(isinstance(checksum, str) and bool(POLICY.SHA256.fullmatch(checksum)), "activation success receipt checksum invalid")
+    unsigned = {key: copy.deepcopy(value) for key, value in receipt.items() if key != "canonicalSha256"}
+    require(digest(unsigned) == checksum, "activation success receipt checksum mismatch")
+    public_projection(unsigned)
+    require(receipt["schemaVersion"] == RECEIPT_SCHEMA, "activation success receipt schema drift")
+    require(receipt["status"] == "activated", "activation success receipt is not activated")
+    require(receipt["protectedRevision"] == rev, "activation success receipt revision drift")
+    require(
+        receipt["activationPolicySha256"] == POLICY.activation_policy_sha256(p),
+        "activation success receipt policy drift",
+    )
+    require(
+        receipt["protectedRunnerFileSha256"] == runner_hashes,
+        "activation success receipt protected file drift",
+    )
+    require(receipt["civicAuthorityEffects"] is False, "activation success receipt civic authority widened")
+    validate_success_facts_v4(receipt["trustedLiveFacts"], p, rev)
+    return {
+        "schemaVersion": RECEIPT_SCHEMA,
+        "status": "activated",
+        "receiptSha256": checksum,
+        "protectedRevision": rev,
+        "activationPolicySha256": receipt["activationPolicySha256"],
+        "civicAuthorityEffects": False,
+    }
 
 def activate(
     p: dict[str, Any],
@@ -1651,6 +2377,7 @@ def activate(
         secret_before_ingress = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_before_ingress, "before Ingress")
         policy_before_ingress = policy_union_v4(r, snapshot_path, owned)
         partial["database"] = database_status_v4(r, snapshot_path, p, partial["publication"]["runtime"])
+        cluster_before_ingress = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_ingress, "before Ingress")
         uncertain = "gateway.ingress"
         try: ingress = create_v4(r, snapshot_path, uncertain, rendered[uncertain], operation_nonce)
         except CreateConflictError: uncertain = None; raise
@@ -1659,6 +2386,7 @@ def activate(
         created.append(ingress); remove_operation_nonce_v4(r, snapshot_path, ingress, operation_nonce); uncertain = None
         partial["routeMatrix"] = route_matrix_v4(r, p)
         source_before_cas = shared_source_revision_v4(r, snapshot_path, rev)
+        cluster_before_flux = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_flux, "before Flux unsuspend")
         changed = unsuspend_both_v4(r, snapshot_path, p, bootstrap); ready = wait_both_ready_v4(r, snapshot_path, p, bootstrap, rev)
         source_after_ready = shared_source_revision_v4(r, snapshot_path, rev)
         secret_after_flux = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_after_flux, "after Flux")
@@ -1667,7 +2395,7 @@ def activate(
         preservation = verify_preservation_v4(r, snapshot_path, preserved)
         final_cluster = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], final_cluster, "before success")
         valid_until = started + dt.timedelta(seconds=300)
-        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
+        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeIngress": cluster_before_ingress, "beforeFluxUnsuspend": cluster_before_flux, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
         validate_success_facts_v4(facts, p, rev)
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
         success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}
@@ -1704,31 +2432,61 @@ def activate(
         finally:
             restore_transaction_signal_handlers_v4(previous_signal_handlers)
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expected-protected-revision", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--dry-run", action="store_true")
+    modes.add_argument("--live", action="store_true")
+    modes.add_argument("--verify-success-receipt", type=Path)
+    modes.add_argument("--verify-success-receipt-fd", type=int)
+    parser.add_argument("--kubeconfig")
+    bootstrap = parser.add_mutually_exclusive_group()
+    bootstrap.add_argument("--flux-bootstrap-receipt", type=Path)
+    bootstrap.add_argument("--flux-bootstrap-receipt-fd", type=int)
+    parser.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json"))
+    return parser.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
     global POLICY, BOOTSTRAP
-    ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--flux-bootstrap-receipt", type=Path); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
-    if a.dry_run == a.live: print("activation blocked: choose exactly one of --dry-run or --live", file=sys.stderr); return 2
     try:
+        a = parse_args(argv)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "executor requires python3 -I isolated safe-path mode")
         os.environ.pop("PYTHONPATH", None)
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
-        require(subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
+        require(trusted_git_v4(["-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
         runner_hashes = protected_checkout(rev)
         POLICY = compile_verified_policy_module_v4(git_blob(rev, POLICY_MODULE_PATH), rev)
         BOOTSTRAP = compile_verified_bootstrap_module_v4(git_blob(rev, BOOTSTRAP_MODULE_PATH), rev)
         bind_verified_policy_identity_v4(POLICY)
         p = policy(rev)
         if a.dry_run:
-            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None, "dry-run accepts no kubeconfig or Flux bootstrap receipt")
+            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None and a.flux_bootstrap_receipt_fd is None, "dry-run accepts no kubeconfig or Flux bootstrap receipt")
             result = dry_run_plan(p, rev, runner_hashes)
             sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0
-        # The immutable readiness gate deliberately precedes kubeconfig
-        # validation and Runner construction. The committed policy therefore
-        # cannot contact Kubernetes in live mode.
+        # The immutable readiness gate precedes receipt or kubeconfig input.
         try: POLICY.assert_activation_ready(p)
         except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
-        require(a.flux_bootstrap_receipt is not None, "live activation requires --flux-bootstrap-receipt")
-        dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
+        if a.verify_success_receipt is not None or a.verify_success_receipt_fd is not None:
+            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None and a.flux_bootstrap_receipt_fd is None, "receipt verification accepts no kubeconfig or Flux bootstrap receipt")
+            receipt = (
+                load_owned_receipt_v4(a.verify_success_receipt, "activation success receipt")
+                if a.verify_success_receipt is not None
+                else load_owned_receipt_fd_v4(a.verify_success_receipt_fd, "activation success receipt")
+            )
+            result = bind_success_receipt_v4(receipt, p, rev, runner_hashes)
+            print(canonical(result))
+            return 0
+        require(a.flux_bootstrap_receipt is not None or a.flux_bootstrap_receipt_fd is not None, "live activation requires a Flux bootstrap receipt")
+        if a.flux_bootstrap_receipt is not None:
+            dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
+        else:
+            dormant_ownership = bind_flux_bootstrap_receipt_value_v4(
+                p,
+                rev,
+                runner_hashes,
+                BOOTSTRAP.load_receipt_fd(a.flux_bootstrap_receipt_fd),
+            )
         sink = ReceiptSink.reserve(a.receipt)
         result = activate(p, rev, a.kubeconfig, Runner(), True, sink, runner_hashes, dormant_ownership)
         print(canonical(result)); return 0

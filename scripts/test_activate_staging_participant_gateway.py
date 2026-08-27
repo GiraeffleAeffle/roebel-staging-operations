@@ -68,6 +68,16 @@ def valid_success_facts(value):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
     sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
     facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
+    cluster = {
+        "apiOrigin": value["clusterIdentity"]["apiOrigin"],
+        "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"],
+        "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"],
+        "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"],
+        "kubeSystemNamespaceResourceVersion": "10",
+        "credentialsIncluded": False,
+        "kubeconfigPathIncluded": False,
+    }
+    facts["clusterBinding"] = {name: copy.deepcopy(cluster) for name in ("initial", "beforeMutation", "beforeIngress", "beforeFluxUnsuspend", "beforeSuccess")}
     facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"], "verificationLevel": "anonymous-registry-manifest-digest-only", "cryptographicPublicationProvenanceVerified": False}
     facts["database"] = valid_database_status(value)
     facts["operationReservation"] = {"operationNonce": nonce, "absencePreflight": {"status": "all-six-exact-target-names-absent", "targets": [{"absent": True}] * 6}}
@@ -262,10 +272,12 @@ class ExecutorTests(unittest.TestCase):
 
     def test_kubeconfig_snapshot_is_single_flattened_0600_file_and_rejects_url_tricks(self):
         pem = b"-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n"
-        def flattened(server):
+        def flattened(server, proxy=None):
+            cluster = {"server": server, "certificate-authority-data": base64.b64encode(pem).decode()}
+            if proxy is not None: cluster["proxy-url"] = proxy
             return json.dumps({
                 "apiVersion": "v1", "kind": "Config", "current-context": "ctx",
-                "clusters": [{"name": "cluster", "cluster": {"server": server, "certificate-authority-data": base64.b64encode(pem).decode()}}],
+                "clusters": [{"name": "cluster", "cluster": cluster}],
                 "contexts": [{"name": "ctx", "context": {"cluster": "cluster", "user": "user"}}],
                 "users": [{"name": "user", "user": {"token": "secret-never-receipted"}}],
             })
@@ -278,14 +290,43 @@ class ExecutorTests(unittest.TestCase):
             snapshot = MODULE.snapshot_kubeconfig_v4(str(original), runner)
             try:
                 self.assertEqual(snapshot.api_origin, "https://api.example.test:6443")
+                self.assertIsNone(snapshot.connect_proxy)
                 self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o600)
                 self.assertEqual(len(runner.calls), 1)
                 self.assertIn("--flatten", runner.calls[0]); self.assertIn("--raw", runner.calls[0])
             finally: snapshot.close()
             self.assertFalse(snapshot.path.exists())
+            proxy_password = "a" * 64
+            proxy_url = f"http://stadtstack-participant:{proxy_password}@127.0.0.1:16443"
+            proxied = MODULE.snapshot_kubeconfig_v4(
+                str(original),
+                Flatten(flattened("https://api.example.test:6443", proxy_url)),
+            )
+            try:
+                self.assertEqual(proxied.api_origin, "https://api.example.test:6443")
+                self.assertEqual(proxied.connect_proxy.host, "127.0.0.1")
+                self.assertEqual(proxied.connect_proxy.port, 16443)
+                self.assertEqual(proxied.connect_proxy.origin, proxy_url)
+                stored = json.loads(proxied.path.read_text())
+                self.assertEqual(stored["clusters"][0]["cluster"]["proxy-url"], proxy_url)
+            finally: proxied.close()
             for bad in ("https://user@api.example.test:6443", "https://api.example.test:6443/path", "https://api.example.test:6443?x=1", "https://api.example.test:6443#x"):
                 with self.assertRaisesRegex(MODULE.ActivationError, "HTTPS origin"):
                     MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened(bad)))
+            for bad_proxy in (
+                "http://127.0.0.1:16443", "https://127.0.0.1:16443", "http://localhost:16443", "http://127.0.0.2:16443",
+                "http://[::1]:16443", "http://127.0.0.1", "http://127.0.0.1:0",
+                "http://user@127.0.0.1:16443", "http://127.0.0.1:16443/",
+                "http://127.0.0.1:16443?x=1", "http://127.0.0.1:16443#x",
+                f"http://stadtstack-participant:{'b' * 63}@127.0.0.1:16443",
+                f"http://wrong-user:{'b' * 64}@127.0.0.1:16443",
+                123,
+            ):
+                with self.subTest(proxy=bad_proxy), self.assertRaisesRegex(MODULE.ActivationError, "loopback HTTP CONNECT proxy"):
+                    MODULE.snapshot_kubeconfig_v4(
+                        str(original),
+                        Flatten(flattened("https://api.example.test:6443", bad_proxy)),
+                    )
 
             failed_snapshot = Path(directory) / "failed-snapshot"
             def make_failed_snapshot(*_args, **_kwargs):
@@ -296,38 +337,216 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.snapshot_kubeconfig_v4(str(original), Flatten(flattened("https://api.example.test:6443")))
             self.assertFalse(failed_snapshot.exists(), "failed credential snapshot must be removed")
 
-    def test_raw_delete_proxy_exposes_only_the_exact_escaped_resource_path(self):
-        class Response:
-            status = 200
+    def test_api_spki_probe_uses_exact_connect_authority_then_end_to_end_tls(self):
+        class Connection:
+            def __init__(self, response): self.response = bytearray(response); self.sent = b""; self.closed = False
+            def sendall(self, value): self.sent += value
+            def recv(self, size):
+                self.asserted_size = size
+                if not self.response: return b""
+                value = bytes(self.response[:1]); del self.response[:1]; return value
+            def close(self): self.closed = True
+            def __enter__(self): return self
+            def __exit__(self, *_args): self.close(); return False
+        class Secured:
+            def getpeercert(self, binary_form=False):
+                self.binary_form = binary_form; return b"certificate-der"
             def __enter__(self): return self
             def __exit__(self, *_args): return False
-        class Opener:
-            def open(self, request, timeout):
-                self.request, self.timeout = request, timeout
-                return Response()
-        class Process:
-            def __init__(self):
-                read_fd, write_fd = os.pipe()
-                os.write(write_fd, b"Starting to serve on 127.0.0.1:41777\n"); os.close(write_fd)
-                self.stdout = os.fdopen(read_fd, "rb", buffering=0); self.terminated = False
-            def poll(self): return None
-            def terminate(self): self.terminated = True
-            def wait(self, timeout): return 0
-            def kill(self): self.terminated = True
+        class Context:
+            def __init__(self): self.wrapped = []
+            def wrap_socket(self, connection, server_hostname):
+                self.wrapped.append((connection, server_hostname)); return Secured()
+        connection = Connection(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: wireproxy\r\n\r\n")
+        context = Context()
+        snapshot = Mock(
+            hostname="10.255.240.11", port=6443, tls_server_name="kubernetes",
+            ca_pem=b"-----BEGIN CERTIFICATE-----\nTEST\n-----END CERTIFICATE-----\n",
+            connect_proxy=MODULE.LoopbackConnectProxy(
+                f"http://stadtstack-participant:{'c' * 64}@127.0.0.1:53161",
+                "127.0.0.1", 53161, "stadtstack-participant", "c" * 64,
+            ),
+        )
+        openssl = [
+            subprocess.CompletedProcess([], 0, b"public-key-pem", b""),
+            subprocess.CompletedProcess([], 0, b"public-key-der", b""),
+        ]
+        with patch.object(MODULE.socket, "create_connection", return_value=connection) as connect, patch.object(
+            MODULE.ssl, "create_default_context", return_value=context,
+        ) as create_context, patch.object(MODULE.subprocess, "run", side_effect=openssl):
+            result = MODULE._api_server_spki_v4(snapshot, 3)
+        connect.assert_called_once_with(("127.0.0.1", 53161), timeout=3)
+        proxy_authorization = base64.b64encode(("stadtstack-participant:" + "c" * 64).encode("ascii"))
+        self.assertEqual(
+            connection.sent,
+            b"CONNECT 10.255.240.11:6443 HTTP/1.1\r\nHost: 10.255.240.11:6443\r\n"
+            + b"Proxy-Authorization: Basic " + proxy_authorization + b"\r\n\r\n",
+        )
+        self.assertEqual(context.wrapped, [(connection, "kubernetes")])
+        create_context.assert_called_once_with(cadata=snapshot.ca_pem.decode("ascii"))
+        self.assertEqual(result, MODULE.bytes_digest(b"public-key-der"))
+        self.assertTrue(connection.closed)
+
+    def test_api_connect_proxy_rejects_non_success_incomplete_and_oversized_responses(self):
+        class Connection:
+            def __init__(self, response): self.response = bytearray(response); self.closed = False
+            def sendall(self, _value): pass
+            def recv(self, _size):
+                if not self.response: return b""
+                value = bytes(self.response[:1]); del self.response[:1]; return value
+            def close(self): self.closed = True
+        snapshot = Mock(
+            hostname="10.255.240.11", port=6443,
+            connect_proxy=MODULE.LoopbackConnectProxy(
+                f"http://stadtstack-participant:{'d' * 64}@127.0.0.1:53161",
+                "127.0.0.1", 53161, "stadtstack-participant", "d" * 64,
+            ),
+        )
+        cases = (
+            b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n",
+            b"HTTP/1.1 301 Moved Permanently\r\n\r\n",
+            b"HTTP/1.1 200 Connection Established\r\n",
+            b"NOT HTTP\r\n\r\n",
+            b"HTTP/1.1 2000 Not A Status\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nMalformed-Header\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nX:" + b"a" * 8192 + b"\r\n\r\n",
+        )
+        for response in cases:
+            connection = Connection(response)
+            with self.subTest(response=response[:40]), patch.object(MODULE.socket, "create_connection", return_value=connection), self.assertRaises(MODULE.ActivationError):
+                MODULE._api_tcp_transport_v4(snapshot, 3)
+            self.assertTrue(connection.closed)
+
+    def test_kubectl_subprocesses_ignore_ambient_proxy_environment(self):
+        hostile = {
+            "PATH": "/usr/bin", "HTTPS_PROXY": "http://attacker.invalid:8080",
+            "http_proxy": "http://attacker.invalid:8080", "ALL_PROXY": "socks5://attacker.invalid:1080",
+            "no_proxy": "*", "SAFE_MARKER": "retained",
+        }
+        binding = Mock(path=Path("/snapshot/kubectl"))
+        process = Mock(returncode=0); process.communicate.return_value = ("ok", "")
+        with patch.dict(MODULE.os.environ, hostile, clear=True), patch.object(
+            MODULE,
+            "kubectl_binding_v4",
+            return_value=binding,
+        ), patch.object(MODULE, "verified_popen", return_value=process) as spawn:
+            result = MODULE.Runner().run(["kubectl", "version"])
+        self.assertEqual(result.out, "ok")
+        self.assertEqual(spawn.call_args.args[1], ["/snapshot/kubectl", "version"])
+        child_env = spawn.call_args.kwargs["env"]
+        self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and Path("/private/tmp/wireproxy-v1.1.3-darwin-arm64/wireproxy").exists(),
+        "Darwin suspended-spawn contract",
+    )
+    def test_verified_spawn_executes_only_the_bound_vnode(self):
+        source = Path("/private/tmp/wireproxy-v1.1.3-darwin-arm64/wireproxy")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wireproxy"
+            path.write_bytes(source.read_bytes()); path.chmod(0o500)
+            binding = MODULE.bind_executable_snapshot(path, MODULE.bytes_digest(path.read_bytes()))
+            try:
+                process = MODULE.verified_popen(
+                    binding,
+                    [str(path), "--version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0)
+                self.assertIn("wireproxy", stdout)
+                self.assertEqual(stderr, "")
+                replacement_path = Path(directory) / "replacement"
+                replacement_path.write_bytes(b"attacker-selected pathname bytes"); replacement_path.chmod(0o500)
+                replacement = MODULE.ExecutableBinding(
+                    replacement_path,
+                    binding.fd,
+                    binding.device,
+                    binding.inode,
+                    binding.size,
+                    binding.sha256,
+                    owns_fd=False,
+                )
+                replacement_process = MODULE.verified_popen(
+                    replacement,
+                    [str(replacement.path), "--version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+                replacement_stdout, replacement_stderr = replacement_process.communicate(timeout=10)
+                self.assertEqual(replacement_process.returncode, 0)
+                self.assertIn("wireproxy", replacement_stdout)
+                self.assertEqual(replacement_stderr, "")
+            finally:
+                binding.close()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin immutable-flag contract")
+    def test_verified_process_cleanup_failure_overrides_signal_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path = root / "invocation"; path.write_bytes(b"exact")
+            fd = os.open(path, os.O_RDWR); path.chmod(0o500); info = os.fstat(fd)
+            MODULE._set_descriptor_flags(fd, stat.UF_IMMUTABLE)
+            binding = MODULE.ExecutableBinding(path, fd, info.st_dev, info.st_ino, info.st_size, MODULE.bytes_digest(b"exact"))
+            process = MODULE.VerifiedProcess(4242, ["fixture"], None, None, None, text=False, cleanup_binding=binding)
+            process.returncode = -15
+            MODULE._set_descriptor_flags(fd, 0)
+            moved = root / "moved"; path.rename(moved)
+            path.write_bytes(b"other")
+            process._cleanup_materialization()
+            self.assertEqual(process.returncode, 125)
+            self.assertIsNotNone(process.cleanup_error)
+            moved.unlink()
+
+    def test_raw_delete_uses_direct_authenticated_tls_without_loopback_listener(self):
+        class Secured:
+            def __init__(self): self.sent = b""; self.closed = False
+            def sendall(self, value): self.sent += value
+            def close(self): self.closed = True
+        class Context:
+            def __init__(self, secured): self.secured = secured
+            def wrap_socket(self, _raw, server_hostname): self.server_hostname = server_hostname; return self.secured
+            def load_cert_chain(self, *_args): raise AssertionError("token fixture loaded a client key")
+        class Response:
+            status = 200
+            def begin(self): pass
+            def read(self, _limit): return b"{}"
         resource_path = f"/apis/networking.k8s.io/v1/namespaces/{MODULE.NAMESPACE}/networkpolicies/{MODULE.NAME}"
-        process, opener = Process(), Opener()
-        with patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, patch.object(MODULE.urllib.request, "build_opener", return_value=opener):
-            MODULE.raw_delete("/snapshot", resource_path, '{"kind":"DeleteOptions"}')
-        command = popen.call_args.args[0]
-        self.assertIn("--address=127.0.0.1", command)
-        self.assertIn("--accept-hosts=^127\\.0\\.0\\.1$", command)
-        self.assertIn("--accept-paths=^" + resource_path.replace(".", r"\.") + "$", command)
-        self.assertEqual(opener.request.full_url, "http://127.0.0.1:41777" + resource_path)
-        self.assertEqual(opener.request.method, "DELETE"); self.assertTrue(process.terminated); self.assertTrue(process.stdout.closed)
-        with patch.object(MODULE.subprocess, "Popen") as forbidden:
-            with self.assertRaisesRegex(MODULE.ActivationError, "outside closed policy"):
-                MODULE.raw_delete("/snapshot", resource_path + "?watch=true", "{}")
-        forbidden.assert_not_called()
+        payload = MODULE.canonical({
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "preconditions": {"uid": "owned-uid", "resourceVersion": "10"},
+        })
+        secured = Secured(); context = Context(secured); raw = Mock()
+        snapshot = Mock(
+            ca_pem=b"-----BEGIN CERTIFICATE-----\\nfixture\\n-----END CERTIFICATE-----",
+            client_certificate_path=None,
+            client_key_path=None,
+            bearer_token="private-token",
+            hostname="10.255.240.11",
+            port=6443,
+            tls_server_name="10.255.240.11",
+        )
+        with patch.object(MODULE.ssl, "create_default_context", return_value=context), patch.object(
+            MODULE,
+            "_api_tcp_transport_v4",
+            return_value=raw,
+        ), patch.object(MODULE.http.client, "HTTPResponse", return_value=Response()), patch.object(
+            MODULE.subprocess,
+            "Popen",
+        ) as forbidden_listener:
+            MODULE.raw_delete(snapshot, resource_path, payload)
+        self.assertIn(f"DELETE {resource_path} HTTP/1.1".encode(), secured.sent)
+        self.assertIn(b"Authorization: Bearer private-token", secured.sent)
+        self.assertIn(payload.encode(), secured.sent)
+        self.assertTrue(secured.closed)
+        forbidden_listener.assert_not_called()
+        with self.assertRaisesRegex(MODULE.ActivationError, "outside closed policy"):
+            MODULE.raw_delete(snapshot, resource_path + "?watch=true", payload)
     def test_definite_create_conflict_is_never_treated_as_uncertain(self):
         class Conflict(MODULE.Runner):
             def run(self, args, *, input_text=None):
@@ -459,10 +678,12 @@ class ExecutorTests(unittest.TestCase):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); current = admitted(desired)
         terminating = admitted(desired); terminating["metadata"] |= {"deletionTimestamp": "2026-01-01T00:00:00Z", "finalizers": ["example.test/hold"]}
         created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, current, {"uid": "owned-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        snapshot = Mock()
         with patch.object(MODULE, "get_optional", side_effect=[current, terminating]), patch.object(MODULE, "raw_delete") as delete:
             with self.assertRaisesRegex(MODULE.ActivationError, "blocked by finalizers"):
-                MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
-        path, payload = delete.call_args.args[1:]
+                MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1, snapshot)
+        called_snapshot, path, payload, _timeout = delete.call_args.args
+        self.assertIs(called_snapshot, snapshot)
         self.assertIn(f"/namespaces/{MODULE.WORKBENCH_NAMESPACE}/networkpolicies/{MODULE.WORKBENCH_POLICY_NAME}", path)
         self.assertIn('"uid":"owned-uid"', payload); self.assertIn('"resourceVersion":"10"', payload)
 
@@ -472,9 +693,12 @@ class ExecutorTests(unittest.TestCase):
             desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
         current = admitted(desired, "deployment-uid", "31")
         created = MODULE.CreatedV4("gateway.deployment", desired, current, {"uid": "deployment-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        snapshot = Mock()
         with patch.object(MODULE, "get_optional", side_effect=[current, None]), patch.object(MODULE, "raw_delete") as delete:
-            receipt = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
-        payload = json.loads(delete.call_args.args[2])
+            receipt = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1, snapshot)
+        called_snapshot, _path, raw_payload, _timeout = delete.call_args.args
+        self.assertIs(called_snapshot, snapshot)
+        payload = json.loads(raw_payload)
         self.assertEqual(payload["propagationPolicy"], "Foreground")
         self.assertEqual(payload["preconditions"], {"uid": "deployment-uid", "resourceVersion": "31"})
         self.assertTrue(receipt["foregroundPropagation"])
@@ -741,14 +965,19 @@ class ExecutorTests(unittest.TestCase):
                 read_fd, write_fd = os.pipe(); os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n"); os.close(write_fd)
                 self.stdout = os.fdopen(read_fd, "rb", buffering=0)
             def poll(self): return None
-        process, opener = Process(), Opener()
-        with patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group") as cleanup:
+        process, opener = Process(), Opener(); binding = Mock(path=Path("/snapshot/kubectl"))
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=binding), patch.object(
+            MODULE,
+            "verified_popen",
+            return_value=process,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group") as cleanup:
             body, receipt = MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
         self.assertEqual(body, '{"status":"ready"}')
         self.assertTrue(receipt["loopbackOnly"]); self.assertFalse(receipt["publicIngressUsed"]); self.assertFalse(receipt["serviceProxyUsed"])
-        command = popen.call_args.args[0]
+        command = spawn.call_args.args[1]
         self.assertIn("--address=127.0.0.1", command); self.assertIn("pod/pod-a", command); self.assertIn(":18085", command)
-        self.assertTrue(popen.call_args.kwargs["start_new_session"]); self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
+        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in spawn.call_args.kwargs["env"]})
+        self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
 
     def test_v4_manual_policy_named_ports_and_ranges_are_conflicts(self):
         def policy_with(port, end_port=None):
@@ -886,6 +1115,75 @@ class ExecutorTests(unittest.TestCase):
             facts["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
             with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
+
+    def test_v4_durable_success_receipt_verifier_binds_checksum_files_policy_and_facts(self):
+        value = ready_policy(); runner_hashes = {"scripts/runner.py": sha("1")}
+        unsigned = {
+            "schemaVersion": MODULE.RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+            "protectedRunnerFileSha256": runner_hashes,
+            "trustedLiveFacts": valid_success_facts(value),
+            "civicAuthorityEffects": False,
+        }
+        receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            bound = MODULE.bind_success_receipt_v4(receipt, value, REV, runner_hashes)
+        self.assertEqual(bound["status"], "activated")
+        self.assertEqual(bound["receiptSha256"], receipt["canonicalSha256"])
+        self.assertFalse(bound["civicAuthorityEffects"])
+
+        corrupted = copy.deepcopy(receipt)
+        corrupted["trustedLiveFacts"]["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
+        corrupted["canonicalSha256"] = MODULE.digest({key: item for key, item in corrupted.items() if key != "canonicalSha256"})
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
+                MODULE.bind_success_receipt_v4(corrupted, value, REV, runner_hashes)
+
+        wrong_hashes = copy.deepcopy(receipt)
+        wrong_hashes["protectedRunnerFileSha256"] = {"scripts/runner.py": sha("2")}
+        wrong_hashes["canonicalSha256"] = MODULE.digest({key: item for key, item in wrong_hashes.items() if key != "canonicalSha256"})
+        with self.assertRaisesRegex(MODULE.ActivationError, "protected file drift"):
+            MODULE.bind_success_receipt_v4(wrong_hashes, value, REV, runner_hashes)
+
+        foreign_cluster = copy.deepcopy(receipt)
+        for binding in foreign_cluster["trustedLiveFacts"]["clusterBinding"].values():
+            binding["apiOrigin"] = "https://10.0.0.1:6443"
+            binding["caCertificateSha256"] = sha("3")
+            binding["apiServerSpkiSha256"] = sha("4")
+            binding["kubeSystemNamespaceUid"] = "foreign-cluster"
+        foreign_cluster["canonicalSha256"] = MODULE.digest({
+            key: item for key, item in foreign_cluster.items() if key != "canonicalSha256"
+        })
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            with self.assertRaisesRegex(MODULE.ActivationError, "protected binding drift"):
+                MODULE.bind_success_receipt_v4(foreign_cluster, value, REV, runner_hashes)
+
+    def test_v4_owned_receipt_loader_rejects_links_modes_size_and_duplicate_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path = root / "activation.json"
+            path.write_text('{"status":"activated"}'); path.chmod(0o600)
+            self.assertEqual(MODULE.load_owned_receipt_v4(path, "fixture"), {"status": "activated"})
+            linked = root / "linked.json"; os.link(path, linked)
+            with self.assertRaisesRegex(MODULE.ActivationError, "nlink-one"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+            linked.unlink(); path.chmod(0o644)
+            with self.assertRaisesRegex(MODULE.ActivationError, "0600"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+            path.chmod(0o600); path.write_text('{"status":"a","status":"b"}')
+            with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+
+    def test_v4_cli_has_effect_free_success_receipt_mode(self):
+        parsed = MODULE.parse_args([
+            "--expected-protected-revision",
+            REV,
+            "--verify-success-receipt-fd",
+            "17",
+        ])
+        self.assertEqual(parsed.verify_success_receipt_fd, 17)
+        self.assertFalse(parsed.live)
 
     def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
         value = ready_policy()

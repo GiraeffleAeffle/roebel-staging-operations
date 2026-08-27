@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -85,12 +86,47 @@ class FakeKube:
         self.preflight_calls += 1
         return {
             "clusterBinding": {"identity": "exact"},
-            "sharedSource": {"uid": "source-uid", "artifactRevision": "main@sha1:" + REVISION},
-            "preservation": {"webIngress": "same", "existingWorkbenchNetworkPolicy": "same"},
+            "sharedSource": {
+                "target": {"kind": "GitRepository", "name": "operations"},
+                "uid": "source-uid",
+                "resourceVersion": "10",
+                "artifactRevision": "main@sha1:" + REVISION,
+                "semanticSha256": "sha256:" + "1" * 64,
+                "mutation": "forbidden",
+            },
+            "preservation": {
+                "webIngress": {
+                    "target": {"kind": "Ingress", "name": "web"},
+                    "beforeCanonicalSha256": "sha256:" + "2" * 64,
+                    "mutation": "forbidden",
+                },
+                "existingWorkbenchNetworkPolicy": {
+                    "target": {"kind": "NetworkPolicy", "name": "workbench"},
+                    "beforeCanonicalSha256": "sha256:" + "3" * 64,
+                    "mutation": "forbidden",
+                },
+            },
+            "secretAccess": "none",
         }
 
     def final_checks(self, _plan, before):
-        return before
+        return {
+            "clusterBinding": before["clusterBinding"],
+            "sharedSource": {
+                key: before["sharedSource"][key]
+                for key in ("uid", "resourceVersion", "artifactRevision", "semanticSha256", "mutation")
+            },
+            "preservation": {
+                label: {
+                    "target": value["target"],
+                    "beforeCanonicalSha256": value["beforeCanonicalSha256"],
+                    "afterCanonicalSha256": value["beforeCanonicalSha256"],
+                    "byteIdenticalCanonicalJson": True,
+                }
+                for label, value in before["preservation"].items()
+            },
+            "secretAccess": "none",
+        }
 
     def get(self, target):
         return self.objects.get(self.key(target))
@@ -200,6 +236,11 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             path.write_text(json.dumps(receipt))
             path.chmod(0o600)
             self.assertEqual(BOOTSTRAP.load_receipt(path), receipt)
+            hardlink = Path(directory) / "receipt-hardlink.json"
+            hardlink.hardlink_to(path)
+            with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "nlink-one"):
+                BOOTSTRAP.load_receipt(path)
+            hardlink.unlink()
             path.chmod(0o644)
             with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "0600"):
                 BOOTSTRAP.load_receipt(path)
@@ -604,6 +645,9 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         self.assertEqual(len(bound["objects"]), 8)
         self.assertEqual(bound["objects"][0]["uid"], "uid-1")
         self.assertNotIn("operationNonce", json.dumps(bound))
+        widened = json.loads(json.dumps(receipt)); widened["unexpected"] = {"authority": "widened"}
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "field set drift"):
+            BOOTSTRAP.bind_success_receipt(plan, close_receipt(widened))
 
     def test_success_receipt_binding_requires_completed_nonce_removal_state(self) -> None:
         plan = self.ready_plan()
@@ -643,6 +687,148 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
 
         with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "success nonce journal drift"):
             BOOTSTRAP.bind_success_receipt(plan, close_receipt(receipt))
+
+    def test_success_receipt_can_only_teardown_the_exact_eight_dormant_uids(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+        bound = BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(teardown))
+
+        self.assertEqual(teardown["status"], "dormant-torn-down")
+        self.assertEqual(bound["status"], "dormant-torn-down")
+        self.assertTrue(bound["allEightAbsentQuiet"])
+        self.assertTrue(bound["bothKustomizationsAbsent"])
+        self.assertEqual(kube.objects, {})
+        self.assertEqual(len(kube.deleted), 8)
+        self.assertEqual(
+            [target["kind"] for target, _uid, _rv in kube.deleted[:2]],
+            ["Kustomization", "Kustomization"],
+        )
+        corrupted = json.loads(json.dumps(teardown))
+        corrupted["rollback"]["deleted"][0]["uid"] = "foreign-uid"
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "deletion UID drift"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(corrupted))
+        preservation_drift = json.loads(json.dumps(teardown))
+        label = next(iter(preservation_drift["rollback"]["finalChecks"]["preservation"]))
+        preservation_drift["rollback"]["finalChecks"]["preservation"][label] = {
+            "target": {"kind": "Foreign", "name": "other"},
+            "beforeCanonicalSha256": "sha256:" + "9" * 64,
+            "afterCanonicalSha256": "sha256:" + "9" * 64,
+            "byteIdenticalCanonicalJson": True,
+        }
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "final preservation evidence drift"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(preservation_drift))
+
+    def test_dormant_teardown_never_adopts_or_deletes_a_replacement_uid(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        target = plan["objects"][0]["target"]
+        replacement = json.loads(json.dumps(kube.get(target)))
+        replacement["metadata"]["uid"] = "foreign-replacement"
+        replacement["metadata"]["resourceVersion"] = "999"
+        kube.objects[kube.key(target)] = replacement
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+
+        self.assertEqual(teardown["status"], "teardown-incomplete")
+        self.assertEqual(kube.get(target)["metadata"]["uid"], "foreign-replacement")
+        self.assertFalse(any(uid == "foreign-replacement" for _target, uid, _rv in kube.deleted))
+        self.assertEqual(kube.deleted, [])
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "not dormant-torn-down"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(teardown))
+    def test_dormant_teardown_refuses_all_deletes_if_flux_was_unsuspended(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        kustomization = next(item for item in plan["objects"] if item["target"]["kind"] == "Kustomization")
+        live = kube.get(kustomization["target"])
+        live["spec"]["suspend"] = False
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+
+        self.assertEqual(teardown["status"], "teardown-incomplete")
+        self.assertEqual(kube.deleted, [])
+        self.assertEqual(len(kube.objects), 8)
+
+
+    def test_success_receipt_cli_verifier_is_effect_free_and_deep(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        context = {
+            "revision": REVISION,
+            "hashes": plan["protectedFileSha256"],
+            "policy": POLICY.approved_next_activation_policy_descriptor(),
+            "policyModule": POLICY,
+            "bootstrapModule": BOOTSTRAP,
+            "plan": plan,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "success.json"
+            receipt.write_text(json.dumps(close_receipt(success))); receipt.chmod(0o600)
+            output = io.StringIO(); fd = os.open(receipt, os.O_RDONLY)
+            try:
+                with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
+                    CLI,
+                    "KubernetesAdapter",
+                    side_effect=AssertionError("receipt verifier contacted Kubernetes"),
+                ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = CLI.main([
+                        "--verify-success-receipt-fd",
+                        str(fd),
+                        "--expected-protected-revision",
+                        REVISION,
+                    ])
+            finally:
+                os.close(fd)
+            verified = json.loads(output.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(verified["status"], "dormant-ready")
+            self.assertEqual(verified["receiptSha256"], close_receipt(success)["canonicalSha256"])
 
     def test_inert_dry_run_writes_plan_without_constructing_kubernetes_adapter(self) -> None:
         inert_plan = BOOTSTRAP.build_plan(
@@ -717,8 +903,9 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
     def test_protected_cli_and_workflow_accept_no_manifest_evidence_or_cluster_credentials(self) -> None:
         source = (ROOT / "scripts/bootstrap-staging-participant-flux.py").read_text()
         workflow = (ROOT / ".github/workflows/staging-participant-flux-bootstrap.yml").read_text()
-        for forbidden in ("--manifest", "--evidence", "--target", "--allowlist", "--secret"):
+        for forbidden in ("--manifest", "--evidence", "--target", "--allowlist", "--secret", "--proxy"):
             self.assertNotIn(forbidden, source)
+        self.assertIn("self.activation.raw_delete(", source)
         self.assertIn('modes.add_argument("--dry-run"', source)
         self.assertIn('modes.add_argument("--live"', source)
         self.assertIn('modes.add_argument("--recover"', source)

@@ -28,6 +28,7 @@ jobs:
           scripts/test_staging_participant_gateway_policy.py
           scripts/test_staging_participant_flux_bootstrap.py
           scripts/test_activate_staging_participant_gateway.py
+          scripts/test_run_staging_participant_gateway_live.py
           scripts/test_verify_reviewed_render.py
       - name: Verify protected render and clean patch
         run: |
