@@ -111,6 +111,18 @@ def source_live(*, revision: str = REVISION) -> dict[str, Any]:
     return value
 
 
+def temporary_root(directory: str) -> Path:
+    """Use the owner-private temporary directory without symlinked parents.
+
+    ``TemporaryDirectory`` creates a mode-0700 directory, but macOS commonly
+    exposes its temporary root through ``/var`` (a symlink to ``/private/var``).
+    The production sinks intentionally reject every symlinked path component,
+    so resolve the directory created by the standard-library helper before
+    handing it to them.  Linux paths are unchanged by ``resolve``.
+    """
+    return Path(directory).resolve()
+
+
 class FakeKubernetes:
     """A deliberately narrow API fake: no list, wildcard, or delete-all path."""
 
@@ -773,8 +785,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
 
     def test_file_recovery_origin_timeout_stays_reserved_until_third_reentry(self) -> None:
         kube = CrashAfterUnsuspendThenStuckDeleteKubernetes(baseline=baseline_live())
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = temporary_root(directory)
             receipt_path = root / "handover.receipt"
             journal_path = root / "handover.journal"
             receipt = MODULE.ReceiptSink(receipt_path)
@@ -846,8 +858,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         self.assertEqual(len(sink.values), 1)
 
     def test_receipt_load_observes_post_replace_failure_and_later_commit_is_immutable(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "receipt.json"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "receipt.json"
             sink = MODULE.ReceiptSink(path)
             replaced = False
             original_replace = MODULE.os.replace
@@ -938,8 +950,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         self.assertEqual(replacement["metadata"]["uid"], "00000000-0000-4000-8000-000000009995")
 
     def test_symlink_components_and_dangling_paths_are_rejected(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = temporary_root(directory)
             real = root / "real"
             real.mkdir()
             link = root / "link"
@@ -952,8 +964,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
                 MODULE.JournalSink(dangling / "handover.journal")
 
     def test_receipt_and_journal_same_path_are_rejected_before_kubernetes_contact(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "receipt.json"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "receipt.json"
             receipt = MODULE.ReceiptSink(path)
             journal = MODULE.JournalSink(path)
             kube = ContactRecordingKubernetes(baseline=baseline_live())
@@ -962,8 +974,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             self.assertEqual(kube.contact_count, 0)
 
     def test_receipt_and_journal_normalized_path_alias_is_rejected_before_kubernetes_contact(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = temporary_root(directory)
             receipt = MODULE.ReceiptSink(root / "nested" / ".." / "receipt.json")
             journal = MODULE.JournalSink(root / "receipt.json")
             kube = ContactRecordingKubernetes(baseline=baseline_live())
@@ -972,8 +984,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             self.assertEqual(kube.contact_count, 0)
 
     def test_receipt_and_journal_hardlink_alias_is_rejected_before_kubernetes_contact(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = temporary_root(directory)
             receipt_path = root / "receipt.json"
             journal_path = root / "journal"
             receipt = MODULE.ReceiptSink(receipt_path)
@@ -985,8 +997,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             self.assertEqual(kube.contact_count, 0)
 
     def test_sink_alias_after_reservation_is_rejected_from_descriptor_identity(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = temporary_root(directory)
             receipt_path = root / "receipt.json"
             journal_path = root / "journal"
             receipt = MODULE.ReceiptSink(receipt_path)
@@ -1016,6 +1028,13 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         self.assertNotIn("importlib.util", wrapper)
         self.assertIn('"show", f"{revision}:{IMPLEMENTATION_PATH}"', wrapper)
         self.assertIn("exec(compile(blob", wrapper)
+
+    def test_test_temp_roots_are_platform_portable(self) -> None:
+        source = Path(__file__).read_text()
+        private_tmp = os.path.join(os.sep, "private", "tmp")
+        temporary_directory_with_dir = "TemporaryDirectory" + "(dir="
+        self.assertNotIn(private_tmp, source)
+        self.assertNotIn(temporary_directory_with_dir, source)
 
     def test_crash_after_marker_removal_recovers_without_uid_adoption(self) -> None:
         kube = CrashAfterMarkerRemovalKubernetes(baseline=baseline_live())
@@ -1157,8 +1176,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         )
 
     def test_journal_sink_persists_checksum_bound_state_and_reloads(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "handover.journal"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "handover.journal"
             journal = MODULE.JournalSink(path)
             state = {
                 "schemaVersion": MODULE.JOURNAL_SCHEMA,
@@ -1171,8 +1190,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             self.assertEqual(reopened.load(), state)
 
     def test_journal_reentry_observes_post_replace_failure(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "handover.journal"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "handover.journal"
             journal = MODULE.JournalSink(path)
             state = {
                 "schemaVersion": MODULE.JOURNAL_SCHEMA,
@@ -1230,8 +1249,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         self.assertEqual(receipt["plan"]["baseline"]["beforeDigest"], MODULE.BASELINE_BEFORE_DIGEST)
 
     def test_receipt_sink_is_owner_only_and_non_overwriting(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "receipt.json"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "receipt.json"
             sink = MODULE.ReceiptSink(path)
             sink.commit({"schemaVersion": MODULE.RECEIPT_SCHEMA, "status": "dry-run"})
             parsed = json.loads(path.read_text())
@@ -1240,8 +1259,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
                 MODULE.ReceiptSink(path)
 
     def test_receipt_sink_can_load_completed_receipt_for_journal_reentry(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            path = Path(directory) / "receipt.json"
+        with tempfile.TemporaryDirectory() as directory:
+            path = temporary_root(directory) / "receipt.json"
             sink = MODULE.ReceiptSink(path)
             value = {"schemaVersion": MODULE.RECEIPT_SCHEMA, "status": "completed", "mode": "live"}
             sink.commit(value)
@@ -1252,8 +1271,8 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
         sink = MODULE.MemoryReceiptSink()
         with self.assertRaises(MODULE.HandoverError):
             sink.commit({"schemaVersion": MODULE.RECEIPT_SCHEMA, "token": "forbidden"})
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            durable = MODULE.ReceiptSink(Path(directory) / "receipt.json")
+        with tempfile.TemporaryDirectory() as directory:
+            durable = MODULE.ReceiptSink(temporary_root(directory) / "receipt.json")
             with self.assertRaises(MODULE.HandoverError):
                 durable.commit({"schemaVersion": MODULE.RECEIPT_SCHEMA, "privateKey": "forbidden"})
 
