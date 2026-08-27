@@ -122,6 +122,78 @@
     "trustedLiveFacts": "protected-local-runner-out-of-band-only",
     "workbenchIngressRenderRoot": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress"
   },
+  "workbenchBaselineBoundary": {
+    "adoption": "one-time-existing-uid-and-exact-digest-only",
+    "beforeCanonicalSha256": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5",
+    "flux": {
+      "activation": "cas-unsuspend-wait-ready-at-current-source-revision",
+      "initialState": "suspended",
+      "kustomization": "roebel-staging-workbench-baseline",
+      "namespace": "flux-roebel-staging",
+      "resourceNames": [
+        "e2e-workbench"
+      ],
+      "role": "roebel-staging-workbench-baseline-reconciler",
+      "roleBinding": "roebel-staging-workbench-baseline-reconciler",
+      "serviceAccount": "roebel-staging-workbench-baseline-reconciler",
+      "verbs": [
+        "get",
+        "patch",
+        "update"
+      ],
+      "apiGroup": "networking.k8s.io",
+      "resource": "networkpolicies",
+      "prune": false,
+      "source": {
+        "apiGroup": "source.toolkit.fluxcd.io",
+        "kind": "GitRepository",
+        "name": "roebel-staging-operations",
+        "namespace": "flux-roebel-staging",
+        "revisionBinding": "main@sha1:<protectedRevision>"
+      },
+      "successState": "kustomization-ready-current-revision-and-networkpolicy-reconciled",
+      "inventoryMetadata": {
+        "labels": {
+          "kustomize.toolkit.fluxcd.io/name": "roebel-staging-workbench-baseline",
+          "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging"
+        },
+        "annotations": {
+          "kustomize.toolkit.fluxcd.io/ssa": "Override"
+        }
+      }
+    },
+    "handoverRunner": "scripts/handover-staging-workbench-baseline.py",
+    "implementation": "scripts/workbench_baseline_handover.py",
+    "journal": {
+      "schemaVersion": "roebel_staging_workbench_baseline_journal_v1",
+      "defaultPath": "<receipt>.journal",
+      "durability": "fsync-temp-write-atomic-rename-owner-only",
+      "recovery": "receipt-first-finalize-else-suspend-rollback",
+      "finalization": "journal-finalizing-before-receipt-then-terminal-state"
+    },
+    "networkPolicy": {
+      "name": "e2e-workbench",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "uid": "298b0f92-0d6b-4563-b141-f93aa8c8fd8f"
+    },
+    "nextOwner": "roebel-staging-operations",
+    "previousOwner": "stadtstack-operations-private",
+    "receiptSchemaVersion": "roebel_staging_workbench_baseline_handover_receipt_v1",
+    "renderRoot": "reviewed-render/roebel-staging/workbench-baseline",
+    "rollback": "suspend-before-restore-owner-remove-transaction-ssa-and-flux-inventory-delete-only-owned-flux-identities",
+    "schemaVersion": "roebel_staging_workbench_baseline_handover_v1",
+    "ssaAnnotation": {
+      "name": "kustomize.toolkit.fluxcd.io/ssa",
+      "value": "Override"
+    },
+    "mutations": {
+      "networkPolicy": "owner-label-and-ssa-annotation-only-before-flux;inventory-labels-approved-after-reconcile",
+      "deployment": "forbidden",
+      "service": "forbidden",
+      "secrets": "forbidden",
+      "civicAuthorityEffects": false
+    }
+  },
   "requiredBranchProtection": {
     "requiredStatusChecks": [
       "reviewed-render-admission"

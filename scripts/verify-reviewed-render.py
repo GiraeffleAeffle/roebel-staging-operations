@@ -42,6 +42,20 @@ def load_participant_gateway_policy_module():
 
 PARTICIPANT_POLICY = load_participant_gateway_policy_module()
 
+
+def load_workbench_baseline_module():
+    """Load the protected one-time workbench handover policy."""
+    path = Path(__file__).with_name("workbench_baseline_handover.py")
+    spec = importlib.util.spec_from_file_location("protected_workbench_baseline_handover", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected workbench baseline handover unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WORKBENCH_BASELINE = load_workbench_baseline_module()
+
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
 RENDER_ROOT = "reviewed-render/roebel-staging"
@@ -151,6 +165,7 @@ EXPECTED_FILES = {
     "scripts/render-release-set-promotion.py",
     "scripts/activate-staging-participant-gateway.py",
     "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/handover-staging-workbench-baseline.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
@@ -162,9 +177,11 @@ EXPECTED_FILES = {
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
+    "scripts/test_workbench_baseline_handover.py",
     "scripts/verify-stadtstack-case-runtime-contract.py",
     "scripts/verify-case-staging-topology.py",
     "scripts/verify-reviewed-render.py",
+    "scripts/workbench_baseline_handover.py",
     "scripts/verify-stadtstack-case-image-resource-inventory-contract.py",
     "scripts/verify-stadtstack-case-recovery-composition-contract.py",
     "tests/test_stadtstack_case_image_resource_inventory_contract.py",
@@ -193,6 +210,8 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/web/ingress.json",
     f"{RENDER_ROOT}/web/kustomization.yaml",
     f"{RENDER_ROOT}/web/networkpolicy.json",
+    WORKBENCH_BASELINE.NETWORK_POLICY_PATH,
+    WORKBENCH_BASELINE.KUSTOMIZATION_PATH,
 }
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
@@ -557,6 +576,14 @@ def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -
         raise VerificationError(str(error)) from error
 
 
+def verify_workbench_baseline(root: Path) -> dict[str, Any]:
+    """Validate the exact, inert baseline render owned by the handover runner."""
+    try:
+        return WORKBENCH_BASELINE.validate_render(root)
+    except WORKBENCH_BASELINE.HandoverError as error:
+        raise VerificationError(f"workbench baseline render verification failed: {error}") from error
+
+
 def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -624,6 +651,69 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "singleReplicaRequired": True,
             "trustedLiveFacts": "protected-local-runner-out-of-band-only",
             "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
+        },
+        "workbenchBaselineBoundary": {
+            "adoption": "one-time-existing-uid-and-exact-digest-only",
+            "beforeCanonicalSha256": WORKBENCH_BASELINE.BASELINE_BEFORE_DIGEST,
+            "flux": {
+                "activation": "cas-unsuspend-wait-ready-at-current-source-revision",
+                "initialState": "suspended",
+                "kustomization": WORKBENCH_BASELINE.FLUX_NAME,
+                "namespace": WORKBENCH_BASELINE.FLUX_NAMESPACE,
+                "resourceNames": [WORKBENCH_BASELINE.WORKBENCH_NAME],
+                "role": WORKBENCH_BASELINE.RECONCILER_NAME,
+                "roleBinding": WORKBENCH_BASELINE.RECONCILER_NAME,
+                "serviceAccount": WORKBENCH_BASELINE.RECONCILER_NAME,
+                "verbs": ["get", "patch", "update"],
+                "apiGroup": "networking.k8s.io",
+                "resource": "networkpolicies",
+                "prune": False,
+                "source": {
+                    "apiGroup": "source.toolkit.fluxcd.io",
+                    "kind": "GitRepository",
+                    "name": WORKBENCH_BASELINE.SOURCE_NAME,
+                    "namespace": WORKBENCH_BASELINE.FLUX_NAMESPACE,
+                    "revisionBinding": "main@sha1:<protectedRevision>",
+                },
+                "successState": "kustomization-ready-current-revision-and-networkpolicy-reconciled",
+                "inventoryMetadata": {
+                    "labels": copy.deepcopy(WORKBENCH_BASELINE.FLUX_INVENTORY_LABELS),
+                    "annotations": {
+                        WORKBENCH_BASELINE.SSA_ANNOTATION: WORKBENCH_BASELINE.SSA_MODE,
+                    },
+                },
+            },
+            "handoverRunner": "scripts/handover-staging-workbench-baseline.py",
+            "implementation": "scripts/workbench_baseline_handover.py",
+            "journal": {
+                "schemaVersion": WORKBENCH_BASELINE.JOURNAL_SCHEMA,
+                "defaultPath": "<receipt>" + WORKBENCH_BASELINE.JOURNAL_DEFAULT_SUFFIX,
+                "durability": WORKBENCH_BASELINE.JOURNAL_DURABILITY,
+                "recovery": WORKBENCH_BASELINE.JOURNAL_RECOVERY,
+                "finalization": WORKBENCH_BASELINE.JOURNAL_FINALIZATION,
+            },
+            "networkPolicy": {
+                "name": WORKBENCH_BASELINE.WORKBENCH_NAME,
+                "namespace": WORKBENCH_BASELINE.WORKBENCH_NAMESPACE,
+                "uid": WORKBENCH_BASELINE.BASELINE_UID,
+            },
+            "nextOwner": WORKBENCH_BASELINE.NEW_OWNER,
+            "previousOwner": WORKBENCH_BASELINE.OLD_OWNER,
+            "receiptSchemaVersion": WORKBENCH_BASELINE.RECEIPT_SCHEMA,
+            "renderRoot": WORKBENCH_BASELINE.BASELINE_ROOT,
+            "rollback": "suspend-before-restore-owner-remove-transaction-ssa-and-flux-inventory-delete-only-owned-flux-identities",
+            "schemaVersion": WORKBENCH_BASELINE.SCHEMA_VERSION,
+            "ssaAnnotation": {
+                "name": WORKBENCH_BASELINE.SSA_ANNOTATION,
+                "value": WORKBENCH_BASELINE.SSA_MODE,
+            },
+            "mutations": {
+                "networkPolicy": "owner-label-and-ssa-annotation-only-before-flux;inventory-labels-approved-after-reconcile",
+                "deployment": "forbidden",
+                "service": "forbidden",
+                "secrets": "forbidden",
+                "civicAuthorityEffects": False,
+            },
         },
         "requiredBranchProtection": {
             "requiredStatusChecks": ["reviewed-render-admission"],
@@ -3890,11 +3980,23 @@ def verify_network_boundary_migration(
     return migration
 
 
-def verify_kustomizations(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> None:
+def verify_kustomizations(
+    root: Path,
+    signed_nostr: bool,
+    participant_gateway: bool = False,
+    workbench_baseline: bool = True,
+) -> None:
     public_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - service.json\n  - networkpolicy.json\n"
     web_expected = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n  - deployment.json\n  - networkpolicy.json\n  - ingress.json\n"
     require((root / RENDER_ROOT / "public-mecky/kustomization.yaml").read_text() == public_expected, "public-mecky Flux path widened")
     require((root / RENDER_ROOT / "web/kustomization.yaml").read_text() == web_expected, "roebel-web-staging Flux path widened")
+    if workbench_baseline:
+        try:
+            WORKBENCH_BASELINE.validate_kustomization_text(
+                (root / WORKBENCH_BASELINE.KUSTOMIZATION_PATH).read_text(),
+            )
+        except WORKBENCH_BASELINE.HandoverError as error:
+            raise VerificationError(f"workbench baseline Flux path widened: {error}") from error
     if signed_nostr:
         for component in SIGNED_NOSTR_COMPONENTS:
             extra = ""
@@ -3980,6 +4082,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     render_file_set = verify_repository_file_set(root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
+    workbench_baseline = verify_workbench_baseline(root)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
@@ -4036,7 +4139,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         checksum_payload["stagingParticipantGateway"] = participant_gateway_objects
     require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
-    verify_kustomizations(root, signed_nostr, participant_gateway)
+    verify_kustomizations(root, signed_nostr, participant_gateway, True)
     live = verify_live_preconditions(root, head)
     return {
         "root": root,
@@ -4052,6 +4155,8 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "signedNostr": signed_nostr_objects,
         "stagingParticipantGateway": participant_gateway_objects,
         "stagingParticipantGatewayPolicy": participant_policy,
+        "workbenchBaseline": workbench_baseline,
+        "workbenchBaselineEnabled": True,
     }
 
 

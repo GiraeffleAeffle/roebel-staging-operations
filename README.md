@@ -10,12 +10,77 @@ Public Mecky chat network boundary:
 - `stadtstack-roebel-staging-lab/NetworkPolicy/public-mecky-chat-from-web`
 - `stadtstack-roebel-web-preview/NetworkPolicy/roebel-web-presentation`
 - `stadtstack-roebel-web-preview/Ingress/roebel-web-presentation`
+- `stadtstack-roebel-staging-lab/NetworkPolicy/e2e-workbench` (one-time
+  baseline handover; its existing workload remains separately owned)
 
 It is deliberately not an infrastructure repository and not a civic record.
 It contains immutable image digests, source revisions, checksums, Kubernetes
 object identities, and references to existing ConfigMaps or Secrets. It may
 not contain a Secret object, a Secret value, credentials, personal data,
 posts, discussions, Civic Cases, municipal records, or runtime status.
+
+## One-time E2E workbench handover
+
+`reviewed-render/roebel-staging/workbench-baseline/` records the exact
+existing `e2e-workbench` NetworkPolicy in
+`stadtstack-roebel-staging-lab`. The protected
+`scripts/handover-staging-workbench-baseline.py` runner may adopt it only when
+the live UID and canonical pre-handover response digest match the pinned
+receipt. It changes only the owner label and adds the explicit Flux
+`kustomize.toolkit.fluxcd.io/ssa: Override` adoption marker; the policy spec,
+all other labels, and existing workload objects remain untouched.
+
+The runner creates one suspended, `prune: false` Flux Kustomization with a
+dedicated ServiceAccount, Role, and RoleBinding. The Role is namespace-scoped
+to this one NetworkPolicy and allows only `get`, `patch`, and `update`. After
+the four identities are created, the runner CAS-unsuspends the Kustomization,
+waits for `observedGeneration` and the exact protected `main@sha1:<revision>`
+to be Ready, and verifies that Flux actually reconciled the policy. The policy
+spec and existing labels remain exact; only Flux's two inventory labels and
+the reviewed `kustomize.toolkit.fluxcd.io/ssa: Override` marker are admitted
+in the post-reconcile metadata. Any failed postcondition first suspends the
+Kustomization, restores the previous owner and removes only the transaction's
+SSA/inventory metadata, then deletes only the four receipt-bound Flux
+identities. The durable receipt contains no Secret or civic-authority data.
+Receipt and journal payloads are bounded to 1 MiB, reject credential-shaped
+keys recursively (while allowing only documented boolean/capability-denial
+metadata), and reject symlinked path components before any open.
+
+The live runner also reserves a private, owner-only journal before its first
+mutation. Every create, marker removal, policy patch, unsuspend, suspend,
+restore, and conditional delete is recorded before and after the API call by a
+fsynced temporary write followed by an atomic rename. The journal stores the
+exact predecessor NetworkPolicy (including UID, resourceVersion, metadata, and
+spec) and each transaction-owned Flux UID. An interrupted invocation must be
+re-entered with the same receipt and journal paths; it discovers only the
+transaction marker and then follows suspend-first rollback. If the receipt was
+durably written just before a crash, re-entry instead proves the exact source,
+Ready/current-revision, NetworkPolicy, inventory, and UID postconditions and
+finishes the journal without mutating Kubernetes. Rollback writes a
+`rollback-finalizing` journal marker before its receipt and becomes terminal
+only after that receipt is durable; a checksum-valid receipt (including an
+incomplete rollback receipt) is immutable and is never replaced by a new claim.
+Kustomization deletion is polled to bounded absence before any
+transaction-owned ServiceAccount, RoleBinding, or Role is removed; a timeout
+leaves the journal in recoverable `rollback-finalizing`/`pending` state without
+writing an immutable receipt; re-entry retries the same UID-bound delete. Only
+a replacement UID, forbidden mutation, or other unprovable ownership boundary
+produces terminal `rollback-incomplete`. Receipt and journal paths are checked
+for normalized equality and hard-link/inode aliases before Kubernetes contact,
+including descriptor identity after opening.
+
+For live use, pass `--journal /private/operator/path/handover.journal`; when
+omitted, the runner derives the exact sibling `<receipt>.journal`. Dry-runs do
+not create or read a journal. SIGINT and SIGTERM enter the same fail-closed,
+suspend-first rollback path. The wrapper verifies the exact implementation blob
+from the protected Git revision before executing it; it never imports the
+mutable worktree module.
+
+Because the protected base predates this boundary, introducing these files is
+a one-time reviewed repository transition. The administrator must merge the
+exact reviewed commit once, restore branch enforcement immediately, and wait
+for the protected `main` verification before running the handover. Later
+promotions cannot alter this runner, contract, or baseline render.
 
 ## Inert Case staging runtime gate
 
