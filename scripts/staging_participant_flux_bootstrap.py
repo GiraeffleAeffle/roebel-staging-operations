@@ -426,6 +426,28 @@ def load_receipt(path: Path) -> dict[str, Any]:
     _closed_receipt_payload(value)
     return value
 
+def load_receipt_fd(fd: int) -> dict[str, Any]:
+    """Read one inherited immutable regular-file receipt descriptor."""
+    _require(isinstance(fd, int) and fd >= 3, "bootstrap receipt descriptor invalid")
+    info = os.fstat(fd)
+    _require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_nlink in {0, 1}
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and 0 < info.st_size <= 1024 * 1024,
+        "bootstrap receipt descriptor must reference a bounded owned 0600 regular file",
+    )
+    raw = os.pread(fd, info.st_size + 1, 0)
+    _require(len(raw) == info.st_size, "bootstrap receipt descriptor read was incomplete")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BootstrapError("bootstrap receipt must be UTF-8 JSON") from exc
+    value = _json_object(text, "bootstrap receipt")
+    _closed_receipt_payload(value)
+    return value
+
 
 def _validate_journal(journal: Any) -> None:
     _require(isinstance(journal, list) and journal, "bootstrap receipt journal invalid")
@@ -496,16 +518,84 @@ def bind_success_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict[
     """Bind later activation to the exact dormant identities from one receipt."""
     payload, checksum = _closed_receipt_payload(receipt)
     _validate_receipt_plan_binding(plan, payload)
+    expected_fields = {
+        "schemaVersion",
+        "status",
+        "mode",
+        "protectedRevision",
+        "activationPolicySha256",
+        "protectedFileSha256",
+        "operation",
+        "plan",
+        "preflight",
+        "objectCreateResults",
+        "postconditions",
+        "rollback",
+        "journal",
+        "effects",
+    }
+    _require(set(payload) == expected_fields, "bootstrap success receipt field set drift")
     _require(payload.get("mode") == "live" and payload.get("status") == "dormant-ready", "bootstrap success receipt not dormant-ready")
     _require(payload.get("rollback") is None, "bootstrap success receipt unexpectedly rolled back")
+    preflight = payload.get("preflight")
+    _require(
+        isinstance(preflight, dict)
+        and set(preflight) == {
+            "allEightAbsent",
+            "objects",
+            "clusterBinding",
+            "sharedSource",
+            "preservation",
+            "secretAccess",
+        }
+        and preflight["allEightAbsent"] is True
+        and preflight["secretAccess"] == "none"
+        and isinstance(preflight["clusterBinding"], dict)
+        and bool(preflight["clusterBinding"])
+        and isinstance(preflight["sharedSource"], dict)
+        and preflight["sharedSource"].get("artifactRevision") == f"main@sha1:{plan['protectedRevision']}"
+        and preflight["sharedSource"].get("mutation") == "forbidden"
+        and isinstance(preflight["preservation"], dict)
+        and bool(preflight["preservation"])
+        and isinstance(preflight["objects"], list)
+        and len(preflight["objects"]) == len(plan["objects"]),
+        "bootstrap success closed preflight invalid",
+    )
+    for item, absent in zip(plan["objects"], preflight["objects"], strict=True):
+        _require(
+            isinstance(absent, dict)
+            and set(absent) == {"logicalName", "target", "state", "apiOutcome"}
+            and absent["logicalName"] == item["logicalName"]
+            and absent["target"] == item["target"]
+            and absent["state"] == "absent"
+            and absent["apiOutcome"] == "http-404-not-found",
+            f"bootstrap success absence preflight drift: {item['logicalName']}",
+        )
     records = payload.get("objectCreateResults")
     postconditions = payload.get("postconditions")
     _require(isinstance(records, list) and len(records) == len(plan["objects"]), "bootstrap success create result count drift")
     _require(
         isinstance(postconditions, dict)
-        and postconditions.get("bothKustomizationsSuspended") is True
-        and isinstance(postconditions.get("objects"), list)
-        and len(postconditions["objects"]) == len(plan["objects"]),
+        and set(postconditions) == {"objects", "bothKustomizationsSuspended", "finalChecks"}
+        and postconditions["bothKustomizationsSuspended"] is True
+        and isinstance(postconditions["objects"], list)
+        and len(postconditions["objects"]) == len(plan["objects"])
+        and isinstance(postconditions["finalChecks"], dict)
+        and set(postconditions["finalChecks"]) == {"clusterBinding", "sharedSource", "preservation", "secretAccess"}
+        and postconditions["finalChecks"]["clusterBinding"] == preflight["clusterBinding"]
+        and postconditions["finalChecks"]["secretAccess"] == "none"
+        and postconditions["finalChecks"]["sharedSource"].get("uid") == preflight["sharedSource"].get("uid")
+        and postconditions["finalChecks"]["sharedSource"].get("artifactRevision") == preflight["sharedSource"].get("artifactRevision")
+        and postconditions["finalChecks"]["sharedSource"].get("semanticSha256") == preflight["sharedSource"].get("semanticSha256")
+        and postconditions["finalChecks"]["sharedSource"].get("mutation") == "forbidden"
+        and set(postconditions["finalChecks"]["preservation"]) == set(preflight["preservation"])
+        and all(
+            isinstance(value, dict)
+            and set(value) == {"target", "beforeCanonicalSha256", "afterCanonicalSha256", "byteIdenticalCanonicalJson"}
+            and value["beforeCanonicalSha256"] == value["afterCanonicalSha256"]
+            and value["byteIdenticalCanonicalJson"] is True
+            for value in postconditions["finalChecks"]["preservation"].values()
+        ),
         "bootstrap success postconditions invalid",
     )
     bound: list[dict[str, Any]] = []
@@ -513,9 +603,24 @@ def bind_success_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict[
     for item, record, post in zip(plan["objects"], records, postconditions["objects"], strict=True):
         _require(
             isinstance(record, dict)
+            and set(record) == {
+                "logicalName",
+                "target",
+                "desiredSemanticSha256",
+                "outcome",
+                "uid",
+                "createdResourceVersion",
+                "postNonceRemovalResourceVersion",
+                "nonceRemovalState",
+                "temporaryNonceRemoved",
+                "rollbackOwned",
+            }
             and record.get("logicalName") == item["logicalName"]
             and record.get("target") == item["target"]
             and record.get("desiredSemanticSha256") == item["desiredSemanticSha256"]
+            and record.get("outcome") in {"http-201-created", "post-send-uncertain-discovered"}
+            and isinstance(record.get("createdResourceVersion"), str)
+            and record["createdResourceVersion"].isdigit()
             and record.get("nonceRemovalState") == "removed"
             and record.get("temporaryNonceRemoved") is True
             and record.get("rollbackOwned") is True,
@@ -600,10 +705,20 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
         "bootstrap teardown source receipt digest invalid",
     )
     preflight = payload["preflight"]
+    environment = preflight.get("environment") if isinstance(preflight, dict) else None
     _require(
         isinstance(preflight, dict)
         and set(preflight) == {"environment", "objects", "allEightSafeBeforeDelete", "errors"}
-        and isinstance(preflight["environment"], dict)
+        and isinstance(environment, dict)
+        and set(environment) == {"clusterBinding", "sharedSource", "preservation", "secretAccess"}
+        and isinstance(environment["clusterBinding"], dict)
+        and bool(environment["clusterBinding"])
+        and isinstance(environment["sharedSource"], dict)
+        and environment["sharedSource"].get("artifactRevision") == f"main@sha1:{plan['protectedRevision']}"
+        and environment["sharedSource"].get("mutation") == "forbidden"
+        and isinstance(environment["preservation"], dict)
+        and bool(environment["preservation"])
+        and environment["secretAccess"] == "none"
         and preflight["allEightSafeBeforeDelete"] is True
         and preflight["errors"] == []
         and isinstance(preflight["objects"], list)
@@ -638,6 +753,23 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
             and record["desiredSemanticSha256"] == item["desiredSemanticSha256"],
             f"bootstrap teardown ownership drift: {item['logicalName']}",
         )
+    records_by_name = {record["logicalName"]: record for record in records}
+    for observed in preflight["objects"]:
+        record = records_by_name[observed["logicalName"]]
+        if observed["state"] == "already-absent":
+            _require(
+                set(observed) == {"logicalName", "uid", "state"}
+                and observed["uid"] == record["uid"],
+                f"bootstrap teardown absent preflight drift: {observed['logicalName']}",
+            )
+        else:
+            _require(
+                set(observed) == {"logicalName", "uid", "resourceVersion", "state"}
+                and observed["uid"] == record["uid"]
+                and isinstance(observed["resourceVersion"], str)
+                and observed["resourceVersion"].isdigit(),
+                f"bootstrap teardown owned preflight drift: {observed['logicalName']}",
+            )
     postconditions = payload["postconditions"]
     rollback = payload["rollback"]
     _require(
@@ -649,15 +781,74 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
         },
         "bootstrap teardown postconditions invalid",
     )
+    expected_deletion_order = [
+        item["logicalName"]
+        for item in reversed(plan["objects"])
+        if item["target"]["kind"] == "Kustomization"
+    ] + [
+        item["logicalName"]
+        for item in reversed(plan["objects"])
+        if item["target"]["kind"] != "Kustomization"
+    ]
     _require(
         isinstance(rollback, dict)
-        and rollback.get("status") == "complete"
-        and rollback.get("allEightAbsentQuiet") is True
-        and rollback.get("bothKustomizationsAbsent") is True
-        and rollback.get("errors") == []
-        and rollback.get("foreignOrReplacementObjectsDeleted") is False,
+        and set(rollback) == {
+            "status",
+            "deletionOrder",
+            "deleted",
+            "allEightAbsentQuiet",
+            "bothKustomizationsAbsent",
+            "finalChecks",
+            "errors",
+            "foreignOrReplacementObjectsDeleted",
+        }
+        and rollback["status"] == "complete"
+        and rollback["deletionOrder"] == expected_deletion_order
+        and isinstance(rollback["deleted"], list)
+        and len(rollback["deleted"]) == len(plan["objects"])
+        and [item.get("logicalName") for item in rollback["deleted"]] == expected_deletion_order
+        and rollback["allEightAbsentQuiet"] is True
+        and rollback["bothKustomizationsAbsent"] is True
+        and isinstance(rollback["finalChecks"], dict)
+        and rollback["errors"] == []
+        and rollback["foreignOrReplacementObjectsDeleted"] is False,
         "bootstrap teardown deletion receipt incomplete",
     )
+    final_checks = rollback["finalChecks"]
+    _require(
+        set(final_checks) == {"clusterBinding", "sharedSource", "preservation", "secretAccess"}
+        and final_checks["clusterBinding"] == environment["clusterBinding"]
+        and final_checks["secretAccess"] == "none"
+        and final_checks["sharedSource"].get("uid") == environment["sharedSource"].get("uid")
+        and final_checks["sharedSource"].get("artifactRevision") == environment["sharedSource"].get("artifactRevision")
+        and final_checks["sharedSource"].get("semanticSha256") == environment["sharedSource"].get("semanticSha256")
+        and final_checks["sharedSource"].get("mutation") == "forbidden"
+        and set(final_checks["preservation"]) == set(environment["preservation"])
+        and all(
+            isinstance(value, dict)
+            and set(value) == {"target", "beforeCanonicalSha256", "afterCanonicalSha256", "byteIdenticalCanonicalJson"}
+            and value["beforeCanonicalSha256"] == value["afterCanonicalSha256"]
+            and value["byteIdenticalCanonicalJson"] is True
+            for value in final_checks["preservation"].values()
+        ),
+        "bootstrap teardown final preservation evidence drift",
+    )
+    for deletion in rollback["deleted"]:
+        record = records_by_name[deletion["logicalName"]]
+        _require(deletion.get("uid") == record["uid"], f"bootstrap teardown deletion UID drift: {deletion['logicalName']}")
+        if deletion.get("state") == "already-absent":
+            _require(
+                set(deletion) == {"logicalName", "uid", "state"},
+                f"bootstrap teardown absent deletion fields drift: {deletion['logicalName']}",
+            )
+        else:
+            _require(
+                set(deletion) == {"logicalName", "uid", "deleteResourceVersion", "state"}
+                and deletion["state"] == "delete-requested"
+                and isinstance(deletion["deleteResourceVersion"], str)
+                and deletion["deleteResourceVersion"].isdigit(),
+                f"bootstrap teardown delete receipt fields drift: {deletion['logicalName']}",
+            )
     _require(
         any(entry.get("phase") == "teardown-reserved" for entry in payload["journal"])
         and any(entry.get("phase") == "dormant-torn-down" for entry in payload["journal"]),

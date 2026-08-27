@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -85,12 +86,47 @@ class FakeKube:
         self.preflight_calls += 1
         return {
             "clusterBinding": {"identity": "exact"},
-            "sharedSource": {"uid": "source-uid", "artifactRevision": "main@sha1:" + REVISION},
-            "preservation": {"webIngress": "same", "existingWorkbenchNetworkPolicy": "same"},
+            "sharedSource": {
+                "target": {"kind": "GitRepository", "name": "operations"},
+                "uid": "source-uid",
+                "resourceVersion": "10",
+                "artifactRevision": "main@sha1:" + REVISION,
+                "semanticSha256": "sha256:" + "1" * 64,
+                "mutation": "forbidden",
+            },
+            "preservation": {
+                "webIngress": {
+                    "target": {"kind": "Ingress", "name": "web"},
+                    "beforeCanonicalSha256": "sha256:" + "2" * 64,
+                    "mutation": "forbidden",
+                },
+                "existingWorkbenchNetworkPolicy": {
+                    "target": {"kind": "NetworkPolicy", "name": "workbench"},
+                    "beforeCanonicalSha256": "sha256:" + "3" * 64,
+                    "mutation": "forbidden",
+                },
+            },
+            "secretAccess": "none",
         }
 
     def final_checks(self, _plan, before):
-        return before
+        return {
+            "clusterBinding": before["clusterBinding"],
+            "sharedSource": {
+                key: before["sharedSource"][key]
+                for key in ("uid", "resourceVersion", "artifactRevision", "semanticSha256", "mutation")
+            },
+            "preservation": {
+                label: {
+                    "target": value["target"],
+                    "beforeCanonicalSha256": value["beforeCanonicalSha256"],
+                    "afterCanonicalSha256": value["beforeCanonicalSha256"],
+                    "byteIdenticalCanonicalJson": True,
+                }
+                for label, value in before["preservation"].items()
+            },
+            "secretAccess": "none",
+        }
 
     def get(self, target):
         return self.objects.get(self.key(target))
@@ -609,6 +645,9 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         self.assertEqual(len(bound["objects"]), 8)
         self.assertEqual(bound["objects"][0]["uid"], "uid-1")
         self.assertNotIn("operationNonce", json.dumps(bound))
+        widened = json.loads(json.dumps(receipt)); widened["unexpected"] = {"authority": "widened"}
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "field set drift"):
+            BOOTSTRAP.bind_success_receipt(plan, close_receipt(widened))
 
     def test_success_receipt_binding_requires_completed_nonce_removal_state(self) -> None:
         plan = self.ready_plan()
@@ -679,6 +718,10 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             [target["kind"] for target, _uid, _rv in kube.deleted[:2]],
             ["Kustomization", "Kustomization"],
         )
+        corrupted = json.loads(json.dumps(teardown))
+        corrupted["rollback"]["deleted"][0]["uid"] = "foreign-uid"
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "deletion UID drift"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(corrupted))
 
     def test_dormant_teardown_never_adopts_or_deletes_a_replacement_uid(self) -> None:
         plan = self.ready_plan(); kube = FakeKube()
@@ -757,18 +800,21 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             receipt = Path(directory) / "success.json"
             receipt.write_text(json.dumps(close_receipt(success))); receipt.chmod(0o600)
-            output = io.StringIO()
-            with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
-                CLI,
-                "KubernetesAdapter",
-                side_effect=AssertionError("receipt verifier contacted Kubernetes"),
-            ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(output), redirect_stderr(io.StringIO()):
-                result = CLI.main([
-                    "--verify-success-receipt",
-                    str(receipt),
-                    "--expected-protected-revision",
-                    REVISION,
-                ])
+            output = io.StringIO(); fd = os.open(receipt, os.O_RDONLY)
+            try:
+                with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
+                    CLI,
+                    "KubernetesAdapter",
+                    side_effect=AssertionError("receipt verifier contacted Kubernetes"),
+                ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(output), redirect_stderr(io.StringIO()):
+                    result = CLI.main([
+                        "--verify-success-receipt-fd",
+                        str(fd),
+                        "--expected-protected-revision",
+                        REVISION,
+                    ])
+            finally:
+                os.close(fd)
             verified = json.loads(output.getvalue())
             self.assertEqual(result, 0)
             self.assertEqual(verified["status"], "dormant-ready")
@@ -849,7 +895,7 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/staging-participant-flux-bootstrap.yml").read_text()
         for forbidden in ("--manifest", "--evidence", "--target", "--allowlist", "--secret", "--proxy"):
             self.assertNotIn(forbidden, source)
-        self.assertIn("env=self.activation.kubernetes_subprocess_environment_v4()", source)
+        self.assertIn("self.activation.raw_delete(", source)
         self.assertIn('modes.add_argument("--dry-run"', source)
         self.assertIn('modes.add_argument("--live"', source)
         self.assertIn('modes.add_argument("--recover"', source)

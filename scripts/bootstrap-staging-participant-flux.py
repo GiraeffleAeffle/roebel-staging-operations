@@ -20,20 +20,18 @@ import hashlib
 import json
 import os
 import re
-import selectors
 import signal
 import stat
 import subprocess
 import sys
 import time
 import types
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
+GIT_BIN = Path("/usr/bin/git")
 POLICY_PATH = "policy/staging-participant-gateway-activation-policy.json"
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
 BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
@@ -76,12 +74,33 @@ def revision(value: Any) -> str:
     require(isinstance(value, str) and REVISION.fullmatch(value) is not None, "expected revision must be 40 lowercase hex")
     return value
 
+def trusted_git(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    info = os.lstat(GIT_BIN)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not GIT_BIN.is_symlink()
+        and info.st_uid == 0
+        and stat.S_IMODE(info.st_mode) & 0o022 == 0
+        and os.access(GIT_BIN, os.X_OK),
+        "trusted Git executable metadata invalid",
+    )
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "HOME": "/dev/null",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    return subprocess.run([str(GIT_BIN), *args], env=environment, **kwargs)
+
 
 def git_blob(rev: str, path: str) -> bytes:
     revision(rev)
     try:
-        result = subprocess.run(
-            ["git", "-C", str(ROOT), "show", f"{rev}:{path}"],
+        result = trusted_git(
+            ["-C", str(ROOT), "show", f"{rev}:{path}"],
             capture_output=True,
             check=False,
             timeout=10,
@@ -115,16 +134,16 @@ def protected_checkout(rev: str) -> dict[str, str]:
         expected = git_blob(rev, path)
         require(local.read_bytes() == expected, f"protected bootstrap file differs from exact Git blob: {path}")
         hashes[path] = bytes_sha256(expected)
-    working = subprocess.run(["git", "-C", str(ROOT), "diff", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
-    staged = subprocess.run(["git", "-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
+    working = trusted_git(["-C", str(ROOT), "diff", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
+    staged = trusted_git(["-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
     require(working.returncode == 0 and staged.returncode == 0, "protected Flux bootstrap checkout is dirty")
     return hashes
 
 
 def load_context(rev: str) -> dict[str, Any]:
     revision(rev)
-    head = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+    head = trusted_git(
+        ["-C", str(ROOT), "rev-parse", "HEAD"],
         text=True,
         capture_output=True,
         check=False,
@@ -350,53 +369,13 @@ class KubernetesAdapter:
     def _raw_delete(self, resource_path: str, payload: str) -> None:
         allowed = {self._resource_path(item["target"]) for item in self.plan["objects"]}
         require(resource_path in allowed, "raw delete path outside exact dormant bootstrap plan")
-        accept_path = "^" + resource_path.replace(".", r"\.") + "$"
-        process = subprocess.Popen(
-            self.activation.kb(str(self.snapshot.path))
-            + ["proxy", "--port=0", "--address=127.0.0.1", "--accept-hosts=^127\\.0\\.0\\.1$", f"--accept-paths={accept_path}"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=self.activation.kubernetes_subprocess_environment_v4(),
+        require(self.snapshot is not None, "authenticated Kubernetes DELETE snapshot absent")
+        self.activation.raw_delete(
+            self.snapshot,
+            resource_path,
+            payload,
+            self.policy["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"],
         )
-        selector = selectors.DefaultSelector()
-        try:
-            require(process.stdout is not None, "kubectl proxy output unavailable")
-            selector.register(process.stdout, selectors.EVENT_READ)
-            deadline = time.monotonic() + 10
-            output = b""
-            port = None
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise CliError("kubectl proxy exited before bootstrap delete")
-                events = selector.select(min(0.25, max(0.0, deadline - time.monotonic())))
-                if not events:
-                    continue
-                chunk = os.read(process.stdout.fileno(), 4096)
-                output = (output + chunk)[-16384:]
-                match = re.search(rb"Starting to serve on 127\.0\.0\.1:(\d+)", output)
-                if match:
-                    port = int(match.group(1))
-                    break
-            require(port is not None, "kubectl proxy did not become ready for bootstrap delete")
-            request = urllib.request.Request(
-                f"http://127.0.0.1:{port}{resource_path}",
-                data=payload.encode("utf-8"),
-                headers={"Content-Type": "application/json"},
-                method="DELETE",
-            )
-            try:
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                with opener.open(request, timeout=15) as response:
-                    require(200 <= response.status < 300, "bootstrap delete did not return success")
-            except urllib.error.HTTPError as exc:
-                if exc.code != 404:
-                    raise CliError(f"bootstrap delete rejected: HTTP {exc.code}") from exc
-        finally:
-            selector.close()
-            self.activation._terminate_process_group(process)
-            if process.stdout is not None:
-                process.stdout.close()
 
     def wait_all_absent(self, targets: list[dict[str, str]]) -> bool:
         require({_target_key(target) for target in targets} == set(self.allowed_targets), "absence wait target set drift")
@@ -431,9 +410,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--teardown", action="store_true")
     modes.add_argument("--verify-success-receipt", type=Path)
     modes.add_argument("--verify-teardown-receipt", type=Path)
+    modes.add_argument("--verify-success-receipt-fd", type=int)
+    modes.add_argument("--verify-teardown-receipt-fd", type=int)
     parser.add_argument("--kubeconfig")
     parser.add_argument("--receipt", type=Path, default=Path("participant-flux-bootstrap-receipt.json"))
-    parser.add_argument("--recovery-receipt", type=Path)
+    recovery = parser.add_mutually_exclusive_group()
+    recovery.add_argument("--recovery-receipt", type=Path)
+    recovery.add_argument("--recovery-receipt-fd", type=int)
     return parser.parse_args(argv)
 
 
@@ -448,7 +431,7 @@ def main(argv: list[str] | None = None) -> int:
         plan = context["plan"]
         module = context["bootstrapModule"]
         if args.dry_run:
-            require(args.kubeconfig is None and args.recovery_receipt is None, "dry-run accepts no kubeconfig or recovery receipt")
+            require(args.kubeconfig is None and args.recovery_receipt is None and args.recovery_receipt_fd is None, "dry-run accepts no kubeconfig or recovery receipt")
             sink = module.ReceiptSink.reserve(args.receipt)
             sink.commit(plan)
             print(canonical(plan))
@@ -457,22 +440,32 @@ def main(argv: list[str] | None = None) -> int:
             context["policyModule"].assert_activation_ready(context["policy"])
         except context["policyModule"].PolicyError as exc:
             raise CliError(str(exc)) from exc
-        if args.verify_success_receipt is not None or args.verify_teardown_receipt is not None:
-            require(args.kubeconfig is None and args.recovery_receipt is None, "receipt verification accepts no kubeconfig or recovery receipt")
-            if args.verify_success_receipt is not None:
-                result = module.bind_success_receipt(plan, module.load_receipt(args.verify_success_receipt))
+        if any(
+            value is not None
+            for value in (
+                args.verify_success_receipt,
+                args.verify_success_receipt_fd,
+                args.verify_teardown_receipt,
+                args.verify_teardown_receipt_fd,
+            )
+        ):
+            require(args.kubeconfig is None and args.recovery_receipt is None and args.recovery_receipt_fd is None, "receipt verification accepts no kubeconfig or recovery receipt")
+            if args.verify_success_receipt is not None or args.verify_success_receipt_fd is not None:
+                receipt = module.load_receipt(args.verify_success_receipt) if args.verify_success_receipt is not None else module.load_receipt_fd(args.verify_success_receipt_fd)
+                result = module.bind_success_receipt(plan, receipt)
             else:
-                result = module.bind_teardown_receipt(plan, module.load_receipt(args.verify_teardown_receipt))
+                receipt = module.load_receipt(args.verify_teardown_receipt) if args.verify_teardown_receipt is not None else module.load_receipt_fd(args.verify_teardown_receipt_fd)
+                result = module.bind_teardown_receipt(plan, receipt)
             print(canonical(result))
             return 0
         require(isinstance(args.kubeconfig, str) and args.kubeconfig, "live/recovery/teardown bootstrap requires explicit --kubeconfig")
         if args.live:
-            require(args.recovery_receipt is None, "live bootstrap accepts no recovery receipt")
+            require(args.recovery_receipt is None and args.recovery_receipt_fd is None, "live bootstrap accepts no recovery receipt")
             prior = None
             mode = "live"
         else:
-            require(args.recovery_receipt is not None, "recovery/teardown mode requires --recovery-receipt")
-            prior = module.load_receipt(args.recovery_receipt)
+            require(args.recovery_receipt is not None or args.recovery_receipt_fd is not None, "recovery/teardown mode requires a recovery receipt")
+            prior = module.load_receipt(args.recovery_receipt) if args.recovery_receipt is not None else module.load_receipt_fd(args.recovery_receipt_fd)
             mode = "teardown" if args.teardown else "recover"
         # Receipt reservation and its first durable commit happen before the
         # adapter snapshots credentials or makes any Kubernetes request.

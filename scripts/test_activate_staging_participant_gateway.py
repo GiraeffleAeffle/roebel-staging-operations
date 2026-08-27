@@ -68,7 +68,15 @@ def valid_success_facts(value):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
     sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
     facts = {"schemaVersion": MODULE.POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": MODULE.POLICY.activation_policy_sha256(value), "collectedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": (now + dt.timedelta(seconds=300)).strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "protectedRevision": REV, **sections}
-    cluster = {"apiOrigin": value["clusterIdentity"]["apiOrigin"], "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"], "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"], "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"]}
+    cluster = {
+        "apiOrigin": value["clusterIdentity"]["apiOrigin"],
+        "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"],
+        "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"],
+        "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"],
+        "kubeSystemNamespaceResourceVersion": "10",
+        "credentialsIncluded": False,
+        "kubeconfigPathIncluded": False,
+    }
     facts["clusterBinding"] = {name: copy.deepcopy(cluster) for name in ("initial", "beforeMutation", "beforeIngress", "beforeFluxUnsuspend", "beforeSuccess")}
     facts["publication"] = {"manifestDigest": value["productPins"]["imageManifestDigest"], "verificationLevel": "anonymous-registry-manifest-digest-only", "cryptographicPublicationProvenanceVerified": False}
     facts["database"] = valid_database_status(value)
@@ -422,39 +430,51 @@ class ExecutorTests(unittest.TestCase):
         child_env = run.call_args.kwargs["env"]
         self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
 
-    def test_raw_delete_proxy_exposes_only_the_exact_escaped_resource_path(self):
+    def test_raw_delete_uses_direct_authenticated_tls_without_loopback_listener(self):
+        class Secured:
+            def __init__(self): self.sent = b""; self.closed = False
+            def sendall(self, value): self.sent += value
+            def close(self): self.closed = True
+        class Context:
+            def __init__(self, secured): self.secured = secured
+            def wrap_socket(self, _raw, server_hostname): self.server_hostname = server_hostname; return self.secured
+            def load_cert_chain(self, *_args): raise AssertionError("token fixture loaded a client key")
         class Response:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *_args): return False
-        class Opener:
-            def open(self, request, timeout):
-                self.request, self.timeout = request, timeout
-                return Response()
-        class Process:
-            def __init__(self):
-                read_fd, write_fd = os.pipe()
-                os.write(write_fd, b"Starting to serve on 127.0.0.1:41777\n"); os.close(write_fd)
-                self.stdout = os.fdopen(read_fd, "rb", buffering=0); self.terminated = False
-            def poll(self): return None
-            def terminate(self): self.terminated = True
-            def wait(self, timeout): return 0
-            def kill(self): self.terminated = True
+            def begin(self): pass
+            def read(self, _limit): return b"{}"
         resource_path = f"/apis/networking.k8s.io/v1/namespaces/{MODULE.NAMESPACE}/networkpolicies/{MODULE.NAME}"
-        process, opener = Process(), Opener()
-        with patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, patch.object(MODULE.urllib.request, "build_opener", return_value=opener):
-            MODULE.raw_delete("/snapshot", resource_path, '{"kind":"DeleteOptions"}')
-        command = popen.call_args.args[0]
-        self.assertIn("--address=127.0.0.1", command)
-        self.assertIn("--accept-hosts=^127\\.0\\.0\\.1$", command)
-        self.assertIn("--accept-paths=^" + resource_path.replace(".", r"\.") + "$", command)
-        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in popen.call_args.kwargs["env"]})
-        self.assertEqual(opener.request.full_url, "http://127.0.0.1:41777" + resource_path)
-        self.assertEqual(opener.request.method, "DELETE"); self.assertTrue(process.terminated); self.assertTrue(process.stdout.closed)
-        with patch.object(MODULE.subprocess, "Popen") as forbidden:
-            with self.assertRaisesRegex(MODULE.ActivationError, "outside closed policy"):
-                MODULE.raw_delete("/snapshot", resource_path + "?watch=true", "{}")
-        forbidden.assert_not_called()
+        payload = MODULE.canonical({
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "preconditions": {"uid": "owned-uid", "resourceVersion": "10"},
+        })
+        secured = Secured(); context = Context(secured); raw = Mock()
+        snapshot = Mock(
+            ca_pem=b"-----BEGIN CERTIFICATE-----\\nfixture\\n-----END CERTIFICATE-----",
+            client_certificate_path=None,
+            client_key_path=None,
+            bearer_token="private-token",
+            hostname="10.255.240.11",
+            port=6443,
+            tls_server_name="10.255.240.11",
+        )
+        with patch.object(MODULE.ssl, "create_default_context", return_value=context), patch.object(
+            MODULE,
+            "_api_tcp_transport_v4",
+            return_value=raw,
+        ), patch.object(MODULE.http.client, "HTTPResponse", return_value=Response()), patch.object(
+            MODULE.subprocess,
+            "Popen",
+        ) as forbidden_listener:
+            MODULE.raw_delete(snapshot, resource_path, payload)
+        self.assertIn(f"DELETE {resource_path} HTTP/1.1".encode(), secured.sent)
+        self.assertIn(b"Authorization: Bearer private-token", secured.sent)
+        self.assertIn(payload.encode(), secured.sent)
+        self.assertTrue(secured.closed)
+        forbidden_listener.assert_not_called()
+        with self.assertRaisesRegex(MODULE.ActivationError, "outside closed policy"):
+            MODULE.raw_delete(snapshot, resource_path + "?watch=true", payload)
     def test_definite_create_conflict_is_never_treated_as_uncertain(self):
         class Conflict(MODULE.Runner):
             def run(self, args, *, input_text=None):
@@ -586,10 +606,12 @@ class ExecutorTests(unittest.TestCase):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); current = admitted(desired)
         terminating = admitted(desired); terminating["metadata"] |= {"deletionTimestamp": "2026-01-01T00:00:00Z", "finalizers": ["example.test/hold"]}
         created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, current, {"uid": "owned-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        snapshot = Mock()
         with patch.object(MODULE, "get_optional", side_effect=[current, terminating]), patch.object(MODULE, "raw_delete") as delete:
             with self.assertRaisesRegex(MODULE.ActivationError, "blocked by finalizers"):
-                MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
-        path, payload = delete.call_args.args[1:]
+                MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1, snapshot)
+        called_snapshot, path, payload, _timeout = delete.call_args.args
+        self.assertIs(called_snapshot, snapshot)
         self.assertIn(f"/namespaces/{MODULE.WORKBENCH_NAMESPACE}/networkpolicies/{MODULE.WORKBENCH_POLICY_NAME}", path)
         self.assertIn('"uid":"owned-uid"', payload); self.assertIn('"resourceVersion":"10"', payload)
 
@@ -599,9 +621,12 @@ class ExecutorTests(unittest.TestCase):
             desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
         current = admitted(desired, "deployment-uid", "31")
         created = MODULE.CreatedV4("gateway.deployment", desired, current, {"uid": "deployment-uid", "operationNonce": "a" * 64, "temporaryNonceRemoved": True})
+        snapshot = Mock()
         with patch.object(MODULE, "get_optional", side_effect=[current, None]), patch.object(MODULE, "raw_delete") as delete:
-            receipt = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1)
-        payload = json.loads(delete.call_args.args[2])
+            receipt = MODULE.delete_with_preconditions_v4(Fake(), "/tmp/kube", created, 1, snapshot)
+        called_snapshot, _path, raw_payload, _timeout = delete.call_args.args
+        self.assertIs(called_snapshot, snapshot)
+        payload = json.loads(raw_payload)
         self.assertEqual(payload["propagationPolicy"], "Foreground")
         self.assertEqual(payload["preconditions"], {"uid": "deployment-uid", "resourceVersion": "31"})
         self.assertTrue(receipt["foregroundPropagation"])
@@ -1046,6 +1071,19 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "protected file drift"):
             MODULE.bind_success_receipt_v4(wrong_hashes, value, REV, runner_hashes)
 
+        foreign_cluster = copy.deepcopy(receipt)
+        for binding in foreign_cluster["trustedLiveFacts"]["clusterBinding"].values():
+            binding["apiOrigin"] = "https://10.0.0.1:6443"
+            binding["caCertificateSha256"] = sha("3")
+            binding["apiServerSpkiSha256"] = sha("4")
+            binding["kubeSystemNamespaceUid"] = "foreign-cluster"
+        foreign_cluster["canonicalSha256"] = MODULE.digest({
+            key: item for key, item in foreign_cluster.items() if key != "canonicalSha256"
+        })
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            with self.assertRaisesRegex(MODULE.ActivationError, "protected binding drift"):
+                MODULE.bind_success_receipt_v4(foreign_cluster, value, REV, runner_hashes)
+
     def test_v4_owned_receipt_loader_rejects_links_modes_size_and_duplicate_keys(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); path = root / "activation.json"
@@ -1065,10 +1103,10 @@ class ExecutorTests(unittest.TestCase):
         parsed = MODULE.parse_args([
             "--expected-protected-revision",
             REV,
-            "--verify-success-receipt",
-            "/tmp/activation.json",
+            "--verify-success-receipt-fd",
+            "17",
         ])
-        self.assertEqual(parsed.verify_success_receipt, Path("/tmp/activation.json"))
+        self.assertEqual(parsed.verify_success_receipt_fd, 17)
         self.assertFalse(parsed.live)
 
     def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
