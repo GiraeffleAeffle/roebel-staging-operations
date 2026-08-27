@@ -428,6 +428,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--dry-run", action="store_true")
     modes.add_argument("--live", action="store_true")
     modes.add_argument("--recover", action="store_true")
+    modes.add_argument("--teardown", action="store_true")
+    modes.add_argument("--verify-success-receipt", type=Path)
+    modes.add_argument("--verify-teardown-receipt", type=Path)
     parser.add_argument("--kubeconfig")
     parser.add_argument("--receipt", type=Path, default=Path("participant-flux-bootstrap-receipt.json"))
     parser.add_argument("--recovery-receipt", type=Path)
@@ -454,15 +457,23 @@ def main(argv: list[str] | None = None) -> int:
             context["policyModule"].assert_activation_ready(context["policy"])
         except context["policyModule"].PolicyError as exc:
             raise CliError(str(exc)) from exc
-        require(isinstance(args.kubeconfig, str) and args.kubeconfig, "live/recovery bootstrap requires explicit --kubeconfig")
+        if args.verify_success_receipt is not None or args.verify_teardown_receipt is not None:
+            require(args.kubeconfig is None and args.recovery_receipt is None, "receipt verification accepts no kubeconfig or recovery receipt")
+            if args.verify_success_receipt is not None:
+                result = module.bind_success_receipt(plan, module.load_receipt(args.verify_success_receipt))
+            else:
+                result = module.bind_teardown_receipt(plan, module.load_receipt(args.verify_teardown_receipt))
+            print(canonical(result))
+            return 0
+        require(isinstance(args.kubeconfig, str) and args.kubeconfig, "live/recovery/teardown bootstrap requires explicit --kubeconfig")
         if args.live:
             require(args.recovery_receipt is None, "live bootstrap accepts no recovery receipt")
             prior = None
             mode = "live"
         else:
-            require(args.recovery_receipt is not None, "recovery mode requires --recovery-receipt")
+            require(args.recovery_receipt is not None, "recovery/teardown mode requires --recovery-receipt")
             prior = module.load_receipt(args.recovery_receipt)
-            mode = "recover"
+            mode = "teardown" if args.teardown else "recover"
         # Receipt reservation and its first durable commit happen before the
         # adapter snapshots credentials or makes any Kubernetes request.
         sink = module.ReceiptSink.reserve(args.receipt)
@@ -476,7 +487,12 @@ def main(argv: list[str] | None = None) -> int:
             policy_module=context["policyModule"],
             prior_receipt=prior,
         )
-        require(result["status"] in {"dormant-ready", "recovered-rolled-back"}, f"Flux bootstrap incomplete: {result['status']}")
+        expected = {
+            "live": "dormant-ready",
+            "recover": "recovered-rolled-back",
+            "teardown": "dormant-torn-down",
+        }[mode]
+        require(result["status"] == expected, f"Flux bootstrap incomplete: {result['status']}")
         print(canonical(result))
         return 0
     except Exception as exc:

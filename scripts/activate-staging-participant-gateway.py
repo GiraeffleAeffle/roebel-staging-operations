@@ -200,6 +200,41 @@ def obj(raw: str, label: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc: raise ActivationError(f"{label}: invalid JSON") from exc
     except ValueError as exc: raise ActivationError(f"{label}: duplicate JSON key") from exc
     require(isinstance(value, dict), f"{label}: JSON object required"); return value
+
+def load_owned_receipt_v4(path: Path, label: str) -> dict[str, Any]:
+    """Read one bounded owned receipt without following or racing links."""
+    selected = Path(os.path.abspath(path))
+    info = os.lstat(selected)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not selected.is_symlink()
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and 0 < info.st_size <= 8 * 1024 * 1024,
+        f"{label} must be an owned 0600 regular non-symlink nlink-one file under 8 MiB",
+    )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(fd)
+        require(
+            opened.st_dev == info.st_dev
+            and opened.st_ino == info.st_ino
+            and opened.st_size == info.st_size,
+            f"{label} identity changed while opening",
+        )
+        raw = os.read(fd, 8 * 1024 * 1024 + 1)
+    finally:
+        os.close(fd)
+    require(len(raw) <= 8 * 1024 * 1024, f"{label} exceeds 8 MiB")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ActivationError(f"{label} must be UTF-8 JSON") from exc
+    return obj(text, label)
 def kb(kubeconfig: str) -> list[str]: return ["kubectl", "--kubeconfig", kubeconfig]
 def get(r: Runner, args: list[str], label: str) -> dict[str, Any]: return obj(checked(r, args + ["-o", "json"], label), label)
 def git_blob(rev: str, path: str) -> bytes:
@@ -1693,6 +1728,52 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     )
     require(facts["rollback"] == {"status": "not-required", "finalizersRemovedByRunner": False}, "trusted success rollback receipt drift")
 
+def bind_success_receipt_v4(
+    receipt: dict[str, Any],
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+) -> dict[str, Any]:
+    """Deep-verify the durable activation commit without contacting Kubernetes."""
+    require(isinstance(receipt, dict), "activation success receipt must be an object")
+    expected_fields = {
+        "schemaVersion",
+        "status",
+        "protectedRevision",
+        "activationPolicySha256",
+        "protectedRunnerFileSha256",
+        "trustedLiveFacts",
+        "civicAuthorityEffects",
+        "canonicalSha256",
+    }
+    require(set(receipt) == expected_fields, "activation success receipt field set drift")
+    checksum = receipt["canonicalSha256"]
+    require(isinstance(checksum, str) and bool(POLICY.SHA256.fullmatch(checksum)), "activation success receipt checksum invalid")
+    unsigned = {key: copy.deepcopy(value) for key, value in receipt.items() if key != "canonicalSha256"}
+    require(digest(unsigned) == checksum, "activation success receipt checksum mismatch")
+    public_projection(unsigned)
+    require(receipt["schemaVersion"] == RECEIPT_SCHEMA, "activation success receipt schema drift")
+    require(receipt["status"] == "activated", "activation success receipt is not activated")
+    require(receipt["protectedRevision"] == rev, "activation success receipt revision drift")
+    require(
+        receipt["activationPolicySha256"] == POLICY.activation_policy_sha256(p),
+        "activation success receipt policy drift",
+    )
+    require(
+        receipt["protectedRunnerFileSha256"] == runner_hashes,
+        "activation success receipt protected file drift",
+    )
+    require(receipt["civicAuthorityEffects"] is False, "activation success receipt civic authority widened")
+    validate_success_facts_v4(receipt["trustedLiveFacts"], p, rev)
+    return {
+        "schemaVersion": RECEIPT_SCHEMA,
+        "status": "activated",
+        "receiptSha256": checksum,
+        "protectedRevision": rev,
+        "activationPolicySha256": receipt["activationPolicySha256"],
+        "civicAuthorityEffects": False,
+    }
+
 def activate(
     p: dict[str, Any],
     rev: str,
@@ -1791,11 +1872,22 @@ def activate(
         finally:
             restore_transaction_signal_handlers_v4(previous_signal_handlers)
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expected-protected-revision", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--dry-run", action="store_true")
+    modes.add_argument("--live", action="store_true")
+    modes.add_argument("--verify-success-receipt", type=Path)
+    parser.add_argument("--kubeconfig")
+    parser.add_argument("--flux-bootstrap-receipt", type=Path)
+    parser.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json"))
+    return parser.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
     global POLICY, BOOTSTRAP
-    ap = argparse.ArgumentParser(); ap.add_argument("--expected-protected-revision", required=True); ap.add_argument("--dry-run", action="store_true"); ap.add_argument("--live", action="store_true"); ap.add_argument("--kubeconfig"); ap.add_argument("--flux-bootstrap-receipt", type=Path); ap.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json")); a = ap.parse_args()
-    if a.dry_run == a.live: print("activation blocked: choose exactly one of --dry-run or --live", file=sys.stderr); return 2
     try:
+        a = parse_args(argv)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "executor requires python3 -I isolated safe-path mode")
         os.environ.pop("PYTHONPATH", None)
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
@@ -1809,11 +1901,19 @@ def main() -> int:
             require(a.kubeconfig is None and a.flux_bootstrap_receipt is None, "dry-run accepts no kubeconfig or Flux bootstrap receipt")
             result = dry_run_plan(p, rev, runner_hashes)
             sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0
-        # The immutable readiness gate deliberately precedes kubeconfig
-        # validation and Runner construction. The committed policy therefore
-        # cannot contact Kubernetes in live mode.
+        # The immutable readiness gate precedes receipt or kubeconfig input.
         try: POLICY.assert_activation_ready(p)
         except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
+        if a.verify_success_receipt is not None:
+            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None, "receipt verification accepts no kubeconfig or Flux bootstrap receipt")
+            result = bind_success_receipt_v4(
+                load_owned_receipt_v4(a.verify_success_receipt, "activation success receipt"),
+                p,
+                rev,
+                runner_hashes,
+            )
+            print(canonical(result))
+            return 0
         require(a.flux_bootstrap_receipt is not None, "live activation requires --flux-bootstrap-receipt")
         dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
         sink = ReceiptSink.reserve(a.receipt)

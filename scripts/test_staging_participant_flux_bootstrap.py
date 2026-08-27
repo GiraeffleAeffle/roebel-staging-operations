@@ -200,6 +200,11 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             path.write_text(json.dumps(receipt))
             path.chmod(0o600)
             self.assertEqual(BOOTSTRAP.load_receipt(path), receipt)
+            hardlink = Path(directory) / "receipt-hardlink.json"
+            hardlink.hardlink_to(path)
+            with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "nlink-one"):
+                BOOTSTRAP.load_receipt(path)
+            hardlink.unlink()
             path.chmod(0o644)
             with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "0600"):
                 BOOTSTRAP.load_receipt(path)
@@ -643,6 +648,131 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
 
         with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "success nonce journal drift"):
             BOOTSTRAP.bind_success_receipt(plan, close_receipt(receipt))
+
+    def test_success_receipt_can_only_teardown_the_exact_eight_dormant_uids(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+        bound = BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(teardown))
+
+        self.assertEqual(teardown["status"], "dormant-torn-down")
+        self.assertEqual(bound["status"], "dormant-torn-down")
+        self.assertTrue(bound["allEightAbsentQuiet"])
+        self.assertTrue(bound["bothKustomizationsAbsent"])
+        self.assertEqual(kube.objects, {})
+        self.assertEqual(len(kube.deleted), 8)
+        self.assertEqual(
+            [target["kind"] for target, _uid, _rv in kube.deleted[:2]],
+            ["Kustomization", "Kustomization"],
+        )
+
+    def test_dormant_teardown_never_adopts_or_deletes_a_replacement_uid(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        target = plan["objects"][0]["target"]
+        replacement = json.loads(json.dumps(kube.get(target)))
+        replacement["metadata"]["uid"] = "foreign-replacement"
+        replacement["metadata"]["resourceVersion"] = "999"
+        kube.objects[kube.key(target)] = replacement
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+
+        self.assertEqual(teardown["status"], "teardown-incomplete")
+        self.assertEqual(kube.get(target)["metadata"]["uid"], "foreign-replacement")
+        self.assertFalse(any(uid == "foreign-replacement" for _target, uid, _rv in kube.deleted))
+        self.assertEqual(kube.deleted, [])
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "not dormant-torn-down"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(teardown))
+    def test_dormant_teardown_refuses_all_deletes_if_flux_was_unsuspended(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        kustomization = next(item for item in plan["objects"] if item["target"]["kind"] == "Kustomization")
+        live = kube.get(kustomization["target"])
+        live["spec"]["suspend"] = False
+
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            prior_receipt=close_receipt(success),
+        )
+
+        self.assertEqual(teardown["status"], "teardown-incomplete")
+        self.assertEqual(kube.deleted, [])
+        self.assertEqual(len(kube.objects), 8)
+
+
+    def test_success_receipt_cli_verifier_is_effect_free_and_deep(self) -> None:
+        plan = self.ready_plan(); kube = FakeKube()
+        success = BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+        )
+        context = {
+            "revision": REVISION,
+            "hashes": plan["protectedFileSha256"],
+            "policy": POLICY.approved_next_activation_policy_descriptor(),
+            "policyModule": POLICY,
+            "bootstrapModule": BOOTSTRAP,
+            "plan": plan,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "success.json"
+            receipt.write_text(json.dumps(close_receipt(success))); receipt.chmod(0o600)
+            output = io.StringIO()
+            with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
+                CLI,
+                "KubernetesAdapter",
+                side_effect=AssertionError("receipt verifier contacted Kubernetes"),
+            ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(output), redirect_stderr(io.StringIO()):
+                result = CLI.main([
+                    "--verify-success-receipt",
+                    str(receipt),
+                    "--expected-protected-revision",
+                    REVISION,
+                ])
+            verified = json.loads(output.getvalue())
+            self.assertEqual(result, 0)
+            self.assertEqual(verified["status"], "dormant-ready")
+            self.assertEqual(verified["receiptSha256"], close_receipt(success)["canonicalSha256"])
 
     def test_inert_dry_run_writes_plan_without_constructing_kubernetes_adapter(self) -> None:
         inert_plan = BOOTSTRAP.build_plan(

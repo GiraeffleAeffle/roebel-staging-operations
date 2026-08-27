@@ -1015,6 +1015,62 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
 
+    def test_v4_durable_success_receipt_verifier_binds_checksum_files_policy_and_facts(self):
+        value = ready_policy(); runner_hashes = {"scripts/runner.py": sha("1")}
+        unsigned = {
+            "schemaVersion": MODULE.RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+            "protectedRunnerFileSha256": runner_hashes,
+            "trustedLiveFacts": valid_success_facts(value),
+            "civicAuthorityEffects": False,
+        }
+        receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            bound = MODULE.bind_success_receipt_v4(receipt, value, REV, runner_hashes)
+        self.assertEqual(bound["status"], "activated")
+        self.assertEqual(bound["receiptSha256"], receipt["canonicalSha256"])
+        self.assertFalse(bound["civicAuthorityEffects"])
+
+        corrupted = copy.deepcopy(receipt)
+        corrupted["trustedLiveFacts"]["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
+        corrupted["canonicalSha256"] = MODULE.digest({key: item for key, item in corrupted.items() if key != "canonicalSha256"})
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            with self.assertRaisesRegex(MODULE.ActivationError, "source revision/UID"):
+                MODULE.bind_success_receipt_v4(corrupted, value, REV, runner_hashes)
+
+        wrong_hashes = copy.deepcopy(receipt)
+        wrong_hashes["protectedRunnerFileSha256"] = {"scripts/runner.py": sha("2")}
+        wrong_hashes["canonicalSha256"] = MODULE.digest({key: item for key, item in wrong_hashes.items() if key != "canonicalSha256"})
+        with self.assertRaisesRegex(MODULE.ActivationError, "protected file drift"):
+            MODULE.bind_success_receipt_v4(wrong_hashes, value, REV, runner_hashes)
+
+    def test_v4_owned_receipt_loader_rejects_links_modes_size_and_duplicate_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); path = root / "activation.json"
+            path.write_text('{"status":"activated"}'); path.chmod(0o600)
+            self.assertEqual(MODULE.load_owned_receipt_v4(path, "fixture"), {"status": "activated"})
+            linked = root / "linked.json"; os.link(path, linked)
+            with self.assertRaisesRegex(MODULE.ActivationError, "nlink-one"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+            linked.unlink(); path.chmod(0o644)
+            with self.assertRaisesRegex(MODULE.ActivationError, "0600"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+            path.chmod(0o600); path.write_text('{"status":"a","status":"b"}')
+            with self.assertRaisesRegex(MODULE.ActivationError, "duplicate"):
+                MODULE.load_owned_receipt_v4(path, "fixture")
+
+    def test_v4_cli_has_effect_free_success_receipt_mode(self):
+        parsed = MODULE.parse_args([
+            "--expected-protected-revision",
+            REV,
+            "--verify-success-receipt",
+            "/tmp/activation.json",
+        ])
+        self.assertEqual(parsed.verify_success_receipt, Path("/tmp/activation.json"))
+        self.assertFalse(parsed.live)
+
     def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
         value = ready_policy()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
