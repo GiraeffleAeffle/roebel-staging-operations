@@ -722,6 +722,16 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         corrupted["rollback"]["deleted"][0]["uid"] = "foreign-uid"
         with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "deletion UID drift"):
             BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(corrupted))
+        preservation_drift = json.loads(json.dumps(teardown))
+        label = next(iter(preservation_drift["rollback"]["finalChecks"]["preservation"]))
+        preservation_drift["rollback"]["finalChecks"]["preservation"][label] = {
+            "target": {"kind": "Foreign", "name": "other"},
+            "beforeCanonicalSha256": "sha256:" + "9" * 64,
+            "afterCanonicalSha256": "sha256:" + "9" * 64,
+            "byteIdenticalCanonicalJson": True,
+        }
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "final preservation evidence drift"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(preservation_drift))
 
     def test_dormant_teardown_never_adopts_or_deletes_a_replacement_uid(self) -> None:
         plan = self.ready_plan(); kube = FakeKube()

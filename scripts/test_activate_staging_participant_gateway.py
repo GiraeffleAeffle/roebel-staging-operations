@@ -423,12 +423,47 @@ class ExecutorTests(unittest.TestCase):
             "http_proxy": "http://attacker.invalid:8080", "ALL_PROXY": "socks5://attacker.invalid:1080",
             "no_proxy": "*", "SAFE_MARKER": "retained",
         }
-        completed = subprocess.CompletedProcess([], 0, "ok", "")
-        with patch.dict(MODULE.os.environ, hostile, clear=True), patch.object(MODULE.subprocess, "run", return_value=completed) as run:
+        binding = Mock(path=Path("/snapshot/kubectl"))
+        process = Mock(returncode=0); process.communicate.return_value = ("ok", "")
+        with patch.dict(MODULE.os.environ, hostile, clear=True), patch.object(
+            MODULE,
+            "kubectl_binding_v4",
+            return_value=binding,
+        ), patch.object(MODULE, "verified_popen", return_value=process) as spawn:
             result = MODULE.Runner().run(["kubectl", "version"])
         self.assertEqual(result.out, "ok")
-        child_env = run.call_args.kwargs["env"]
+        self.assertEqual(spawn.call_args.args[1], ["/snapshot/kubectl", "version"])
+        child_env = spawn.call_args.kwargs["env"]
         self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin suspended-spawn contract")
+    def test_verified_spawn_executes_only_the_bound_vnode(self):
+        path = Path("/bin/echo").resolve(); fd = os.open(path, os.O_RDONLY); info = os.fstat(fd)
+        binding = MODULE.ExecutableBinding(path, fd, info.st_dev, info.st_ino, info.st_size, MODULE.bytes_digest(os.pread(fd, info.st_size + 1, 0)))
+        try:
+            process = MODULE.verified_popen(
+                binding,
+                [str(path), "verified"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual((process.returncode, stdout.strip(), stderr), (0, "verified", ""))
+            replacement = MODULE.ExecutableBinding(
+                Path("/usr/bin/true").resolve(),
+                binding.fd,
+                binding.device,
+                binding.inode,
+                binding.size,
+                binding.sha256,
+                owns_fd=False,
+            )
+            with self.assertRaisesRegex(MODULE.ActivationError, "vnode differs"):
+                MODULE.verified_popen(replacement, [str(replacement.path)], start_new_session=True)
+        finally:
+            binding.close()
 
     def test_raw_delete_uses_direct_authenticated_tls_without_loopback_listener(self):
         class Secured:
@@ -893,15 +928,19 @@ class ExecutorTests(unittest.TestCase):
                 read_fd, write_fd = os.pipe(); os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n"); os.close(write_fd)
                 self.stdout = os.fdopen(read_fd, "rb", buffering=0)
             def poll(self): return None
-        process, opener = Process(), Opener()
-        with patch.object(MODULE.subprocess, "Popen", return_value=process) as popen, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group") as cleanup:
+        process, opener = Process(), Opener(); binding = Mock(path=Path("/snapshot/kubectl"))
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=binding), patch.object(
+            MODULE,
+            "verified_popen",
+            return_value=process,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group") as cleanup:
             body, receipt = MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
         self.assertEqual(body, '{"status":"ready"}')
         self.assertTrue(receipt["loopbackOnly"]); self.assertFalse(receipt["publicIngressUsed"]); self.assertFalse(receipt["serviceProxyUsed"])
-        command = popen.call_args.args[0]
+        command = spawn.call_args.args[1]
         self.assertIn("--address=127.0.0.1", command); self.assertIn("pod/pod-a", command); self.assertIn(":18085", command)
-        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in popen.call_args.kwargs["env"]})
-        self.assertTrue(popen.call_args.kwargs["start_new_session"]); self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
+        self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in spawn.call_args.kwargs["env"]})
+        self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
 
     def test_v4_manual_policy_named_ports_and_ranges_are_conflicts(self):
         def policy_with(port, end_port=None):

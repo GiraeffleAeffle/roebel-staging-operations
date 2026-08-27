@@ -718,6 +718,15 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
         and environment["sharedSource"].get("mutation") == "forbidden"
         and isinstance(environment["preservation"], dict)
         and bool(environment["preservation"])
+        and all(
+            isinstance(value, dict)
+            and set(value) == {"target", "beforeCanonicalSha256", "mutation"}
+            and isinstance(value["target"], dict)
+            and isinstance(value["beforeCanonicalSha256"], str)
+            and SHA256.fullmatch(value["beforeCanonicalSha256"]) is not None
+            and value["mutation"] == "forbidden"
+            for value in environment["preservation"].values()
+        )
         and environment["secretAccess"] == "none"
         and preflight["allEightSafeBeforeDelete"] is True
         and preflight["errors"] == []
@@ -827,9 +836,11 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
         and all(
             isinstance(value, dict)
             and set(value) == {"target", "beforeCanonicalSha256", "afterCanonicalSha256", "byteIdenticalCanonicalJson"}
-            and value["beforeCanonicalSha256"] == value["afterCanonicalSha256"]
+            and value["target"] == environment["preservation"][label]["target"]
+            and value["beforeCanonicalSha256"] == environment["preservation"][label]["beforeCanonicalSha256"]
+            and value["afterCanonicalSha256"] == environment["preservation"][label]["beforeCanonicalSha256"]
             and value["byteIdenticalCanonicalJson"] is True
-            for value in final_checks["preservation"].values()
+            for label, value in final_checks["preservation"].items()
         ),
         "bootstrap teardown final preservation evidence drift",
     )

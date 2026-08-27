@@ -88,12 +88,13 @@ def trusted_git(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[A
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "HOME": "/dev/null",
         "LANG": "C",
         "LC_ALL": "C",
         "PATH": "/usr/bin:/bin",
     }
-    return subprocess.run([str(GIT_BIN), *args], env=environment, **kwargs)
+    return subprocess.run([str(GIT_BIN), "--no-replace-objects", *args], env=environment, **kwargs)
 
 
 def git_blob(rev: str, path: str) -> bytes:
@@ -134,9 +135,6 @@ def protected_checkout(rev: str) -> dict[str, str]:
         expected = git_blob(rev, path)
         require(local.read_bytes() == expected, f"protected bootstrap file differs from exact Git blob: {path}")
         hashes[path] = bytes_sha256(expected)
-    working = trusted_git(["-C", str(ROOT), "diff", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
-    staged = trusted_git(["-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *PROTECTED_PATHS], check=False)
-    require(working.returncode == 0 and staged.returncode == 0, "protected Flux bootstrap checkout is dirty")
     return hashes
 
 

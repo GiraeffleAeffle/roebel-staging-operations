@@ -12,7 +12,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("participant live wrapper blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, hashlib, json, os, re, secrets, select, shutil, signal, socket, stat, subprocess, sys, tempfile, threading, time
+import argparse, base64, hashlib, json, os, re, secrets, select, shutil, signal, socket, stat, subprocess, sys, tempfile, threading, time, types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -123,6 +123,7 @@ def git_environment() -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "HOME": "/dev/null",
         "LANG": "C",
         "LC_ALL": "C",
@@ -139,7 +140,7 @@ def trusted_git(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[A
         and os.access(GIT_BIN, os.X_OK),
         "trusted Git executable metadata invalid",
     )
-    return subprocess.run([str(GIT_BIN), *args], env=git_environment(), **kwargs)
+    return subprocess.run([str(GIT_BIN), "--no-replace-objects", *args], env=git_environment(), **kwargs)
 
 def git_blob(revision: str, path: str) -> bytes:
     try:
@@ -166,12 +167,50 @@ def bind_protected_checkout(revision: str) -> tuple[dict[str, str], dict[str, by
         expected = git_blob(revision, path)
         require(local.read_bytes() == expected, f"protected file differs from exact Git blob: {path}")
         hashes[path] = bytes_sha256(expected); blobs[path] = expected
-    dirty = trusted_git(["-C", str(ROOT), "diff", "--quiet", revision, "--", *PROTECTED_PATHS], check=False)
-    cached = trusted_git(["-C", str(ROOT), "diff", "--cached", "--quiet", revision, "--", *PROTECTED_PATHS], check=False)
-    require(dirty.returncode == 0 and cached.returncode == 0, "protected transport checkout is dirty")
     return dict(sorted(hashes.items())), blobs
 
-def snapshot_binary(source_path: Path, label: str, destination: Path) -> Path:
+def compile_verified_spawn_module(source: bytes, revision: str) -> Any:
+    require(isinstance(source, bytes) and source, "verified spawn module source absent")
+    name = f"participant_verified_spawn_{revision}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{revision}:{ACTIVATION_RUNNER}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec", dont_inherit=True), module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+@dataclass
+class PinnedExecutableSnapshot:
+    path: Path
+    fd: int
+    device: int
+    inode: int
+    size: int
+    sha256: str
+
+    def to_binding(self, module: Any) -> Any:
+        require(self.fd >= 0, "pinned executable binding already transferred")
+        binding = module.ExecutableBinding(
+            self.path,
+            self.fd,
+            self.device,
+            self.inode,
+            self.size,
+            self.sha256,
+            owns_fd=True,
+        )
+        self.fd = -1
+        return binding
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            os.close(self.fd); self.fd = -1
+
+def snapshot_binary(source_path: Path, label: str, destination: Path) -> PinnedExecutableSnapshot:
     resolved = Path(source_path).expanduser().resolve(strict=True)
     source_flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"): source_flags |= os.O_NOFOLLOW
@@ -180,7 +219,7 @@ def snapshot_binary(source_path: Path, label: str, destination: Path) -> Path:
     try:
         before = os.fstat(source_fd)
         require(stat.S_ISREG(before.st_mode) and before.st_size > 0, f"{label} must resolve to a non-empty regular executable")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
         if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
         destination_fd = os.open(destination, flags, 0o500)
         digest = hashlib.sha256()
@@ -193,47 +232,52 @@ def snapshot_binary(source_path: Path, label: str, destination: Path) -> Path:
                 written = os.write(destination_fd, pending)
                 pending = pending[written:]
         os.fchmod(destination_fd, 0o500); os.fsync(destination_fd)
-        after = os.fstat(source_fd)
+        after = os.fstat(source_fd); bound = os.fstat(destination_fd)
+        observed = "sha256:" + digest.hexdigest()
+        path_info = os.lstat(destination)
         require(
             (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
-            f"{label} binary changed while snapshotting",
+            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            and observed == EXPECTED_BINARIES[label]
+            and stat.S_ISREG(bound.st_mode)
+            and bound.st_uid == os.geteuid()
+            and bound.st_nlink == 1
+            and stat.S_IMODE(bound.st_mode) == 0o500
+            and (bound.st_dev, bound.st_ino, bound.st_size)
+            == (path_info.st_dev, path_info.st_ino, path_info.st_size)
+            and "sha256:" + hashlib.sha256(os.pread(destination_fd, bound.st_size + 1, 0)).hexdigest() == observed,
+            f"{label} executable snapshot verification failed",
         )
-        observed = "sha256:" + digest.hexdigest()
-        require(observed == EXPECTED_BINARIES[label], f"{label} binary digest differs")
+        fsync_directory(destination.parent)
+        result = PinnedExecutableSnapshot(destination, destination_fd, bound.st_dev, bound.st_ino, bound.st_size, observed)
+        destination_fd = -1
+        return result
     finally:
         if destination_fd >= 0: os.close(destination_fd)
         os.close(source_fd)
-    info = os.lstat(destination)
-    require(
-        stat.S_ISREG(info.st_mode)
-        and info.st_uid == os.geteuid()
-        and info.st_nlink == 1
-        and stat.S_IMODE(info.st_mode) == 0o500
-        and file_sha256(destination) == EXPECTED_BINARIES[label],
-        f"{label} executable snapshot verification failed",
-    )
-    fsync_directory(destination.parent)
-    return destination
 
 def wireproxy_config(authority: str, wireguard: bytes) -> bytes:
     require(authority in {f"{API_HOST}:{API_PORT}", f"{API_HOST}:{TALOS_PORT}"}, "wireproxy target authority is not protected")
-    forbidden_sections = (
-        b"[http]",
-        b"[Socks5]",
-        b"[TCPClientTunnel]",
-        b"[TCPServerTunnel]",
-        b"[STDIOTunnel]",
-        b"[SNI]",
-        b"[UDPProxyTunnel]",
-    )
+    require(isinstance(wireguard, bytes) and 0 < len(wireguard) <= 1024 * 1024, "WireGuard configuration byte size invalid")
+    try:
+        text = wireguard.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise LiveTransportError("WireGuard configuration must be ASCII") from exc
+    sections: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if re.match(r"(?i)^wgconfig\s*=", line):
+            raise LiveTransportError("nested WireGuard configuration path is forbidden")
+        if not line.startswith("["):
+            continue
+        match = re.fullmatch(r"\[([A-Za-z0-9]+)\](?:\s*[#;].*)?", line)
+        require(match is not None, "WireGuard section syntax invalid")
+        sections.append(match.group(1).lower())
     require(
-        isinstance(wireguard, bytes)
-        and 0 < len(wireguard) <= 1024 * 1024
-        and b"[Interface]" in wireguard
-        and b"[Peer]" in wireguard
-        and not any(section in wireguard for section in forbidden_sections),
-        "WireGuard configuration bytes invalid or expose an additional listener",
+        sections.count("interface") == 1
+        and sections.count("peer") >= 1
+        and set(sections) == {"interface", "peer"},
+        "WireGuard configuration may contain only one Interface and one-or-more Peer sections",
     )
     return wireguard.rstrip() + (
         "\n\n[STDIOTunnel]\n"
@@ -245,9 +289,6 @@ def proxy_url(password: str, port: int) -> str:
     require(1024 <= port <= 65535, "proxy port outside unprivileged range")
     return f"http://{PROXY_USERNAME}:{password}@127.0.0.1:{port}"
 
-def reserve_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0)); return int(listener.getsockname()[1])
 
 def sanitized_environment(extra: dict[str, str] | None = None) -> dict[str, str]:
     blocked = {"http_proxy", "https_proxy", "all_proxy", "no_proxy", "kubeconfig", "pythonpath"}
@@ -400,7 +441,6 @@ class CancellationState:
 
     def install(self) -> None:
         require(not self.previous_handlers, "cancellation state already installed")
-        require(hasattr(signal, "pthread_sigmask"), "transaction requires pthread signal masking")
         for signum in TRANSACTION_SIGNALS:
             self.previous_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, self.handle_signal)
@@ -419,11 +459,6 @@ class CancellationState:
         if self.signals and not self.finalizing:
             raise LiveTransportInterrupted(self.signals[-1])
 
-    def _block(self) -> set[signal.Signals]:
-        return signal.pthread_sigmask(signal.SIG_BLOCK, TRANSACTION_SIGNALS)
-
-    def _restore_mask(self, previous: set[signal.Signals]) -> None:
-        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
     def run(
         self,
@@ -433,52 +468,34 @@ class CancellationState:
         forward_signals: bool = True,
         receipt_pending: bool = False,
         timeout: float | None = None,
+        executable_binding: Any | None = None,
         **kwargs: Any,
     ) -> ProcessResult:
         if not allow_cancelled: self.checkpoint()
-        previous = self._block()
-        if self.signals and not allow_cancelled:
-            self._restore_mask(previous)
-            raise LiveTransportInterrupted(self.signals[-1])
-        process: subprocess.Popen[Any] | None = None
-        try:
-            process = subprocess.Popen(command, start_new_session=True, **kwargs)
-            self.owned_processes.append(process)
-            self.active_process = process
-            self.forward_active_signal = forward_signals
-        finally:
-            self._restore_mask(previous)
+        process = (
+            executable_binding.popen(command, start_new_session=True, **kwargs)
+            if executable_binding is not None
+            else subprocess.Popen(command, start_new_session=True, **kwargs)
+        )
+        self.owned_processes.append(process)
+        self.active_process = process
+        self.forward_active_signal = forward_signals
+        if forward_signals and self.signals and process.poll() is None:
+            try: os.killpg(process.pid, self.signals[-1])
+            except (OSError, ProcessLookupError): pass
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             stop_process(process)
-            process.communicate()
             raise LiveTransportError(f"owned process timed out: {Path(command[0]).name}") from exc
         finally:
-            previous = self._block()
-            try:
-                if self.active_process is process:
-                    self.active_process = None
-                    self.forward_active_signal = False
-                if receipt_pending:
-                    self.receipt_pending = True
-            finally:
-                self._restore_mask(previous)
-        return ProcessResult(process.returncode, stdout, stderr)
+            if self.active_process is process:
+                self.active_process = None
+                self.forward_active_signal = False
+            if receipt_pending:
+                self.receipt_pending = True
+        return ProcessResult(int(process.returncode), stdout, stderr)
 
-    def spawn_background(self, command: list[str], **kwargs: Any) -> subprocess.Popen[Any]:
-        self.checkpoint()
-        previous = self._block()
-        if self.signals:
-            self._restore_mask(previous)
-            raise LiveTransportInterrupted(self.signals[-1])
-        try:
-            process = subprocess.Popen(command, start_new_session=True, **kwargs)
-            self.owned_processes.append(process)
-        finally:
-            self._restore_mask(previous)
-        self.checkpoint()
-        return process
 
     def receipt_reconciled(self) -> None:
         self.receipt_pending = False
@@ -496,7 +513,7 @@ class CancellationState:
         for signum, handler in self.previous_handlers.items(): signal.signal(signum, handler)
         self.previous_handlers.clear()
 
-def decrypt(state: CancellationState, age: Path, identity: Path, source: Path, destination: Path) -> None:
+def decrypt(state: CancellationState, age: Any, identity: Path, source: Path, destination: Path) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
     fd = os.open(destination, flags, 0o600)
@@ -505,10 +522,11 @@ def decrypt(state: CancellationState, age: Path, identity: Path, source: Path, d
         with os.fdopen(fd, "wb", closefd=True) as stream:
             fd = -1
             result = state.run(
-                [str(age), "--decrypt", "--identity", str(identity), str(source)],
+                [str(age.path), "--decrypt", "--identity", str(identity), str(source)],
                 stdout=stream,
                 stderr=subprocess.PIPE,
                 timeout=30,
+                executable_binding=age,
             )
             stream.flush(); os.fsync(stream.fileno())
         require(result.returncode == 0, "encrypted transport input could not be decrypted")
@@ -528,7 +546,7 @@ class ExactConnectProxy:
     def __init__(
         self,
         authority: str,
-        proxy_binary: Path,
+        proxy_binary: Any,
         config: bytes,
         config_directory: Path,
         client_password: str,
@@ -607,14 +625,14 @@ class ExactConnectProxy:
                 f"{self.authority} fixed-target wireproxy config",
             )
             try:
-                process = subprocess.Popen(
-                    [str(self.proxy_binary), "-s", "-c", f"/dev/fd/{config_blob.fd}"],
+                process = self.proxy_binary.popen(
+                    [str(self.proxy_binary.path), "-s", "-c", f"/dev/fd/{config_blob.fd}"],
                     stdin=child,
                     stdout=child,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True,
                     env=self.environment,
                     pass_fds=(config_blob.fd,),
+                    start_new_session=True,
                 )
             finally:
                 config_blob.close()
@@ -759,7 +777,7 @@ class ExactConnectProxy:
 class LiveSession:
     def __init__(
         self,
-        proxy_binary: Path,
+        proxy_binary: Any,
         api_config: bytes,
         talos_config: bytes,
         config_directory: Path,
@@ -794,6 +812,7 @@ class LiveSession:
         require_transport: bool = True,
         timeout: float = 900,
         pass_fds: tuple[int, ...] = (),
+        executable_binding: Any | None = None,
     ) -> ChildResult:
         if require_transport: require(self.transport_alive(), "owned exact transport absent before protected runner")
         result = self.cancellation.run(
@@ -807,6 +826,7 @@ class LiveSession:
             text=True,
             env=environment,
             pass_fds=pass_fds,
+            executable_binding=executable_binding,
         )
         stdout = result.stdout if isinstance(result.stdout, str) else ""
         stderr = result.stderr if isinstance(result.stderr, str) else ""
@@ -835,8 +855,8 @@ class LiveSession:
 
 def create_admin_kubeconfig(
     session: LiveSession,
-    talosctl: Path,
-    kubectl: Path,
+    talosctl: Any,
+    kubectl: Any,
     talosconfig: Path,
     destination: Path,
     talos_proxy: str,
@@ -846,19 +866,21 @@ def create_admin_kubeconfig(
     direct = temp / "talos-kubeconfig"
     environment = sanitized_environment() | {"HTTPS_PROXY": talos_proxy, "HTTP_PROXY": talos_proxy, "NO_PROXY": ""}
     generated = session.run_child(
-        [str(talosctl), "--talosconfig", str(talosconfig), "--endpoints", API_HOST, "--nodes", API_HOST, "kubeconfig", str(direct), "--force", "--merge=false"],
+        [str(talosctl.path), "--talosconfig", str(talosconfig), "--endpoints", API_HOST, "--nodes", API_HOST, "kubeconfig", str(direct), "--force", "--merge=false"],
         environment,
         receipt_pending=False,
         timeout=60,
+        executable_binding=talosctl,
     )
     require(generated.returncode == 0, "Talos administrator kubeconfig generation failed")
     os.chmod(direct, 0o600)
     flattened = session.run_child(
-        [str(kubectl), "--kubeconfig", str(direct), "config", "view", "--raw", "--flatten", "--minify", "-o", "json"],
+        [str(kubectl.path), "--kubeconfig", str(direct), "config", "view", "--raw", "--flatten", "--minify", "-o", "json"],
         sanitized_environment(),
         receipt_pending=False,
         require_transport=False,
         timeout=30,
+        executable_binding=kubectl,
     )
     require(flattened.returncode == 0, "generated kubeconfig flattening failed")
     config = json_object(flattened.stdout, "generated kubeconfig")
@@ -998,9 +1020,17 @@ def verify_receipt_with_protected_cli(
     require(projection.get("civicAuthorityEffects") is False, f"protected receipt widened civic authority: {receipt.label}")
     return projection
 
-def print_child(result: ChildResult) -> None:
-    if result.stdout: print(result.stdout, end="")
-    if result.stderr: print(result.stderr, end="", file=sys.stderr)
+def best_effort_print_child(result: ChildResult) -> str | None:
+    try:
+        if result.stdout: print(result.stdout, end="")
+        if result.stderr: print(result.stderr, end="", file=sys.stderr)
+        return None
+    except (BrokenPipeError, OSError) as exc:
+        return f"protected child output forwarding failed: {type(exc).__name__}"
+
+def best_effort_stderr(message: str) -> None:
+    try: print(message, file=sys.stderr)
+    except (BrokenPipeError, OSError): pass
 
 def receipt_record(projection: dict[str, Any] | None, receipt: BoundBlob | None) -> dict[str, Any]:
     return {
@@ -1034,7 +1064,8 @@ def run_dormant_teardown(
     output_receipt: Path,
     snapshot_path: Path,
     environment: dict[str, str],
-) -> tuple[dict[str, Any], int, BoundBlob]:
+    extra_pass_fds: tuple[int, ...] = (),
+) -> tuple[dict[str, Any], int, BoundBlob, str | None]:
     result = session.run_child(
         runner.command([
             "--teardown",
@@ -1051,9 +1082,8 @@ def run_dormant_teardown(
         allow_cancelled=True,
         forward_signals=False,
         receipt_pending=True,
-        pass_fds=(runner.blob.fd, source_receipt.fd),
+        pass_fds=(runner.blob.fd, source_receipt.fd, *extra_pass_fds),
     )
-    print_child(result)
     bound_output: BoundBlob | None = None
     try:
         bound_output = snapshot_owned_receipt(output_receipt, snapshot_path, "dormant teardown receipt")
@@ -1068,7 +1098,8 @@ def run_dormant_teardown(
             allow_cancelled=True,
             expected_source_sha256=source_canonical_sha256,
         )
-        return projection, result.returncode, bound_output
+        logging_error = best_effort_print_child(result)
+        return projection, result.returncode, bound_output, logging_error
     except BaseException:
         if bound_output is not None: bound_output.close()
         raise
@@ -1098,6 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
     revision: str | None = None; protected_hashes: dict[str, str] = {}; protected_blobs: dict[str, bytes] = {}
     snapshot_hashes: dict[str, str] = {}; credentials: list[str] = []
     bound_runners: dict[str, BoundRunner] = {}; bound_receipts: list[BoundBlob] = []
+    verified_spawn_module: Any | None = None; executable_bindings: dict[str, Any] = {}
     source_dormant_receipt: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
     activation_bound: BoundBlob | None = None
@@ -1123,6 +1155,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_sink = WrapperReceiptSink.reserve(receipt_dir / "transport-transaction.json")
         cancellation.checkpoint()
         protected_hashes, protected_blobs = bind_protected_checkout(revision)
+        verified_spawn_module = compile_verified_spawn_module(protected_blobs[ACTIVATION_RUNNER], revision)
         cancellation.checkpoint()
 
         identity = private_file(args.age_identity, "age identity")
@@ -1177,16 +1210,18 @@ def main(argv: list[str] | None = None) -> int:
             "talosctl": args.talosctl_bin,
             "wireproxy": args.wireproxy_bin,
         }
-        snapshots: dict[str, Path] = {}
+        snapshots: dict[str, PinnedExecutableSnapshot] = {}
         for label in sorted(binary_sources):
-            snapshots[label] = snapshot_binary(binary_sources[label], label, executable_dir / label)
-            snapshot_hashes[label] = file_sha256(snapshots[label])
+            snapshot = snapshot_binary(binary_sources[label], label, executable_dir / label)
+            snapshots[label] = snapshot
+            snapshot_hashes[label] = snapshot.sha256
+            executable_bindings[label] = snapshot.to_binding(verified_spawn_module)
             cancellation.checkpoint()
         fsync_directory(executable_dir)
 
         wireguard = temp / "wireguard.conf"; talosconfig = temp / "talosconfig.yaml"
-        decrypt(cancellation, snapshots["age"], identity, encrypted_wg, wireguard)
-        decrypt(cancellation, snapshots["age"], identity, encrypted_talos, talosconfig)
+        decrypt(cancellation, executable_bindings["age"], identity, encrypted_wg, wireguard)
+        decrypt(cancellation, executable_bindings["age"], identity, encrypted_talos, talosconfig)
 
         wireguard_bytes = wireguard.read_bytes()
         api_config = wireproxy_config(f"{API_HOST}:{API_PORT}", wireguard_bytes)
@@ -1203,12 +1238,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             try:
                 config_test = cancellation.run(
-                    [str(snapshots["wireproxy"]), "-n", "-c", f"/dev/fd/{config_blob.fd}"],
+                    [str(executable_bindings["wireproxy"].path), "-n", "-c", f"/dev/fd/{config_blob.fd}"],
                     timeout=10,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=sanitized_environment(),
                     pass_fds=(config_blob.fd,),
+                    executable_binding=executable_bindings["wireproxy"],
                 )
             finally:
                 config_blob.close()
@@ -1216,7 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
             require(config_test.returncode == 0, f"wireproxy rejected protected fixed-target config {index}")
 
         session = LiveSession(
-            snapshots["wireproxy"],
+            executable_bindings["wireproxy"],
             api_config,
             talos_config,
             binding_dir,
@@ -1231,8 +1267,8 @@ def main(argv: list[str] | None = None) -> int:
         talos_proxy = proxy_url(talos_password, talos_guard_port)
         create_admin_kubeconfig(
             session,
-            snapshots["talosctl"],
-            snapshots["kubectl"],
+            executable_bindings["talosctl"],
+            executable_bindings["kubectl"],
             talosconfig,
             kubeconfig,
             talos_proxy,
@@ -1240,14 +1276,16 @@ def main(argv: list[str] | None = None) -> int:
             temp,
         )
         child_environment = sanitized_environment() | {
-            "PATH": f"{executable_dir}:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+            **executable_bindings["kubectl"].environment("ROEBEL_PINNED_KUBECTL"),
         }
         bootstrap_runner = bound_runners[BOOTSTRAP_RUNNER]
         activation_runner = bound_runners[ACTIVATION_RUNNER]
+        kubectl_fd = executable_bindings["kubectl"].fd
 
         if source_dormant_receipt is not None:
             teardown_receipt = receipt_dir / "participant-flux-dormant-teardown.json"
-            teardown_projection, teardown_returncode, teardown_bound = run_dormant_teardown(
+            teardown_projection, teardown_returncode, teardown_bound, teardown_logging_error = run_dormant_teardown(
                 session,
                 cancellation,
                 bootstrap_runner,
@@ -1258,9 +1296,12 @@ def main(argv: list[str] | None = None) -> int:
                 teardown_receipt,
                 binding_dir / "teardown-receipt.bound",
                 child_environment,
+                extra_pass_fds=(kubectl_fd,),
             )
             bound_receipts.append(teardown_bound)
             base_status = "dormant-torn-down"; operation_succeeded = True
+            if teardown_logging_error is not None:
+                child_cleanup_errors.append(teardown_logging_error)
             if teardown_returncode != 0:
                 child_cleanup_errors.append(f"protected dormant teardown exited {teardown_returncode} after durable commit")
         else:
@@ -1276,9 +1317,8 @@ def main(argv: list[str] | None = None) -> int:
                     str(bootstrap_receipt),
                 ]),
                 child_environment,
-                pass_fds=(bootstrap_runner.blob.fd,),
+                pass_fds=(bootstrap_runner.blob.fd, kubectl_fd),
             )
-            print_child(bootstrap)
             bootstrap_verification_error: str | None = None
             try:
                 if bootstrap_receipt.exists():
@@ -1302,6 +1342,12 @@ def main(argv: list[str] | None = None) -> int:
                 bootstrap_verification_error = str(exc)
             finally:
                 session.receipt_reconciled()
+            if bootstrap_projection is not None:
+                bootstrap_logging_error = best_effort_print_child(bootstrap)
+                if bootstrap_logging_error is not None:
+                    base_status = "dormant-ready"
+                    child_cleanup_errors.append(bootstrap_logging_error)
+                    raise LiveTransportError("bootstrap committed but output evidence forwarding failed")
             if bootstrap_projection is None:
                 if bootstrap.returncode != 0 and bootstrap_bound is not None and session.transport_alive():
                     recovery_attempted = True
@@ -1322,9 +1368,9 @@ def main(argv: list[str] | None = None) -> int:
                         allow_cancelled=True,
                         forward_signals=False,
                         receipt_pending=True,
-                        pass_fds=(bootstrap_runner.blob.fd, bootstrap_bound.fd),
+                        pass_fds=(bootstrap_runner.blob.fd, bootstrap_bound.fd, kubectl_fd),
                     )
-                    recovery_returncode = recovery.returncode; print_child(recovery); session.receipt_reconciled()
+                    recovery_returncode = recovery.returncode; best_effort_print_child(recovery); session.receipt_reconciled()
                     if recovery_receipt.exists():
                         recovery_bound = snapshot_owned_receipt(
                             recovery_receipt,
@@ -1342,7 +1388,7 @@ def main(argv: list[str] | None = None) -> int:
             if cancellation.signals or not session.transport_alive():
                 if session.transport_alive():
                     teardown_receipt = receipt_dir / "participant-flux-dormant-teardown.json"
-                    teardown_projection, teardown_returncode, teardown_bound = run_dormant_teardown(
+                    teardown_projection, teardown_returncode, teardown_bound, teardown_logging_error = run_dormant_teardown(
                         session,
                         cancellation,
                         bootstrap_runner,
@@ -1353,9 +1399,12 @@ def main(argv: list[str] | None = None) -> int:
                         teardown_receipt,
                         binding_dir / "teardown-receipt.bound",
                         child_environment,
+                        extra_pass_fds=(kubectl_fd,),
                     )
                     bound_receipts.append(teardown_bound)
                     base_status = "cancelled-dormant-torn-down" if cancellation.signals else "transport-lost-dormant-torn-down"
+                    if teardown_logging_error is not None:
+                        child_cleanup_errors.append(teardown_logging_error)
                     if teardown_returncode != 0:
                         child_cleanup_errors.append(f"protected dormant teardown exited {teardown_returncode} after durable commit")
                     raise LiveTransportError("activation cancelled after exact dormant teardown")
@@ -1376,9 +1425,8 @@ def main(argv: list[str] | None = None) -> int:
                     str(activation_receipt),
                 ]),
                 child_environment,
-                pass_fds=(activation_runner.blob.fd, bootstrap_bound.fd),
+                pass_fds=(activation_runner.blob.fd, bootstrap_bound.fd, kubectl_fd),
             )
-            print_child(activation)
             try:
                 require(activation_receipt.exists(), "activation runner produced no durable receipt")
                 activation_bound = snapshot_owned_receipt(
@@ -1400,6 +1448,9 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 session.receipt_reconciled()
             activation_committed = True; operation_succeeded = True; base_status = "activated"
+            activation_logging_error = best_effort_print_child(activation)
+            if activation_logging_error is not None:
+                child_cleanup_errors.append(activation_logging_error)
             if activation.returncode != 0:
                 child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
                 raise LiveTransportError("protected activation cleanup incomplete after durable commit")
@@ -1412,7 +1463,7 @@ def main(argv: list[str] | None = None) -> int:
             and base_status == "blocked"
         ):
             base_status = "bootstrap-state-indeterminate"
-        print(f"participant live wrapper blocked: {error}", file=sys.stderr)
+        best_effort_stderr(f"participant live wrapper blocked: {error}")
 
     if cancellation_installed: cancellation.begin_finalization()
     cleanup_errors: list[str] = list(child_cleanup_errors)
@@ -1439,6 +1490,10 @@ def main(argv: list[str] | None = None) -> int:
         try: receipt.close()
         except BaseException as exc:
             bindings_closed = False; cleanup_errors.append(f"receipt binding cleanup: {exc}")
+    for binding in executable_bindings.values():
+        try: binding.close()
+        except BaseException as exc:
+            bindings_closed = False; cleanup_errors.append(f"executable binding cleanup: {exc}")
     for runner in bound_runners.values():
         try: runner.close()
         except BaseException as exc:
@@ -1528,10 +1583,10 @@ def main(argv: list[str] | None = None) -> int:
         except BaseException as exc:
             exit_code = 3
             label = "activated-cleanup-incomplete" if activation_committed else f"{status}-receipt-incomplete"
-            print(f"participant live wrapper {label}: durable wrapper receipt failed: {exc}", file=sys.stderr)
+            best_effort_stderr(f"participant live wrapper {label}: durable wrapper receipt failed: {exc}")
     else:
         exit_code = 3
-        print("participant live wrapper receipt-incomplete: wrapper receipt target unavailable", file=sys.stderr)
+        best_effort_stderr("participant live wrapper receipt-incomplete: wrapper receipt target unavailable")
     if cancellation_installed: cancellation.restore()
     if activation_committed and (not cleanup_complete or not receipt_committed):
         return 3

@@ -36,6 +36,9 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             with self.subTest(authority=authority), self.assertRaises(MODULE.LiveTransportError):
                 MODULE.wireproxy_config(authority, wireguard)
 
+        for injected in (b"\n[HTTP]\nBindAddress = 127.0.0.1:1\n", b"\n[tcpservertunnel]\nTarget = 127.0.0.1:1\n", b"\nWGConfig = /tmp/other\n"):
+            with self.subTest(injected=injected), self.assertRaises(MODULE.LiveTransportError):
+                MODULE.wireproxy_config(api_authority, wireguard + injected)
     def test_guard_rejects_method_authority_and_auth_then_relays_fixed_tunnel(self):
         backend = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         backend.bind(("127.0.0.1", 0)); backend.listen(1)
@@ -119,21 +122,19 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             state.run(["must-not-start"])
         spawn.assert_not_called()
 
-    def test_process_spawn_is_signal_masked_until_owned_group_is_registered(self):
+    def test_process_spawn_race_registers_then_forwards_without_blocking_child_signals(self):
         state = MODULE.CancellationState()
-        process = Mock(pid=12345, returncode=0); process.communicate.return_value = ("", "")
-        events: list[tuple[str, object]] = []
-        def mask(operation, _signals):
-            events.append(("mask", operation, state.active_process)); return set()
+        process = Mock(pid=12345, returncode=-15)
+        process.poll.return_value = None
+        process.communicate.return_value = ("", "")
         def spawn(*_args, **_kwargs):
-            events.append(("spawn", state.active_process)); return process
-        with patch.object(MODULE.signal, "pthread_sigmask", side_effect=mask), patch.object(MODULE.subprocess, "Popen", side_effect=spawn):
+            state.handle_signal(MODULE.signal.SIGTERM, None)
+            return process
+        with patch.object(MODULE.subprocess, "Popen", side_effect=spawn), patch.object(MODULE.os, "killpg") as forward:
             result = state.run(["fixture"], stdout=MODULE.subprocess.PIPE, stderr=MODULE.subprocess.PIPE, text=True)
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(events[0][0:2], ("mask", MODULE.signal.SIG_BLOCK))
-        self.assertEqual(events[1], ("spawn", None))
-        self.assertEqual(events[2][0:2], ("mask", MODULE.signal.SIG_SETMASK))
-        self.assertIs(events[2][2], process)
+        self.assertEqual(result.returncode, -15)
+        forward.assert_called_once_with(12345, MODULE.signal.SIGTERM)
+        self.assertFalse(hasattr(state, "_block"))
 
     def test_child_exit_signal_race_defers_to_deep_receipt_reconciliation(self):
         state = MODULE.CancellationState(); state.install(); self.addCleanup(state.restore)
@@ -163,10 +164,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             destination = root / "snapshot"; expected = MODULE.bytes_sha256(source.read_bytes())
             with patch.dict(MODULE.EXPECTED_BINARIES, {"fixture": expected}, clear=False):
                 snapshot = MODULE.snapshot_binary(source, "fixture", destination)
-                self.assertEqual(MODULE.file_sha256(snapshot), expected)
-                self.assertEqual(stat.S_IMODE(snapshot.stat().st_mode), 0o500)
-                self.assertEqual(snapshot.stat().st_nlink, 1)
-                with self.assertRaises(FileExistsError): MODULE.snapshot_binary(source, "fixture", destination)
+                try:
+                    self.assertEqual(snapshot.sha256, expected)
+                    self.assertEqual(MODULE.file_sha256(snapshot.path), expected)
+                    self.assertEqual(stat.S_IMODE(snapshot.path.stat().st_mode), 0o500)
+                    self.assertEqual(snapshot.path.stat().st_ino, os.fstat(snapshot.fd).st_ino)
+                    with self.assertRaises(FileExistsError): MODULE.snapshot_binary(source, "fixture", destination)
+                finally:
+                    snapshot.close()
 
     def test_private_inputs_and_wrapper_receipt_are_closed_and_link_safe(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -193,8 +198,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         ) as run:
             MODULE.trusted_git(["--version"], check=False)
         self.assertEqual(run.call_args.args[0][0], "/usr/bin/git")
+        self.assertEqual(run.call_args.args[0][1], "--no-replace-objects")
         self.assertEqual(run.call_args.kwargs["env"]["PATH"], "/usr/bin:/bin")
         self.assertEqual(run.call_args.kwargs["env"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+        self.assertEqual(run.call_args.kwargs["env"]["GIT_NO_REPLACE_OBJECTS"], "1")
 
     def test_bound_runner_executes_unlinked_verified_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -241,6 +248,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         source = inspect.getsource(MODULE.main)
         for check in ("bootstrap.returncode != 0", "teardown_returncode != 0", "activation.returncode != 0"):
             self.assertIn(check, source)
+        self.assertLess(source.index("activation_projection = verify_receipt_with_protected_cli("), source.index("activation_logging_error = best_effort_print_child(activation)"))
+        self.assertLess(source.index("bootstrap_projection = verify_receipt_with_protected_cli("), source.index("bootstrap_logging_error = best_effort_print_child(bootstrap)"))
+        with patch("builtins.print", side_effect=BrokenPipeError):
+            logging_error = MODULE.best_effort_print_child(MODULE.ChildResult(0, "committed", "", True))
+        self.assertIn("BrokenPipeError", logging_error)
 
     def test_signal_state_prebinds_every_transitive_blob_before_snapshot_and_decrypt(self):
         expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}

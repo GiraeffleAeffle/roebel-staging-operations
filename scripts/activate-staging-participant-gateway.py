@@ -17,7 +17,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("activation blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, copy, datetime as dt, hashlib, http.client, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, time, types, urllib.error, urllib.parse, urllib.request
+import argparse, base64, copy, ctypes, datetime as dt, hashlib, http.client, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, threading, time, types, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -160,12 +160,13 @@ def trusted_git_v4(args: list[str], **kwargs: Any) -> subprocess.CompletedProces
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
         "HOME": "/dev/null",
         "LANG": "C",
         "LC_ALL": "C",
         "PATH": "/usr/bin:/bin",
     }
-    return subprocess.run([str(GIT_BIN), *args], env=environment, **kwargs)
+    return subprocess.run([str(GIT_BIN), "--no-replace-objects", *args], env=environment, **kwargs)
 
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
@@ -177,13 +178,307 @@ def protected_checkout(rev: str) -> dict[str, str]:
         expected = git_blob(rev, path)
         require(local.read_bytes() == expected, f"protected executable differs from exact Git blob: {path}")
         hashes[path] = bytes_digest(expected)
-    diff = trusted_git_v4(["-C", str(ROOT), "diff", "--quiet", rev, "--", *paths], check=False)
-    cached = trusted_git_v4(["-C", str(ROOT), "diff", "--cached", "--quiet", rev, "--", *paths], check=False)
-    require(diff.returncode == 0 and cached.returncode == 0, "protected executable checkout is dirty")
     return hashes
 
 @dataclass
 class Result: code: int = 0; out: str = ""; err: str = ""
+
+@dataclass
+class ExecutableBinding:
+    path: Path
+    fd: int
+    device: int
+    inode: int
+    size: int
+    sha256: str
+    owns_fd: bool = True
+
+    def close(self) -> None:
+        if self.owns_fd and self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
+    def environment(self, prefix: str) -> dict[str, str]:
+        return {
+            f"{prefix}_PATH": str(self.path),
+            f"{prefix}_FD": str(self.fd),
+            f"{prefix}_DEVICE": str(self.device),
+            f"{prefix}_INODE": str(self.inode),
+            f"{prefix}_SIZE": str(self.size),
+            f"{prefix}_SHA256": self.sha256,
+        }
+
+    def popen(self, args: list[str], **kwargs: Any) -> "VerifiedProcess":
+        return verified_popen(self, args, **kwargs)
+
+def bind_executable_snapshot(path: Path, expected_sha256: str) -> ExecutableBinding:
+    selected = Path(os.path.abspath(path)); info = os.lstat(selected)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and not selected.is_symlink()
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o500
+        and info.st_size > 0,
+        "executable snapshot metadata invalid",
+    )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"): flags |= os.O_NOFOLLOW
+    fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(fd)
+        raw = os.pread(fd, opened.st_size + 1, 0)
+        observed = bytes_digest(raw)
+        require(
+            (opened.st_dev, opened.st_ino, opened.st_size)
+            == (info.st_dev, info.st_ino, info.st_size)
+            and len(raw) == opened.st_size
+            and observed == expected_sha256,
+            "executable snapshot binding drift",
+        )
+        return ExecutableBinding(selected, fd, opened.st_dev, opened.st_ino, opened.st_size, observed)
+    except BaseException:
+        os.close(fd)
+        raise
+
+def executable_binding_from_environment(prefix: str) -> ExecutableBinding:
+    try:
+        path = Path(os.environ[f"{prefix}_PATH"])
+        fd = int(os.environ[f"{prefix}_FD"])
+        device = int(os.environ[f"{prefix}_DEVICE"])
+        inode = int(os.environ[f"{prefix}_INODE"])
+        size = int(os.environ[f"{prefix}_SIZE"])
+        expected = os.environ[f"{prefix}_SHA256"]
+    except (KeyError, ValueError) as exc:
+        raise ActivationError(f"{prefix} executable binding environment invalid") from exc
+    info = os.fstat(fd)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and (info.st_dev, info.st_ino, info.st_size) == (device, inode, size)
+        and bytes_digest(os.pread(fd, size + 1, 0)) == expected,
+        f"{prefix} inherited executable binding drift",
+    )
+    return ExecutableBinding(path, fd, device, inode, size, expected, owns_fd=False)
+
+class VerifiedProcess:
+    def __init__(
+        self,
+        pid: int,
+        args: list[str],
+        stdin: Any,
+        stdout: Any,
+        stderr: Any,
+        *,
+        text: bool,
+    ):
+        self.pid, self.args = pid, args
+        self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
+        self.text = text
+        self.returncode: int | None = None
+
+    @staticmethod
+    def _exitcode(status: int) -> int:
+        return os.waitstatus_to_exitcode(status)
+
+    def poll(self) -> int | None:
+        if self.returncode is not None: return self.returncode
+        try: pid, status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError: return self.returncode
+        if pid == self.pid: self.returncode = self._exitcode(status)
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(0.01)
+        return int(self.returncode)
+
+    def terminate(self) -> None:
+        try: os.killpg(self.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+
+    def kill(self) -> None:
+        try: os.killpg(self.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+
+    def communicate(self, input: str | bytes | None = None, timeout: float | None = None) -> tuple[Any, Any]:
+        input_bytes = input.encode() if isinstance(input, str) else input
+        outputs: dict[str, bytes] = {"stdout": b"", "stderr": b""}
+        threads: list[threading.Thread] = []
+        def read_stream(name: str, stream: Any) -> None:
+            try: outputs[name] = stream.read()
+            finally: stream.close()
+        def write_stream(stream: Any) -> None:
+            try:
+                if input_bytes: stream.write(input_bytes); stream.flush()
+            finally: stream.close()
+        for name, stream in (("stdout", self.stdout), ("stderr", self.stderr)):
+            if stream is not None:
+                thread = threading.Thread(target=read_stream, args=(name, stream), daemon=False)
+                threads.append(thread); thread.start()
+        if self.stdin is not None:
+            thread = threading.Thread(target=write_stream, args=(self.stdin,), daemon=False)
+            threads.append(thread); thread.start()
+        try:
+            self.wait(timeout)
+        except subprocess.TimeoutExpired:
+            self.kill()
+            try: self.wait(5)
+            except subprocess.TimeoutExpired: pass
+            for thread in threads: thread.join(timeout=5)
+            raise
+        for thread in threads: thread.join(timeout=5)
+        stdout, stderr = outputs["stdout"], outputs["stderr"]
+        if self.text:
+            return stdout.decode(errors="replace"), stderr.decode(errors="replace")
+        return stdout, stderr
+
+def _verified_text_vnode(pid: int, binding: ExecutableBinding) -> None:
+    lsof = Path("/usr/sbin/lsof"); info = os.lstat(lsof)
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == 0
+        and stat.S_IMODE(info.st_mode) & 0o022 == 0
+        and os.access(lsof, os.X_OK),
+        "trusted lsof executable metadata invalid",
+    )
+    result = subprocess.run(
+        [str(lsof), "-a", "-p", str(pid), "-d", "txt", "-F0"],
+        capture_output=True,
+        check=False,
+        env={"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        timeout=10,
+    )
+    require(result.returncode == 0, "suspended executable identity unavailable")
+    expected_device = f"D0x{binding.device:x}".encode()
+    expected_inode = f"i{binding.inode}".encode()
+    expected_size = f"s{binding.size}".encode()
+    records = [set(record.split(b"\0")) for record in result.stdout.split(b"\n") if record]
+    require(
+        any(b"ftxt" in record and expected_device in record and expected_inode in record and expected_size in record for record in records),
+        "spawned executable vnode differs from verified binding",
+    )
+
+VERIFIED_SPAWN_LOCK = threading.Lock()
+
+def verified_popen(
+    binding: ExecutableBinding,
+    args: list[str],
+    *,
+    stdin: Any = None,
+    stdout: Any = None,
+    stderr: Any = None,
+    text: bool = False,
+    env: dict[str, str] | None = None,
+    pass_fds: tuple[int, ...] = (),
+    start_new_session: bool = True,
+) -> VerifiedProcess:
+    require(sys.platform == "darwin", "verified executable spawn requires Darwin suspended spawn")
+    require(start_new_session, "verified executable spawn requires a separate session")
+    opened = os.fstat(binding.fd)
+    require(
+        (opened.st_dev, opened.st_ino, opened.st_size) == (binding.device, binding.inode, binding.size)
+        and bytes_digest(os.pread(binding.fd, binding.size + 1, 0)) == binding.sha256,
+        "executable binding changed before spawn",
+    )
+    libc = ctypes.CDLL(None, use_errno=True)
+    actions = ctypes.c_void_p(); attributes = ctypes.c_void_p()
+    require(libc.posix_spawn_file_actions_init(ctypes.byref(actions)) == 0, "posix_spawn file actions unavailable")
+    require(libc.posix_spawnattr_init(ctypes.byref(attributes)) == 0, "posix_spawn attributes unavailable")
+    parent_stdin = parent_stdout = parent_stderr = None
+    child_fds: list[int] = []; parent_close: list[int] = []
+    def fileno(value: Any) -> int:
+        return value if isinstance(value, int) else value.fileno()
+    def pipe_for(target: int, reading_in_parent: bool) -> Any:
+        read_fd, write_fd = os.pipe()
+        child_fd, parent_fd = (write_fd, read_fd) if reading_in_parent else (read_fd, write_fd)
+        require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), child_fd, target) == 0, "posix_spawn pipe action failed")
+        child_fds.append(child_fd); parent_close.append(parent_fd)
+        return os.fdopen(parent_fd, "rb" if reading_in_parent else "wb", buffering=0)
+    devnull_fd: int | None = None
+    try:
+        if stdin == subprocess.PIPE:
+            parent_stdin = pipe_for(0, False)
+        elif stdin == subprocess.DEVNULL:
+            devnull_fd = os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 0) == 0, "stdin action failed")
+        elif stdin is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stdin), 0) == 0, "stdin action failed")
+        if stdout == subprocess.PIPE:
+            parent_stdout = pipe_for(1, True)
+        elif stdout == subprocess.DEVNULL:
+            devnull_fd = devnull_fd if devnull_fd is not None else os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 1) == 0, "stdout action failed")
+        elif stdout is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stdout), 1) == 0, "stdout action failed")
+        if stderr == subprocess.PIPE:
+            parent_stderr = pipe_for(2, True)
+        elif stderr == subprocess.STDOUT:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), 1, 2) == 0, "stderr redirect action failed")
+        elif stderr == subprocess.DEVNULL:
+            devnull_fd = devnull_fd if devnull_fd is not None else os.open("/dev/null", os.O_RDWR)
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), devnull_fd, 2) == 0, "stderr action failed")
+        elif stderr is not None:
+            require(libc.posix_spawn_file_actions_adddup2(ctypes.byref(actions), fileno(stderr), 2) == 0, "stderr action failed")
+        empty_mask = ctypes.c_uint32(0)
+        require(libc.posix_spawnattr_setsigmask(ctypes.byref(attributes), ctypes.byref(empty_mask)) == 0, "spawn signal mask setup failed")
+        flags = 0x0080 | 0x0400 | 0x0008
+        require(libc.posix_spawnattr_setflags(ctypes.byref(attributes), ctypes.c_short(flags)) == 0, "suspended spawn flags unavailable")
+        encoded_args = [str(binding.path), *args[1:]]
+        argv = (ctypes.c_char_p * (len(encoded_args) + 1))(*[value.encode() for value in encoded_args], None)
+        environment = os.environ.copy() if env is None else env
+        encoded_environment = [f"{key}={value}".encode() for key, value in environment.items()]
+        envp = (ctypes.c_char_p * (len(encoded_environment) + 1))(*encoded_environment, None)
+        inherited_states = {fd: os.get_inheritable(fd) for fd in dict.fromkeys(pass_fds)}
+        with VERIFIED_SPAWN_LOCK:
+            try:
+                for inherited_fd in inherited_states: os.set_inheritable(inherited_fd, True)
+                pid = ctypes.c_int()
+                code = libc.posix_spawn(
+                    ctypes.byref(pid),
+                    str(binding.path).encode(),
+                    ctypes.byref(actions),
+                    ctypes.byref(attributes),
+                    argv,
+                    envp,
+                )
+            finally:
+                for inherited_fd, was_inheritable in inherited_states.items():
+                    os.set_inheritable(inherited_fd, was_inheritable)
+        require(code == 0, f"verified executable spawn failed: errno {code}")
+        for child_fd in child_fds: os.close(child_fd)
+        child_fds.clear()
+        try:
+            _verified_text_vnode(pid.value, binding)
+        except BaseException:
+            try: os.kill(pid.value, signal.SIGKILL)
+            except ProcessLookupError: pass
+            try: os.waitpid(pid.value, 0)
+            except ChildProcessError: pass
+            raise
+        os.kill(pid.value, signal.SIGCONT)
+        return VerifiedProcess(pid.value, encoded_args, parent_stdin, parent_stdout, parent_stderr, text=text)
+    except BaseException:
+        for stream in (parent_stdin, parent_stdout, parent_stderr):
+            if stream is not None:
+                try: stream.close()
+                except OSError: pass
+        raise
+    finally:
+        for child_fd in child_fds:
+            try: os.close(child_fd)
+            except OSError: pass
+        if devnull_fd is not None:
+            try: os.close(devnull_fd)
+            except OSError: pass
+        libc.posix_spawn_file_actions_destroy(ctypes.byref(actions))
+        libc.posix_spawnattr_destroy(ctypes.byref(attributes))
+
+def kubectl_binding_v4() -> ExecutableBinding:
+    return executable_binding_from_environment("ROEBEL_PINNED_KUBECTL")
 def kubernetes_subprocess_environment_v4() -> dict[str, str]:
     """Keep caller state except ambient proxy routing for Kubernetes clients.
 
@@ -195,8 +490,23 @@ def kubernetes_subprocess_environment_v4() -> dict[str, str]:
     return {key: value for key, value in os.environ.items() if key.lower() not in proxy_names}
 class Runner:
     def run(self, args: list[str], *, input_text: str | None = None, timeout: int | float = 10) -> Result:
-        environment = kubernetes_subprocess_environment_v4() if args and args[0] == "kubectl" else None
-        try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout, env=environment)
+        if args and args[0] == "kubectl":
+            binding = kubectl_binding_v4()
+            process = verified_popen(
+                binding,
+                [str(binding.path), *args[1:]],
+                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=kubernetes_subprocess_environment_v4(),
+            )
+            try:
+                stdout, stderr = process.communicate(input_text, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                return Result(124, "", f"timeout after {timeout}s: {exc}")
+            return Result(int(process.returncode), stdout, stderr)
+        try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired as exc: return Result(124, "", f"timeout after {timeout}s: {exc}")
         return Result(p.returncode, p.stdout, p.stderr)
 def checked(r: Runner, args: list[str], label: str, input_text: str | None = None, timeout: int | float | None = None) -> str:
@@ -1239,11 +1549,13 @@ def _pod_port_forward_get_v4(
         "-n", NAMESPACE, "port-forward", "--address=127.0.0.1",
         f"pod/{pod_name}", f":{remote_port}",
     ]
-    process = subprocess.Popen(
-        command,
+    binding = kubectl_binding_v4()
+    process = verified_popen(
+        binding,
+        [str(binding.path), *command[1:]],
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        start_new_session=True,
         env=kubernetes_subprocess_environment_v4(),
     )
     selector = selectors.DefaultSelector()
