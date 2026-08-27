@@ -435,6 +435,38 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(spawn.call_args.args[1], ["/snapshot/kubectl", "version"])
         child_env = spawn.call_args.kwargs["env"]
         self.assertEqual(child_env, {"PATH": "/usr/bin", "SAFE_MARKER": "retained"})
+    def test_kubectl_read_timeouts_retry_but_mutations_remain_single_attempt(self):
+        binding = Mock(path=Path("/snapshot/kubectl"))
+        timed_out = Mock(returncode=124)
+        timed_out.communicate.side_effect = subprocess.TimeoutExpired(["kubectl"], 10)
+        succeeded = Mock(returncode=0)
+        succeeded.communicate.return_value = ('{"kind":"PodList","items":[]}', "")
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=binding), patch.object(
+            MODULE,
+            "verified_popen",
+            side_effect=[timed_out, succeeded],
+        ) as spawn:
+            result = MODULE.Runner().run(
+                ["kubectl", "--kubeconfig", "/private/kube", "get", "pods", "-o", "json"],
+                timeout=10,
+            )
+        self.assertEqual(result.code, 0)
+        self.assertEqual(spawn.call_count, 2)
+
+        mutation_timeout = Mock(returncode=124)
+        mutation_timeout.communicate.side_effect = subprocess.TimeoutExpired(["kubectl"], 10)
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=binding), patch.object(
+            MODULE,
+            "verified_popen",
+            return_value=mutation_timeout,
+        ) as spawn:
+            result = MODULE.Runner().run(
+                ["kubectl", "--kubeconfig", "/private/kube", "patch", "deployment", "gateway"],
+                timeout=10,
+            )
+        self.assertEqual(result.code, 124)
+        self.assertEqual(spawn.call_count, 1)
+
 
     @unittest.skipUnless(
         sys.platform == "darwin" and Path("/private/tmp/wireproxy-v1.1.3-darwin-arm64/wireproxy").exists(),

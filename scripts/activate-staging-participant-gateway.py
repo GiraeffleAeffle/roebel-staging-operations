@@ -603,21 +603,26 @@ def kubernetes_subprocess_environment_v4() -> dict[str, str]:
 class Runner:
     def run(self, args: list[str], *, input_text: str | None = None, timeout: int | float = 10) -> Result:
         if args and args[0] == "kubectl":
-            binding = kubectl_binding_v4()
-            process = verified_popen(
-                binding,
-                [str(binding.path), *args[1:]],
-                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=kubernetes_subprocess_environment_v4(),
-            )
-            try:
-                stdout, stderr = process.communicate(input_text, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                return Result(124, "", f"timeout after {timeout}s: {exc}")
-            return Result(int(process.returncode), stdout, stderr)
+            read_attempts = 3 if input_text is None and "get" in args[1:] else 1
+            for attempt in range(read_attempts):
+                binding = kubectl_binding_v4()
+                process = verified_popen(
+                    binding,
+                    [str(binding.path), *args[1:]],
+                    stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=kubernetes_subprocess_environment_v4(),
+                )
+                try:
+                    stdout, stderr = process.communicate(input_text, timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    if attempt + 1 < read_attempts:
+                        continue
+                    return Result(124, "", f"timeout after {timeout}s: {exc}")
+                return Result(int(process.returncode), stdout, stderr)
+            raise AssertionError("unreachable Kubernetes read retry")
         try: p = subprocess.run(args, input=input_text, text=True, capture_output=True, check=False, timeout=timeout)
         except subprocess.TimeoutExpired as exc: return Result(124, "", f"timeout after {timeout}s: {exc}")
         return Result(p.returncode, p.stdout, p.stderr)
