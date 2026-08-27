@@ -397,6 +397,14 @@ def _verified_text_vnode(pid: int, binding: ExecutableBinding) -> None:
         "spawned executable vnode differs from verified binding",
     )
 
+def _verified_code_signature(pid: int) -> None:
+    flags = ctypes.c_uint32(0)
+    libc = ctypes.CDLL(None, use_errno=True)
+    code = libc.csops(ctypes.c_int(pid), ctypes.c_uint(0), ctypes.byref(flags), ctypes.sizeof(flags))
+    require(code == 0, f"spawned code-sign status unavailable: errno {ctypes.get_errno()}")
+    required = 0x00000001 | 0x00000200 | 0x00020000
+    require(flags.value & required == required, "spawned executable lacks valid kill-on-invalid linker signature")
+
 VERIFIED_SPAWN_LOCK = threading.Lock()
 
 def _materialize_bound_executable(binding: ExecutableBinding) -> ExecutableBinding:
@@ -539,6 +547,7 @@ def verified_popen(
             "spawned executable binding changed before resume",
         )
         _verified_text_vnode(spawned_pid, invocation)
+        _verified_code_signature(spawned_pid)
         for child_fd in child_fds: os.close(child_fd)
         child_fds.clear()
         os.kill(spawned_pid, signal.SIGCONT)
