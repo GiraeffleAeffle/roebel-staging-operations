@@ -322,26 +322,47 @@ class KubernetesAdapter:
         resource_version: str,
         nonce: str,
     ) -> dict[str, Any]:
+        """Remove the bootstrap nonce despite controller-owned status races."""
         require(self.snapshot is not None, "Kubernetes adapter used before protected preflight")
+        require(isinstance(resource_version, str) and resource_version.isdigit(), "created resourceVersion invalid")
         target = self.bootstrap_module.target_of(desired)
         self._item(target)
         path = "/metadata/annotations/" + self.bootstrap_module.NONCE_ANNOTATION.replace("~", "~0").replace("/", "~1")
-        patch = [
-            {"op": "test", "path": "/metadata/uid", "value": uid},
-            {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
-            {"op": "test", "path": path, "value": nonce},
-            {"op": "remove", "path": path},
-        ]
-        raw = self.activation.checked(
-            self.runner,
-            self.activation.kb(str(self.snapshot.path))
-            + ["-n", target["namespace"], "patch", target["kind"].lower(), target["name"], "--type=json", "-p", canonical(patch), "-o", "json"],
-            f"remove dormant bootstrap nonce {target['kind']}/{target['name']}",
-            timeout=self.policy["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"],
-        )
-        after = self.activation.obj(raw, f"nonce removal {target['kind']}/{target['name']}")
-        self.policy_module.require_semantically_equal(after, desired, f"nonce removal {target['name']}")
-        return after
+        expected_with_nonce = self.bootstrap_module._with_nonce(desired, nonce)
+        last_error = "nonce removal retry exhausted"
+        for attempt in range(4):
+            current = self.get(target)
+            require(current is not None, f"nonce removal target absent: {target['kind']}/{target['name']}")
+            metadata = current.get("metadata", {})
+            require(metadata.get("uid") == uid, f"nonce removal UID drift: {target['kind']}/{target['name']}")
+            current_resource_version = metadata.get("resourceVersion")
+            require(isinstance(current_resource_version, str) and current_resource_version.isdigit(), f"nonce removal resourceVersion absent: {target['kind']}/{target['name']}")
+            annotations = metadata.get("annotations", {})
+            current_nonce = annotations.get(self.bootstrap_module.NONCE_ANNOTATION) if isinstance(annotations, dict) else None
+            if current_nonce is None:
+                self.policy_module.require_semantically_equal(current, desired, f"completed nonce removal {target['name']}")
+                return current
+            require(current_nonce == nonce, f"nonce removal ownership drift: {target['kind']}/{target['name']}")
+            self.policy_module.require_semantically_equal(current, expected_with_nonce, f"owned nonce removal {target['name']}")
+            patch = [
+                {"op": "test", "path": "/metadata/uid", "value": uid},
+                {"op": "test", "path": "/metadata/resourceVersion", "value": current_resource_version},
+                {"op": "test", "path": path, "value": nonce},
+                {"op": "remove", "path": path},
+            ]
+            response = self.runner.run(
+                self.activation.kb(str(self.snapshot.path))
+                + ["-n", target["namespace"], "patch", target["kind"].lower(), target["name"], "--type=json", "-p", canonical(patch), "-o", "json"],
+                timeout=self.policy["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"],
+            )
+            if response.code == 0:
+                after = self.activation.obj(response.out, f"nonce removal {target['kind']}/{target['name']}")
+                self.policy_module.require_semantically_equal(after, desired, f"nonce removal {target['name']}")
+                return after
+            last_error = response.err.strip()[:512] or f"exit {response.code}"
+            if attempt < 3:
+                time.sleep(0.05 * (attempt + 1))
+        raise CliError(f"remove dormant bootstrap nonce {target['kind']}/{target['name']}: {last_error}")
 
     def delete(self, target: dict[str, str], uid: str, resource_version: str) -> None:
         require(self.snapshot is not None, "Kubernetes adapter used before protected preflight")

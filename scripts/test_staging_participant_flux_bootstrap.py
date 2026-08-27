@@ -213,6 +213,66 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         self.assertEqual(plan["sharedSourceMutation"], "forbidden")
         self.assertFalse(plan["civicAuthorityEffects"])
 
+    def test_kubernetes_adapter_retries_nonce_removal_after_controller_resource_version_race(self) -> None:
+        plan = self.ready_plan()
+        item = next(entry for entry in plan["objects"] if entry["logicalName"] == "gateway.kustomization")
+        desired = item["desired"]
+        nonce = "a" * 64
+
+        def live(resource_version):
+            value = BOOTSTRAP._with_nonce(desired, nonce)
+            value["metadata"]["uid"] = "owned-kustomization-uid"
+            value["metadata"]["resourceVersion"] = resource_version
+            return value
+
+        reads = iter((live("10"), live("11")))
+        admitted = json.loads(json.dumps(desired))
+        admitted["metadata"]["uid"] = "owned-kustomization-uid"
+        admitted["metadata"]["resourceVersion"] = "12"
+
+        class Activation:
+            @staticmethod
+            def kb(path):
+                return ["kubectl", "--kubeconfig", path]
+
+            @staticmethod
+            def obj(raw, _label):
+                return json.loads(raw)
+
+        class Runner:
+            def __init__(self):
+                self.patches = []
+
+            def run(self, args, **_kwargs):
+                self.patches.append(json.loads(args[args.index("-p") + 1]))
+                if len(self.patches) == 1:
+                    return BOOTSTRAP.RawResult(1, "", "the server rejected our request due to an error in our request")
+                return BOOTSTRAP.RawResult(0, json.dumps(admitted), "")
+
+        adapter = object.__new__(CLI.KubernetesAdapter)
+        adapter.snapshot = type("Snapshot", (), {"path": Path("/private/kubeconfig")})()
+        adapter.bootstrap_module = BOOTSTRAP
+        adapter.policy_module = POLICY
+        adapter.policy = POLICY.approved_next_activation_policy_descriptor()
+        adapter.allowed_targets = {CLI._target_key(item["target"]): item}
+        adapter.activation = Activation()
+        adapter.runner = Runner()
+        adapter.get = lambda _target: next(reads)
+
+        result = adapter.remove_nonce(
+            desired,
+            "owned-kustomization-uid",
+            "10",
+            nonce,
+        )
+
+        self.assertEqual(result["metadata"]["resourceVersion"], "12")
+        self.assertEqual(
+            [patch[1]["value"] for patch in adapter.runner.patches],
+            ["10", "11"],
+        )
+        self.assertNotIn(BOOTSTRAP.NONCE_ANNOTATION, result["metadata"].get("annotations", {}))
+
     def test_receipt_sink_is_0600_non_overwriting_and_canonically_checksummed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             parent = Path(directory) / "receipts"
