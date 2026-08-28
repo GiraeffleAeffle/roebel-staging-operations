@@ -23,6 +23,7 @@ BOOTSTRAP_RUNNER = "scripts/bootstrap-staging-participant-flux.py"
 ACTIVATION_RUNNER = "scripts/activate-staging-participant-gateway.py"
 WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
 WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
+WORKBENCH_RECOVERY_IMPLEMENTATION = "scripts/workbench_baseline_recovery.py"
 PROTECTED_PATHS = (
     SELF_PATH,
     BOOTSTRAP_RUNNER,
@@ -51,6 +52,13 @@ WORKBENCH_PROTECTED_PATHS = (
     "reviewed-render/roebel-staging/workbench-baseline/kustomization.yaml",
     ".github/workflows/reviewed-render-admission.yml",
 )
+WORKBENCH_RECOVERY_PROTECTED_PATHS = (
+    SELF_PATH,
+    WORKBENCH_RECOVERY_IMPLEMENTATION,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+    ".github/workflows/reviewed-render-admission.yml",
+)
 API_HOST, API_PORT, TALOS_PORT = "10.255.240.11", 6443, 50000
 PROXY_USERNAME = "stadtstack-participant"
 GIT_BIN = Path("/usr/bin/git")
@@ -66,6 +74,21 @@ exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v2"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
+WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
+WORKBENCH_RECOVERY_ORIGIN_REVISION = "3be9405c6bfd6b4caf0423b137f969aab3bef323"
+WORKBENCH_RECOVERY_OPERATION_ID = "b6b52abc-4b28-4db0-b4ef-74041f41d7c6"
+WORKBENCH_RECOVERY_MARKER = "77157c24-d1d0-4cb8-850b-538f380c16fd"
+WORKBENCH_RECOVERY_EVIDENCE = {
+    "originJournalSha256": "sha256:70015e2728bf8e30491862687c3b507aa3d4d03e4f91b72cafb84ae3dcba30c0",
+    "attemptReceiptSha256": "sha256:55a7cfac98cdb40aa49a46a00abbd47d8305cff4d001f8984c57a0c964d51ee9",
+    "inspectionSha256": "sha256:d7a94d4e27c18317ede34f6700a7c4a27081133bd7f881e46d5bd30466430755",
+}
+WORKBENCH_RECOVERY_OBJECT_UIDS = {
+    "kustomization": "d251a65f-b322-44a5-8e03-76ca268e72be",
+    "roleBinding": "d7e8ec85-3fad-41ff-873b-4b8920c7b8df",
+    "role": "2ca77559-34dc-4573-85e3-2c41242eab12",
+    "serviceAccount": "c0829ad9-ab20-43a0-9c84-a122098864f0",
+}
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
@@ -1300,6 +1323,108 @@ def verify_workbench_handover_evidence(
         "ready": True,
     }
 
+
+def verify_workbench_recovery_evidence(
+    receipt: BoundBlob,
+    journal: BoundBlob,
+    revision: str,
+) -> dict[str, Any]:
+    """Validate the exact delete-only recovery proof before wrapper success."""
+    evidence = read_bound_json(receipt, "workbench recovery receipt")
+    state = read_bound_json(journal, "workbench recovery journal")
+    receipt_checksum = evidence.pop("canonicalSha256", None)
+    require(isinstance(receipt_checksum, str) and receipt_checksum == bytes_sha256(canonical(evidence).encode("utf-8")), "workbench recovery receipt checksum drift")
+    require(evidence.get("schemaVersion") == "roebel_staging_workbench_baseline_recovery_receipt_v1", "workbench recovery receipt schema drift")
+    require(evidence.get("status") == "completed" and evidence.get("protectedRevision") == revision, "workbench recovery did not complete at protected revision")
+    require(
+        evidence.get("originRevision") == WORKBENCH_RECOVERY_ORIGIN_REVISION
+        and evidence.get("operationId") == WORKBENCH_RECOVERY_OPERATION_ID
+        and evidence.get("operationMarker") == WORKBENCH_RECOVERY_MARKER
+        and evidence.get("evidence") == WORKBENCH_RECOVERY_EVIDENCE,
+        "workbench recovery origin/evidence binding drift",
+    )
+    effects = evidence.get("effects")
+    require(
+        isinstance(effects, dict)
+        and effects.get("deleteOnlyMutation") is True
+        and effects.get("create") is False
+        and effects.get("patch") is False
+        and effects.get("apply") is False
+        and effects.get("list") is False
+        and effects.get("secretAccess") is False
+        and effects.get("civicAuthorityEffects") is False
+        and effects.get("baselineChanged") is False
+        and effects.get("sharedSourceChanged") is False
+        and effects.get("cleanupComplete") is True,
+        "workbench recovery effect boundary drift",
+    )
+    baseline = evidence.get("baseline")
+    source = evidence.get("source")
+    require(isinstance(baseline, dict) and baseline.get("uid") == "298b0f92-0d6b-4563-b141-f93aa8c8fd8f" and baseline.get("digest") == "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5", "workbench recovery baseline proof drift")
+    require(isinstance(source, dict) and source.get("uid") == "0de8a05d-550f-429c-93c5-9b8c76b0bf9b" and source.get("revision") == f"main@sha1:{revision}", "workbench recovery source proof drift")
+    objects = evidence.get("objects")
+    expected = {"kustomization", "roleBinding", "role", "serviceAccount"}
+    require(isinstance(objects, dict) and set(objects) == expected and all(objects[name].get("status") == "absent" and objects[name].get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name] for name in expected), "workbench recovery cleanup inventory drift")
+    final_absence = evidence.get("finalAbsence")
+    require(
+        isinstance(final_absence, dict) and set(final_absence) == expected
+        and all(final_absence[name].get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name] and final_absence[name].get("absent") is True for name in expected),
+        "workbench recovery final absence proof drift",
+    )
+    require(state.get("schemaVersion") == "roebel_staging_workbench_baseline_recovery_journal_v1" and state.get("status") == "completed" and state.get("protectedRevision") == revision, "workbench recovery journal is not terminal")
+    persisted_checksum = state.pop("journalSha256", None)
+    require(
+        isinstance(persisted_checksum, str)
+        and persisted_checksum == bytes_sha256(canonical(state).encode("utf-8")),
+        "workbench recovery journal checksum drift",
+    )
+    events = state.get("events")
+    require(isinstance(events, list) and events and isinstance(events[-1], dict), "workbench recovery journal event chain absent")
+    previous = None
+    for sequence, event in enumerate(events, start=1):
+        entry = dict(event); entry_hash = entry.pop("entrySha256", None)
+        require(
+            event.get("sequence") == sequence
+            and event.get("previousEntrySha256") == previous
+            and entry_hash == bytes_sha256(canonical(entry).encode("utf-8")),
+            "workbench recovery journal event hash drift",
+        )
+        previous = entry_hash
+    logical_delete_order: list[str] = []
+    for event in events:
+        operation = event.get("operation")
+        if event.get("stage") != "before" or not isinstance(operation, str) or not operation.startswith("delete."):
+            continue
+        name = operation.removeprefix("delete.")
+        require(name in WORKBENCH_RECOVERY_OBJECT_UIDS, "workbench recovery delete target drift")
+        options = event.get("deleteOptions")
+        payload = event.get("deletePayload")
+        require(
+            isinstance(options, dict)
+            and options.get("preconditions", {}).get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name]
+            and isinstance(payload, str)
+            and event.get("deletePayloadSha256") == bytes_sha256(payload.encode("utf-8"))
+            and payload == canonical(options),
+            "workbench recovery delete precondition drift",
+        )
+        if not logical_delete_order or logical_delete_order[-1] != name:
+            logical_delete_order.append(name)
+    require(logical_delete_order == ["kustomization", "roleBinding", "role", "serviceAccount"], "workbench recovery delete order drift")
+    require(state.get("finalAbsence") == final_absence, "workbench recovery final absence journal drift")
+    terminal_hash = events[-1].get("entrySha256")
+    journal_binding = evidence.get("journal")
+    require(
+        journal_binding == {
+            "schemaVersion": "roebel_staging_workbench_baseline_recovery_journal_v1",
+            "status": "completed",
+            "eventCount": len(events),
+            "terminalEntrySha256": terminal_hash,
+            "terminalJournalSha256": persisted_checksum,
+        },
+        "workbench recovery receipt/journal binding drift",
+    )
+    return {"receiptSha256": receipt.sha256, "journalSha256": journal.sha256, "cleanupComplete": True}
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
@@ -1308,6 +1433,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # self-documenting mode selection.
     mode.add_argument("--participant-gateway", action="store_true")
     mode.add_argument("--workbench-baseline-handover", action="store_true")
+    mode.add_argument("--workbench-baseline-recovery", action="store_true")
     parser.add_argument("--expected-protected-revision", required=True)
     parser.add_argument("--age-bin", required=True, type=Path)
     parser.add_argument("--age-identity", required=True, type=Path)
@@ -1319,13 +1445,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--teardown-dormant-receipt", type=Path)
     parser.add_argument("--workbench-handover-receipt", type=Path)
     parser.add_argument("--workbench-handover-journal", type=Path)
+    parser.add_argument("--workbench-recovery-receipt", type=Path)
+    parser.add_argument("--workbench-recovery-journal", type=Path)
+    parser.add_argument("--workbench-origin-journal", type=Path)
+    parser.add_argument("--workbench-attempt-receipt", type=Path)
+    parser.add_argument("--workbench-inspection", type=Path)
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
     if args.workbench_baseline_handover:
         require(args.teardown_dormant_receipt is None, "workbench handover may not request participant teardown")
         require(args.workbench_handover_receipt is not None and args.workbench_handover_journal is not None, "workbench handover requires explicit receipt and journal paths for resume")
+        require(all(value is None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench handover may not receive recovery paths")
+    elif args.workbench_baseline_recovery:
+        require(args.teardown_dormant_receipt is None, "workbench recovery may not request participant teardown")
+        require(all(value is not None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench recovery requires exact evidence, receipt, and journal paths")
+        require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "workbench recovery may not receive handover paths")
     else:
-        require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "participant mode may not receive workbench handover paths")
+        require(all(value is None for value in (args.workbench_handover_receipt, args.workbench_handover_journal, args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "participant mode may not receive workbench paths")
     return args
 
 def run_dormant_teardown(
@@ -1413,23 +1549,29 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
     cleanup_errors: list[str] = []; error: str | None = None; completed = False
     listener_verified = False; proof: dict[str, Any] | None = None
     revision = args.expected_protected_revision
+    is_recovery = bool(getattr(args, "workbench_baseline_recovery", False))
     handover_receipt: Path | None = None; handover_journal: Path | None = None
+    recovery_receipt: Path | None = None; recovery_journal: Path | None = None
+    pending_recovery_evidence: dict[str, dict[str, Any]] = {}
     try:
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
-        require(args.live is True and args.workbench_baseline_handover is True, "workbench transport requires explicit --workbench-baseline-handover --live")
+        require(args.live is True and (args.workbench_baseline_handover is True or is_recovery), "workbench transport requires explicit workbench mode and --live")
         require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
-        handover_receipt = private_workbench_output(args.workbench_handover_receipt, "workbench handover receipt")
-        handover_journal = private_workbench_output(args.workbench_handover_journal, "workbench handover journal")
-        require(
-            os.path.normcase(os.path.normpath(os.fspath(handover_receipt))) != os.path.normcase(os.path.normpath(os.fspath(handover_journal))),
-            "workbench handover receipt and journal paths must be distinct",
-        )
+        if is_recovery:
+            recovery_receipt = private_workbench_output(args.workbench_recovery_receipt, "workbench recovery receipt")
+            recovery_journal = private_workbench_output(args.workbench_recovery_journal, "workbench recovery journal")
+            require(not recovery_receipt.exists(), "workbench recovery receipt must be a new immutable attempt output")
+            require(os.path.normcase(os.path.normpath(os.fspath(recovery_receipt))) != os.path.normcase(os.path.normpath(os.fspath(recovery_journal))), "workbench recovery receipt and journal paths must be distinct")
+        else:
+            handover_receipt = private_workbench_output(args.workbench_handover_receipt, "workbench handover receipt")
+            handover_journal = private_workbench_output(args.workbench_handover_journal, "workbench handover journal")
+            require(os.path.normcase(os.path.normpath(os.fspath(handover_receipt))) != os.path.normcase(os.path.normpath(os.fspath(handover_journal))), "workbench handover receipt and journal paths must be distinct")
         cancellation.install(); installed = True
         receipt_dir = reserve_output_directory(args.receipt_directory)
-        attempt_path = receipt_dir / "workbench-baseline-transport-attempt.json"
+        attempt_path = receipt_dir / ("workbench-baseline-recovery-transport-attempt.json" if is_recovery else "workbench-baseline-transport-attempt.json")
         receipt_sink = WrapperReceiptSink.reserve(attempt_path)
         cancellation.checkpoint()
-        protected_hashes, protected_blobs = bind_protected_checkout(revision, paths=WORKBENCH_PROTECTED_PATHS)
+        protected_hashes, protected_blobs = bind_protected_checkout(revision, paths=WORKBENCH_RECOVERY_PROTECTED_PATHS if is_recovery else WORKBENCH_PROTECTED_PATHS)
         identity = private_file(args.age_identity, "age identity")
         bundle_source = Path(os.path.abspath(args.bootstrap_bundle)); bundle_source_info = os.lstat(bundle_source)
         require(not stat.S_ISLNK(bundle_source_info.st_mode), "bootstrap bundle must not be a symlink")
@@ -1440,12 +1582,22 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
         encrypted_talos = private_file(bundle / "talosconfig.yaml.age", "encrypted Talos input")
         temp = Path(tempfile.mkdtemp(prefix="roebel-workbench-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
         binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
-        # Bind both blobs.  Only the implementation blob is executed; the
-        # companion runner blob is a separately retained review identity.
-        for logical_path in (WORKBENCH_RUNNER, WORKBENCH_IMPLEMENTATION):
+        # The recovery binds only its own protected implementation.  The
+        # ordinary handover retains its separately reviewed runner identity.
+        logical_paths = (WORKBENCH_RECOVERY_IMPLEMENTATION,) if is_recovery else (WORKBENCH_RUNNER, WORKBENCH_IMPLEMENTATION)
+        for logical_path in logical_paths:
             blob = bind_bytes_to_fd(protected_blobs[logical_path], binding_dir / (Path(logical_path).name + ".bound"), f"protected workbench blob {logical_path}")
             bound.append(BoundRunner(logical_path, blob))
-        implementation = next(item for item in bound if item.logical_path == WORKBENCH_IMPLEMENTATION)
+        implementation = next(item for item in bound if item.logical_path == (WORKBENCH_RECOVERY_IMPLEMENTATION if is_recovery else WORKBENCH_IMPLEMENTATION))
+        recovery_inputs: dict[str, BoundBlob] = {}
+        if is_recovery:
+            for name, source in (
+                ("origin-journal", args.workbench_origin_journal),
+                ("attempt-receipt", args.workbench_attempt_receipt),
+                ("inspection", args.workbench_inspection),
+            ):
+                recovery_inputs[name] = snapshot_owned_receipt(source, binding_dir / f"recovery-{name}.bound", f"workbench recovery {name}")
+            evidence.extend(recovery_inputs.values())
         executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
         for label, source in sorted({"age": args.age_bin, "kubectl": args.kubectl_bin, "talosctl": args.talosctl_bin, "wireproxy": args.wireproxy_bin}.items()):
             snapshot = snapshot_binary(source, label, executable_dir / label)
@@ -1478,22 +1630,40 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
             proxy_url(talos_password, talos_port), proxy_url(api_password, api_port), temp,
         )
         child_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
+        child_arguments = (
+            [
+                "--expected-protected-revision", revision, "--kubeconfig", str(kubeconfig),
+                "--origin-journal-fd", str(recovery_inputs["origin-journal"].fd),
+                "--attempt-receipt-fd", str(recovery_inputs["attempt-receipt"].fd),
+                "--inspection-fd", str(recovery_inputs["inspection"].fd),
+                "--recovery-journal", str(recovery_journal), "--receipt", str(recovery_receipt),
+            ]
+            if is_recovery else
+            ["--expected-protected-revision", revision, "--kubeconfig", str(kubeconfig), "--receipt", str(handover_receipt), "--journal", str(handover_journal)]
+        )
         child = session.run_child(
             workbench_implementation_command(
                 implementation,
                 snapshots["kubectl"],
-                ["--expected-protected-revision", revision, "--kubeconfig", str(kubeconfig), "--receipt", str(handover_receipt), "--journal", str(handover_journal)],
+                child_arguments,
             ),
             child_environment,
             receipt_pending=True,
-            pass_fds=(implementation.blob.fd, snapshots["kubectl"].fd),
+            pass_fds=(implementation.blob.fd, snapshots["kubectl"].fd, *(item.fd for item in recovery_inputs.values())),
         )
         try:
-            require(child.returncode == 0, f"protected workbench handover exited {child.returncode}")
-            receipt_bound = snapshot_owned_receipt(handover_receipt, binding_dir / "workbench-handover-receipt.bound", "workbench handover receipt")
-            journal_bound = snapshot_owned_receipt(handover_journal, binding_dir / "workbench-handover-journal.bound", "workbench handover journal")
+            if is_recovery and child.returncode != 0:
+                for label, output in (("receipt", recovery_receipt), ("journal", recovery_journal)):
+                    require(output is not None, "workbench recovery output path absent")
+                    if output.exists() and output.stat().st_size > 0:
+                        pending = snapshot_owned_receipt(output, binding_dir / f"workbench-recovery-pending-{label}.bound", f"workbench recovery pending {label}")
+                        evidence.append(pending)
+                        pending_recovery_evidence[label] = {"sha256": pending.sha256, "size": pending.size}
+            require(child.returncode == 0, f"protected workbench {'recovery' if is_recovery else 'handover'} exited {child.returncode}")
+            receipt_bound = snapshot_owned_receipt(recovery_receipt if is_recovery else handover_receipt, binding_dir / ("workbench-recovery-receipt.bound" if is_recovery else "workbench-handover-receipt.bound"), f"workbench {'recovery' if is_recovery else 'handover'} receipt")
+            journal_bound = snapshot_owned_receipt(recovery_journal if is_recovery else handover_journal, binding_dir / ("workbench-recovery-journal.bound" if is_recovery else "workbench-handover-journal.bound"), f"workbench {'recovery' if is_recovery else 'handover'} journal")
             evidence.extend((receipt_bound, journal_bound))
-            proof = verify_workbench_handover_evidence(receipt_bound, journal_bound, revision, protected_hashes)
+            proof = verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision) if is_recovery else verify_workbench_handover_evidence(receipt_bound, journal_bound, revision, protected_hashes)
             bindings["kubectl"]._verify()
             logging_error = best_effort_print_child(child)
             require(logging_error is None, logging_error or "protected child output forwarding failed")
@@ -1531,13 +1701,13 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
     cleanup_complete = not cleanup_errors and session_cleanup.get("wireproxyProcessGroupStopped") is True and session_cleanup.get("allGuardWorkersStopped") is True and process_cleanup["ownedProcessGroupsStopped"] is True and plaintext_removed
     status = "completed" if completed and cleanup_complete else ("completed-cleanup-incomplete" if completed else "blocked")
     payload = {
-        "schemaVersion": WORKBENCH_TRANSPORT_RECEIPT_SCHEMA,
+        "schemaVersion": WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA if is_recovery else WORKBENCH_TRANSPORT_RECEIPT_SCHEMA,
         "status": status,
         "protectedRevision": revision,
         "protectedGitBlobSha256": protected_hashes,
         "binarySha256": {name: snapshot.sha256 for name, snapshot in sorted(snapshots.items())},
         "transport": {"mode": "authenticated-exact-connect-guards-spawning-fixed-wireproxy-stdio-tunnels", "apiAuthority": f"{API_HOST}:{API_PORT}", "talosAuthority": f"{API_HOST}:{TALOS_PORT}", "listenerOwnershipAndAuthenticationVerified": listener_verified, "temporaryTransportStopped": session_cleanup.get("wireproxyProcessGroupStopped") is True, "plaintextTransportInputsRemoved": plaintext_removed},
-        "handover": proof or {"receiptSha256": None, "journalSha256": None, "networkPolicyUid": None, "fluxObjectUids": {}, "ready": False},
+        "recovery" if is_recovery else "handover": proof or ({"receiptSha256": None, "journalSha256": None, "cleanupComplete": False, "pendingEvidence": pending_recovery_evidence} if is_recovery else {"receiptSha256": None, "journalSha256": None, "networkPolicyUid": None, "fluxObjectUids": {}, "ready": False}),
         "resume": {"explicitReceiptAndJournalRequired": True, "automaticRetry": False, "sameProtectedRevisionRequired": True},
         "cleanup": {"complete": cleanup_complete, "errors": cleanup_errors, "processes": process_cleanup},
         "failure": error,
@@ -1581,7 +1751,7 @@ def main(argv: list[str] | None = None) -> int:
     listener_verified = False
     try:
         args = parse_args(argv)
-        if args.workbench_baseline_handover:
+        if args.workbench_baseline_handover or args.workbench_baseline_recovery:
             return run_workbench_baseline_handover_transport(args)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
         require(args.live is True, "wrapper requires explicit --live")

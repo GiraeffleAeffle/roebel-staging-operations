@@ -1257,6 +1257,19 @@ def _journal_mutation_uncertain(journal: Any, state: dict[str, Any], event: dict
     journal.commit(state)
 
 
+def _journal_mutation_conflict(journal: Any, state: dict[str, Any], event: dict[str, Any], error: Exception) -> None:
+    """Durably close a known stale-CAS attempt before its single retry.
+
+    This is deliberately distinct from an unknown transport outcome.  The
+    retry itself receives a fresh durable ``before`` event, so recovery can
+    still reason about the exact request that may have reached Kubernetes.
+    """
+    event["stage"] = "conflict"
+    event["error"] = str(error)[:320]
+    _journal_rehash(event)
+    journal.commit(state)
+
+
 def _journal_validate_state(plan: dict[str, Any], state: dict[str, Any]) -> None:
     require(isinstance(state, dict), "handover journal must be an object")
     require(state.get("schemaVersion") == JOURNAL_SCHEMA, "handover journal schema invalid")
@@ -1375,6 +1388,30 @@ def _exact_marked_candidate(value: Any, name: str, desired: dict[str, Any], oper
     require(annotations == {HANDOVER_OPERATION_ANNOTATION: operation_marker}, f"{name} create outcome is not this transaction's marker")
     marked_desired = _marked_object(desired, operation_marker)
     require(_marked_semantics(value, name) == _marked_semantics(marked_desired, name), f"{name} create outcome semantic drift")
+    return uid, resource_version
+
+
+def _exact_marker_retry_candidate(
+    value: Any,
+    name: str,
+    desired: dict[str, Any],
+    operation_marker: str,
+    *,
+    expected_uid: str,
+) -> tuple[str, str]:
+    """Bind a one-time marker retry to the original transaction object.
+
+    A Flux controller may add its documented Kustomization finalizer and
+    status immediately after CREATE.  That changes resourceVersion before the
+    first marker-removal JSON patch reaches the API server.  A retry is safe
+    only when the live object is still this exact UID, still carries this
+    operation marker, and still has the full protected semantics.  The
+    normalization used here admits only the controller metadata already
+    admitted for Flux objects; it does not admit arbitrary labels,
+    annotations, spec fields, or a replacement UID.
+    """
+    uid, resource_version = _exact_marked_candidate(value, name, desired, operation_marker)
+    require(uid == expected_uid, f"{name} marker retry UID changed; refusing adoption")
     return uid, resource_version
 
 
@@ -1834,6 +1871,17 @@ def _recover_marker_removals(*, kube: Any, journal: Any, state: dict[str, Any]) 
         journal.commit(state)
 
 
+def _marker_conflict_open(state: dict[str, Any], record: dict[str, Any]) -> bool:
+    """True only for the durable stale-CAS gap before retry intent exists."""
+    if record.get("objectId") != "kustomization" or record.get("markerRemoved") is not False:
+        return False
+    events = [
+        event for event in state.get("events", [])
+        if event.get("operation") == "remove-marker.kustomization"
+    ]
+    return bool(events) and events[-1].get("stage") == "conflict"
+
+
 def _receipt_from_sink(sink: Any) -> dict[str, Any] | None:
     """Read a previously durable receipt without making it mutable."""
     loader = getattr(sink, "load", None)
@@ -2193,7 +2241,16 @@ def _rollback_transaction(
                         raise
                     _journal_mutation_after(journal, state, event, _journal_result(suspended, "kustomization"))
                     current = suspended
-                validate_flux_suspended(current, kustomization_record["uid"])
+                if _marker_conflict_open(state, kustomization_record):
+                    marked_uid, _marked_rv = _exact_marked_candidate(
+                        current,
+                        "kustomization",
+                        kustomization_record["desired"],
+                        state["operationMarker"],
+                    )
+                    require(marked_uid == kustomization_record["uid"], "rollback Kustomization conflict-state UID drift")
+                else:
+                    validate_flux_suspended(current, kustomization_record["uid"])
                 suspension_proven = True
             else:
                 # An already-absent transaction-owned controller cannot be
@@ -2262,13 +2319,28 @@ def _rollback_transaction(
             }
             event = _journal_mutation_before(journal, state, f"rollback.delete.{name}", identity, delete_options)
             try:
+                if name == "kustomization" and _marker_conflict_open(state, record):
+                    # A process can die after recording the known stale CAS
+                    # conflict and before recording retry intent.  In that
+                    # narrow state only the original, still-suspended,
+                    # marker-bound UID remains rollback-owned.
+                    marked_uid, _marked_rv = _exact_marked_candidate(
+                        current,
+                        name,
+                        record["desired"],
+                        state["operationMarker"],
+                    )
+                    require(marked_uid == record["uid"], "rollback Kustomization conflict-state UID drift")
+                    acceptable = (record["markedDesired"],)
+                else:
+                    acceptable = (record["markedDesired"], expected_flux_objects(suspended=False)["kustomization"]) if name == "kustomization" else (record["markedDesired"],)
                 outcome = _owned_created(
                     kube,
                     identity,
                     record["uid"],
                     record["desired"],
                     f"rollback {name}",
-                    acceptable=(record["markedDesired"], expected_flux_objects(suspended=False)["kustomization"]) if name == "kustomization" else (record["markedDesired"],),
+                    acceptable=acceptable,
                 )
             except Exception as error:
                 _journal_mutation_uncertain(journal, state, event, error)
@@ -2691,9 +2763,63 @@ def run(
                     removed_uid, removed_rv = _static_candidate(candidate, name, desired, expected_uid=uid)
                     require(HANDOVER_OPERATION_ANNOTATION not in candidate.get("metadata", {}).get("annotations", {}), f"{name} marker removal outcome ambiguous")
                 except Exception as ownership_error:
-                    _journal_mutation_uncertain(journal, state, marker_event, ownership_error)
-                    raise HandoverError(f"{name} marker removal outcome unresolved") from error
-                marker_removed = candidate
+                    # Flux may have added its documented finalizer/status in
+                    # the small window after CREATE.  That produces a stale
+                    # resourceVersion even though the exact transaction
+                    # object and its marker remain intact.  Make at most one
+                    # fresh CAS attempt, and only after proving that exact
+                    # UID/marker/semantic state.  Any second conflict or any
+                    # wider drift remains unresolved and rolls back.
+                    if name != "kustomization":
+                        _journal_mutation_uncertain(journal, state, marker_event, ownership_error)
+                        raise HandoverError(f"{name} marker removal outcome unresolved") from error
+                    try:
+                        retry_uid, retry_rv = _exact_marker_retry_candidate(
+                            candidate,
+                            name,
+                            desired,
+                            operation_marker,
+                            expected_uid=uid,
+                        )
+                    except Exception as retry_ownership_error:
+                        _journal_mutation_uncertain(journal, state, marker_event, retry_ownership_error)
+                        raise HandoverError(f"{name} marker removal outcome unresolved") from error
+                    _journal_mutation_conflict(journal, state, marker_event, error)
+                    retry_patch = _marker_remove_patch(retry_uid, retry_rv, operation_marker)
+                    retry_event = _journal_mutation_before(
+                        journal,
+                        state,
+                        f"remove-marker.{name}",
+                        identity,
+                        retry_patch,
+                    )
+                    try:
+                        marker_removed = kube.patch(identity, retry_patch)
+                        removed_uid, removed_rv = _static_candidate(marker_removed, name, desired, expected_uid=uid)
+                    except Exception as retry_error:
+                        try:
+                            retry_candidate = kube.get(identity)
+                        except Exception as discovery_error:
+                            _journal_mutation_uncertain(journal, state, retry_event, discovery_error)
+                            raise HandoverError(f"{name} marker removal retry outcome unresolved") from retry_error
+                        try:
+                            removed_uid, removed_rv = _static_candidate(
+                                retry_candidate,
+                                name,
+                                desired,
+                                expected_uid=uid,
+                            )
+                            require(
+                                HANDOVER_OPERATION_ANNOTATION not in retry_candidate.get("metadata", {}).get("annotations", {}),
+                                f"{name} marker removal retry outcome ambiguous",
+                            )
+                        except Exception as retry_ownership_error:
+                            _journal_mutation_uncertain(journal, state, retry_event, retry_ownership_error)
+                            raise HandoverError(f"{name} marker removal retry outcome unresolved") from retry_error
+                        marker_removed = retry_candidate
+                    marker_event = retry_event
+                else:
+                    marker_removed = candidate
             _journal_update_created(state, name=name, uid=removed_uid, resource_version=removed_rv, marker_removed=True)
             _journal_mutation_after(journal, state, marker_event, _journal_result(marker_removed, name))
             for record in receipt["objects"]:
