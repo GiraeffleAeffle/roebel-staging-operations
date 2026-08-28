@@ -1754,7 +1754,7 @@ def verify_workbench_image_promotion_evidence(
         and isinstance(backend.get("selector"), dict)
         and bool(backend["selector"])
         and backend.get("servicePort") == 18083
-        and backend.get("targetPort") == "http"
+        and backend.get("targetPort") == 18083
         and backend.get("containerPort") == {"name": "http", "port": 18083, "protocol": "TCP"}
         and isinstance(backend.get("endpointSliceUids"), list)
         and backend["endpointSliceUids"]

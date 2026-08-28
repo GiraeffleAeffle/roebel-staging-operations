@@ -72,7 +72,7 @@ def service() -> dict[str, Any]:
     return {
         "apiVersion": "v1", "kind": "Service",
         "metadata": {"name": MODULE.SERVICE_NAME, "namespace": MODULE.WORKBENCH_NAMESPACE, "uid": uid(10), "resourceVersion": "1"},
-        "spec": {"selector": {"app.kubernetes.io/component": "e2e-workbench"}, "ports": [{"name": "http", "port": 18083, "targetPort": "http"}]},
+        "spec": {"selector": {"app.kubernetes.io/component": "e2e-workbench"}, "ports": [{"name": "http", "port": 18083, "targetPort": 18083}]},
     }
 
 
@@ -457,7 +457,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(kube.patch_calls, [])
 
     def test_service_selector_or_target_port_drift_fails_before_patch(self) -> None:
-        for field, value in (("selector", {"app": "foreign"}), ("targetPort", "foreign")):
+        for field, value in (("selector", {"app": "foreign"}), ("targetPort", "http"), ("targetPort", 18084)):
             kube = FakeKubernetes()
             if field == "selector":
                 kube.objects["service"]["spec"]["selector"] = value

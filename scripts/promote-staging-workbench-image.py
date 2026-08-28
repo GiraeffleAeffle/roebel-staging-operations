@@ -570,7 +570,7 @@ def validate_service_or_network_policy(value: Any, expected: dict[str, str], lab
 
 
 def validate_service_routing(service: dict[str, Any], deployment_facts: dict[str, Any]) -> dict[str, Any]:
-    """Bind the exact Service selector and named port to the Deployment."""
+    """Bind the exact live Service selector and numeric port to the Deployment."""
     spec = service.get("spec")
     require(isinstance(spec, dict), "workbench Service spec absent", PostconditionFailure)
     ports = spec.get("ports")
@@ -581,7 +581,7 @@ def validate_service_routing(service: dict[str, Any], deployment_facts: dict[str
         and set(ports[0]) <= {"name", "port", "protocol", "targetPort"}
         and ports[0].get("name") == WORKBENCH_SERVICE_PORT_NAME
         and ports[0].get("port") == WORKBENCH_SERVICE_PORT
-        and ports[0].get("targetPort") == WORKBENCH_SERVICE_PORT_NAME
+        and ports[0].get("targetPort") == WORKBENCH_SERVICE_PORT
         and ports[0].get("protocol", "TCP") == "TCP",
         "workbench Service selector/port/targetPort drift",
         PostconditionFailure,
@@ -589,7 +589,7 @@ def validate_service_routing(service: dict[str, Any], deployment_facts: dict[str
     return {
         "selector": copy.deepcopy(deployment_facts["selector"]),
         "servicePort": WORKBENCH_SERVICE_PORT,
-        "targetPort": WORKBENCH_SERVICE_PORT_NAME,
+        "targetPort": WORKBENCH_SERVICE_PORT,
         "containerPort": copy.deepcopy(deployment_facts["containerPort"]),
     }
 

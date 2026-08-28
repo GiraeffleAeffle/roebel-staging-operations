@@ -26,7 +26,7 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
     }
     service = {"target": {"apiVersion": "v1", "kind": "Service", "namespace": target["namespace"], "name": "e2e-workbench"}, "uid": "service-uid", "specSha256": MODULE.bytes_sha256(b"service")}
     network = {"target": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "namespace": target["namespace"], "name": "e2e-workbench"}, "uid": "network-uid", "specSha256": MODULE.bytes_sha256(b"network")}
-    routing = {"selector": {"app.kubernetes.io/component": "e2e-workbench"}, "servicePort": 18083, "targetPort": "http", "containerPort": {"name": "http", "port": 18083, "protocol": "TCP"}}
+    routing = {"selector": {"app.kubernetes.io/component": "e2e-workbench"}, "servicePort": 18083, "targetPort": 18083, "containerPort": {"name": "http", "port": 18083, "protocol": "TCP"}}
     patch_sha = MODULE.bytes_sha256(b"patch")
     events = recovery_event_chain([
         ("after", "preflight", {"deploymentResourceVersion": "1"}),
