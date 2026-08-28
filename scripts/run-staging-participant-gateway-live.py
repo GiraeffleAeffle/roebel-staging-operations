@@ -89,6 +89,12 @@ WORKBENCH_RECOVERY_OBJECT_UIDS = {
     "role": "2ca77559-34dc-4573-85e3-2c41242eab12",
     "serviceAccount": "c0829ad9-ab20-43a0-9c84-a122098864f0",
 }
+WORKBENCH_RECOVERY_TARGETS = {
+    "kustomization": {"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "namespace": "flux-roebel-staging", "name": "roebel-staging-workbench-baseline"},
+    "roleBinding": {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding", "namespace": "stadtstack-roebel-staging-lab", "name": "roebel-staging-workbench-baseline-reconciler"},
+    "role": {"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role", "namespace": "stadtstack-roebel-staging-lab", "name": "roebel-staging-workbench-baseline-reconciler"},
+    "serviceAccount": {"apiVersion": "v1", "kind": "ServiceAccount", "namespace": "flux-roebel-staging", "name": "roebel-staging-workbench-baseline-reconciler"},
+}
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
@@ -1390,26 +1396,85 @@ def verify_workbench_recovery_evidence(
             "workbench recovery journal event hash drift",
         )
         previous = entry_hash
+    first, terminal = events[0], events[-1]
+    require(
+        first.get("stage") == "before"
+        and first.get("operation") == "preflight"
+        and {key: value for key, value in first.items() if key not in {"sequence", "stage", "operation", "previousEntrySha256", "entrySha256"}}
+        == {"baselineDigest": baseline["digest"], "sourceUid": source["uid"]},
+        "workbench recovery preflight grammar drift",
+    )
+    require(
+        terminal.get("stage") == "after"
+        and terminal.get("operation") == "complete"
+        and {key: value for key, value in terminal.items() if key not in {"sequence", "stage", "operation", "previousEntrySha256", "entrySha256"}}
+        == {"baselineDigest": baseline["digest"], "sourceUid": source["uid"]},
+        "workbench recovery terminal grammar drift",
+    )
+    expected_delete_order = ["kustomization", "roleBinding", "role", "serviceAccount"]
     logical_delete_order: list[str] = []
-    for event in events:
-        operation = event.get("operation")
-        if event.get("stage") != "before" or not isinstance(operation, str) or not operation.startswith("delete."):
+    delete_intents: set[str] = set()
+    delete_outcomes: set[str] = set()
+    seen_uncertain = False
+    resume_epochs = 0
+    uncertain_epoch_by_name: dict[str, int] = {}
+    payload_fields = ("deleteOptions", "deletePayload", "deletePayloadSha256")
+    for event in events[1:-1]:
+        operation, stage = event.get("operation"), event.get("stage")
+        if operation == "resume":
+            require(
+                stage == "before"
+                and {key: value for key, value in event.items() if key not in {"sequence", "stage", "operation", "previousEntrySha256", "entrySha256"}} == {"revision": revision}
+                and seen_uncertain,
+                "workbench recovery resume grammar drift",
+            )
+            resume_epochs += 1
             continue
+        require(isinstance(operation, str) and operation.startswith("delete."), "workbench recovery unknown journal operation")
         name = operation.removeprefix("delete.")
         require(name in WORKBENCH_RECOVERY_OBJECT_UIDS, "workbench recovery delete target drift")
-        options = event.get("deleteOptions")
-        payload = event.get("deletePayload")
-        require(
-            isinstance(options, dict)
-            and options.get("preconditions", {}).get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name]
-            and isinstance(payload, str)
-            and event.get("deletePayloadSha256") == bytes_sha256(payload.encode("utf-8"))
-            and payload == canonical(options),
-            "workbench recovery delete precondition drift",
-        )
-        if not logical_delete_order or logical_delete_order[-1] != name:
-            logical_delete_order.append(name)
-    require(logical_delete_order == ["kustomization", "roleBinding", "role", "serviceAccount"], "workbench recovery delete order drift")
+        has_payload = any(field in event for field in payload_fields)
+        if stage in {"before", "uncertain"} or (stage == "after" and has_payload):
+            options = event.get("deleteOptions")
+            payload = event.get("deletePayload")
+            resource_version = event.get("resourceVersion")
+            require(
+                event.get("target") == WORKBENCH_RECOVERY_TARGETS[name]
+                and event.get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name]
+                and event.get("verb") == "DELETE"
+                and isinstance(resource_version, str) and resource_version.isdigit()
+                and options == {"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": WORKBENCH_RECOVERY_OBJECT_UIDS[name], "resourceVersion": resource_version}}
+                and isinstance(payload, str)
+                and event.get("deletePayloadSha256") == bytes_sha256(payload.encode("utf-8"))
+                and payload == canonical(options),
+                "workbench recovery delete precondition drift",
+            )
+            if name not in delete_intents:
+                require(len(logical_delete_order) < len(expected_delete_order) and name == expected_delete_order[len(logical_delete_order)], "workbench recovery delete order drift")
+                logical_delete_order.append(name); delete_intents.add(name)
+            else:
+                require(logical_delete_order and logical_delete_order[-1] == name, "workbench recovery delete retry order drift")
+            if stage == "uncertain":
+                require(isinstance(event.get("error"), str) and event["error"], "workbench recovery uncertain outcome drift")
+                seen_uncertain = True
+                uncertain_epoch_by_name[name] = resume_epochs
+        if stage == "after":
+            require(name in delete_intents, "workbench recovery after event without prior delete intent")
+            result = event.get("result")
+            if not has_payload:
+                require(
+                    name in uncertain_epoch_by_name
+                    and resume_epochs > uncertain_epoch_by_name[name]
+                    and event.get("uid") == WORKBENCH_RECOVERY_OBJECT_UIDS[name]
+                    and result == "already-absent",
+                    "workbench recovery resumed absence grammar drift",
+                )
+            else:
+                require(result == {"absent": True, "uid": WORKBENCH_RECOVERY_OBJECT_UIDS[name]}, "workbench recovery delete outcome drift")
+            delete_outcomes.add(name)
+        elif stage not in {"before", "uncertain"}:
+            raise LiveTransportError("workbench recovery delete event stage drift")
+    require(logical_delete_order == expected_delete_order and delete_outcomes == set(expected_delete_order), "workbench recovery delete order drift")
     require(state.get("finalAbsence") == final_absence, "workbench recovery final absence journal drift")
     terminal_hash = events[-1].get("entrySha256")
     journal_binding = evidence.get("journal")

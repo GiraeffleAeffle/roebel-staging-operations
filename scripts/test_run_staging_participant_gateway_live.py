@@ -12,6 +12,91 @@ SPEC = importlib.util.spec_from_file_location(
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
 
 
+def recovery_event_chain(specifications: list[tuple[str, str, dict]]) -> list[dict]:
+    previous = None; events: list[dict] = []
+    for sequence, (stage, operation, details) in enumerate(specifications, start=1):
+        event = {"sequence": sequence, "stage": stage, "operation": operation, "previousEntrySha256": previous, **details}
+        event["entrySha256"] = MODULE.bytes_sha256(MODULE.canonical(event).encode())
+        events.append(event); previous = event["entrySha256"]
+    return events
+
+
+def recovery_verifier_fixture(*, synthetic_after_only: bool = False, omit_first_resume: bool = False, wrong_resume_revision: bool = False, wrong_absent_uid: bool = False, missing_absent_uid: bool = False, unknown_operation: bool = False, terminal_operation: str = "complete", role_uncertain_after_earlier_resume: bool = False) -> tuple[dict, dict, str]:
+    revision = "a" * 40
+    order = ("kustomization", "roleBinding", "role", "serviceAccount")
+    options = {
+        name: {"apiVersion": "v1", "kind": "DeleteOptions", "preconditions": {"uid": MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name], "resourceVersion": str(100 + index)}}
+        for index, name in enumerate(order)
+    }
+    def intent(name: str, stage: str = "before") -> tuple[str, str, dict]:
+        payload = MODULE.canonical(options[name])
+        return stage, f"delete.{name}", {"target": MODULE.WORKBENCH_RECOVERY_TARGETS[name], "uid": MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name], "resourceVersion": options[name]["preconditions"]["resourceVersion"], "verb": "DELETE", "deleteOptions": options[name], "deletePayload": payload, "deletePayloadSha256": MODULE.bytes_sha256(payload.encode())}
+    def absent(name: str) -> tuple[str, str, dict]:
+        uid = "00000000-0000-4000-8000-000000000099" if wrong_absent_uid and name == "role" else MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name]
+        details = {"result": "already-absent", "uid": uid}
+        if missing_absent_uid and name == "role": details.pop("uid")
+        return "after", f"delete.{name}", details
+    def completed_delete(name: str) -> tuple[str, str, dict]:
+        stage, operation, details = intent(name, "after")
+        return stage, operation, details | {"result": {"absent": True, "uid": MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name]}}
+    def uncertain_delete(name: str) -> tuple[str, str, dict]:
+        stage, operation, details = intent(name, "uncertain")
+        return stage, operation, details | {"error": "response lost after DELETE"}
+    role_binding = completed_delete("roleBinding")
+    if unknown_operation:
+        role_binding = (role_binding[0], "unknown-operation", role_binding[2])
+    first_resume = ("before", "resume", {"revision": "b" * 40 if wrong_resume_revision else revision})
+    if role_uncertain_after_earlier_resume:
+        # A resume following Kustomization's uncertain delete cannot authorize
+        # Role's later no-payload already-absent outcome.
+        specifications = [
+            ("before", "preflight", {"baselineDigest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5", "sourceUid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b"}),
+            uncertain_delete("kustomization"),
+            ("before", "resume", {"revision": revision}),
+            absent("kustomization"),
+            role_binding,
+            uncertain_delete("role"),
+            absent("role"),
+            completed_delete("serviceAccount"),
+            ("before", "resume", {"revision": revision}),
+            ("before", "resume", {"revision": revision}),
+            ("after", terminal_operation, {"baselineDigest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5", "sourceUid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b"}),
+        ]
+    else:
+        specifications = [
+            ("before", "preflight", {"baselineDigest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5", "sourceUid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b"}),
+            absent("kustomization") if synthetic_after_only else completed_delete("kustomization"),
+            role_binding,
+            uncertain_delete("role"),
+            *(([] if omit_first_resume else [first_resume])),
+            absent("role"),
+            completed_delete("serviceAccount"),
+            ("before", "resume", {"revision": revision}),
+            ("before", "resume", {"revision": revision}),
+            ("after", terminal_operation, {"baselineDigest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5", "sourceUid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b"}),
+        ]
+    events = recovery_event_chain(specifications)
+    final_absence = {name: {"uid": MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name], "absent": True} for name in order}
+    state = {
+        "schemaVersion": "roebel_staging_workbench_baseline_recovery_journal_v1", "status": "completed", "protectedRevision": revision,
+        "events": events, "finalAbsence": final_absence,
+    }
+    state["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(state).encode())
+    evidence = {
+        "schemaVersion": "roebel_staging_workbench_baseline_recovery_receipt_v1", "status": "completed", "protectedRevision": revision,
+        "originRevision": MODULE.WORKBENCH_RECOVERY_ORIGIN_REVISION, "operationId": MODULE.WORKBENCH_RECOVERY_OPERATION_ID, "operationMarker": MODULE.WORKBENCH_RECOVERY_MARKER,
+        "evidence": MODULE.WORKBENCH_RECOVERY_EVIDENCE,
+        "effects": {"deleteOnlyMutation": True, "create": False, "patch": False, "apply": False, "list": False, "secretAccess": False, "civicAuthorityEffects": False, "baselineChanged": False, "sharedSourceChanged": False, "cleanupComplete": True},
+        "baseline": {"uid": "298b0f92-0d6b-4563-b141-f93aa8c8fd8f", "digest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5"},
+        "source": {"uid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b", "revision": f"main@sha1:{revision}"},
+        "objects": {name: {"uid": MODULE.WORKBENCH_RECOVERY_OBJECT_UIDS[name], "status": "absent"} for name in order},
+        "finalAbsence": final_absence,
+        "journal": {"schemaVersion": "roebel_staging_workbench_baseline_recovery_journal_v1", "status": "completed", "eventCount": len(events), "terminalEntrySha256": events[-1]["entrySha256"], "terminalJournalSha256": state["journalSha256"]},
+    }
+    evidence["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(evidence).encode())
+    return evidence, state, revision
+
+
 class ParticipantLiveWrapperTests(unittest.TestCase):
     def test_wireproxy_configuration_has_only_one_fixed_stdio_target(self):
         password = "a" * 64
@@ -369,6 +454,77 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                     changed.close()
             finally:
                 receipt.close(); state.close()
+
+    def test_recovery_verifier_accepts_uncertain_delete_intent_then_exact_already_absent_resume(self):
+        payload, journal, revision = recovery_verifier_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+            journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+            try:
+                proof = MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+                self.assertTrue(proof["cleanupComplete"])
+                self.assertEqual(payload["journal"]["eventCount"], 10)
+            finally:
+                receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_rejects_after_only_synthetic_delete_event(self):
+        payload, journal, revision = recovery_verifier_fixture(synthetic_after_only=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+            journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+            try:
+                with self.assertRaisesRegex(MODULE.LiveTransportError, "after event without prior delete intent"):
+                    MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+            finally:
+                receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_rejects_misplaced_resume_terminal_and_unknown_operations(self):
+        cases = (
+            ("uncertain-without-resume", {"omit_first_resume": True}, "resumed absence grammar drift"),
+            ("wrong-resume-revision", {"wrong_resume_revision": True}, "resume grammar drift"),
+            ("non-complete-terminal", {"terminal_operation": "not-complete"}, "terminal grammar drift"),
+            ("unknown-operation", {"unknown_operation": True}, "unknown journal operation"),
+        )
+        for label, arguments, message in cases:
+            with self.subTest(label=label):
+                payload, journal, revision = recovery_verifier_fixture(**arguments)
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+                    journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+                    try:
+                        with self.assertRaisesRegex(MODULE.LiveTransportError, message):
+                            MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+                    finally:
+                        receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_rejects_missing_or_wrong_uid_on_resumed_absence(self):
+        for arguments in ({"wrong_absent_uid": True}, {"missing_absent_uid": True}):
+            with self.subTest(arguments=arguments):
+                payload, journal, revision = recovery_verifier_fixture(**arguments)
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+                    journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+                    try:
+                        with self.assertRaisesRegex(MODULE.LiveTransportError, "resumed absence grammar drift"):
+                            MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+                    finally:
+                        receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_requires_a_resume_after_the_same_objects_uncertain_delete(self):
+        payload, journal, revision = recovery_verifier_fixture(role_uncertain_after_earlier_resume=True)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+            journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+            try:
+                with self.assertRaisesRegex(MODULE.LiveTransportError, "resumed absence grammar drift"):
+                    MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+            finally:
+                receipt_bound.close(); journal_bound.close()
 
     def test_workbench_launcher_rechecks_pinned_kubectl_for_each_adapter_call(self):
         source = MODULE.WORKBENCH_IMPLEMENTATION_LAUNCHER
