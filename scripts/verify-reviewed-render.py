@@ -3758,7 +3758,7 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) 
     early = (
         "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
         "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
-        "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }"
+        "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }"
     )
     paths = [
         {
@@ -3774,7 +3774,7 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) 
         early = (
             "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky } !{ path /stadtstack-test/api/session/admit } !{ path /stadtstack-test/api/signed-event }\n"
             "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
-            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }\n"
             "http-request deny deny_status 404 if { path_beg /stadtstack-test } !{ path /stadtstack-test/healthz } !{ path /stadtstack-test/api/config } !{ path /stadtstack-test/api/feed } !{ path /stadtstack-test/api/thread } !{ path /stadtstack-test/api/conversation } !{ path /stadtstack-test/api/session/admit } !{ path /stadtstack-test/api/signed-event }"
         )
         paths.append({
@@ -4017,6 +4017,9 @@ def verify_network_boundary_migration(
                         "/stadtstack-test/api/session/admit",
                         "/stadtstack-test/api/signed-event",
                     ],
+                    "apiReadOnlyPrefixes": ["/api/public-feed/", "/api/civic/v1/"],
+                    "apiReadOnlyExactPaths": ["/api/notifications/unread-count"],
+                    "apiReadOnlyMethods": ["GET", "HEAD"],
                     "readOnlyPrefix": "/stadtstack-test",
                     "resource": {"kind": "Ingress", "name": "roebel-web-presentation", "namespace": SIGNED_NOSTR_WEB_NAMESPACE},
                 },
@@ -4070,7 +4073,10 @@ def verify_network_boundary_migration(
             "ingress": {
                 "allowedMethods": ["GET", "HEAD", "POST"],
                 "exactPostPath": "/api/chat/mecky",
-                "otherApiPaths": "404_except_public_feed_notifications_and_exact_mecky_path",
+                "apiReadOnlyPrefixes": ["/api/public-feed/", "/api/civic/v1/"],
+                "apiReadOnlyExactPaths": ["/api/notifications/unread-count"],
+                "apiReadOnlyMethods": ["GET", "HEAD"],
+                "otherApiPaths": "404_except_public_feed_civic_v1_notifications_and_exact_mecky_path",
                 "otherMethods": "405",
                 "otherPostPaths": "405",
                 "resource": {
