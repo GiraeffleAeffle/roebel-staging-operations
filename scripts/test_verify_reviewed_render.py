@@ -65,7 +65,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "ingress": {
                     "allowedMethods": ["GET", "HEAD", "POST"],
                     "exactPostPath": "/api/chat/mecky",
-                    "otherApiPaths": "404_except_public_feed_notifications_and_exact_mecky_path",
+                    "apiReadOnlyPrefixes": ["/api/public-feed/", "/api/civic/v1/"],
+                    "apiReadOnlyExactPaths": ["/api/notifications/unread-count"],
+                    "apiReadOnlyMethods": ["GET", "HEAD"],
+                    "otherApiPaths": "404_except_public_feed_civic_v1_notifications_and_exact_mecky_path",
                     "otherMethods": "405",
                     "otherPostPaths": "405",
                     "resource": {
@@ -600,6 +603,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                         "/stadtstack-test/api/session/admit",
                         "/stadtstack-test/api/signed-event",
                     ],
+                    "apiReadOnlyPrefixes": ["/api/public-feed/", "/api/civic/v1/"],
+                    "apiReadOnlyExactPaths": ["/api/notifications/unread-count"],
+                    "apiReadOnlyMethods": ["GET", "HEAD"],
                     "readOnlyPrefix": "/stadtstack-test",
                     "resource": {
                         "kind": "Ingress",
@@ -2599,6 +2605,17 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         result = VERIFIER.verify(ROOT)
         self.assertEqual(result["renderFileSet"], "reviewed-public-knowledge-participant-gateway")
         render = ROOT / "reviewed-render/roebel-staging"
+        ingress = json.loads((render / "web/ingress.json").read_text())
+        self.assertEqual(
+            ingress["metadata"]["annotations"][
+                "haproxy-ingress.github.io/config-backend-early"
+            ].split("\n"),
+            [
+                "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }",
+                "http-request deny deny_status 405 unless { method GET HEAD POST }",
+                "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }",
+            ],
+        )
         web = json.loads((render / "web/deployment.json").read_text())
         env = web["spec"]["template"]["spec"]["containers"][0]["env"]
         self.assertIn(
@@ -2654,9 +2671,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         for replacement in (
             "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky/other }\n"
             "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
-            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky/other }",
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky/other }",
             "http-request deny deny_status 405 unless { method GET HEAD }\n"
-            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path /api/notifications/unread-count }",
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count }",
+            "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
+            "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/chat/mecky }",
+            "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }\n"
+            "http-request deny deny_status 405 unless { method GET HEAD POST }\n"
+            "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1 } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }",
         ):
             temp, candidate = self.candidate()
             self.addCleanup(temp.cleanup)

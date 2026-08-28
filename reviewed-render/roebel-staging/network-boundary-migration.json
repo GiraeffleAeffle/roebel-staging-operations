@@ -138,7 +138,7 @@
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:1bd1f19ef1b198c6b9d3c49cc3453da3a932e53d9c513a98a79bb426a6c833e7"
+      "sha256": "sha256:18684dcad1f4c373d36b4006178fa2b89b8928f3a8da07cf1889bcd96ef469f5"
     },
     {
       "kind": "ServiceAccount",
