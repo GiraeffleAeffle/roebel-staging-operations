@@ -1,4 +1,4 @@
-import base64, contextlib, copy, datetime as dt, importlib.util, json, os, stat, subprocess, sys, tempfile, unittest
+import base64, contextlib, copy, datetime as dt, importlib.util, inspect, json, os, stat, subprocess, sys, tempfile, unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -110,6 +110,206 @@ class Fake(MODULE.Runner):
         return MODULE.Result()
 
 class ExecutorTests(unittest.TestCase):
+    def test_exact_historical_b790_secret_receipt_is_the_only_accepted_legacy_origin(self):
+        value = ready_policy()
+        receipt = {
+            "schemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
+            "status": "materialized",
+            "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
+            "canonicalSha256": MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+            "protectedRunnerFileSha256": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
+        }
+        expected_records = {
+            label: {
+                "target": {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "namespace": reference["namespace"],
+                    "name": reference["name"],
+                },
+                "uid": f"{label}-uid",
+                "resourceVersion": MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS[label],
+                "keySet": sorted(reference["keys"]),
+                "valuesRead": False,
+            }
+            for label, reference in value["runtime"]["secretReferences"].items()
+        }
+
+        def bind(candidate, candidate_policy, revision, hashes):
+            self.assertEqual(candidate, receipt)
+            self.assertEqual(candidate_policy, value)
+            self.assertEqual(revision, MODULE.SECRET_RECEIPT_ORIGIN_REVISION)
+            self.assertEqual(hashes, MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256)
+            return {
+                "status": "materialized",
+                "secretRecords": copy.deepcopy(expected_records),
+                "civicAuthorityEffects": False,
+            }
+
+        materializer = Mock(
+            PROTECTED_PATHS=tuple(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
+            bind_materialization_receipt=Mock(side_effect=bind),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipt.json"
+            path.write_text(json.dumps(receipt), encoding="utf-8")
+            os.chmod(path, 0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                with (
+                    patch.object(MODULE, "SECRET_MATERIALIZER", materializer),
+                    patch.object(MODULE, "bytes_digest", return_value=MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256),
+                ):
+                    ownership = MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
+            finally:
+                os.close(fd)
+        self.assertEqual(
+            ownership["receiptProvenance"],
+            {
+                "mode": "historical-b790-value-free-secret-materialization",
+                "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
+                "rawSha256": MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256,
+                "canonicalSha256": MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+            },
+        )
+
+    def test_historical_secret_receipt_rejects_raw_canonical_and_runner_drift(self):
+        value = ready_policy()
+        base = {
+            "schemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
+            "status": "materialized",
+            "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
+            "canonicalSha256": MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+            "protectedRunnerFileSha256": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
+        }
+        materializer = Mock(PROTECTED_PATHS=tuple(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256))
+        cases = (
+            (copy.deepcopy(base), sha("9"), "raw checksum"),
+            (base | {"canonicalSha256": sha("8")}, MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256, "canonical checksum"),
+            (
+                base | {"protectedRunnerFileSha256": dict(base["protectedRunnerFileSha256"]) | {"scripts/run-staging-participant-gateway-live.py": sha("7")}},
+                MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256,
+                "protected runner binding",
+            ),
+        )
+        for candidate, raw_digest, expected_error in cases:
+            with self.subTest(expected_error=expected_error), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "receipt.json"
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                os.chmod(path, 0o600)
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    with (
+                        patch.object(MODULE, "SECRET_MATERIALIZER", materializer),
+                        patch.object(MODULE, "bytes_digest", return_value=raw_digest),
+                        self.assertRaisesRegex(MODULE.ActivationError, expected_error),
+                    ):
+                        MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
+                finally:
+                    os.close(fd)
+
+    def test_historical_secret_continuation_requires_exact_resource_versions(self):
+        value = ready_policy()
+        records = {}
+        live = {}
+        for label, reference in value["runtime"]["secretReferences"].items():
+            resource_version = MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS[label]
+            records[label] = {
+                "target": {
+                    "apiVersion": "v1",
+                    "kind": "Secret",
+                    "namespace": reference["namespace"],
+                    "name": reference["name"],
+                },
+                "uid": f"{label}-uid",
+                "resourceVersion": resource_version,
+                "keySet": sorted(reference["keys"]),
+                "valuesRead": False,
+            }
+            live[label] = {
+                "name": reference["name"],
+                "namespace": reference["namespace"],
+                "uid": f"{label}-uid",
+                "resourceVersion": resource_version,
+                "keys": sorted(reference["keys"]),
+                "valuesRead": False,
+            }
+        ownership = {
+            "status": "materialized",
+            "secretRecords": records,
+            "civicAuthorityEffects": False,
+            "receiptProvenance": {"mode": "historical-b790-value-free-secret-materialization"},
+        }
+        current = {"status": "exact-keysets-present-without-reading-values", "secrets": live}
+        MODULE.require_secret_materialization_binding_v4(current, ownership, value)
+        changed = copy.deepcopy(current)
+        changed["secrets"]["config"]["resourceVersion"] = str(int(changed["secrets"]["config"]["resourceVersion"]) + 1)
+        with self.assertRaisesRegex(MODULE.ActivationError, "identity/keyset drift"):
+            MODULE.require_secret_materialization_binding_v4(changed, ownership, value)
+        current_ownership = copy.deepcopy(ownership)
+        current_ownership["receiptProvenance"] = {"mode": "current-protected-revision"}
+        MODULE.require_secret_materialization_binding_v4(current, current_ownership, value)
+        with self.assertRaisesRegex(MODULE.ActivationError, "identity/keyset drift"):
+            MODULE.require_secret_materialization_binding_v4(changed, current_ownership, value)
+
+    def test_handover_prebound_closure_disables_git_blob_fallback(self):
+        raw = b"protected-blob-fixture"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "blob"
+            path.write_bytes(raw)
+            path.chmod(0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                descriptors = [
+                    json.dumps({
+                        "revision": revision,
+                        "path": logical_path,
+                        "fd": fd,
+                        "size": len(raw),
+                        "sha256": MODULE.bytes_digest(raw),
+                    })
+                    for revision, logical_path in sorted(MODULE.required_handover_prebound_keys_v4(REV))
+                ]
+                blobs = MODULE.parse_prebound_git_blob_descriptors_v4(descriptors, REV)
+            finally:
+                os.close(fd)
+        self.assertEqual(set(blobs), MODULE.required_handover_prebound_keys_v4(REV))
+        self.assertIn((REV, MODULE.SECRET_MATERIALIZER_PATH), blobs)
+        self.assertIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), blobs)
+        self.assertNotIn((REV, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
+        self.assertNotIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
+        nested_expected = MODULE.required_nested_handover_prebound_keys_v4(REV)
+        handover_module = Mock()
+        handover_module.bind_handover_receipt.return_value = {
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(ready_policy()),
+            "civicAuthorityEffects": False,
+        }
+
+        def build_context(revision, archived_raw, nested_blobs):
+            self.assertEqual(revision, REV)
+            self.assertEqual(archived_raw, b"archived")
+            self.assertEqual(set(nested_blobs), nested_expected)
+            self.assertNotIn((REV, MODULE.SECRET_MATERIALIZER_PATH), nested_blobs)
+            self.assertNotIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), nested_blobs)
+            return {"policy": ready_policy(), "binding": {}, "handoverModule": handover_module}
+
+        runner = Mock()
+        runner.owned_receipt_raw.side_effect = [b"archived", b"handover"]
+        runner.build_context.side_effect = build_context
+        runner.json_object.return_value = {"status": "handover-ready"}
+        with patch.object(MODULE, "_PREBOUND_GIT_BLOBS", blobs), patch.object(
+            MODULE, "trusted_git_v4", side_effect=AssertionError("Git fallback forbidden")
+        ) as git, patch.object(MODULE, "compile_verified_handover_runner_v4", return_value=runner):
+            for key, expected in blobs.items():
+                self.assertEqual(MODULE.git_blob(*key), expected)
+            with self.assertRaisesRegex(MODULE.ActivationError, "was not prebound"):
+                MODULE.git_blob(REV, "outside/exact/closure")
+            ownership = MODULE.bind_handover_receipt_pair_v4(ready_policy(), REV, 11, 12, blobs)
+            self.assertEqual(ownership["protectedRevision"], REV)
+        git.assert_not_called()
+        runner.build_context.assert_called_once()
+
     def test_missing_fixed_policy_blocks_before_any_runner_call(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(MODULE, "ROOT", Path(directory)):
             runner = Fake()

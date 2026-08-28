@@ -566,6 +566,19 @@ def bind_materialization_receipt(
         "protectedRevision": rev,
         "receiptSha256": checksum,
         "secretUids": {label: unsigned["secrets"][label]["uid"] for label in CREATE_ORDER},
+        # Value-free records let a later activation continuation perform a
+        # fresh UID/key-set/resourceVersion check without rereading or
+        # rematerializing any Secret value.
+        "secretRecords": {
+            label: {
+                "target": copy.deepcopy(unsigned["secrets"][label]["target"]),
+                "uid": unsigned["secrets"][label]["uid"],
+                "resourceVersion": unsigned["secrets"][label]["resourceVersion"],
+                "keySet": copy.deepcopy(unsigned["secrets"][label]["keySet"]),
+                "valuesRead": False,
+            }
+            for label in CREATE_ORDER
+        },
         "civicAuthorityEffects": False,
     }
 

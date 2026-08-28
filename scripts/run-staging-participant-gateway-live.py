@@ -12,7 +12,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("participant live wrapper blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, hashlib, json, os, re, secrets, select, shutil, signal, socket, stat, subprocess, sys, tempfile, threading, time, types
+import argparse, base64, hashlib, ipaddress, json, os, re, secrets, select, shutil, signal, socket, stat, subprocess, sys, tempfile, threading, time, types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,9 @@ SELF_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_RUNNER = "scripts/bootstrap-staging-participant-flux.py"
 ACTIVATION_RUNNER = "scripts/activate-staging-participant-gateway.py"
 SECRET_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
+HANDOVER_RUNNER = "scripts/handover-staging-participant-dormant-receipt.py"
+HANDOVER_IMPLEMENTATION = "scripts/staging_participant_dormant_receipt_handover.py"
+WORKBENCH_PROMOTER = "scripts/promote-staging-workbench-image.py"
 WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
 WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
 WORKBENCH_RECOVERY_IMPLEMENTATION = "scripts/workbench_baseline_recovery.py"
@@ -30,6 +33,8 @@ PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER,
     ACTIVATION_RUNNER,
     SECRET_RUNNER,
+    HANDOVER_RUNNER,
+    HANDOVER_IMPLEMENTATION,
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
     "policy/staging-participant-gateway-activation-policy.json",
@@ -38,6 +43,52 @@ PROTECTED_PATHS = (
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
 )
+# The dormant-receipt handover child is forbidden from performing Git reads in
+# a partial clone.  Keep this closure in the outer wrapper so every current
+# and historical transitive blob is bound before decrypting transport inputs or
+# snapshotting binaries.  It intentionally mirrors the child runner's fixed
+# constants; drift is rejected by the exact-key-set check in that child.
+HANDOVER_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
+HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION = "b790fa76d4f2ad4d0bd86663dcd896b97ba0b61e"
+HANDOVER_ARCHIVED_PROTECTED_PATHS = (
+    BOOTSTRAP_RUNNER,
+    SELF_PATH,
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/staging_participant_gateway_policy.py",
+    "policy/staging-participant-gateway-activation-policy.json",
+    ACTIVATION_RUNNER,
+    ".github/workflows/staging-participant-flux-bootstrap.yml",
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
+HANDOVER_COMPATIBILITY_PATHS = (
+    "policy/staging-participant-gateway-activation-policy.json",
+    "scripts/staging_participant_gateway_policy.py",
+    ".github/workflows/staging-participant-flux-bootstrap.yml",
+    ".github/workflows/staging-participant-gateway-activation.yml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/service.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/deployment.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/ingress.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/kustomization.yaml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
+)
+HANDOVER_CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
+    *HANDOVER_ARCHIVED_PROTECTED_PATHS,
+    HANDOVER_IMPLEMENTATION,
+    HANDOVER_RUNNER,
+)))
+HANDOVER_PREBOUND_CURRENT_PATHS = tuple(dict.fromkeys((
+    *HANDOVER_CURRENT_PROTECTED_PATHS,
+    *HANDOVER_COMPATIBILITY_PATHS,
+)))
+HANDOVER_PREBOUND_ARCHIVE_PATHS = tuple(dict.fromkeys((
+    *HANDOVER_ARCHIVED_PROTECTED_PATHS,
+    *HANDOVER_COMPATIBILITY_PATHS,
+)))
 # This is deliberately a separate protected closure.  Workbench baseline
 # transport must never load, bind, or invoke a participant transaction runner.
 # The handover runner is retained as a separately bound review identity; the
@@ -61,6 +112,16 @@ WORKBENCH_RECOVERY_PROTECTED_PATHS = (
     "policy/repository-contract.json",
     ".github/workflows/reviewed-render-admission.yml",
 )
+# The image promotion is a distinct one-time capability.  Its closure is
+# intentionally smaller than the baseline handover closure: it binds the
+# wrapper, the exact promoter blob, and the protected repository contract but
+# cannot load a participant or baseline transaction runner.
+WORKBENCH_PROMOTION_PROTECTED_PATHS = (
+    SELF_PATH,
+    WORKBENCH_PROMOTER,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
 API_HOST, API_PORT, TALOS_PORT = "10.255.240.11", 6443, 50000
 PROXY_USERNAME = "stadtstack-participant"
 GIT_BIN = Path("/usr/bin/git")
@@ -77,6 +138,13 @@ exec(compile(source,path,'exec',dont_inherit=True),scope)
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
+WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v1"
+WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b"
+WORKBENCH_PROMOTION_SOURCE_REVISION = "36ac41d7049df815aaebbe4301c098a0ec7e4101"
+WORKBENCH_PROMOTION_TARGET_IMAGE = (
+    "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
+    "sha256:2158831bd76865db483ca6a8dc211e7d5c3de51d0113613fc0a22a4ca27fc6ce"
+)
 WORKBENCH_RECOVERY_ORIGIN_REVISION = "3be9405c6bfd6b4caf0423b137f969aab3bef323"
 WORKBENCH_RECOVERY_OPERATION_ID = "b6b52abc-4b28-4db0-b4ef-74041f41d7c6"
 WORKBENCH_RECOVERY_MARKER = "77157c24-d1d0-4cb8-850b-538f380c16fd"
@@ -103,6 +171,7 @@ WORKBENCH_RECOVERY_TARGETS = {
 }
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 TRANSACTION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 EXPECTED_BINARIES = {
@@ -178,6 +247,7 @@ def git_environment() -> dict[str, str]:
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
         "HOME": "/dev/null",
         "LANG": "C",
         "LC_ALL": "C",
@@ -563,6 +633,48 @@ def workbench_implementation_command(
         *arguments,
     ]
 
+# The image promoter has a different error type and Kubernetes adapter
+# signature from the baseline handover implementation.  Derive a separate
+# launcher from the already-closed, audited pinned-kubectl launcher rather
+# than adding a generic command executor or importing the ambient worktree.
+WORKBENCH_PROMOTER_LAUNCHER = (
+    WORKBENCH_IMPLEMENTATION_LAUNCHER
+    .replace("protected_workbench_baseline_handover", "protected_workbench_image_promotion")
+    .replace("HandoverError", "PromotionError")
+    .replace("pinned kubectl snapshot differs before workbench execution", "pinned kubectl snapshot differs before workbench promotion")
+    .replace("workbench KubernetesAdapter kubectl override forbidden", "workbench promoter kubectl override forbidden")
+    # The promoter hard-binds its functional probes to the reviewed
+    # apiserver Service proxy.  Do not expose an arbitrary network destination
+    # through the protected launcher.
+    .replace("def _run(self,args,*,input_text=None):", "def _run(self,args,*,input_text=None,timeout=40):")
+    .replace("super()._run(args,input_text=input_text)", "super()._run(args,input_text=input_text,timeout=timeout)")
+)
+
+def workbench_promoter_command(
+    promoter: BoundRunner,
+    kubectl: PinnedExecutableSnapshot,
+    arguments: list[str],
+) -> list[str]:
+    """Return the only command shape admitted for image promotion mode."""
+    require(kubectl.fd >= 0 and kubectl.path.exists(), "pinned workbench kubectl snapshot unavailable")
+    return [
+        sys.executable,
+        "-I",
+        "-c",
+        WORKBENCH_PROMOTER_LAUNCHER,
+        str(ROOT / promoter.logical_path),
+        str(promoter.blob.fd),
+        str(promoter.blob.size),
+        promoter.blob.sha256,
+        str(kubectl.path),
+        str(kubectl.fd),
+        str(kubectl.device),
+        str(kubectl.inode),
+        str(kubectl.size),
+        kubectl.sha256,
+        *arguments,
+    ]
+
 def bind_bytes_to_fd(value: bytes, destination: Path, label: str) -> BoundBlob:
     require(isinstance(value, bytes) and 0 < len(value) <= MAX_RECEIPT_BYTES, f"{label} byte size invalid")
     write_private(destination, value)
@@ -587,6 +699,66 @@ def bind_bytes_to_fd(value: bytes, destination: Path, label: str) -> BoundBlob:
         os.close(fd)
         try: destination.unlink()
         except FileNotFoundError: pass
+        raise
+
+
+def bind_handover_git_closure(
+    revision: str,
+    binding_dir: Path,
+    protected_blobs: dict[str, bytes],
+) -> tuple[dict[tuple[str, str], BoundBlob], list[BoundBlob]]:
+    """Bind every Git blob the dormant handover may transitively inspect.
+
+    Current blobs are checked against the protected checkout; historical blobs
+    are fetched once by this outer wrapper and then inherited by descriptor.
+    The child receives no Git capability and fails closed if a descriptor is
+    missing or widened.
+    """
+    bound: dict[tuple[str, str], BoundBlob] = {}
+    owned: list[BoundBlob] = []
+    try:
+        for index, path in enumerate(HANDOVER_PREBOUND_CURRENT_PATHS):
+            local = ROOT / path
+            info = os.lstat(local)
+            require(stat.S_ISREG(info.st_mode) and not local.is_symlink(), f"handover protected file is not regular: {path}")
+            expected = protected_blobs.get(path)
+            if expected is None:
+                expected = git_blob(revision, path)
+            require(local.read_bytes() == expected, f"handover current protected file drift: {path}")
+            item = bind_bytes_to_fd(expected, binding_dir / f"handover-current-{index}.bound", f"handover current Git blob {path}")
+            bound[(revision, path)] = item; owned.append(item)
+        for index, path in enumerate(HANDOVER_PREBOUND_ARCHIVE_PATHS):
+            expected = git_blob(HANDOVER_ARCHIVE_REVISION, path)
+            item = bind_bytes_to_fd(expected, binding_dir / f"handover-archive-{index}.bound", f"handover archived Git blob {path}")
+            bound[(HANDOVER_ARCHIVE_REVISION, path)] = item; owned.append(item)
+        current_secret = protected_blobs[SECRET_RUNNER]
+        current_secret_item = bind_bytes_to_fd(
+            current_secret,
+            binding_dir / "handover-current-secret-materializer.bound",
+            "handover current Secret materializer Git blob",
+        )
+        bound[(revision, SECRET_RUNNER)] = current_secret_item; owned.append(current_secret_item)
+        historical_secret = git_blob(HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION, SECRET_RUNNER)
+        historical_secret_item = bind_bytes_to_fd(
+            historical_secret,
+            binding_dir / "handover-historical-secret-materializer.bound",
+            "handover historical Secret materializer Git blob",
+        )
+        bound[(HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION, SECRET_RUNNER)] = historical_secret_item; owned.append(historical_secret_item)
+        require(
+            set(bound) == {
+                *((revision, path) for path in HANDOVER_PREBOUND_CURRENT_PATHS),
+                *((HANDOVER_ARCHIVE_REVISION, path) for path in HANDOVER_PREBOUND_ARCHIVE_PATHS),
+                (revision, SECRET_RUNNER),
+                (HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION, SECRET_RUNNER),
+            },
+            "handover prebound Git closure is incomplete or widened",
+        )
+        fsync_directory(binding_dir)
+        return bound, owned
+    except BaseException:
+        for item in owned:
+            item.close()
         raise
 
 def snapshot_owned_receipt(source: Path, destination: Path, label: str) -> BoundBlob:
@@ -621,6 +793,58 @@ def snapshot_owned_receipt(source: Path, destination: Path, label: str) -> Bound
     finally:
         os.close(source_fd)
     return bind_bytes_to_fd(raw, destination, label)
+
+
+def snapshot_owned_file_path(
+    source: Path,
+    destination: Path,
+    label: str,
+    *,
+    max_bytes: int = MAX_RECEIPT_BYTES,
+) -> Path:
+    """Copy one owner-only input into the private transaction directory.
+
+    The protected child receives a path because the workbench promoter's
+    audited CLI accepts a path, not an inherited descriptor.  The source is
+    nevertheless identity-checked and the copy is created owner-only inside
+    the wrapper's private temporary directory, so the child cannot be steered
+    to a caller-replaced or world-readable artifact pin.
+    """
+    selected = private_file(source, label, max_bytes)
+    info = os.lstat(selected)
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    source_fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(source_fd)
+        require(
+            (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+            == (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
+            f"{label} identity changed while opening",
+        )
+        raw = os.pread(source_fd, opened.st_size + 1, 0)
+        after = os.fstat(source_fd)
+        require(
+            len(raw) == opened.st_size
+            and (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+            == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+            f"{label} changed while snapshotting",
+        )
+    finally:
+        os.close(source_fd)
+    write_private(destination, raw)
+    copied = os.lstat(destination)
+    require(
+        stat.S_ISREG(copied.st_mode)
+        and copied.st_uid == os.geteuid()
+        and copied.st_nlink == 1
+        and stat.S_IMODE(copied.st_mode) == 0o600
+        and copied.st_size == len(raw)
+        and bytes_sha256(destination.read_bytes()) == bytes_sha256(raw),
+        f"{label} private snapshot verification failed",
+    )
+    return destination
 
 
 def bind_terminal_finalization_journal(source: Path, binding_directory: Path, revision: str) -> BoundBlob:
@@ -830,11 +1054,17 @@ class ExactConnectProxy:
         try: connection.sendall(f"HTTP/1.1 {status} {reason}\r\n{extra}Connection: close\r\nContent-Length: 0\r\n\r\n".encode("ascii"))
         except OSError: pass
 
-    @staticmethod
-    def _read_head(connection: socket.socket) -> tuple[bytes, bytes]:
-        value = bytearray(); connection.settimeout(5)
+    def _read_head(self, connection: socket.socket) -> tuple[bytes, bytes]:
+        value = bytearray(); connection.settimeout(0.25)
+        deadline = time.monotonic() + 5
         while b"\r\n\r\n" not in value:
+            if self.stopping.is_set():
+                raise LiveTransportError("CONNECT guard stopped before headers")
             try: chunk = connection.recv(2048)
+            except socket.timeout:
+                if time.monotonic() >= deadline:
+                    raise LiveTransportError("CONNECT peer header timeout")
+                continue
             except OSError as exc: raise LiveTransportError("CONNECT peer read failed") from exc
             if not chunk: raise LiveTransportError("CONNECT peer closed before headers")
             value.extend(chunk)
@@ -1236,9 +1466,12 @@ def verify_receipt_with_protected_cli(
     *,
     allow_cancelled: bool,
     expected_source_sha256: str | None = None,
+    expected_projection_revision: str | None = None,
+    extra_args: tuple[str, ...] = (),
+    extra_pass_fds: tuple[int, ...] = (),
 ) -> dict[str, Any]:
     result = cancellation.run(
-        runner.command([mode, str(receipt.fd), "--expected-protected-revision", revision]),
+        runner.command([mode, str(receipt.fd), "--expected-protected-revision", revision, *extra_args]),
         allow_cancelled=allow_cancelled,
         forward_signals=False,
         receipt_pending=False,
@@ -1247,14 +1480,17 @@ def verify_receipt_with_protected_cli(
         stderr=subprocess.PIPE,
         text=True,
         env=environment,
-        pass_fds=(runner.blob.fd, receipt.fd),
+        pass_fds=(runner.blob.fd, receipt.fd, *extra_pass_fds),
     )
     require(result.returncode == 0, f"protected receipt verifier rejected {receipt.label}")
     output = result.stdout.strip() if isinstance(result.stdout, str) else ""
     require(output and "\n" not in output, f"protected receipt verifier output invalid: {receipt.label}")
     projection = json_object(output, f"verified {receipt.label}")
     require(projection.get("status") == expected_status, f"protected receipt status drift: {receipt.label}")
-    require(projection.get("protectedRevision") == revision, f"protected receipt revision drift: {receipt.label}")
+    require(
+        projection.get("protectedRevision") == (expected_projection_revision or revision),
+        f"protected receipt revision drift: {receipt.label}",
+    )
     require(
         isinstance(projection.get("receiptSha256"), str)
         and SHA256.fullmatch(projection["receiptSha256"]) is not None,
@@ -1319,6 +1555,35 @@ def private_workbench_output(path: Path, label: str) -> Path:
     return selected
 
 
+def private_new_workbench_output(path: Path, label: str) -> Path:
+    """Require a fresh owner-only output file for a one-time mutation."""
+    selected = private_workbench_output(path, label)
+    require(not selected.exists(), f"{label} must not already exist")
+    return selected
+
+
+def private_workbench_promotion_outputs(receipt_path: Path, journal_path: Path) -> tuple[Path, Path]:
+    """Accept only a fresh pair or one exact interrupted-run reservation."""
+    receipt = private_workbench_output(receipt_path, "workbench image promotion receipt")
+    journal = private_workbench_output(journal_path, "workbench image promotion journal")
+    require(
+        os.path.normcase(os.path.normpath(os.fspath(receipt)))
+        != os.path.normcase(os.path.normpath(os.fspath(journal))),
+        "workbench image promotion receipt and journal paths must be distinct",
+    )
+    receipt_exists = receipt.exists()
+    journal_exists = journal.exists()
+    if not receipt_exists and not journal_exists:
+        return receipt, journal
+    require(receipt_exists and journal_exists, "workbench image promotion restart requires both reserved output paths")
+    receipt_info = os.lstat(receipt); journal_info = os.lstat(journal)
+    require(
+        receipt_info.st_size == 0 and 0 < journal_info.st_size <= MAX_RECEIPT_BYTES,
+        "workbench image promotion restart requires an empty receipt and nonterminal journal",
+    )
+    return receipt, journal
+
+
 def read_bound_json(receipt: BoundBlob, label: str) -> dict[str, Any]:
     raw = os.pread(receipt.fd, receipt.size + 1, 0)
     require(len(raw) == receipt.size, f"{label} bound receipt size drift")
@@ -1370,6 +1635,256 @@ def verify_workbench_handover_evidence(
         "networkPolicyUid": baseline["uid"],
         "fluxObjectUids": {entry["objectId"]: entry["uid"] for entry in objects},
         "ready": True,
+    }
+
+
+def verify_workbench_image_promotion_evidence(
+    receipt: BoundBlob,
+    journal: BoundBlob,
+    revision: str,
+    protected_hashes: dict[str, str],
+    artifact_pin_sha256: str,
+) -> dict[str, Any]:
+    """Validate the protected promoter's value-free terminal evidence."""
+    evidence = read_bound_json(receipt, "workbench image promotion receipt")
+    state = read_bound_json(journal, "workbench image promotion journal")
+    receipt_checksum = evidence.pop("canonicalSha256", None)
+    require(
+        isinstance(receipt_checksum, str)
+        and receipt_checksum == bytes_sha256(canonical(evidence).encode("utf-8")),
+        "workbench image promotion receipt checksum drift",
+    )
+    require(
+        set(evidence) == {
+            "schemaVersion", "status", "mode", "operation", "protectedRevision",
+            "protectedGitBlobSha256", "probeBinding", "artifact", "target",
+            "deployment", "preservation", "rollout", "backendBinding", "probes",
+            "patch", "rollback", "effects", "completedAt",
+        },
+        "workbench image promotion receipt field set drift",
+    )
+    require(
+        evidence.get("schemaVersion") == "roebel_staging_workbench_image_promotion_receipt_v1"
+        and evidence.get("status") == "completed"
+        and evidence.get("mode") == "live",
+        "workbench image promotion receipt status drift",
+    )
+    operation = evidence.get("operation")
+    require(
+        isinstance(operation, dict)
+        and set(operation) == {"operationId"}
+        and isinstance(operation.get("operationId"), str)
+        and UUID.fullmatch(operation["operationId"]) is not None
+        and evidence.get("protectedRevision") == revision
+        and evidence.get("protectedGitBlobSha256") == protected_hashes,
+        "workbench image promotion protected operation binding drift",
+    )
+    artifact = evidence.get("artifact")
+    require(
+        isinstance(artifact, dict)
+        and artifact.get("receiptSha256") == artifact_pin_sha256
+        and artifact.get("sourceRevision") == WORKBENCH_PROMOTION_SOURCE_REVISION
+        and artifact.get("component") == "roebel-e2e-workbench"
+        and artifact.get("manifestDigest") == WORKBENCH_PROMOTION_TARGET_IMAGE.rsplit("@", 1)[1]
+        and artifact.get("image") == WORKBENCH_PROMOTION_TARGET_IMAGE,
+        "workbench image promotion artifact binding drift",
+    )
+    require(
+        evidence.get("target") == {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "namespace": "stadtstack-roebel-staging-lab",
+            "name": "e2e-workbench",
+        },
+        "workbench image promotion target drift",
+    )
+    effects = evidence.get("effects")
+    require(
+        isinstance(effects, dict)
+        and set(effects) == {
+            "clusterMutation", "deploymentImageChanged", "rollbackApplied",
+            "serviceChanged", "networkPolicyChanged", "secretValuesRead",
+            "civicAuthorityEffects",
+        }
+        and effects == {
+            "clusterMutation": True,
+            "deploymentImageChanged": True,
+            "rollbackApplied": False,
+            "serviceChanged": False,
+            "networkPolicyChanged": False,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        },
+        "workbench image promotion effect boundary drift",
+    )
+    preservation = evidence.get("preservation")
+    require(
+        isinstance(preservation, dict)
+        and preservation.get("unchanged") is True
+        and isinstance(preservation.get("service"), dict)
+        and isinstance(preservation.get("networkPolicy"), dict),
+        "workbench image promotion preservation proof drift",
+    )
+    rollout = evidence.get("rollout")
+    backend = evidence.get("backendBinding")
+    probes = evidence.get("probes")
+    rollout_pods = rollout.get("podImageProof", {}).get("pods", []) if isinstance(rollout, dict) else []
+    backend_targets = backend.get("podTargets", []) if isinstance(backend, dict) else []
+    expected_backend_targets: list[dict[str, Any]] = []
+    expected_address_types: set[str] = set()
+    if isinstance(rollout_pods, list):
+        for item in rollout_pods:
+            if not isinstance(item, dict) or not isinstance(item.get("podIPs"), list):
+                continue
+            addresses = item["podIPs"]
+            try:
+                parsed = [ipaddress.ip_address(address) for address in addresses]
+            except (TypeError, ValueError):
+                continue
+            if not addresses or len(addresses) != len(set(addresses)) or any(str(value) != address for value, address in zip(parsed, addresses)):
+                continue
+            expected_address_types.update("IPv4" if value.version == 4 else "IPv6" for value in parsed)
+            expected_backend_targets.append({"uid": item.get("uid"), "name": item.get("name"), "addresses": sorted(addresses)})
+    require(
+        isinstance(rollout, dict)
+        and isinstance(rollout.get("podImageProof"), dict)
+        and rollout["podImageProof"].get("expectedImage") == WORKBENCH_PROMOTION_TARGET_IMAGE
+        and isinstance(backend, dict)
+        and set(backend) == {"selector", "servicePort", "targetPort", "containerPort", "endpointSliceUids", "addressTypes", "podTargets"}
+        and isinstance(backend.get("selector"), dict)
+        and bool(backend["selector"])
+        and backend.get("servicePort") == 18083
+        and backend.get("targetPort") == "http"
+        and backend.get("containerPort") == {"name": "http", "port": 18083, "protocol": "TCP"}
+        and isinstance(backend.get("endpointSliceUids"), list)
+        and backend["endpointSliceUids"]
+        and len(backend["endpointSliceUids"]) == len(set(backend["endpointSliceUids"]))
+        and all(isinstance(value, str) and UUID.fullmatch(value) is not None for value in backend["endpointSliceUids"])
+        and backend.get("addressTypes") == sorted(expected_address_types)
+        and sorted(backend_targets, key=lambda item: str(item.get("uid")) if isinstance(item, dict) else "")
+        == sorted(expected_backend_targets, key=lambda item: str(item.get("uid")))
+        and len(expected_backend_targets) == len(rollout_pods)
+        and isinstance(probes, dict)
+        and probes.get("methods") == {"config": "GET", "feed": "GET"},
+        "workbench image promotion postcondition proof drift",
+    )
+    require(
+        set(state) == {
+            "schemaVersion", "status", "operationId", "protectedRevision",
+            "protectedGitBlobSha256", "artifact", "target", "events", "before", "journalSha256",
+        }
+        and state.get("schemaVersion") == "roebel_staging_workbench_image_promotion_journal_v1"
+        and state.get("status") == "completed"
+        and state.get("operationId") == operation["operationId"]
+        and state.get("protectedRevision") == revision
+        and state.get("protectedGitBlobSha256") == protected_hashes
+        and state.get("artifact") == artifact
+        and state.get("target") == evidence.get("target"),
+        "workbench image promotion journal is not terminal",
+    )
+    journal_checksum = state.pop("journalSha256", None)
+    require(
+        isinstance(journal_checksum, str)
+        and journal_checksum == bytes_sha256(canonical(state).encode("utf-8")),
+        "workbench image promotion journal checksum drift",
+    )
+    events = state.get("events")
+    require(isinstance(events, list) and events, "workbench image promotion journal events absent")
+    previous: str | None = None
+    grammar: list[tuple[str, str]] = []
+    patch_request_sha256: str | None = None
+    for sequence, event in enumerate(events, start=1):
+        require(isinstance(event, dict), "workbench image promotion journal event invalid")
+        entry = dict(event)
+        entry_hash = entry.pop("entrySha256", None)
+        require(
+            event.get("sequence") == sequence
+            and event.get("previousEntrySha256") == previous
+            and isinstance(entry_hash, str)
+            and entry_hash == bytes_sha256(canonical(entry).encode("utf-8")),
+            "workbench image promotion journal event hash drift",
+        )
+        previous = entry_hash
+        operation_name, stage = event.get("operation"), event.get("stage")
+        grammar.append((operation_name, stage))
+        base = {"sequence", "operation", "stage", "previousEntrySha256", "entrySha256"}
+        details = {key: value for key, value in event.items() if key not in base}
+        if (operation_name, stage) == ("preflight", "after"):
+            require(set(details) == {"deploymentResourceVersion"} and isinstance(details["deploymentResourceVersion"], str), "workbench promotion preflight event grammar drift")
+        elif (operation_name, stage) == ("patch-deployment-image", "intent"):
+            require(set(details) == {"requestSha256", "target"} and details["target"] == evidence["target"] and SHA256.fullmatch(details["requestSha256"]) is not None, "workbench promotion patch intent grammar drift")
+            patch_request_sha256 = details["requestSha256"]
+        elif (operation_name, stage) == ("patch-deployment-image", "after"):
+            require(details == {"response": "accepted"}, "workbench promotion patch response grammar drift")
+        elif (operation_name, stage) == ("patch-deployment-image", "classified"):
+            require(details == {"classification": "applied"}, "workbench promotion patch classification grammar drift")
+        elif (operation_name, stage) == ("resume", "before"):
+            require(details == {"operationId": operation["operationId"]}, "workbench promotion resume-before grammar drift")
+        elif (operation_name, stage) == ("resume", "classified"):
+            require(details == {"operationId": operation["operationId"], "classification": "target-image"}, "workbench promotion resume classification grammar drift")
+        elif (operation_name, stage) == ("postconditions", "after"):
+            require(details == {"status": "verified"}, "workbench promotion postcondition grammar drift")
+        elif (operation_name, stage) in {("transaction", "finalizing"), ("transaction", "completed")}:
+            require(details == {"receiptStatus": "completed"}, "workbench promotion terminal grammar drift")
+        else:
+            raise LiveTransportError("workbench promotion unknown journal operation")
+    middle = grammar[2:-3]
+    if middle and middle[0] in {("patch-deployment-image", "after"), ("patch-deployment-image", "classified")}:
+        middle = middle[1:]
+    # A process can be terminated after durably recording resume/before but
+    # before its one classification GET returns.  Each later invocation may
+    # therefore contribute another before marker; the final invocation must
+    # close the chain with the exact target-image classification accepted by
+    # this completed receipt.
+    recovery_grammar_valid = True
+    cursor = 0
+    while cursor < len(middle):
+        # A prior invocation may have durably verified postconditions and
+        # then been killed before finalization.  It must be followed by a new
+        # exact resume epoch, not treated as the proof for this receipt.
+        if middle[cursor] == ("postconditions", "after"):
+            cursor += 1
+            if cursor == len(middle):
+                recovery_grammar_valid = False
+                break
+        before_count = 0
+        while cursor < len(middle) and middle[cursor] == ("resume", "before"):
+            before_count += 1
+            cursor += 1
+        if before_count == 0 or cursor == len(middle) or middle[cursor] != ("resume", "classified"):
+            recovery_grammar_valid = False
+            break
+        cursor += 1
+    require(
+        grammar[:2] == [("preflight", "after"), ("patch-deployment-image", "intent")]
+        and grammar[-3:] == [("postconditions", "after"), ("transaction", "finalizing"), ("transaction", "completed")]
+        and grammar.count(("patch-deployment-image", "intent")) == 1
+        and recovery_grammar_valid,
+        "workbench promotion journal grammar drift",
+    )
+    before = state.get("before")
+    deployment = evidence.get("deployment")
+    require(
+        isinstance(before, dict)
+        and set(before) == {"deploymentUid", "resourceVersion", "specSha256", "normalizedSpecSha256", "service", "serviceRouting", "networkPolicy"}
+        and before.get("deploymentUid") == deployment.get("uid")
+        and before.get("resourceVersion") == deployment.get("beforeResourceVersion")
+        and before.get("specSha256") == deployment.get("beforeSpecSha256")
+        and before.get("normalizedSpecSha256") == deployment.get("beforeNormalizedSpecSha256")
+        and before.get("service") == preservation.get("service")
+        and before.get("networkPolicy") == preservation.get("networkPolicy")
+        and before.get("serviceRouting") == {key: backend.get(key) for key in ("selector", "servicePort", "targetPort", "containerPort")}
+        and patch_request_sha256 == evidence.get("patch", {}).get("requestSha256"),
+        "workbench promotion receipt/journal cross-binding drift",
+    )
+    return {
+        "receiptSha256": receipt.sha256,
+        "receiptCanonicalSha256": receipt_checksum,
+        "journalSha256": journal.sha256,
+        "artifactPinSha256": artifact_pin_sha256,
+        "targetImage": WORKBENCH_PROMOTION_TARGET_IMAGE,
+        "deploymentImageChanged": True,
+        "preservationUnchanged": True,
     }
 
 
@@ -1600,6 +2115,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--workbench-baseline-handover", action="store_true")
     mode.add_argument("--workbench-baseline-recovery", action="store_true")
     mode.add_argument("--workbench-baseline-recovery-finalize", action="store_true")
+    mode.add_argument("--workbench-image-promotion", action="store_true")
     parser.add_argument("--expected-protected-revision", required=True)
     parser.add_argument("--age-bin", required=True, type=Path)
     parser.add_argument("--age-identity", required=True, type=Path)
@@ -1611,6 +2127,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--teardown-dormant-receipt", type=Path)
     parser.add_argument("--participant-secret-bundle", type=Path)
     parser.add_argument("--teardown-participant-secret-receipt", type=Path)
+    parser.add_argument("--handover-dormant-receipt", type=Path)
+    parser.add_argument(
+        "--participant-secret-materialization-receipt",
+        "--secret-materialization-receipt",
+        dest="participant_secret_materialization_receipt",
+        type=Path,
+    )
     parser.add_argument("--workbench-handover-receipt", type=Path)
     parser.add_argument("--workbench-handover-journal", type=Path)
     parser.add_argument("--workbench-recovery-receipt", type=Path)
@@ -1618,27 +2141,85 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workbench-origin-journal", type=Path)
     parser.add_argument("--workbench-attempt-receipt", type=Path)
     parser.add_argument("--workbench-inspection", type=Path)
+    parser.add_argument("--workbench-artifact-pin", type=Path)
+    parser.add_argument("--workbench-promotion-receipt", type=Path)
+    parser.add_argument("--workbench-promotion-journal", type=Path)
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
-    if args.workbench_baseline_handover:
+    promotion_paths = (
+        args.workbench_artifact_pin,
+        args.workbench_promotion_receipt,
+        args.workbench_promotion_journal,
+    )
+    if args.workbench_image_promotion:
+        require(args.live is True, "workbench image promotion requires --live")
+        require(
+            all(value is None for value in (
+                args.teardown_dormant_receipt,
+                args.participant_secret_bundle,
+                args.teardown_participant_secret_receipt,
+                args.handover_dormant_receipt,
+                args.participant_secret_materialization_receipt,
+                args.workbench_handover_receipt,
+                args.workbench_handover_journal,
+                args.workbench_recovery_receipt,
+                args.workbench_recovery_journal,
+                args.workbench_origin_journal,
+                args.workbench_attempt_receipt,
+                args.workbench_inspection,
+            )),
+            "workbench image promotion may not receive participant or baseline inputs",
+        )
+        require(all(value is not None for value in promotion_paths), "workbench image promotion requires artifact pin, receipt, and journal")
+        require(
+            os.path.normcase(os.path.normpath(os.fspath(args.workbench_promotion_receipt)))
+            != os.path.normcase(os.path.normpath(os.fspath(args.workbench_promotion_journal))),
+            "workbench image promotion receipt and journal paths must be distinct",
+        )
+    elif any(value is not None for value in promotion_paths):
+        raise LiveTransportError("workbench image promotion paths require --workbench-image-promotion")
+    elif args.workbench_baseline_handover:
         require(args.teardown_dormant_receipt is None, "workbench handover may not request participant teardown")
-        require(args.participant_secret_bundle is None and args.teardown_participant_secret_receipt is None, "workbench handover may not receive participant Secret inputs")
+        require(
+            args.participant_secret_bundle is None
+            and args.teardown_participant_secret_receipt is None
+            and args.handover_dormant_receipt is None
+            and args.participant_secret_materialization_receipt is None,
+            "workbench handover may not receive participant Secret or continuation inputs",
+        )
         require(args.workbench_handover_receipt is not None and args.workbench_handover_journal is not None, "workbench handover requires explicit receipt and journal paths for resume")
         require(all(value is None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench handover may not receive recovery paths")
     elif args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
         require(args.teardown_dormant_receipt is None, "workbench recovery may not request participant teardown")
-        require(args.participant_secret_bundle is None and args.teardown_participant_secret_receipt is None, "workbench recovery may not receive participant Secret inputs")
+        require(
+            args.participant_secret_bundle is None
+            and args.teardown_participant_secret_receipt is None
+            and args.handover_dormant_receipt is None
+            and args.participant_secret_materialization_receipt is None,
+            "workbench recovery may not receive participant Secret or continuation inputs",
+        )
         require(all(value is not None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench recovery requires exact evidence, receipt, and journal paths")
         require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "workbench recovery may not receive handover paths")
     else:
         require(all(value is None for value in (args.workbench_handover_receipt, args.workbench_handover_journal, args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "participant mode may not receive workbench paths")
-        if args.teardown_participant_secret_receipt is not None:
+        continuation = args.handover_dormant_receipt is not None or args.participant_secret_materialization_receipt is not None
+        if continuation:
+            require(
+                args.handover_dormant_receipt is not None
+                and args.participant_secret_materialization_receipt is not None
+                and args.teardown_dormant_receipt is None
+                and args.teardown_participant_secret_receipt is None
+                and args.participant_secret_bundle is None,
+                "participant continuation requires archived dormant and Secret materialization receipts only",
+            )
+        elif args.teardown_participant_secret_receipt is not None:
             require(args.teardown_dormant_receipt is None, "participant Secret teardown may not combine with dormant Flux teardown")
-            require(args.participant_secret_bundle is None, "participant Secret teardown accepts no Secret input bundle")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "participant Secret teardown accepts no Secret input or continuation receipts")
         elif args.teardown_dormant_receipt is not None:
-            require(args.participant_secret_bundle is None, "dormant Flux teardown accepts no Secret input bundle")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "dormant Flux teardown accepts no Secret input or continuation receipts")
         else:
             require(args.participant_secret_bundle is not None, "participant activation requires an explicit private Secret bundle")
+            require(args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "participant activation accepts no continuation receipts")
     return args
 
 def run_dormant_teardown(
@@ -1927,6 +2508,241 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
     return 0 if completed and cleanup_complete and committed else 3 if completed else 2
 
 
+def run_workbench_image_promotion_transport(args: argparse.Namespace) -> int:
+    """Promote the reviewed workbench image through the protected promoter.
+
+    This is a separate capability from both participant activation and the
+    workbench baseline handover.  The wrapper binds the promoter source from
+    the exact protected Git revision, snapshots the immutable artifact pin,
+    and gives the child only the two explicit output paths plus the inherited
+    pinned kubectl descriptor.  The promoter itself owns the narrow Deployment
+    CAS mutation and Service-proxy GET proofs.
+    """
+    receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
+    temp: Path | None = None; session: LiveSession | None = None
+    cancellation = CancellationState(); installed = False
+    snapshots: dict[str, PinnedExecutableSnapshot] = {}
+    bindings: dict[str, PersistentPinnedExecutable] = {}
+    bound: list[BoundRunner] = []; evidence: list[BoundBlob] = []
+    protected_hashes: dict[str, str] = {}; credentials: list[str] = []
+    cleanup_errors: list[str] = []; error: str | None = None; completed = False
+    listener_verified = False; proof: dict[str, Any] | None = None
+    revision = args.expected_protected_revision
+    promotion_receipt = Path(args.workbench_promotion_receipt)
+    promotion_journal = Path(args.workbench_promotion_journal)
+    artifact_pin_copy: Path | None = None
+    try:
+        require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
+        require(args.live is True and args.workbench_image_promotion is True, "workbench image promotion requires explicit mode and --live")
+        require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
+        # Reserve and validate caller-owned durable outputs before any
+        # transport, credential, or Kubernetes state is created.  The child
+        # promoter will create these exact paths with its own owner-only,
+        # immutable sink checks.
+        promotion_receipt, promotion_journal = private_workbench_promotion_outputs(promotion_receipt, promotion_journal)
+        cancellation.install(); installed = True
+        receipt_dir = reserve_output_directory(args.receipt_directory)
+        receipt_sink = WrapperReceiptSink.reserve(receipt_dir / "workbench-image-promotion-transport-attempt.json")
+        cancellation.checkpoint()
+        protected_hashes, protected_blobs = bind_protected_checkout(revision, paths=WORKBENCH_PROMOTION_PROTECTED_PATHS)
+        identity = private_file(args.age_identity, "age identity")
+        bundle_source = Path(os.path.abspath(args.bootstrap_bundle)); bundle_source_info = os.lstat(bundle_source)
+        require(not stat.S_ISLNK(bundle_source_info.st_mode), "bootstrap bundle must not be a symlink")
+        bundle = Path(os.path.realpath(bundle_source)); bundle_info = os.lstat(bundle)
+        require(
+            bundle == bundle_source
+            and stat.S_ISDIR(bundle_info.st_mode)
+            and bundle_info.st_uid == os.geteuid()
+            and stat.S_IMODE(bundle_info.st_mode) & 0o077 == 0,
+            "bootstrap bundle must be a private owned directory",
+        )
+        encrypted_wg = private_file(bundle / "wireguard-daily.conf.age", "encrypted WireGuard input")
+        encrypted_talos = private_file(bundle / "talosconfig.yaml.age", "encrypted Talos input")
+
+        temp = Path(tempfile.mkdtemp(prefix="roebel-workbench-promotion-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
+        binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
+        promoter_blob = bind_bytes_to_fd(
+            protected_blobs[WORKBENCH_PROMOTER],
+            binding_dir / "promote-staging-workbench-image.py.bound",
+            "protected workbench image promoter",
+        )
+        bound.append(BoundRunner(WORKBENCH_PROMOTER, promoter_blob))
+        promoter = bound[0]
+        # The pin is a caller input, not a repository file.  Copy it into the
+        # private transaction directory and bind its reviewed checksum before
+        # the first cluster contact; the protected child receives only this
+        # verified copy.
+        artifact_pin_copy = temp / "artifact-pin.json"
+        snapshot_owned_file_path(
+            Path(args.workbench_artifact_pin),
+            artifact_pin_copy,
+            "workbench artifact pin",
+            max_bytes=MAX_RECEIPT_BYTES,
+        )
+        require(file_sha256(artifact_pin_copy) == WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256, "workbench artifact pin checksum drift")
+        executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
+        for label, source in sorted({"age": args.age_bin, "kubectl": args.kubectl_bin, "talosctl": args.talosctl_bin, "wireproxy": args.wireproxy_bin}.items()):
+            snapshot = snapshot_binary(source, label, executable_dir / label)
+            seal_pinned_snapshot(snapshot)
+            snapshots[label] = snapshot; bindings[label] = PersistentPinnedExecutable(snapshot)
+            cancellation.checkpoint()
+        fsync_directory(executable_dir)
+        wireguard = temp / "wireguard.conf"; talosconfig = temp / "talosconfig.yaml"
+        decrypt(cancellation, bindings["age"], identity, encrypted_wg, wireguard)
+        decrypt(cancellation, bindings["age"], identity, encrypted_talos, talosconfig)
+        wireguard_bytes = wireguard.read_bytes(); wireguard.unlink(); fsync_directory(wireguard.parent)
+        api_config = wireproxy_config(f"{API_HOST}:{API_PORT}", wireguard_bytes)
+        talos_config = wireproxy_config(f"{API_HOST}:{TALOS_PORT}", wireguard_bytes)
+        api_password = secrets.token_hex(32); talos_password = secrets.token_hex(32); credentials = [api_password, talos_password]
+        for index, config in enumerate((api_config, talos_config)):
+            config_blob = bind_bytes_to_fd(config, binding_dir / f"wireproxy-config-{index}.bound", f"workbench promotion fixed-target wireproxy config {index}")
+            try:
+                checked = cancellation.run(
+                    [str(bindings["wireproxy"].path), "-n", "-c", f"/dev/fd/{config_blob.fd}"],
+                    timeout=10,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=sanitized_environment(),
+                    pass_fds=(config_blob.fd,),
+                    executable_binding=bindings["wireproxy"],
+                )
+                require(checked.returncode == 0, f"wireproxy rejected protected fixed-target config {index}")
+            finally:
+                config_blob.close()
+        session = LiveSession(bindings["wireproxy"], api_config, talos_config, binding_dir, api_password, talos_password, cancellation)
+        api_port, talos_port = session.start_proxy(); listener_verified = session.listener_verified
+        kubeconfig = temp / "admin-kubeconfig.json"
+        create_admin_kubeconfig(
+            session,
+            bindings["talosctl"],
+            bindings["kubectl"],
+            talosconfig,
+            kubeconfig,
+            proxy_url(talos_password, talos_port),
+            proxy_url(api_password, api_port),
+            temp,
+        )
+        child_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
+        child = session.run_child(
+            workbench_promoter_command(
+                promoter,
+                snapshots["kubectl"],
+                [
+                    "--artifact-pin", str(artifact_pin_copy),
+                    "--kubeconfig", str(kubeconfig),
+                    "--receipt", str(promotion_receipt),
+                    "--journal", str(promotion_journal),
+                    "--protected-revision", revision,
+                    "--protected-hashes", canonical(protected_hashes),
+                ],
+            ),
+            child_environment,
+            receipt_pending=True,
+            pass_fds=(promoter.blob.fd, snapshots["kubectl"].fd),
+        )
+        try:
+            require(child.returncode == 0, f"protected workbench image promoter exited {child.returncode}")
+            receipt_bound = snapshot_owned_receipt(
+                promotion_receipt,
+                binding_dir / "workbench-promotion-receipt.bound",
+                "workbench image promotion receipt",
+            )
+            journal_bound = snapshot_owned_receipt(
+                promotion_journal,
+                binding_dir / "workbench-promotion-journal.bound",
+                "workbench image promotion journal",
+            )
+            evidence.extend((receipt_bound, journal_bound))
+            proof = verify_workbench_image_promotion_evidence(
+                receipt_bound,
+                journal_bound,
+                revision,
+                protected_hashes,
+                WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+            )
+            bindings["kubectl"]._verify()
+            logging_error = best_effort_print_child(child)
+            require(logging_error is None, logging_error or "protected workbench image promoter output forwarding failed")
+            completed = True
+        finally:
+            session.receipt_reconciled()
+    except BaseException as exc:
+        error = str(exc) or type(exc).__name__
+        best_effort_stderr(f"workbench image promotion wrapper blocked: {error}")
+    if installed: cancellation.begin_finalization()
+    session_cleanup: dict[str, Any] = {"wireproxyProcessGroupStopped": True, "allGuardWorkersStopped": True}
+    if session is not None:
+        try: session_cleanup = session.close()
+        except BaseException as exc: cleanup_errors.append(f"transport cleanup: {exc}")
+    process_cleanup = {"ownedProcessGroupsStopped": True, "ownedProcessGroupCount": 0}
+    if installed:
+        try: process_cleanup = cancellation.cleanup_processes()
+        except BaseException as exc: cleanup_errors.append(f"process cleanup: {exc}")
+    for snapshot in snapshots.values():
+        try: unseal_pinned_snapshot(snapshot)
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot unseal: {exc}")
+        try: snapshot.close()
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot close: {exc}")
+    for item in evidence:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"promotion evidence close: {exc}")
+    for item in bound:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"protected promoter close: {exc}")
+    plaintext_removed = temp is None
+    if temp is not None:
+        try: shutil.rmtree(temp)
+        except BaseException as exc: cleanup_errors.append(f"private promotion temp cleanup: {exc}")
+        plaintext_removed = not temp.exists()
+    cleanup_complete = (
+        not cleanup_errors
+        and session_cleanup.get("wireproxyProcessGroupStopped") is True
+        and session_cleanup.get("allGuardWorkersStopped") is True
+        and process_cleanup["ownedProcessGroupsStopped"] is True
+        and plaintext_removed
+    )
+    status = "completed" if completed and cleanup_complete else ("completed-cleanup-incomplete" if completed else "blocked")
+    payload = {
+        "schemaVersion": WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA,
+        "status": status,
+        "protectedRevision": revision,
+        "protectedGitBlobSha256": protected_hashes,
+        "binarySha256": {name: snapshot.sha256 for name, snapshot in sorted(snapshots.items())},
+        "artifactPinSha256": WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        "targetImage": WORKBENCH_PROMOTION_TARGET_IMAGE,
+        "transport": {
+            "mode": "authenticated-exact-connect-guards-spawning-protected-workbench-promoter",
+            "apiAuthority": f"{API_HOST}:{API_PORT}",
+            "talosAuthority": f"{API_HOST}:{TALOS_PORT}",
+            "listenerOwnershipAndAuthenticationVerified": listener_verified,
+            "temporaryTransportStopped": session_cleanup.get("wireproxyProcessGroupStopped") is True,
+            "plaintextTransportInputsRemoved": plaintext_removed,
+        },
+        "promotion": proof or {"receiptSha256": None, "journalSha256": None, "cleanupComplete": False},
+        "resume": {
+            "explicitReceiptPath": str(promotion_receipt),
+            "explicitJournalPath": str(promotion_journal),
+            "automaticRetry": False,
+            "sameProtectedRevisionRequired": True,
+        },
+        "cleanup": {"complete": cleanup_complete, "errors": cleanup_errors, "processes": process_cleanup},
+        "failure": error,
+        "containsSecretMaterial": False,
+        "civicAuthorityEffects": False,
+        "automaticRetry": False,
+    }
+    committed = False
+    if receipt_sink is not None:
+        try:
+            encoded = canonical(payload)
+            require(not any(value in encoded for value in credentials), "workbench promotion wrapper receipt contains transport credential")
+            receipt_sink.commit(payload); committed = True
+        except BaseException as exc:
+            best_effort_stderr(f"workbench image promotion wrapper receipt-incomplete: {exc}")
+    if installed: cancellation.restore()
+    return 0 if completed and cleanup_complete and committed else 3 if completed else 2
+
+
 def main(argv: list[str] | None = None) -> int:
     receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
     temp: Path | None = None; session: LiveSession | None = None
@@ -1935,17 +2751,18 @@ def main(argv: list[str] | None = None) -> int:
     revision: str | None = None; protected_hashes: dict[str, str] = {}; protected_blobs: dict[str, bytes] = {}
     snapshot_hashes: dict[str, str] = {}; credentials: list[str] = []
     bound_runners: dict[str, BoundRunner] = {}; bound_receipts: list[BoundBlob] = []
+    handover_prebound: dict[tuple[str, str], BoundBlob] = {}; handover_prebound_owned: list[BoundBlob] = []
     verified_spawn_module: Any | None = None; executable_bindings: dict[str, Any] = {}
-    source_dormant_receipt: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
+    source_dormant_receipt: BoundBlob | None = None; handover_archive_receipt: BoundBlob | None = None; handover_bound: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
     activation_bound: BoundBlob | None = None
     secret_config_input: BoundBlob | None = None; secret_runtime_input: BoundBlob | None = None
     source_secret_receipt: BoundBlob | None = None; secret_materialization_bound: BoundBlob | None = None
     secret_teardown_bound: BoundBlob | None = None
-    bootstrap_receipt: Path | None = None; recovery_receipt: Path | None = None
+    bootstrap_receipt: Path | None = None; handover_receipt: Path | None = None; recovery_receipt: Path | None = None
     teardown_receipt: Path | None = None; activation_receipt: Path | None = None
     source_dormant_projection: dict[str, Any] | None = None
-    bootstrap_projection: dict[str, Any] | None = None
+    bootstrap_projection: dict[str, Any] | None = None; handover_projection: dict[str, Any] | None = None
     teardown_projection: dict[str, Any] | None = None
     activation_projection: dict[str, Any] | None = None
     source_secret_projection: dict[str, Any] | None = None
@@ -1960,6 +2777,8 @@ def main(argv: list[str] | None = None) -> int:
         args = parse_args(argv)
         if args.workbench_baseline_handover or args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
             return run_workbench_baseline_handover_transport(args)
+        if args.workbench_image_promotion:
+            return run_workbench_image_promotion_transport(args)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
         require(args.live is True, "wrapper requires explicit --live")
         revision = args.expected_protected_revision
@@ -1989,18 +2808,47 @@ def main(argv: list[str] | None = None) -> int:
 
         temp = Path(tempfile.mkdtemp(prefix="roebel-participant-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
         binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
-        for runner_path in (BOOTSTRAP_RUNNER, ACTIVATION_RUNNER, SECRET_RUNNER):
+        for runner_path in (BOOTSTRAP_RUNNER, ACTIVATION_RUNNER, SECRET_RUNNER, HANDOVER_RUNNER):
             runner_blob = bind_bytes_to_fd(
                 protected_blobs[runner_path],
                 binding_dir / (Path(runner_path).name + ".bound"),
                 f"protected runner {runner_path}",
             )
             bound_runners[runner_path] = BoundRunner(runner_path, runner_blob)
+        if args.handover_dormant_receipt is not None:
+            handover_prebound, handover_prebound_owned = bind_handover_git_closure(revision, binding_dir, protected_blobs)
         fsync_directory(binding_dir)
         cancellation.checkpoint()
 
         verifier_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
-        if args.teardown_dormant_receipt is not None:
+        if args.handover_dormant_receipt is not None:
+            handover_archive_receipt = snapshot_owned_receipt(
+                args.handover_dormant_receipt,
+                binding_dir / "archived-dormant-receipt.bound",
+                "archived dormant receipt",
+            )
+            bound_receipts.append(handover_archive_receipt)
+            source_secret_receipt = snapshot_owned_receipt(
+                args.participant_secret_materialization_receipt,
+                binding_dir / "source-secret-materialization-receipt.bound",
+                "source Secret materialization receipt",
+            )
+            bound_receipts.append(source_secret_receipt)
+            # Verify both prior receipts against protected current code before
+            # opening the transport.  The Secret verifier only inspects the
+            # value-free receipt and never reads or rematerializes a Secret.
+            source_secret_projection = verify_receipt_with_protected_cli(
+                cancellation,
+                bound_runners[ACTIVATION_RUNNER],
+                "--verify-secret-materialization-receipt-fd",
+                source_secret_receipt,
+                revision,
+                verifier_environment,
+                "materialized",
+                allow_cancelled=False,
+                expected_projection_revision=HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION,
+            )
+        elif args.teardown_dormant_receipt is not None:
             source_dormant_receipt = snapshot_owned_receipt(
                 args.teardown_dormant_receipt,
                 binding_dir / "source-dormant-receipt.bound",
@@ -2135,9 +2983,164 @@ def main(argv: list[str] | None = None) -> int:
         bootstrap_runner = bound_runners[BOOTSTRAP_RUNNER]
         activation_runner = bound_runners[ACTIVATION_RUNNER]
         secret_runner = bound_runners[SECRET_RUNNER]
+        handover_runner = bound_runners[HANDOVER_RUNNER]
         kubectl_fd = executable_bindings["kubectl"].fd
+        participant_blob_args: list[str] = []
+        participant_blob_fds: list[int] = []
+        handover_blob_args: list[str] = []
+        handover_blob_fds: list[int] = []
+        for (blob_revision, blob_path), blob in sorted(handover_prebound.items()):
+            descriptor = canonical({"revision": blob_revision, "path": blob_path, "fd": blob.fd, "size": blob.size, "sha256": blob.sha256})
+            participant_blob_args.extend((
+                "--prebound-blob",
+                descriptor,
+            ))
+            participant_blob_fds.append(blob.fd)
+            if (
+                (blob_revision == revision and blob_path in HANDOVER_PREBOUND_CURRENT_PATHS)
+                or (blob_revision == HANDOVER_ARCHIVE_REVISION and blob_path in HANDOVER_PREBOUND_ARCHIVE_PATHS)
+            ):
+                handover_blob_args.extend(("--prebound-blob", descriptor))
+                handover_blob_fds.append(blob.fd)
+        if handover_archive_receipt is not None:
+            require(
+                handover_blob_args
+                and len(handover_blob_fds) + 2 == len(handover_prebound)
+                and len(participant_blob_fds) == len(handover_prebound),
+                "participant continuation protected Git closure was not prebound",
+            )
 
-        if source_secret_receipt is not None:
+        if handover_archive_receipt is not None:
+            # Revalidate the current cluster against the archived dormant
+            # receipt with a strictly GET-only protected child.  This creates
+            # the value-free handover receipt consumed by activation below.
+            handover_receipt = receipt_dir / "participant-flux-dormant-handover.json"
+            handover = session.run_child(
+                handover_runner.command([
+                    "--live",
+                    "--expected-protected-revision",
+                    revision,
+                    "--archived-bootstrap-receipt-fd",
+                    str(handover_archive_receipt.fd),
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "--receipt",
+                    str(handover_receipt),
+                    *handover_blob_args,
+                ]),
+                child_environment,
+                forward_signals=False,
+                pass_fds=(handover_runner.blob.fd, handover_archive_receipt.fd, kubectl_fd, *handover_blob_fds),
+            )
+            handover_verification_error: str | None = None
+            try:
+                if handover_receipt.exists():
+                    handover_bound = snapshot_owned_receipt(
+                        handover_receipt,
+                        binding_dir / "handover-receipt.bound",
+                        "dormant bootstrap handover receipt",
+                    )
+                    bound_receipts.append(handover_bound)
+                    handover_projection = verify_receipt_with_protected_cli(
+                        cancellation,
+                        handover_runner,
+                        "--verify-success-receipt-fd",
+                        handover_bound,
+                        revision,
+                        child_environment,
+                        "dormant-ready",
+                        allow_cancelled=False,
+                        extra_args=(
+                            "--archived-bootstrap-receipt-fd",
+                            str(handover_archive_receipt.fd),
+                            *handover_blob_args,
+                        ),
+                        extra_pass_fds=(handover_archive_receipt.fd, *handover_blob_fds),
+                    )
+            except (LiveTransportError, OSError) as exc:
+                handover_verification_error = str(exc)
+            finally:
+                session.receipt_reconciled()
+            handover_logging_error = best_effort_print_child(handover)
+            if handover_logging_error is not None:
+                child_cleanup_errors.append(handover_logging_error)
+            if handover_projection is None:
+                base_status = "handover-state-indeterminate" if handover_bound is not None else "blocked"
+                raise LiveTransportError(handover_verification_error or "dormant handover did not yield verified receipt")
+            if handover.returncode != 0:
+                child_cleanup_errors.append(f"protected dormant handover exited {handover.returncode} after durable commit")
+                raise LiveTransportError("protected dormant handover cleanup incomplete after durable commit")
+            # Continuation is a separate path: the archived handover already
+            # proved the dormant Flux objects and the Secret receipt was bound
+            # before transport.  Do not materialize Secrets or bootstrap Flux
+            # again; invoke activation directly with the three exact receipt
+            # descriptors while the GET-only transport is still alive.
+            if cancellation.signals or not session.transport_alive():
+                base_status = "handover-ready"
+                raise LiveTransportError("activation cancelled after GET-only dormant handover; retry the explicit continuation")
+            activation_receipt = receipt_dir / "participant-gateway-activation.json"
+            require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
+            activation_arguments = [
+                "--archived-flux-bootstrap-receipt-fd",
+                str(handover_archive_receipt.fd),
+                "--dormant-bootstrap-handover-receipt-fd",
+                str(handover_bound.fd),
+                "--secret-materialization-receipt-fd",
+                str(source_secret_receipt.fd),
+            ]
+            activation_fds = (
+                activation_runner.blob.fd,
+                handover_archive_receipt.fd,
+                handover_bound.fd,
+                source_secret_receipt.fd,
+                kubectl_fd,
+                *participant_blob_fds,
+            )
+            activation = session.run_child(
+                activation_runner.command([
+                    "--live",
+                    "--expected-protected-revision",
+                    revision,
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    *activation_arguments,
+                    *participant_blob_args,
+                    "--receipt",
+                    str(activation_receipt),
+                ]),
+                child_environment,
+                pass_fds=activation_fds,
+            )
+            try:
+                require(activation_receipt.exists(), "activation runner produced no durable receipt")
+                activation_bound = snapshot_owned_receipt(
+                    activation_receipt,
+                    binding_dir / "activation-receipt.bound",
+                    "activation success receipt",
+                )
+                bound_receipts.append(activation_bound)
+                activation_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    activation_runner,
+                    "--verify-success-receipt-fd",
+                    activation_bound,
+                    revision,
+                    child_environment,
+                    "activated",
+                    allow_cancelled=True,
+                    extra_args=tuple(participant_blob_args),
+                    extra_pass_fds=tuple(participant_blob_fds),
+                )
+            finally:
+                session.receipt_reconciled()
+            activation_committed = True; operation_succeeded = True; base_status = "activated"
+            activation_logging_error = best_effort_print_child(activation)
+            if activation_logging_error is not None:
+                child_cleanup_errors.append(activation_logging_error)
+            if activation.returncode != 0:
+                child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
+                raise LiveTransportError("protected activation cleanup incomplete after durable commit")
+        elif source_secret_receipt is not None:
             secret_teardown_receipt = receipt_dir / "participant-secret-teardown.json"
             secret_teardown = session.run_child(
                 secret_runner.command([
@@ -2330,6 +3333,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise LiveTransportError("protected dormant bootstrap cleanup incomplete after durable commit")
 
             if cancellation.signals or not session.transport_alive():
+                if handover_archive_receipt is not None:
+                    base_status = "handover-ready"
+                    raise LiveTransportError("activation cancelled after GET-only dormant handover; retry the explicit continuation")
                 if session.transport_alive():
                     teardown_receipt = receipt_dir / "participant-flux-dormant-teardown.json"
                     teardown_projection, teardown_returncode, teardown_bound, teardown_logging_error = run_dormant_teardown(
@@ -2356,6 +3362,21 @@ def main(argv: list[str] | None = None) -> int:
                 raise LiveTransportError("verified dormant bootstrap lost transport; exact teardown continuation required")
 
             activation_receipt = receipt_dir / "participant-gateway-activation.json"
+            if handover_archive_receipt is not None:
+                require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
+                activation_arguments = [
+                    "--archived-flux-bootstrap-receipt-fd",
+                    str(handover_archive_receipt.fd),
+                    "--dormant-bootstrap-handover-receipt-fd",
+                    str(handover_bound.fd),
+                    "--secret-materialization-receipt-fd",
+                    str(source_secret_receipt.fd),
+                ]
+                activation_fds = (activation_runner.blob.fd, handover_archive_receipt.fd, handover_bound.fd, source_secret_receipt.fd, kubectl_fd)
+            else:
+                require(bootstrap_bound is not None, "dormant bootstrap activation binding unavailable")
+                activation_arguments = ["--flux-bootstrap-receipt-fd", str(bootstrap_bound.fd)]
+                activation_fds = (activation_runner.blob.fd, bootstrap_bound.fd, kubectl_fd)
             activation = session.run_child(
                 activation_runner.command([
                     "--live",
@@ -2363,13 +3384,12 @@ def main(argv: list[str] | None = None) -> int:
                     revision,
                     "--kubeconfig",
                     str(kubeconfig),
-                    "--flux-bootstrap-receipt-fd",
-                    str(bootstrap_bound.fd),
+                    *activation_arguments,
                     "--receipt",
                     str(activation_receipt),
                 ]),
                 child_environment,
-                pass_fds=(activation_runner.blob.fd, bootstrap_bound.fd, kubectl_fd),
+                pass_fds=activation_fds,
             )
             try:
                 require(activation_receipt.exists(), "activation runner produced no durable receipt")
@@ -2446,6 +3466,10 @@ def main(argv: list[str] | None = None) -> int:
         try: runner.close()
         except BaseException as exc:
             bindings_closed = False; cleanup_errors.append(f"runner binding cleanup: {exc}")
+    for item in handover_prebound_owned:
+        try: item.close()
+        except BaseException as exc:
+            bindings_closed = False; cleanup_errors.append(f"handover Git blob cleanup: {exc}")
     plaintext_removed = temp is None
     if temp is not None:
         try: shutil.rmtree(temp)
@@ -2467,6 +3491,7 @@ def main(argv: list[str] | None = None) -> int:
     secret_materialization_record = receipt_record(secret_materialization_projection, secret_materialization_bound)
     secret_teardown_record = receipt_record(secret_teardown_projection, secret_teardown_bound)
     bootstrap_record = receipt_record(bootstrap_projection, bootstrap_bound)
+    handover_record = receipt_record(handover_projection, handover_bound)
     teardown_record = receipt_record(teardown_projection, teardown_bound)
     activation_record = receipt_record(activation_projection, activation_bound)
     recovery_record = receipt_record(None, recovery_bound)
@@ -2508,17 +3533,25 @@ def main(argv: list[str] | None = None) -> int:
             "wrapperReceiptCommit": "atomic-replace-file-and-parent-fsync",
         },
         "sourceDormant": source_record,
+        "sourceArchivedDormant": {
+            "fileSha256": handover_archive_receipt.sha256 if handover_archive_receipt is not None else None,
+            "canonicalSha256": None,
+            "status": "archived-input-bound" if handover_archive_receipt is not None else None,
+        },
         "sourceSecretMaterialization": source_secret_record,
         "secretMaterialization": secret_materialization_record,
         "secretTeardown": secret_teardown_record,
         "bootstrap": bootstrap_record,
+        "handover": handover_record,
         "recovery": recovery_record | {"attempted": recovery_attempted, "runnerReturnCode": recovery_returncode},
         "teardown": teardown_record,
         "activation": activation_record,
         "dormantContinuation": {
             "required": base_status in {"dormant-cleanup-required", "bootstrap-state-indeterminate", "dormant-ready"},
-            "mode": "--teardown-dormant-receipt",
+            "mode": "--handover-dormant-receipt" if handover_archive_receipt is not None else "--teardown-dormant-receipt",
             "requiresClosedDormantPreflight": True,
+            "requiresExistingSecretMaterializationReceipt": handover_archive_receipt is not None,
+            "handoverReceiptSha256": handover_projection.get("receiptSha256") if handover_projection is not None else None,
             "adoptsArbitraryObjects": False,
         },
         "secretContinuation": {

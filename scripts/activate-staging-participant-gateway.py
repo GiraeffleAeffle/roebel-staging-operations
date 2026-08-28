@@ -34,8 +34,56 @@ WORKFLOW_PATH = ".github/workflows/staging-participant-gateway-activation.yml"
 BOOTSTRAP_MODULE_PATH = "scripts/staging_participant_flux_bootstrap.py"
 BOOTSTRAP_RUNNER_PATH = "scripts/bootstrap-staging-participant-flux.py"
 LIVE_WRAPPER_PATH = "scripts/run-staging-participant-gateway-live.py"
+HANDOVER_RUNNER_PATH = "scripts/handover-staging-participant-dormant-receipt.py"
+HANDOVER_MODULE_PATH = "scripts/staging_participant_dormant_receipt_handover.py"
+SECRET_MATERIALIZER_PATH = "scripts/materialize-staging-participant-gateway-secrets.py"
 BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
+HANDOVER_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
+# A materialization receipt produced by the reviewed b790 transaction is the
+# sole historical Secret input accepted by the dormant-receipt continuation.
+# These are value-free provenance binders: activation still GETs only the live
+# Secret UID/keyset/resourceVersion before its first mutation.
+SECRET_RECEIPT_ORIGIN_REVISION = "b790fa76d4f2ad4d0bd86663dcd896b97ba0b61e"
+SECRET_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:b8c8aab74cc3101ef20394b080c1e18e7435fb1d07661fcf103b46e73b750be3"
+SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256 = "sha256:173d52ab2fc1b496d61241eebbf986a5ece27bb66298b96db31d16b9ce273aa9"
+SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256 = {
+    "policy/repository-contract.json": "sha256:1e47d943cd741c2d00ef1a14fdeb2dab7e0d5b481af88dce8685ad83519bd29e",
+    "policy/staging-participant-gateway-activation-policy.json": "sha256:f9ec42610af3ced30e0951bae9ffa2e0176d555819712b0e9e67e25650817c1a",
+    "scripts/activate-staging-participant-gateway.py": "sha256:d4870e21ccd2b6eaf6d8de405142c8c16dfce0b0320e1da17af33de2a3136518",
+    "scripts/materialize-staging-participant-gateway-secrets.py": "sha256:e8eb56782cd52403411de6990379fd5827d06e12d2aa7181ae7fdb142d1292b9",
+    "scripts/run-staging-participant-gateway-live.py": "sha256:11d4bc7ef959aea416109111a3358dbe11b35bfed89204e09d5d25daac158f14",
+    "scripts/staging_participant_gateway_policy.py": "sha256:14f78ce3284adb6bba46bfc74c96c62059b12566051f0015c95f2acafa04cd97",
+}
+SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS = {"config": "15906163", "runtime": "15906221"}
 BOOTSTRAP_PROTECTED_PATHS = (
+    BOOTSTRAP_RUNNER_PATH,
+    LIVE_WRAPPER_PATH,
+    HANDOVER_RUNNER_PATH,
+    HANDOVER_MODULE_PATH,
+    BOOTSTRAP_MODULE_PATH,
+    POLICY_MODULE_PATH,
+    POLICY_PATH,
+    "scripts/activate-staging-participant-gateway.py",
+    BOOTSTRAP_WORKFLOW_PATH,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
+HANDOVER_COMPATIBILITY_PATHS = (
+    POLICY_PATH,
+    POLICY_MODULE_PATH,
+    BOOTSTRAP_WORKFLOW_PATH,
+    WORKFLOW_PATH,
+    "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/service.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/deployment.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/ingress.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/kustomization.yaml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
+)
+HANDOVER_ARCHIVED_PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
     LIVE_WRAPPER_PATH,
     BOOTSTRAP_MODULE_PATH,
@@ -49,6 +97,8 @@ BOOTSTRAP_PROTECTED_PATHS = (
 
 POLICY: Any = None
 BOOTSTRAP: Any = None
+SECRET_MATERIALIZER: Any = None
+_PREBOUND_GIT_BLOBS: dict[tuple[str, str], bytes] | None = None
 
 def compile_verified_policy_module_v4(source: bytes, rev: str) -> Any:
     """Compile only policy bytes already read from the exact protected blob."""
@@ -81,6 +131,41 @@ def compile_verified_bootstrap_module_v4(source: bytes, rev: str) -> Any:
     except BaseException:
         sys.modules.pop(name, None)
         raise
+    return module
+
+def compile_verified_handover_runner_v4(source: bytes, rev: str) -> Any:
+    """Compile the exact protected handover binder without local imports."""
+    revision(rev)
+    require(isinstance(source, bytes) and source, "protected handover runner blob is empty")
+    name = f"staging_participant_dormant_handover_runner_{rev}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{rev}:{HANDOVER_RUNNER_PATH}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec", dont_inherit=True), module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    module.ROOT = ROOT
+    module.GIT_BIN = GIT_BIN
+    return module
+
+def compile_verified_secret_materializer_v4(source: bytes, rev: str) -> Any:
+    """Compile the current protected Secret receipt binder without imports."""
+    revision(rev)
+    require(isinstance(source, bytes) and source, "protected Secret materializer blob is empty")
+    name = f"staging_participant_secret_materializer_{rev}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{rev}:{SECRET_MATERIALIZER_PATH}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec", dont_inherit=True), module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    module.POLICY = POLICY
     return module
 
 def bind_verified_policy_identity_v4(module: Any) -> None:
@@ -161,6 +246,7 @@ def trusted_git_v4(args: list[str], **kwargs: Any) -> subprocess.CompletedProces
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
         "HOME": "/dev/null",
         "LANG": "C",
         "LC_ALL": "C",
@@ -685,7 +771,7 @@ def load_owned_receipt_v4(path: Path, label: str) -> dict[str, Any]:
         raise ActivationError(f"{label} must be UTF-8 JSON") from exc
     return obj(text, label)
 
-def load_owned_receipt_fd_v4(fd: int, label: str) -> dict[str, Any]:
+def load_owned_receipt_fd_raw_v4(fd: int, label: str) -> bytes:
     """Read one inherited immutable regular-file receipt descriptor."""
     require(isinstance(fd, int) and fd >= 3, f"{label} descriptor invalid")
     info = os.fstat(fd)
@@ -699,15 +785,76 @@ def load_owned_receipt_fd_v4(fd: int, label: str) -> dict[str, Any]:
     )
     raw = os.pread(fd, info.st_size + 1, 0)
     require(len(raw) == info.st_size, f"{label} descriptor read was incomplete")
+    return raw
+
+def load_owned_receipt_fd_v4(fd: int, label: str) -> dict[str, Any]:
+    raw = load_owned_receipt_fd_raw_v4(fd, label)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ActivationError(f"{label} must be UTF-8 JSON") from exc
     return obj(text, label)
+
+def required_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, str]]:
+    current_paths = tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, SECRET_MATERIALIZER_PATH, *HANDOVER_COMPATIBILITY_PATHS)))
+    archived_paths = tuple(dict.fromkeys((*HANDOVER_ARCHIVED_PROTECTED_PATHS, *HANDOVER_COMPATIBILITY_PATHS)))
+    return {
+        *((current_revision, path) for path in current_paths),
+        *((HANDOVER_ARCHIVE_REVISION, path) for path in archived_paths),
+        (SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH),
+    }
+
+def required_nested_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, str]]:
+    """Return only the two-revision closure understood by the handover runner."""
+    return required_handover_prebound_keys_v4(current_revision) - {
+        (current_revision, SECRET_MATERIALIZER_PATH),
+        (SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH),
+    }
+
+def parse_prebound_git_blob_descriptors_v4(values: list[str] | None, current_revision: str) -> dict[tuple[str, str], bytes]:
+    """Read the wrapper's exact fd-bound handover closure without Git access."""
+    require(values is not None and values, "complete prebound protected Git closure required")
+    result: dict[tuple[str, str], bytes] = {}
+    for encoded in values:
+        value = obj(encoded, "prebound Git blob descriptor")
+        require(
+            set(value) == {"revision", "path", "fd", "size", "sha256"}
+            and isinstance(value.get("revision"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", value["revision"]) is not None
+            and isinstance(value.get("path"), str)
+            and isinstance(value.get("fd"), int)
+            and value["fd"] >= 3
+            and isinstance(value.get("size"), int)
+            and 0 < value["size"] <= 8 * 1024 * 1024
+            and isinstance(value.get("sha256"), str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", value["sha256"]) is not None,
+            "prebound Git blob descriptor invalid",
+        )
+        key = (value["revision"], value["path"])
+        require(key not in result, "prebound Git blob descriptor duplicated")
+        info = os.fstat(value["fd"])
+        require(
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid == os.geteuid()
+            and info.st_nlink in {0, 1}
+            and stat.S_IMODE(info.st_mode) == 0o600
+            and info.st_size == value["size"],
+            "prebound Git blob descriptor metadata invalid",
+        )
+        raw = os.pread(value["fd"], value["size"] + 1, 0)
+        require(len(raw) == value["size"] and bytes_digest(raw) == value["sha256"], "prebound Git blob bytes/checksum drift")
+        result[key] = raw
+    require(set(result) == required_handover_prebound_keys_v4(current_revision), "prebound protected Git closure is incomplete or widened")
+    return result
+
 def kb(kubeconfig: str) -> list[str]: return ["kubectl", "--kubeconfig", kubeconfig]
 def get(r: Runner, args: list[str], label: str) -> dict[str, Any]: return obj(checked(r, args + ["-o", "json"], label), label)
 def git_blob(rev: str, path: str) -> bytes:
     # Both revision and path originate in fixed code/policy, never CLI/evidence.
+    if _PREBOUND_GIT_BLOBS is not None:
+        key = (rev, path)
+        require(key in _PREBOUND_GIT_BLOBS, f"protected Git blob was not prebound: {path}")
+        return _PREBOUND_GIT_BLOBS[key]
     try:
         p = trusted_git_v4(
             ["-C", str(ROOT), "show", f"{rev}:{path}"],
@@ -782,6 +929,97 @@ def bind_flux_bootstrap_receipt_value_v4(
         return BOOTSTRAP.bind_success_receipt(plan, receipt)
     except BOOTSTRAP.BootstrapError as exc:
         raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
+
+def bind_handover_receipt_pair_v4(
+    p: dict[str, Any],
+    rev: str,
+    archived_receipt_fd: int,
+    handover_receipt_fd: int,
+    prebound_blobs: dict[tuple[str, str], bytes],
+) -> dict[str, Any]:
+    """Bind the archived receipt and its GET-only current-revision bridge."""
+    try:
+        runner = compile_verified_handover_runner_v4(git_blob(rev, HANDOVER_RUNNER_PATH), rev)
+        archived_raw = runner.owned_receipt_raw(archived_receipt_fd, "archived dormant bootstrap receipt")
+        require(set(prebound_blobs) == required_handover_prebound_keys_v4(rev), "handover prebound Git closure drift")
+        handover_blobs = {key: value for key, value in prebound_blobs.items() if key in required_nested_handover_prebound_keys_v4(rev)}
+        context = runner.build_context(rev, archived_raw, handover_blobs)
+        require(context["policy"] == p, "handover/current activation policy drift")
+        handover_raw = runner.owned_receipt_raw(handover_receipt_fd, "dormant bootstrap handover receipt")
+        handover_receipt = runner.json_object(handover_raw, "dormant bootstrap handover receipt")
+        ownership = context["handoverModule"].bind_handover_receipt(context["binding"], handover_receipt)
+        require(
+            ownership.get("protectedRevision") == rev
+            and ownership.get("activationPolicySha256") == POLICY.activation_policy_sha256(p)
+            and ownership.get("civicAuthorityEffects") is False,
+            "dormant bootstrap handover ownership drift",
+        )
+        return ownership
+    except ActivationError:
+        raise
+    except Exception as exc:
+        raise ActivationError(f"dormant Flux handover receipt pair rejected: {exc}") from exc
+
+def bind_secret_materialization_receipt_v4(
+    p: dict[str, Any],
+    rev: str,
+    receipt_fd: int,
+) -> dict[str, Any]:
+    """Bind an existing value-free Secret receipt to the current policy.
+
+    This is deliberately a receipt-only operation.  The binder never receives
+    or reads Secret values; activation later performs a metadata/keyset-only
+    GET and compares it to the returned ownership projection.
+    """
+    global SECRET_MATERIALIZER
+    try:
+        if SECRET_MATERIALIZER is None:
+            SECRET_MATERIALIZER = compile_verified_secret_materializer_v4(git_blob(rev, SECRET_MATERIALIZER_PATH), rev)
+        raw = load_owned_receipt_fd_raw_v4(receipt_fd, "Secret materialization receipt")
+        try:
+            receipt = obj(raw.decode("utf-8"), "Secret materialization receipt")
+        except UnicodeDecodeError as exc:
+            raise ActivationError("Secret materialization receipt must be UTF-8 JSON") from exc
+        protected_paths = tuple(getattr(SECRET_MATERIALIZER, "PROTECTED_PATHS", ()))
+        require(protected_paths and len(protected_paths) == len(set(protected_paths)), "Secret materializer protected path closure invalid")
+        receipt_revision = receipt.get("protectedRevision")
+        if receipt_revision == SECRET_RECEIPT_ORIGIN_REVISION:
+            # The old receipt is accepted only as the one audited, value-free
+            # b790 continuation artifact.  Binding the historical hashes is
+            # deliberately explicit; a caller cannot select another old
+            # revision or provide a partially matching runner inventory.
+            historical_materializer = git_blob(SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH)
+            require(
+                "sha256:" + hashlib.sha256(historical_materializer).hexdigest() == SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256[SECRET_MATERIALIZER_PATH],
+                "historical Secret materializer checksum drift",
+            )
+            require(bytes_digest(raw) == SECRET_RECEIPT_ORIGIN_RAW_SHA256, "historical Secret receipt raw checksum drift")
+            require(receipt.get("canonicalSha256") == SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256, "historical Secret receipt canonical checksum drift")
+            require(receipt.get("protectedRunnerFileSha256") == SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256, "historical Secret receipt protected runner binding drift")
+            require(all(path in SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256 for path in protected_paths), "historical Secret receipt protected path closure drift")
+            hashes = {path: SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256[path] for path in protected_paths}
+            ownership = SECRET_MATERIALIZER.bind_materialization_receipt(receipt, p, SECRET_RECEIPT_ORIGIN_REVISION, hashes)
+            records = ownership.get("secretRecords")
+            require(
+                isinstance(records, dict)
+                and set(records) == set(SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS)
+                and all(records[label].get("resourceVersion") == value for label, value in SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS.items()),
+                "historical Secret receipt resourceVersion binding drift",
+            )
+            ownership["receiptProvenance"] = {
+                "mode": "historical-b790-value-free-secret-materialization",
+                "protectedRevision": SECRET_RECEIPT_ORIGIN_REVISION,
+                "rawSha256": SECRET_RECEIPT_ORIGIN_RAW_SHA256,
+                "canonicalSha256": SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+            }
+            return ownership
+        require(receipt_revision == rev, "Secret materialization receipt protected revision drift")
+        hashes = {path: bytes_digest(git_blob(rev, path)) for path in protected_paths}
+        return SECRET_MATERIALIZER.bind_materialization_receipt(receipt, p, rev, hashes)
+    except ActivationError:
+        raise
+    except Exception as exc:
+        raise ActivationError(f"Secret materialization receipt rejected: {exc}") from exc
 
 class ReceiptSink:
     """A pre-reserved, non-overwriting, durably committed receipt target."""
@@ -1281,6 +1519,159 @@ def remove_operation_nonce_v4(r: Runner, kubeconfig: str, created: CreatedV4, op
 def _target_live(r: Runner, kubeconfig: str, target: dict[str, str]) -> dict[str, Any]:
     return live_obj(r, kubeconfig, target["kind"].lower(), target["name"], target["namespace"])
 
+def validate_dormant_receipt_provenance_v4(value: Any, receipt_sha256: str) -> dict[str, Any]:
+    """Validate the value-free provenance of an activation receipt source."""
+    require(isinstance(value, dict), "dormant receipt provenance absent")
+    mode = value.get("mode")
+    if mode == "current-v1":
+        require(
+            set(value) == {"mode", "currentReceiptCanonicalSha256"}
+            and value["currentReceiptCanonicalSha256"] == receipt_sha256
+            and POLICY.SHA256.fullmatch(receipt_sha256) is not None,
+            "current dormant receipt provenance drift",
+        )
+    elif mode == "archived-v1+get-only-handover":
+        require(
+            set(value) == {
+                "mode", "archivedRawSha256", "archivedCanonicalSha256",
+                "handoverCanonicalSha256", "handoverEffects",
+            }
+            and all(
+                isinstance(value.get(field), str) and POLICY.SHA256.fullmatch(value[field]) is not None
+                for field in ("archivedRawSha256", "archivedCanonicalSha256", "handoverCanonicalSha256")
+            )
+            and value["handoverCanonicalSha256"] == receipt_sha256
+            and value["handoverEffects"] == {
+                "verbs": ["GET"], "kubernetesGetCount": 12, "resourceGetCount": 11,
+                "clusterMutationCount": 0, "secretReads": False, "civicAuthorityEffects": False,
+            },
+            "archived dormant handover provenance drift",
+        )
+    else:
+        raise ActivationError("dormant receipt provenance mode invalid")
+    return copy.deepcopy(value)
+
+def validate_bound_cluster_identity_v4(value: Any, p: dict[str, Any], label: str) -> dict[str, Any]:
+    expected_fields = {
+        "apiOrigin", "caCertificateSha256", "apiServerSpkiSha256",
+        "kubeSystemNamespaceUid", "kubeSystemNamespaceResourceVersion",
+        "credentialsIncluded", "kubeconfigPathIncluded",
+    }
+    expected = p["clusterIdentity"]
+    require(
+        isinstance(value, dict)
+        and set(value) == expected_fields
+        and {key: value.get(key) for key in expected} == expected
+        and isinstance(value.get("kubeSystemNamespaceResourceVersion"), str)
+        and value["kubeSystemNamespaceResourceVersion"].isdigit()
+        and value.get("credentialsIncluded") is False
+        and value.get("kubeconfigPathIncluded") is False,
+        f"{label} protected cluster binding drift",
+    )
+    return copy.deepcopy(value)
+
+def validate_bound_preservation_v4(value: Any, p: dict[str, Any]) -> dict[str, Any]:
+    require(isinstance(value, dict) and set(value) == set(p["preservation"]), "dormant preservation binding set drift")
+    result: dict[str, Any] = {}
+    for label, descriptor in p["preservation"].items():
+        observed = value[label]
+        require(
+            isinstance(observed, dict)
+            and set(observed) == {"target", "canonicalSha256"}
+            and observed.get("target") == descriptor["target"]
+            and isinstance(observed.get("canonicalSha256"), str)
+            and POLICY.SHA256.fullmatch(observed["canonicalSha256"]) is not None,
+            f"dormant preservation binding drift: {label}",
+        )
+        result[label] = copy.deepcopy(observed)
+    return result
+
+def require_current_preservation_binding_v4(
+    snapshots: dict[str, PreservedV4],
+    ownership: dict[str, Any],
+    p: dict[str, Any],
+) -> None:
+    """Revalidate the current (never archived) preservation boundary.
+
+    The archived receipt proves only what the old transaction observed.  The
+    handover GET-only phase records a fresh digest for the current objects;
+    activation must bind that value again before its first write.
+    """
+    bound = validate_bound_preservation_v4(ownership.get("preservation"), p)
+    require(set(snapshots) == set(bound), "current preservation snapshot set drift")
+    for label, snapshot in snapshots.items():
+        expected = bound[label]
+        require(snapshot.target == expected["target"], f"current preservation target drift: {label}")
+        require(snapshot.canonical_sha256 == expected["canonicalSha256"], f"current preservation digest drift: {label}")
+
+def require_secret_materialization_binding_v4(
+    current: dict[str, Any],
+    ownership: dict[str, Any],
+    p: dict[str, Any],
+) -> None:
+    """Compare value-free live Secret identity/keysets with a prior receipt."""
+    require(
+        current.get("status") == "exact-keysets-present-without-reading-values"
+        and ownership.get("status") == "materialized"
+        and ownership.get("civicAuthorityEffects") is False,
+        "Secret materialization continuation status drift",
+    )
+    records = ownership.get("secretRecords")
+    require(isinstance(records, dict) and set(records) == set(p["runtime"]["secretReferences"]), "Secret materialization continuation record set drift")
+    live_records = current.get("secrets")
+    require(isinstance(live_records, dict) and set(live_records) == set(records), "current Secret materialization record set drift")
+    references = p["runtime"]["secretReferences"]
+    for label, record in records.items():
+        live = live_records[label]
+        reference = references[label]
+        require(
+            isinstance(record, dict)
+            and set(record) == {"target", "uid", "resourceVersion", "keySet", "valuesRead"}
+            and record["target"] == {"apiVersion": "v1", "kind": "Secret", "namespace": reference["namespace"], "name": reference["name"]}
+            and isinstance(record["uid"], str)
+            and isinstance(record["resourceVersion"], str)
+            and record["resourceVersion"].isdigit()
+            and record["keySet"] == sorted(reference["keys"])
+            and record["valuesRead"] is False,
+            f"Secret materialization ownership record invalid: {label}",
+        )
+        require(
+            isinstance(live, dict)
+            and live.get("name") == reference["name"]
+            and live.get("namespace") == reference["namespace"]
+            and live.get("uid") == record["uid"]
+            and isinstance(live.get("resourceVersion"), str)
+            and live["resourceVersion"].isdigit()
+            and int(live["resourceVersion"]) == int(record["resourceVersion"])
+            and live.get("keys") == record["keySet"]
+            and live.get("valuesRead") is False,
+            f"Secret materialization identity/keyset drift: {label}",
+        )
+
+def _validate_handover_object_ownership_v4(
+    dormant_ownership: dict[str, Any],
+    p: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    expected_names = tuple(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER)
+    objects = dormant_ownership.get("objects")
+    require(
+        isinstance(objects, list)
+        and len(objects) == len(expected_names)
+        and [item.get("logicalName") for item in objects if isinstance(item, dict)] == list(expected_names),
+        "dormant handover object order invalid",
+    )
+    bound = {item["logicalName"]: item for item in objects}
+    require(len(bound) == len(expected_names), "dormant handover object names are duplicated")
+    uids = [item.get("uid") for item in objects]
+    targets = [canonical(item.get("target")) for item in objects]
+    require(
+        all(isinstance(uid, str) and bool(uid) for uid in uids)
+        and len(set(uids)) == len(uids)
+        and len(set(targets)) == len(targets),
+        "dormant handover object identities are duplicated or invalid",
+    )
+    return bound
+
 def flux_preflight_v4(
     r: Runner,
     kubeconfig: str,
@@ -1289,6 +1680,24 @@ def flux_preflight_v4(
     dormant_ownership: dict[str, Any],
 ) -> dict[str, Any]:
     source = shared_source_revision_v4(r, kubeconfig, rev)
+
+    handover_provenance = dormant_ownership.get("receiptProvenance")
+    handover_mode = isinstance(handover_provenance, dict) and handover_provenance.get("mode") == "archived-v1+get-only-handover"
+    if handover_mode:
+        validate_dormant_receipt_provenance_v4(handover_provenance, dormant_ownership.get("receiptSha256"))
+        validate_bound_cluster_identity_v4(dormant_ownership.get("clusterBinding"), p, "dormant handover")
+        validate_bound_preservation_v4(dormant_ownership.get("preservation"), p)
+        shared_source = dormant_ownership.get("sharedSource")
+        require(
+            isinstance(shared_source, dict)
+            and source.get("metadata", {}).get("uid") == shared_source.get("uid")
+            and source.get("status", {}).get("artifact", {}).get("revision") == f"main@sha1:{rev}",
+            "dormant handover shared Source identity drift",
+        )
+        require(
+            shared_source.get("semanticSha256") == POLICY.semantic_sha256(source),
+            "dormant handover shared Source identity drift",
+        )
 
     builders = {"gateway": POLICY.gateway_flux_objects, "workbenchIngress": POLICY.workbench_ingress_flux_objects}
     bound = {
@@ -1304,6 +1713,8 @@ def flux_preflight_v4(
         and set(bound) == set(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER),
         "dormant Flux bootstrap receipt ownership set invalid",
     )
+    if handover_mode:
+        _validate_handover_object_ownership_v4(dormant_ownership, p)
     owners: dict[str, dict[str, Any]] = {}
     for owner, builder in builders.items():
         expected = _policy_call(builder, suspended=True); live: dict[str, Any] = {}
@@ -1320,6 +1731,12 @@ def flux_preflight_v4(
                 and int(metadata["resourceVersion"]) >= int(receipt["resourceVersion"]),
                 f"{owner} dormant {key} no longer matches bootstrap receipt identity",
             )
+            if handover_mode:
+                require(
+                    receipt.get("desiredSemanticSha256") == POLICY.semantic_sha256(expected[key])
+                    and receipt.get("target") == target,
+                    f"{owner} dormant {key} desired semantic binding drift",
+                )
         require(live["kustomization"].get("spec", {}).get("suspend") is True, f"{owner} Kustomization not dormant")
         owners[owner] = live
     return {
@@ -2348,23 +2765,36 @@ def activate(
     sink: ReceiptSink,
     runner_hashes: dict[str, str],
     dormant_ownership: dict[str, Any] | None = None,
+    secret_materialization_ownership: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute both Flux paths as one guarded transaction; no caller evidence."""
     if not live: return dry_run_plan(p, rev, {})
     _policy_call(POLICY.assert_activation_ready, p); require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
     require(dormant_ownership is not None, "live activation requires exact dormant Flux bootstrap receipt")
+    handover_mode = isinstance(dormant_ownership.get("receiptProvenance"), dict) and dormant_ownership["receiptProvenance"].get("mode") == "archived-v1+get-only-handover"
+    if handover_mode:
+        require(secret_materialization_ownership is not None, "dormant handover activation requires existing Secret materialization receipt")
     rendered = render_v4(rev, p); created: list[CreatedV4] = []; bootstrap = None; preserved = None; uncertain = None; operation_nonce: str | None = None; partial: dict[str, Any] = {}; snapshot: KubeconfigSnapshot | None = None; mutation_started = False
     started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     previous_signal_handlers = install_transaction_signal_handlers_v4()
     try:
         snapshot = snapshot_kubeconfig_v4(kube, r); snapshot_path = str(snapshot.path)
         partial["clusterBinding"] = cluster_binding_v4(r, snapshot, p)
+        if handover_mode:
+            bound_cluster = validate_bound_cluster_identity_v4(dormant_ownership.get("clusterBinding"), p, "dormant handover")
+            require_same_cluster_identity_v4(partial["clusterBinding"], bound_cluster, "dormant handover continuation")
         partial["publication"] = anonymous_publication_v4(p)
         partial["endpoints"] = endpoint_facts_v4(p)
-        preserved = preservation_v4(r, snapshot_path, p); bootstrap = flux_preflight_v4(r, snapshot_path, p, rev, dormant_ownership)
+        preserved = preservation_v4(r, snapshot_path, p)
+        if handover_mode:
+            require_current_preservation_binding_v4(preserved, dormant_ownership, p)
+        bootstrap = flux_preflight_v4(r, snapshot_path, p, rev, dormant_ownership)
         absence = exact_absence_preflight_v4(r, snapshot_path, rendered); operation_nonce = secrets.token_hex(32)
         require(bool(POLICY.NONCE.fullmatch(operation_nonce)), "runner CSPRNG operation nonce invalid")
-        secret_before = secret_materialization_v4(r, snapshot_path, p); policy_before = policy_union_v4(r, snapshot_path)
+        secret_before = secret_materialization_v4(r, snapshot_path, p)
+        if handover_mode:
+            require_secret_materialization_binding_v4(secret_before, secret_materialization_ownership, p)
+        policy_before = policy_union_v4(r, snapshot_path)
         cluster_before_mutation = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_mutation, "before mutation")
         order = ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount", "gateway.service", "gateway.deployment")
         deployment = haproxy = None
@@ -2445,20 +2875,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--live", action="store_true")
     modes.add_argument("--verify-success-receipt", type=Path)
     modes.add_argument("--verify-success-receipt-fd", type=int)
+    modes.add_argument("--verify-secret-materialization-receipt-fd", type=int)
     parser.add_argument("--kubeconfig")
     bootstrap = parser.add_mutually_exclusive_group()
     bootstrap.add_argument("--flux-bootstrap-receipt", type=Path)
     bootstrap.add_argument("--flux-bootstrap-receipt-fd", type=int)
+    parser.add_argument("--archived-flux-bootstrap-receipt-fd", type=int)
+    parser.add_argument("--dormant-bootstrap-handover-receipt-fd", type=int)
+    parser.add_argument("--secret-materialization-receipt-fd", type=int)
+    parser.add_argument("--prebound-blob", action="append")
     parser.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json"))
     return parser.parse_args(argv)
 
 def main(argv: list[str] | None = None) -> int:
-    global POLICY, BOOTSTRAP
+    global POLICY, BOOTSTRAP, _PREBOUND_GIT_BLOBS
     try:
+        _PREBOUND_GIT_BLOBS = None
         a = parse_args(argv)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "executor requires python3 -I isolated safe-path mode")
         os.environ.pop("PYTHONPATH", None)
         rev = revision(a.expected_protected_revision); require((ROOT / ".git").exists(), "executor must run from the protected repository checkout")
+        if a.prebound_blob:
+            _PREBOUND_GIT_BLOBS = parse_prebound_git_blob_descriptors_v4(a.prebound_blob, rev)
         require(trusted_git_v4(["-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
         runner_hashes = protected_checkout(rev)
         POLICY = compile_verified_policy_module_v4(git_blob(rev, POLICY_MODULE_PATH), rev)
@@ -2466,14 +2904,35 @@ def main(argv: list[str] | None = None) -> int:
         bind_verified_policy_identity_v4(POLICY)
         p = policy(rev)
         if a.dry_run:
-            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None and a.flux_bootstrap_receipt_fd is None, "dry-run accepts no kubeconfig or Flux bootstrap receipt")
+            require(
+                a.kubeconfig is None
+                and a.flux_bootstrap_receipt is None
+                and a.flux_bootstrap_receipt_fd is None
+                and a.archived_flux_bootstrap_receipt_fd is None
+                and a.dormant_bootstrap_handover_receipt_fd is None
+                and a.secret_materialization_receipt_fd is None
+                and a.prebound_blob is None,
+                "dry-run accepts no kubeconfig or continuation receipts",
+            )
             result = dry_run_plan(p, rev, runner_hashes)
             sink = ReceiptSink.reserve(a.receipt); sink.commit(result); print(canonical(result)); return 0
         # The immutable readiness gate precedes receipt or kubeconfig input.
         try: POLICY.assert_activation_ready(p)
         except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
-        if a.verify_success_receipt is not None or a.verify_success_receipt_fd is not None:
-            require(a.kubeconfig is None and a.flux_bootstrap_receipt is None and a.flux_bootstrap_receipt_fd is None, "receipt verification accepts no kubeconfig or Flux bootstrap receipt")
+        if a.verify_success_receipt is not None or a.verify_success_receipt_fd is not None or a.verify_secret_materialization_receipt_fd is not None:
+            require(
+                a.kubeconfig is None
+                and a.flux_bootstrap_receipt is None
+                and a.flux_bootstrap_receipt_fd is None
+                and a.archived_flux_bootstrap_receipt_fd is None
+                and a.dormant_bootstrap_handover_receipt_fd is None
+                and a.secret_materialization_receipt_fd is None,
+                "receipt verification accepts no kubeconfig or continuation receipts",
+            )
+            if a.verify_secret_materialization_receipt_fd is not None:
+                result = bind_secret_materialization_receipt_v4(p, rev, a.verify_secret_materialization_receipt_fd)
+                print(canonical(result))
+                return 0
             receipt = (
                 load_owned_receipt_v4(a.verify_success_receipt, "activation success receipt")
                 if a.verify_success_receipt is not None
@@ -2482,18 +2941,55 @@ def main(argv: list[str] | None = None) -> int:
             result = bind_success_receipt_v4(receipt, p, rev, runner_hashes)
             print(canonical(result))
             return 0
-        require(a.flux_bootstrap_receipt is not None or a.flux_bootstrap_receipt_fd is not None, "live activation requires a Flux bootstrap receipt")
-        if a.flux_bootstrap_receipt is not None:
-            dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
-        else:
-            dormant_ownership = bind_flux_bootstrap_receipt_value_v4(
+        handover_flags = (a.archived_flux_bootstrap_receipt_fd, a.dormant_bootstrap_handover_receipt_fd, a.secret_materialization_receipt_fd)
+        handover_requested = any(value is not None for value in handover_flags)
+        if handover_requested:
+            require(
+                a.archived_flux_bootstrap_receipt_fd is not None
+                and a.dormant_bootstrap_handover_receipt_fd is not None
+                and a.secret_materialization_receipt_fd is not None
+                and a.flux_bootstrap_receipt is None
+                and a.flux_bootstrap_receipt_fd is None
+                and _PREBOUND_GIT_BLOBS is not None,
+                "handover continuation requires archived, handover, Secret, and prebound Git closure receipts only",
+            )
+            dormant_ownership = bind_handover_receipt_pair_v4(
                 p,
                 rev,
-                runner_hashes,
-                BOOTSTRAP.load_receipt_fd(a.flux_bootstrap_receipt_fd),
+                a.archived_flux_bootstrap_receipt_fd,
+                a.dormant_bootstrap_handover_receipt_fd,
+                _PREBOUND_GIT_BLOBS,
             )
+            secret_materialization_ownership = bind_secret_materialization_receipt_v4(
+                p,
+                rev,
+                a.secret_materialization_receipt_fd,
+            )
+        else:
+            require(a.flux_bootstrap_receipt is not None or a.flux_bootstrap_receipt_fd is not None, "live activation requires a Flux bootstrap receipt")
+            require(a.secret_materialization_receipt_fd is None and a.prebound_blob is None, "ordinary activation accepts no continuation Secret receipt or prebound Git closure")
+            if a.flux_bootstrap_receipt is not None:
+                dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
+            else:
+                dormant_ownership = bind_flux_bootstrap_receipt_value_v4(
+                    p,
+                    rev,
+                    runner_hashes,
+                    BOOTSTRAP.load_receipt_fd(a.flux_bootstrap_receipt_fd),
+                )
+            secret_materialization_ownership = None
         sink = ReceiptSink.reserve(a.receipt)
-        result = activate(p, rev, a.kubeconfig, Runner(), True, sink, runner_hashes, dormant_ownership)
+        result = activate(
+            p,
+            rev,
+            a.kubeconfig,
+            Runner(),
+            True,
+            sink,
+            runner_hashes,
+            dormant_ownership,
+            secret_materialization_ownership,
+        )
         print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2
 if __name__ == "__main__": raise SystemExit(main())

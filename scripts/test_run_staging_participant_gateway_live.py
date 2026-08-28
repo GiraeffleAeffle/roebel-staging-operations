@@ -12,6 +12,57 @@ SPEC = importlib.util.spec_from_file_location(
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
 
 
+def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
+    revision = "a" * 40
+    protected = {path: MODULE.bytes_sha256(path.encode()) for path in MODULE.WORKBENCH_PROMOTION_PROTECTED_PATHS}
+    operation_id = "12345678-1234-4123-8123-123456789abc"
+    target = {"apiVersion": "apps/v1", "kind": "Deployment", "namespace": "stadtstack-roebel-staging-lab", "name": "e2e-workbench"}
+    artifact = {
+        "receiptSha256": MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        "sourceRevision": MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION,
+        "component": "roebel-e2e-workbench",
+        "manifestDigest": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE.rsplit("@", 1)[1],
+        "image": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE,
+    }
+    service = {"target": {"apiVersion": "v1", "kind": "Service", "namespace": target["namespace"], "name": "e2e-workbench"}, "uid": "service-uid", "specSha256": MODULE.bytes_sha256(b"service")}
+    network = {"target": {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "namespace": target["namespace"], "name": "e2e-workbench"}, "uid": "network-uid", "specSha256": MODULE.bytes_sha256(b"network")}
+    routing = {"selector": {"app.kubernetes.io/component": "e2e-workbench"}, "servicePort": 18083, "targetPort": "http", "containerPort": {"name": "http", "port": 18083, "protocol": "TCP"}}
+    patch_sha = MODULE.bytes_sha256(b"patch")
+    events = recovery_event_chain([
+        ("after", "preflight", {"deploymentResourceVersion": "1"}),
+        ("intent", "patch-deployment-image", {"requestSha256": patch_sha, "target": target}),
+        ("after", "patch-deployment-image", {"response": "accepted"}),
+        ("after", "postconditions", {"status": "verified"}),
+        ("finalizing", "transaction", {"receiptStatus": "completed"}),
+        ("completed", "transaction", {"receiptStatus": "completed"}),
+    ])
+    journal = {
+        "schemaVersion": "roebel_staging_workbench_image_promotion_journal_v1", "status": "completed",
+        "operationId": operation_id, "protectedRevision": revision, "protectedGitBlobSha256": protected,
+        "artifact": artifact, "target": target, "events": events,
+        "before": {"deploymentUid": "f7e99fb3-842d-469b-9196-cd1c6dfe10bb", "resourceVersion": "1", "specSha256": MODULE.bytes_sha256(b"spec"), "normalizedSpecSha256": MODULE.bytes_sha256(b"normalized"), "service": service, "serviceRouting": routing, "networkPolicy": network},
+    }
+    journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(journal).encode())
+    payload = {
+        "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v1", "status": "completed", "mode": "live",
+        "operation": {"operationId": operation_id}, "protectedRevision": revision, "protectedGitBlobSha256": protected,
+        "probeBinding": {}, "artifact": artifact, "target": target,
+        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
+        "preservation": {"service": service, "networkPolicy": network, "unchanged": True},
+        "rollout": {"podImageProof": {"expectedImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "pods": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "podIPs": ["10.0.0.12"]}]}},
+        "backendBinding": routing | {
+            "endpointSliceUids": ["12345678-1234-4123-8123-123456789abe"],
+            "addressTypes": ["IPv4"],
+            "podTargets": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "addresses": ["10.0.0.12"]}],
+        },
+        "probes": {"methods": {"config": "GET", "feed": "GET"}}, "patch": {"requestSha256": patch_sha, "rollbackRequestSha256": None}, "rollback": None,
+        "effects": {"clusterMutation": True, "deploymentImageChanged": True, "rollbackApplied": False, "serviceChanged": False, "networkPolicyChanged": False, "secretValuesRead": False, "civicAuthorityEffects": False},
+        "completedAt": "2026-08-28T00:00:00Z",
+    }
+    payload["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(payload).encode())
+    return payload, journal, revision, protected
+
+
 def recovery_event_chain(specifications: list[tuple[str, str, dict]]) -> list[dict]:
     previous = None; events: list[dict] = []
     for sequence, (stage, operation, details) in enumerate(specifications, start=1):
@@ -300,7 +351,9 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         with socket.create_connection(("127.0.0.1", port), timeout=2) as second:
             second.sendall(b"CONNECT 10.255.240.11:6443 HTTP/1.1\r\nHost: 10.255.240.11:6443\r\n\r\n")
             self.assertIn(b" 503 ", second.recv(4096))
+        close_started = time.monotonic()
         report = guard.close(); first.close()
+        self.assertLess(time.monotonic() - close_started, 1.5)
         self.assertTrue(report["listenerStopped"])
         self.assertTrue(report["workerThreadsStopped"])
         self.assertTrue(report["connectionsClosed"])
@@ -433,6 +486,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         hostile = {"PATH": "/usr/bin", "HTTP_PROXY": "http://attacker", "https_proxy": "http://attacker", "ALL_PROXY": "socks5://attacker", "no_proxy": "*", "KUBECONFIG": "/attacker", "PYTHONPATH": "/attacker", "SAFE": "yes"}
         with patch.dict(MODULE.os.environ, hostile, clear=True):
             self.assertEqual(MODULE.sanitized_environment(), {"PATH": "/usr/bin", "SAFE": "yes"})
+        self.assertEqual(MODULE.git_environment()["GIT_NO_LAZY_FETCH"], "1")
 
     def test_post_commit_cleanup_failure_is_never_success_or_blocked(self):
         self.assertEqual(MODULE.classify_final_status("activated", activation_committed=True, operation_succeeded=True, cleanup_complete=False), ("activated-cleanup-incomplete", 3))
@@ -454,15 +508,34 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("BrokenPipeError", logging_error)
 
     def test_signal_state_prebinds_every_transitive_blob_before_snapshot_and_decrypt(self):
-        expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, MODULE.SECRET_RUNNER, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}
+        expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, MODULE.SECRET_RUNNER, MODULE.HANDOVER_RUNNER, MODULE.HANDOVER_IMPLEMENTATION, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}
         self.assertEqual(set(MODULE.PROTECTED_PATHS), expected)
         source = inspect.getsource(MODULE.main)
         self.assertLess(source.index("cancellation.install()"), source.index("bind_protected_checkout(revision)"))
         self.assertLess(source.index("bind_protected_checkout(revision)"), source.index("bind_bytes_to_fd("))
+        self.assertLess(source.index("bind_handover_git_closure("), source.index("snapshot_binary("))
         self.assertLess(source.index("bind_bytes_to_fd("), source.index("snapshot_binary("))
         self.assertLess(source.index("snapshot_binary("), source.index("decrypt("))
         self.assertIn("--verify-success-receipt-fd", source)
         self.assertIn("--teardown-dormant-receipt", inspect.getsource(MODULE.parse_args))
+
+    def test_dormant_handover_continuation_invokes_activation_without_rebootstrap_or_materialization(self):
+        source = inspect.getsource(MODULE.main)
+        start = source.index("if handover_archive_receipt is not None:")
+        end = source.index("elif source_secret_receipt is not None:", start)
+        continuation = source[start:end]
+        self.assertIn("activation_runner.command(", continuation)
+        self.assertIn("session.run_child(", continuation)
+        self.assertIn("--dormant-bootstrap-handover-receipt-fd", continuation)
+        self.assertIn("--secret-materialization-receipt-fd", continuation)
+        self.assertIn("*participant_blob_args", continuation)
+        self.assertIn("*participant_blob_fds", continuation)
+        self.assertIn("extra_args=tuple(participant_blob_args)", continuation)
+        self.assertIn("extra_pass_fds=tuple(participant_blob_fds)", continuation)
+        self.assertIn("*handover_blob_args", continuation)
+        self.assertIn("*handover_blob_fds", continuation)
+        self.assertNotIn("secret_materialization = session.run_child(", continuation)
+        self.assertNotIn("bootstrap = session.run_child(", continuation)
 
     def test_wrapper_delegates_kubernetes_writes_to_immutable_protected_runners(self):
         source = inspect.getsource(MODULE.main)
@@ -547,6 +620,84 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("terminalJournalSha256", verifier)
         self.assertIn("receipt/journal binding drift", verifier)
 
+    def test_workbench_image_promotion_mode_has_exact_outputs_and_rejects_probe_escape(self):
+        arguments = [
+            "--workbench-image-promotion", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt", "--workbench-artifact-pin", "/private/pin.json",
+            "--workbench-promotion-receipt", "/private/promotion.json", "--workbench-promotion-journal", "/private/promotion.journal",
+        ]
+        parsed = MODULE.parse_args(arguments)
+        self.assertTrue(parsed.workbench_image_promotion)
+        self.assertEqual(parsed.workbench_artifact_pin, Path("/private/pin.json"))
+        self.assertIsNone(getattr(parsed, "workbench_promotion_probe_base_url", None))
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args([*arguments, "--workbench-promotion-probe-base-url", "https://attacker.invalid"])
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args(["--participant-gateway", *arguments])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires artifact pin, receipt, and journal"):
+            MODULE.parse_args([value for value in arguments if value not in {"--workbench-promotion-journal", "/private/promotion.journal"}])
+        source = inspect.getsource(MODULE.run_workbench_image_promotion_transport)
+        self.assertIn("workbench_promoter_command", source)
+        self.assertIn("snapshot_owned_file_path", source)
+        self.assertIn("private_workbench_promotion_outputs", source)
+        self.assertNotIn("probe-base-url", source)
+
+    def test_workbench_promotion_restart_paths_require_exact_reserved_pair_shape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            receipt = root / "promotion.receipt"; journal = root / "promotion.journal"
+            self.assertEqual(MODULE.private_workbench_promotion_outputs(receipt, journal), (receipt, journal))
+
+            receipt.touch(mode=0o600); receipt.chmod(0o600)
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "both reserved output paths"):
+                MODULE.private_workbench_promotion_outputs(receipt, journal)
+            journal.write_text("{}\n", encoding="utf-8"); journal.chmod(0o600)
+            self.assertEqual(MODULE.private_workbench_promotion_outputs(receipt, journal), (receipt, journal))
+
+            receipt.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "empty receipt"):
+                MODULE.private_workbench_promotion_outputs(receipt, journal)
+
+    def test_workbench_promoter_launcher_argv_is_exact_and_descriptor_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            promoter_path = root / "promoter.bound"
+            promoter_bytes = b"protected promoter bytes"
+            promoter_path.write_bytes(promoter_bytes)
+            promoter_fd = os.open(promoter_path, os.O_RDONLY)
+            kubectl_path = root / "kubectl"
+            kubectl_bytes = b"protected kubectl bytes"
+            kubectl_path.write_bytes(kubectl_bytes)
+            kubectl_fd = os.open(kubectl_path, os.O_RDONLY)
+            promoter_blob = MODULE.BoundBlob(promoter_fd, len(promoter_bytes), MODULE.bytes_sha256(promoter_bytes), "promoter")
+            kubectl_info = os.fstat(kubectl_fd)
+            kubectl = MODULE.PinnedExecutableSnapshot(
+                kubectl_path, kubectl_fd, kubectl_info.st_dev, kubectl_info.st_ino, kubectl_info.st_size, MODULE.bytes_sha256(kubectl_bytes)
+            )
+            try:
+                command = MODULE.workbench_promoter_command(
+                    MODULE.BoundRunner(MODULE.WORKBENCH_PROMOTER, promoter_blob),
+                    kubectl,
+                    [
+                        "--artifact-pin", "/private/pin.json", "--kubeconfig", "/private/kubeconfig",
+                        "--receipt", "/private/r.json", "--journal", "/private/journal.json",
+                        "--protected-revision", "a" * 40, "--protected-hashes", '{"fixture":"' + "b" * 64 + '"}',
+                    ],
+                )
+                self.assertEqual(command[:4], [sys.executable, "-I", "-c", MODULE.WORKBENCH_PROMOTER_LAUNCHER])
+                self.assertEqual(command[4:], [
+                    str(MODULE.ROOT / MODULE.WORKBENCH_PROMOTER), str(promoter_fd), str(len(promoter_bytes)), MODULE.bytes_sha256(promoter_bytes),
+                    str(kubectl_path), str(kubectl_fd), str(kubectl_info.st_dev), str(kubectl_info.st_ino), str(kubectl_info.st_size), MODULE.bytes_sha256(kubectl_bytes),
+                    "--artifact-pin", "/private/pin.json", "--kubeconfig", "/private/kubeconfig", "--receipt", "/private/r.json", "--journal", "/private/journal.json",
+                    "--protected-revision", "a" * 40, "--protected-hashes", '{"fixture":"' + "b" * 64 + '"}',
+                ])
+                self.assertNotIn("--probe-base-url", command)
+            finally:
+                promoter_blob.close()
+                kubectl.close()
+
     @unittest.skipUnless(hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"), "requires macOS immutable file flags")
     def test_workbench_pinned_kubectl_path_cannot_be_replaced_between_calls(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -594,6 +745,78 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                     changed.close()
             finally:
                 receipt.close(); state.close()
+
+    def test_promotion_verifier_cross_binds_operation_artifact_revision_and_exact_grammar(self):
+        payload, journal, revision, protected = promotion_verifier_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "promotion-receipt.bound", "promotion receipt")
+            state = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "promotion-journal.bound", "promotion journal")
+            try:
+                proof = MODULE.verify_workbench_image_promotion_evidence(
+                    receipt, state, revision, protected, MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256
+                )
+                self.assertTrue(proof["deploymentImageChanged"])
+            finally:
+                receipt.close(); state.close()
+
+        resumed_payload, resumed_journal, resumed_revision, resumed_protected = promotion_verifier_fixture()
+        operation_id = resumed_payload["operation"]["operationId"]
+        resumed_journal["events"] = recovery_event_chain([
+            ("after", "preflight", {"deploymentResourceVersion": "1"}),
+            ("intent", "patch-deployment-image", {"requestSha256": resumed_payload["patch"]["requestSha256"], "target": resumed_payload["target"]}),
+            ("before", "resume", {"operationId": operation_id}),
+            ("before", "resume", {"operationId": operation_id}),
+            ("classified", "resume", {"operationId": operation_id, "classification": "target-image"}),
+            ("after", "postconditions", {"status": "verified"}),
+            ("finalizing", "transaction", {"receiptStatus": "completed"}),
+            ("completed", "transaction", {"receiptStatus": "completed"}),
+        ])
+        resumed_journal.pop("journalSha256", None)
+        resumed_journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(resumed_journal).encode())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = MODULE.bind_bytes_to_fd((MODULE.canonical(resumed_payload) + "\n").encode(), root / "resumed-receipt.bound", "promotion receipt")
+            state = MODULE.bind_bytes_to_fd((MODULE.canonical(resumed_journal) + "\n").encode(), root / "resumed-journal.bound", "promotion journal")
+            try:
+                MODULE.verify_workbench_image_promotion_evidence(
+                    receipt, state, resumed_revision, resumed_protected, MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256
+                )
+            finally:
+                receipt.close(); state.close()
+
+        cases = (
+            ("operation", lambda value: value[1].__setitem__("operationId", "22345678-1234-4123-8123-123456789abc")),
+            ("artifact", lambda value: value[1]["artifact"].__setitem__("sourceRevision", "b" * 40)),
+            ("protected", lambda value: value[1].__setitem__("protectedGitBlobSha256", dict(value[1]["protectedGitBlobSha256"]) | {next(iter(protected)): MODULE.bytes_sha256(b"wrong")})),
+            ("grammar", lambda value: value[1]["events"][2].__setitem__("operation", "unknown")),
+            ("backend-address", lambda value: value[0]["backendBinding"]["podTargets"][0]["addresses"].__setitem__(0, "10.0.0.99")),
+        )
+        for label, mutate in cases:
+            changed_payload, changed_journal, changed_revision, changed_protected = promotion_verifier_fixture()
+            mutate((changed_payload, changed_journal))
+            changed_payload.pop("canonicalSha256", None)
+            changed_payload["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(changed_payload).encode())
+            for event in changed_journal["events"]:
+                event.pop("entrySha256", None)
+            previous = None
+            for event in changed_journal["events"]:
+                event["previousEntrySha256"] = previous
+                event["entrySha256"] = MODULE.bytes_sha256(MODULE.canonical(event).encode())
+                previous = event["entrySha256"]
+            changed_journal.pop("journalSha256", None)
+            changed_journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(changed_journal).encode())
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                receipt = MODULE.bind_bytes_to_fd((MODULE.canonical(changed_payload) + "\n").encode(), root / "receipt.bound", "receipt")
+                state = MODULE.bind_bytes_to_fd((MODULE.canonical(changed_journal) + "\n").encode(), root / "journal.bound", "journal")
+                try:
+                    with self.assertRaises(MODULE.LiveTransportError):
+                        MODULE.verify_workbench_image_promotion_evidence(
+                            receipt, state, changed_revision, changed_protected, MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256
+                        )
+                finally:
+                    receipt.close(); state.close()
 
     def test_recovery_verifier_accepts_uncertain_delete_intent_then_exact_already_absent_resume(self):
         payload, journal, revision = recovery_verifier_fixture()
