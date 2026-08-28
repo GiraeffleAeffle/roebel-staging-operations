@@ -300,6 +300,28 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
         self.assertIn("workbench_implementation_command", source)
 
+    def test_workbench_recovery_mode_is_explicit_delete_only_and_requires_all_evidence(self):
+        arguments = [
+            "--workbench-baseline-recovery", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt", "--workbench-recovery-receipt", "/private/recovery.json",
+            "--workbench-recovery-journal", "/private/recovery.journal", "--workbench-origin-journal", "/private/origin.journal",
+            "--workbench-attempt-receipt", "/private/attempt.json", "--workbench-inspection", "/private/inspection.json",
+        ]
+        parsed = MODULE.parse_args(arguments)
+        self.assertTrue(parsed.workbench_baseline_recovery)
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires exact evidence"):
+            MODULE.parse_args([value for value in arguments if value not in {"--workbench-inspection", "/private/inspection.json"}])
+        self.assertNotIn(MODULE.BOOTSTRAP_RUNNER, MODULE.WORKBENCH_RECOVERY_PROTECTED_PATHS)
+        self.assertNotIn(MODULE.ACTIVATION_RUNNER, MODULE.WORKBENCH_RECOVERY_PROTECTED_PATHS)
+        source = inspect.getsource(MODULE.run_workbench_baseline_handover_transport)
+        self.assertIn("WORKBENCH_RECOVERY_IMPLEMENTATION", source)
+        self.assertIn("verify_workbench_recovery_evidence", source)
+        verifier = inspect.getsource(MODULE.verify_workbench_recovery_evidence)
+        self.assertIn("terminalJournalSha256", verifier)
+        self.assertIn("receipt/journal binding drift", verifier)
+
     @unittest.skipUnless(hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"), "requires macOS immutable file flags")
     def test_workbench_pinned_kubectl_path_cannot_be_replaced_between_calls(self):
         with tempfile.TemporaryDirectory() as directory:

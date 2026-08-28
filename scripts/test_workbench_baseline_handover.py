@@ -361,6 +361,67 @@ class CrashAfterMarkerRemovalKubernetes(FakeKubernetes):
         return updated
 
 
+class KustomizationMarkerRemovalResourceVersionRaceKubernetes(FakeKubernetes):
+    """Flux writes only its admitted metadata between CREATE and marker CAS."""
+
+    def __init__(self, *, baseline: dict[str, Any] | None = None) -> None:
+        super().__init__(baseline=baseline)
+        self.marker_patch_attempts = 0
+        self.raced = False
+
+    def patch(self, identity: dict[str, str], operations: list[dict[str, Any]]) -> dict[str, Any]:
+        is_kustomization_marker_removal = (
+            identity["kind"] == "Kustomization"
+            and any(
+                operation.get("op") == "remove"
+                and operation.get("path") == MODULE._operation_marker_path()
+                for operation in operations
+            )
+        )
+        if is_kustomization_marker_removal:
+            self.marker_patch_attempts += 1
+            if not self.raced:
+                self.raced = True
+                current = self.objects[key(identity)]
+                # This models the exact controller-owned changes admitted by
+                # _flux_server_fields: no desired labels/annotations/spec
+                # mutation, no UID replacement, only finalizer/status/RV.
+                current["metadata"]["finalizers"] = ["finalizers.fluxcd.io"]
+                current["status"] = {
+                    "observedGeneration": current["metadata"].get("generation", 1),
+                    "conditions": [{"type": "Ready", "status": "Unknown"}],
+                }
+                current["metadata"]["resourceVersion"] = str(self._next_resource_version)
+                self._next_resource_version += 1
+        return super().patch(identity, operations)
+
+
+class KustomizationMarkerRemovalUnadmittedDriftKubernetes(
+    KustomizationMarkerRemovalResourceVersionRaceKubernetes
+):
+    """A same-UID marker retry must reject even a small desired-state drift."""
+
+    def patch(self, identity: dict[str, str], operations: list[dict[str, Any]]) -> dict[str, Any]:
+        is_kustomization_marker_removal = (
+            identity["kind"] == "Kustomization"
+            and any(
+                operation.get("op") == "remove"
+                and operation.get("path") == MODULE._operation_marker_path()
+                for operation in operations
+            )
+        )
+        if is_kustomization_marker_removal and not self.raced:
+            self.raced = True
+            self.marker_patch_attempts += 1
+            current = self.objects[key(identity)]
+            current["metadata"]["finalizers"] = ["finalizers.fluxcd.io"]
+            current["metadata"].setdefault("labels", {})["example.org/unadmitted"] = "drift"
+            current["metadata"]["resourceVersion"] = str(self._next_resource_version)
+            self._next_resource_version += 1
+            return FakeKubernetes.patch(self, identity, operations)
+        return super().patch(identity, operations)
+
+
 class CrashBeforeMarkerRemovalPatchKubernetes(FakeKubernetes):
     """Crash after durable marker-removal intent but before sending PATCH."""
 
@@ -503,6 +564,20 @@ class CrashAfterRollbackJournalCommit(MODULE.MemoryJournalSink):
             raise SimulatedProcessDeath(f"crash after journal {self.crash_status}")
 
 
+class CrashAfterKustomizationMarkerConflictJournal(MODULE.MemoryJournalSink):
+    """Die in the durable stale-CAS gap before retry intent is recorded."""
+    def __init__(self) -> None:
+        super().__init__()
+        self.crashed = False
+
+    def commit(self, value: dict[str, Any]) -> None:
+        super().commit(value)
+        events = value.get("events", [])
+        if not self.crashed and events and events[-1].get("operation") == "remove-marker.kustomization" and events[-1].get("stage") == "conflict":
+            self.crashed = True
+            raise SimulatedProcessDeath("crash after durable Kustomization marker conflict")
+
+
 class WorkbenchBaselineHandoverTests(unittest.TestCase):
     def plan(self) -> dict[str, Any]:
         hashes = {
@@ -604,6 +679,68 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             ["ServiceAccount", "Role", "RoleBinding", "Kustomization", "NetworkPolicy", "Kustomization"],
         )
         self.assertTrue(kube.get(MODULE.source_target()) is not None)
+
+    def test_kustomization_marker_removal_retries_once_after_admitted_flux_metadata_race(self) -> None:
+        kube = KustomizationMarkerRemovalResourceVersionRaceKubernetes(baseline=baseline_live())
+        sink = MODULE.MemoryReceiptSink()
+        journal = MODULE.MemoryJournalSink()
+
+        receipt = MODULE.run(self.plan(), mode="live", kube=kube, sink=sink, journal=journal)
+
+        self.assertEqual(receipt["status"], "completed")
+        self.assertEqual(kube.marker_patch_attempts, 2)
+        identity = MODULE.target(MODULE.expected_flux_objects()["kustomization"])
+        kustomization = kube.get(identity)
+        assert kustomization is not None
+        receipt_record = next(item for item in receipt["objects"] if item["objectId"] == "kustomization")
+        self.assertEqual(kustomization["metadata"]["uid"], receipt_record["uid"])
+        self.assertNotIn(MODULE.HANDOVER_OPERATION_ANNOTATION, kustomization["metadata"].get("annotations", {}))
+        self.assertEqual(
+            MODULE._flux_server_fields(kustomization),
+            MODULE.expected_flux_objects(suspended=False)["kustomization"],
+        )
+        marker_events = [
+            event
+            for event in journal.state["events"]
+            if event.get("operation") == "remove-marker.kustomization"
+        ]
+        self.assertEqual([event["stage"] for event in marker_events], ["conflict", "after"])
+        self.assertEqual(
+            marker_events[1]["request"][2]["value"],
+            marker_events[0]["request"][2]["value"],
+        )
+        self.assertNotEqual(
+            marker_events[1]["request"][1]["value"],
+            marker_events[0]["request"][1]["value"],
+        )
+
+    def test_kustomization_marker_retry_rejects_unadmitted_same_uid_drift(self) -> None:
+        kube = KustomizationMarkerRemovalUnadmittedDriftKubernetes(baseline=baseline_live())
+        sink = MODULE.MemoryReceiptSink()
+        journal = MODULE.MemoryJournalSink()
+        with self.assertRaisesRegex(MODULE.HandoverError, "marker removal outcome unresolved|surviving object drift"):
+            MODULE.run(self.plan(), mode="live", kube=kube, sink=sink, journal=journal)
+        self.assertEqual(kube.marker_patch_attempts, 1)
+        identity = MODULE.target(MODULE.expected_flux_objects()["kustomization"])
+        kustomization = kube.get(identity)
+        self.assertIsNotNone(kustomization)
+        assert kustomization is not None
+        self.assertEqual(kustomization["metadata"]["labels"]["example.org/unadmitted"], "drift")
+        self.assertEqual(
+            kustomization["metadata"]["annotations"][MODULE.HANDOVER_OPERATION_ANNOTATION],
+            journal.state["operationMarker"],
+        )
+
+    def test_crash_after_marker_conflict_rolls_back_only_exact_suspended_marked_kustomization(self) -> None:
+        kube = KustomizationMarkerRemovalResourceVersionRaceKubernetes(baseline=baseline_live())
+        sink = MODULE.MemoryReceiptSink(); journal = CrashAfterKustomizationMarkerConflictJournal()
+        with self.assertRaises(SimulatedProcessDeath):
+            MODULE.run(self.plan(), mode="live", kube=kube, sink=sink, journal=journal)
+        marker_events = [event for event in journal.state["events"] if event.get("operation") == "remove-marker.kustomization"]
+        self.assertEqual([event["stage"] for event in marker_events], ["conflict"])
+        recovered = MODULE.run(self.plan(), mode="live", kube=kube, sink=sink, journal=journal)
+        self.assertEqual(recovered["status"], "recovered-rolled-back")
+        self.assertEqual([item["kind"] for item in kube.deleted], ["Kustomization", "RoleBinding", "Role", "ServiceAccount"])
 
     def test_receipt_failure_after_flux_reconcile_suspends_restores_inventory_and_deletes_owned_objects(self) -> None:
         kube = FakeKubernetes(baseline=baseline_live())
