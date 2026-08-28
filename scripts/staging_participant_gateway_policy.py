@@ -54,6 +54,9 @@ FLUX_SOURCE_NAME = "roebel-staging-operations"
 OPERATION_NONCE_ANNOTATION = "stadtstack.io/participant-activation-nonce"
 DORMANT_BOOTSTRAP_NONCE_ANNOTATION = "stadtstack.io/participant-flux-bootstrap-nonce"
 DORMANT_BOOTSTRAP_RECEIPT_SCHEMA = "roebel_staging_participant_flux_bootstrap_receipt_v1"
+SECRET_MATERIALIZER_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
+SECRET_MATERIALIZATION_RECEIPT_SCHEMA = "roebel_staging_participant_secret_materialization_receipt_v1"
+SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_staging_participant_secret_teardown_receipt_v1"
 DORMANT_BOOTSTRAP_OBJECT_ORDER = (
     "gateway.serviceAccount",
     "workbenchIngress.serviceAccount",
@@ -157,6 +160,35 @@ def _target(api_version: str, kind: str, name: str, namespace: str) -> dict[str,
         "kind": kind,
         "name": name,
         "namespace": namespace,
+    }
+
+
+def secret_materializer_contract() -> dict[str, Any]:
+    """Return the closed create/delete boundary for participant Secrets."""
+    return {
+        "runner": SECRET_MATERIALIZER_RUNNER,
+        "receiptSchemaVersion": SECRET_MATERIALIZATION_RECEIPT_SCHEMA,
+        "teardownReceiptSchemaVersion": SECRET_TEARDOWN_RECEIPT_SCHEMA,
+        "inputTransport": "owned-private-inherited-descriptors-only",
+        "createOrder": ["config", "runtime"],
+        "initialState": "both-exact-secret-names-absent",
+        "adoption": "forbidden",
+        "receiptContainsValues": False,
+        "teardown": {
+            "sourceReceiptRequired": True,
+            "deleteOrder": ["runtime", "config"],
+            "uidResourceVersionPreconditions": True,
+            "requiredAbsentTargets": [
+                _target("networking.k8s.io/v1", "NetworkPolicy", GATEWAY_NAME, GATEWAY_NAMESPACE),
+                _target("v1", "ServiceAccount", GATEWAY_NAME, GATEWAY_NAMESPACE),
+                _target("v1", "Service", GATEWAY_NAME, GATEWAY_NAMESPACE),
+                _target("apps/v1", "Deployment", GATEWAY_NAME, GATEWAY_NAMESPACE),
+                _target("networking.k8s.io/v1", "Ingress", GATEWAY_NAME, GATEWAY_NAMESPACE),
+                _target("networking.k8s.io/v1", "NetworkPolicy", WORKBENCH_INGRESS_POLICY_NAME, WORKBENCH_NAMESPACE),
+                _target("kustomize.toolkit.fluxcd.io/v1", "Kustomization", GATEWAY_NAME, FLUX_NAMESPACE),
+                _target("kustomize.toolkit.fluxcd.io/v1", "Kustomization", WORKBENCH_INGRESS_POLICY_NAME, FLUX_NAMESPACE),
+            ],
+        },
     }
 
 
@@ -297,6 +329,7 @@ def _static_descriptor() -> dict[str, Any]:
                     "keys": ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
                 },
             },
+            "secretMaterializer": secret_materializer_contract(),
         },
         "render": {
             "gateway": {
@@ -821,6 +854,10 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         value["runtime"]["secretReferences"]["runtime"]["keys"]
         == ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
         "participant runtime Secret keyset drift",
+    )
+    _require(
+        value["runtime"]["secretMaterializer"] == secret_materializer_contract(),
+        "participant Secret materializer boundary drift",
     )
     _require(
         value["runtime"]["topicPolicy"]
