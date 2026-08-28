@@ -97,7 +97,115 @@ def recovery_verifier_fixture(*, synthetic_after_only: bool = False, omit_first_
     return evidence, state, revision
 
 
+def migrated_recovery_verifier_fixture() -> tuple[dict, dict, str, str]:
+    evidence, state, revision = recovery_verifier_fixture()
+    terminal_revision = "b" * 40
+    specifications = []
+    for event in state["events"]:
+        details = {
+            key: value for key, value in event.items()
+            if key not in {"sequence", "stage", "operation", "previousEntrySha256", "entrySha256"}
+        }
+        if event["operation"] == "resume":
+            details["revision"] = terminal_revision
+        specifications.append((event["stage"], event["operation"], details))
+    source_at_recovery = {
+        "uid": "0de8a05d-550f-429c-93c5-9b8c76b0bf9b",
+        "revision": f"main@sha1:{terminal_revision}",
+        "generation": 2,
+    }
+    source_at_finalization = {
+        "uid": source_at_recovery["uid"],
+        "revision": f"main@sha1:{revision}",
+        "generation": 2,
+    }
+    baseline = {
+        "uid": "298b0f92-0d6b-4563-b141-f93aa8c8fd8f",
+        "resourceVersion": "300",
+        "digest": "sha256:21c582036f38a54649b771a6dec1ba599ca859029a1c32246ef8aee6a00359c5",
+    }
+    state["events"] = recovery_event_chain(specifications)
+    state["protectedRevision"] = terminal_revision
+    state["source"] = source_at_recovery
+    state["baseline"] = baseline
+    state["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical({key: value for key, value in state.items() if key != "journalSha256"}).encode())
+    journal_file_sha256 = MODULE.bytes_sha256((MODULE.canonical(state) + "\n").encode())
+
+    evidence.update({
+        "protectedRevision": revision,
+        "finalizedAgainstRevision": revision,
+        "finalizationParentRevision": "c" * 40,
+        "terminalRecoveryRevision": terminal_revision,
+        "source": source_at_finalization,
+        "sourceAtRecovery": source_at_recovery,
+        "sourceAtFinalization": source_at_finalization,
+        "baseline": baseline,
+    })
+    evidence["effects"].update({
+        "historicalDeleteOnlyRecovery": True,
+        "deleteOnlyMutation": False,
+        "getOnlyFinalization": True,
+        "clusterMutationCount": 0,
+        "newDeletes": 0,
+    })
+    evidence["journal"] = {
+        "schemaVersion": state["schemaVersion"],
+        "status": "completed",
+        "eventCount": len(state["events"]),
+        "terminalEntrySha256": state["events"][-1]["entrySha256"],
+        "terminalJournalSha256": state["journalSha256"],
+        "protectedRevision": terminal_revision,
+        "terminalJournalFileSha256": journal_file_sha256,
+    }
+    evidence.pop("canonicalSha256", None)
+    evidence["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(evidence).encode())
+    return evidence, state, revision, journal_file_sha256
+
+
 class ParticipantLiveWrapperTests(unittest.TestCase):
+    def test_terminal_finalizer_requires_the_exact_single_protected_parent(self):
+        revision = "a" * 40
+        parent = MODULE.WORKBENCH_RECOVERY_FINALIZATION_PARENT_REVISION
+        exact = MODULE.subprocess.CompletedProcess([], 0, stdout=f"{revision} {parent}\n", stderr="")
+        with patch.object(MODULE, "trusted_git", return_value=exact):
+            MODULE.require_protected_revision_parent(revision, parent)
+
+        for observed in (f"{revision} {'b' * 40}\n", f"{revision} {parent} {'c' * 40}\n", f"{'d' * 40} {parent}\n"):
+            with self.subTest(observed=observed), patch.object(
+                MODULE,
+                "trusted_git",
+                return_value=MODULE.subprocess.CompletedProcess([], 0, stdout=observed, stderr=""),
+            ):
+                with self.assertRaisesRegex(MODULE.LiveTransportError, "exact protected parent"):
+                    MODULE.require_protected_revision_parent(revision, parent)
+
+    def test_terminal_finalization_preflight_requires_exact_existing_journal_before_transport(self):
+        revision = "a" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            bindings = root / "bindings"; bindings.mkdir(mode=0o700)
+            exact = root / "exact.journal"; exact.write_bytes(b"exact terminal journal\n"); exact.chmod(0o600)
+            expected_sha256 = MODULE.bytes_sha256(exact.read_bytes())
+            with patch.object(MODULE, "WORKBENCH_RECOVERY_TERMINAL_JOURNAL_FILE_SHA256", expected_sha256), patch.object(
+                MODULE, "require_protected_revision_parent"
+            ) as parent_guard:
+                bound = MODULE.bind_terminal_finalization_journal(exact, bindings, revision)
+                try:
+                    self.assertEqual(bound.sha256, expected_sha256)
+                    parent_guard.assert_called_once_with(revision, MODULE.WORKBENCH_RECOVERY_FINALIZATION_PARENT_REVISION)
+                finally:
+                    bound.close()
+
+            empty = root / "empty.journal"; empty.touch(mode=0o600)
+            wrong = root / "wrong.journal"; wrong.write_bytes(b"other\n"); wrong.chmod(0o600)
+            for candidate in (root / "absent.journal", empty, wrong):
+                with self.subTest(candidate=candidate.name), patch.object(
+                    MODULE, "WORKBENCH_RECOVERY_TERMINAL_JOURNAL_FILE_SHA256", expected_sha256
+                ), patch.object(MODULE, "require_protected_revision_parent") as parent_guard:
+                    with self.assertRaisesRegex((MODULE.LiveTransportError, FileNotFoundError), "exact terminal|bounded owned"):
+                        MODULE.bind_terminal_finalization_journal(candidate, bindings, revision)
+                    parent_guard.assert_not_called()
+
     def test_wireproxy_configuration_has_only_one_fixed_stdio_target(self):
         password = "a" * 64
         api_authority = f"{MODULE.API_HOST}:{MODULE.API_PORT}"
@@ -396,6 +504,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         ]
         parsed = MODULE.parse_args(arguments)
         self.assertTrue(parsed.workbench_baseline_recovery)
+        finalizer_arguments = [
+            "--workbench-baseline-recovery-finalize" if value == "--workbench-baseline-recovery" else value
+            for value in arguments
+        ]
+        finalized = MODULE.parse_args(finalizer_arguments)
+        self.assertTrue(finalized.workbench_baseline_recovery_finalize)
         with self.assertRaisesRegex(MODULE.LiveTransportError, "requires exact evidence"):
             MODULE.parse_args([value for value in arguments if value not in {"--workbench-inspection", "/private/inspection.json"}])
         self.assertNotIn(MODULE.BOOTSTRAP_RUNNER, MODULE.WORKBENCH_RECOVERY_PROTECTED_PATHS)
@@ -403,6 +517,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         source = inspect.getsource(MODULE.run_workbench_baseline_handover_transport)
         self.assertIn("WORKBENCH_RECOVERY_IMPLEMENTATION", source)
         self.assertIn("verify_workbench_recovery_evidence", source)
+        self.assertIn('"--terminal-finalize"', source)
+        self.assertIn("bind_terminal_finalization_journal", source)
         verifier = inspect.getsource(MODULE.verify_workbench_recovery_evidence)
         self.assertIn("terminalJournalSha256", verifier)
         self.assertIn("receipt/journal binding drift", verifier)
@@ -467,6 +583,66 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 self.assertEqual(payload["journal"]["eventCount"], 10)
             finally:
                 receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_accepts_only_dual_provenance_get_only_terminal_finalization(self):
+        payload, journal, revision, journal_file_sha256 = migrated_recovery_verifier_fixture()
+        with tempfile.TemporaryDirectory() as directory, patch.multiple(
+            MODULE,
+            WORKBENCH_RECOVERY_TERMINAL_REVISION=journal["protectedRevision"],
+            WORKBENCH_RECOVERY_TERMINAL_JOURNAL_FILE_SHA256=journal_file_sha256,
+            WORKBENCH_RECOVERY_TERMINAL_JOURNAL_CANONICAL_SHA256=journal["journalSha256"],
+            WORKBENCH_RECOVERY_FINALIZATION_PARENT_REVISION=payload["finalizationParentRevision"],
+            create=True,
+        ):
+            root = Path(directory)
+            receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+            journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+            try:
+                with self.assertRaisesRegex(MODULE.LiveTransportError, "mode drift"):
+                    MODULE.verify_workbench_recovery_evidence(receipt_bound, journal_bound, revision)
+                proof = MODULE.verify_workbench_recovery_evidence(
+                    receipt_bound, journal_bound, revision, terminal_finalization_expected=True
+                )
+                self.assertTrue(proof["cleanupComplete"])
+                self.assertEqual(proof["clusterMutationCount"], 0)
+                self.assertEqual(proof["terminalRecoveryRevision"], journal["protectedRevision"])
+            finally:
+                receipt_bound.close(); journal_bound.close()
+
+    def test_recovery_verifier_rejects_ambiguous_terminal_provenance_or_nonzero_mutation(self):
+        cases = (
+            ("missing-terminal-revision", lambda payload: payload.pop("terminalRecoveryRevision"), "provenance drift"),
+            ("wrong-parent", lambda payload: payload.__setitem__("finalizationParentRevision", "d" * 40), "provenance drift"),
+            ("nonzero-mutation", lambda payload: payload["effects"].__setitem__("clusterMutationCount", 1), "effect.*drift"),
+            ("new-delete", lambda payload: payload["effects"].__setitem__("newDeletes", 1), "effect.*drift"),
+            ("current-delete-claim", lambda payload: payload["effects"].__setitem__("deleteOnlyMutation", True), "effect.*drift"),
+            ("missing-history", lambda payload: payload["effects"].pop("historicalDeleteOnlyRecovery"), "effect.*drift"),
+            ("source-generation", lambda payload: payload["sourceAtFinalization"].__setitem__("generation", 3), "predecessor drift"),
+            ("journal-binding", lambda payload: payload["journal"].__setitem__("terminalJournalFileSha256", "sha256:" + "0" * 64), "binding drift"),
+        )
+        for label, mutate, message in cases:
+            with self.subTest(label=label):
+                payload, journal, revision, journal_file_sha256 = migrated_recovery_verifier_fixture()
+                mutate(payload)
+                payload.pop("canonicalSha256", None)
+                payload["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(payload).encode())
+                with tempfile.TemporaryDirectory() as directory, patch.multiple(
+                    MODULE,
+                    WORKBENCH_RECOVERY_TERMINAL_REVISION=journal["protectedRevision"],
+                    WORKBENCH_RECOVERY_TERMINAL_JOURNAL_FILE_SHA256=journal_file_sha256,
+                    WORKBENCH_RECOVERY_TERMINAL_JOURNAL_CANONICAL_SHA256=journal["journalSha256"],
+                    WORKBENCH_RECOVERY_FINALIZATION_PARENT_REVISION="c" * 40,
+                ):
+                    root = Path(directory)
+                    receipt_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(payload) + "\n").encode(), root / "receipt.bound", "recovery receipt")
+                    journal_bound = MODULE.bind_bytes_to_fd((MODULE.canonical(journal) + "\n").encode(), root / "journal.bound", "recovery journal")
+                    try:
+                        with self.assertRaisesRegex(MODULE.LiveTransportError, message):
+                            MODULE.verify_workbench_recovery_evidence(
+                                receipt_bound, journal_bound, revision, terminal_finalization_expected=True
+                            )
+                    finally:
+                        receipt_bound.close(); journal_bound.close()
 
     def test_recovery_verifier_rejects_after_only_synthetic_delete_event(self):
         payload, journal, revision = recovery_verifier_fixture(synthetic_after_only=True)
