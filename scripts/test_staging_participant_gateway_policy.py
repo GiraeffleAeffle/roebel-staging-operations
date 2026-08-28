@@ -259,6 +259,34 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(preserved["mutation"], "forbidden")
         self.assertEqual(preserved["adoption"], "forbidden")
 
+    def test_civic_projection_workbench_ingress_adds_only_the_exact_web_presentation(self):
+        policy = POLICY.expected_workbench_ingress_network_policy(
+            include_web_presentation=True,
+        )
+        self.assertEqual(
+            policy["spec"]["ingress"][0]["from"],
+            [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": POLICY.GATEWAY_NAMESPACE,
+                        },
+                    },
+                    "podSelector": {"matchLabels": POLICY.GATEWAY_LABELS},
+                },
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": POLICY.GATEWAY_NAMESPACE,
+                        },
+                    },
+                    "podSelector": {
+                        "matchLabels": POLICY.WEB_PRESENTATION_LABELS,
+                    },
+                },
+            ],
+        )
+
     def test_definite_conflict_is_never_discoverable_or_adoptable(self):
         transaction = POLICY.activation_policy_descriptor()["gitOps"]["activationTransaction"]
         self.assertEqual(transaction["adoption"], "forbidden")

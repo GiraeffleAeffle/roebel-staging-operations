@@ -41,6 +41,8 @@ def load_participant_gateway_policy_module():
 
 
 PARTICIPANT_POLICY = load_participant_gateway_policy_module()
+CIVIC_PROJECTION_UPSTREAM_URL = PARTICIPANT_POLICY.WEB_CIVIC_PROJECTION_UPSTREAM_URL
+WEB_PRESENTATION_LABELS = PARTICIPANT_POLICY.WEB_PRESENTATION_LABELS
 
 
 def load_workbench_baseline_module():
@@ -237,6 +239,17 @@ PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
 PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES = {
     "policy/repository-contract.json",
     PARTICIPANT_POLICY.POLICY_PATH,
+}
+CIVIC_PROJECTION_ROUTE_TRANSITION_FILES = {
+    "scripts/staging_participant_gateway_policy.py",
+    "scripts/test_staging_participant_gateway_policy.py",
+    "scripts/verify-reviewed-render.py",
+    "scripts/test_verify_reviewed_render.py",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/workbench-ingress/networkpolicy.json",
 }
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
@@ -1013,7 +1026,13 @@ def verify_reviewed_public_knowledge(root: Path) -> dict[str, Any]:
     }
 
 
-def verify_deployment(root: Path, component: str, head: dict[str, Any], reviewed_knowledge: bool = False) -> dict[str, Any]:
+def verify_deployment(
+    root: Path,
+    component: str,
+    head: dict[str, Any],
+    reviewed_knowledge: bool = False,
+    civic_projection_route: bool = False,
+) -> dict[str, Any]:
     policy = COMPONENTS[component]
     path = root / RENDER_ROOT / policy["directory"] / "deployment.json"
     deployment = load_json(path)
@@ -1107,7 +1126,34 @@ def verify_deployment(root: Path, component: str, head: dict[str, Any], reviewed
             "name": "PUBLIC_MECKY_CHAT_URL",
             "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084",
         }, "Web Public Mecky URL invalid")
+        projection = {
+            "name": "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL",
+            "value": CIVIC_PROJECTION_UPSTREAM_URL,
+        }
+        if civic_projection_route:
+            require(
+                by_name.get("STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL") == projection,
+                "Web civic projection upstream invalid",
+            )
+        else:
+            require(
+                "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL" not in by_name,
+                "Web civic projection route is not admitted",
+            )
     return deployment
+
+
+def web_civic_projection_route_enabled(root: Path) -> bool:
+    deployment = load_json(root / RENDER_ROOT / "web/deployment.json")
+    try:
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("name") == "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL"
+        for item in environment
+    )
 
 
 def verify_public_mecky_service(root: Path) -> dict[str, Any]:
@@ -2686,9 +2732,8 @@ def verify_public_mecky_network_policy(
     return policy, reviewed_egress or signed_egress
 
 
-def verify_web_network_policy(root: Path) -> dict[str, Any]:
-    policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
-    require(policy == {
+def expected_web_network_policy(civic_projection_route: bool = False) -> dict[str, Any]:
+    policy = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
         "metadata": {
@@ -2764,7 +2809,33 @@ def verify_web_network_policy(root: Path) -> dict[str, Any]:
             },
             "policyTypes": ["Ingress", "Egress"],
         },
-    }, "Web NetworkPolicy drift")
+    }
+    if civic_projection_route:
+        policy["spec"]["egress"].append({
+            "to": [{
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE
+                    }
+                },
+                "podSelector": {
+                    "matchLabels": PARTICIPANT_POLICY.WORKBENCH_SELECTOR
+                },
+            }],
+            "ports": [{"port": PARTICIPANT_POLICY.WORKBENCH_PORT, "protocol": "TCP"}],
+        })
+    return policy
+
+
+def verify_web_network_policy(
+    root: Path,
+    civic_projection_route: bool = False,
+) -> dict[str, Any]:
+    policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
+    require(
+        policy == expected_web_network_policy(civic_projection_route),
+        "Web NetworkPolicy drift",
+    )
     return policy
 
 
@@ -3522,10 +3593,15 @@ def expected_participant_gateway_ingress(
 def expected_participant_gateway_resources(
     runtime_pin: dict[str, Any],
     participant_policy: dict[str, Any] | None = None,
+    *,
+    civic_projection_route: bool = False,
 ) -> dict[str, Any]:
     """Compatibility adapter to the single protected policy module."""
     try:
-        expected = PARTICIPANT_POLICY.expected_gateway_resources(participant_policy)
+        expected = PARTICIPANT_POLICY.expected_gateway_resources(
+            participant_policy,
+            include_web_presentation=civic_projection_route,
+        )
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     require(runtime_pin == expected["runtimePin"], "participant runtime pin differs from protected policy")
@@ -3635,7 +3711,6 @@ def verify_participant_gateway(
         load_json(root / PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"),
         participant_policy,
     )
-    expected = expected_participant_gateway_resources(runtime_pin, participant_policy)
     actual = {
         "deployment": load_json(root / PARTICIPANT_GATEWAY_ROOT / "deployment.json"),
         "service": load_json(root / PARTICIPANT_GATEWAY_ROOT / "service.json"),
@@ -3650,8 +3725,30 @@ def verify_participant_gateway(
             root / PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT / "kustomization.yaml"
         ).read_text(),
     }
+    legacy = expected_participant_gateway_resources(
+        runtime_pin,
+        participant_policy,
+        civic_projection_route=False,
+    )
+    civic_projection = expected_participant_gateway_resources(
+        runtime_pin,
+        participant_policy,
+        civic_projection_route=True,
+    )
+    if actual["workbenchIngressNetworkPolicy"] == legacy["workbenchIngressNetworkPolicy"]:
+        expected = legacy
+        civic_projection_route = False
+    elif actual["workbenchIngressNetworkPolicy"] == civic_projection["workbenchIngressNetworkPolicy"]:
+        expected = civic_projection
+        civic_projection_route = True
+    else:
+        raise VerificationError("staging participant gateway workbench ingress policy drift")
     require(actual == expected, "staging participant gateway resource drift")
-    return {"runtimePin": runtime_pin, **actual}
+    return {
+        "runtimePin": runtime_pin,
+        "civicProjectionRoute": civic_projection_route,
+        **actual,
+    }
 
 
 def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
@@ -3800,6 +3897,7 @@ def verify_network_boundary_migration(
     signed_nostr: bool,
     participant_gateway: bool = False,
     participant_gateway_objects: dict[str, Any] | None = None,
+    civic_projection_route: bool = False,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
     if participant_gateway:
@@ -3881,6 +3979,31 @@ def verify_network_boundary_migration(
             "schemaVersion": "roebel_staging_participant_gateway_boundary_v1",
             "status": "approved-for-exact-staging-activation",
         }
+        if civic_projection_route:
+            gateway_source = {
+                "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                "podSelector": PARTICIPANT_GATEWAY_LABELS,
+            }
+            web_source = {
+                "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                "podSelector": WEB_PRESENTATION_LABELS,
+            }
+            expected["boundary"]["workbenchIngress"] = {
+                "name": PARTICIPANT_POLICY.WORKBENCH_INGRESS_POLICY_NAME,
+                "namespace": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE,
+                "port": PARTICIPANT_POLICY.WORKBENCH_PORT,
+                "existingPolicyMutation": "forbidden",
+                "sources": [gateway_source, web_source],
+            }
+            expected["boundary"]["webCivicProjection"] = {
+                "authority": "none",
+                "destinationNamespace": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE,
+                "destinationPodLabels": PARTICIPANT_POLICY.WORKBENCH_SELECTOR,
+                "port": PARTICIPANT_POLICY.WORKBENCH_PORT,
+                "protocol": "TCP",
+                "source": web_source,
+                "upstreamUrl": CIVIC_PROJECTION_UPSTREAM_URL,
+            }
         require(migration == expected, "participant gateway network-boundary receipt drift")
         return migration
     if signed_nostr:
@@ -4145,23 +4268,47 @@ def verify_tree(root: Path) -> dict[str, Any]:
     participant_gateway = render_file_set in {
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
-    deployments = {component: verify_deployment(root, component, head, reviewed_knowledge) for component in COMPONENT_ORDER}
+    civic_projection_route = web_civic_projection_route_enabled(root)
+    deployments = {
+        component: verify_deployment(
+            root,
+            component,
+            head,
+            reviewed_knowledge,
+            civic_projection_route=civic_projection_route and component == "roebel-web-staging",
+        )
+        for component in COMPONENT_ORDER
+    }
     service = verify_public_mecky_service(root)
     network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
         root,
         reviewed_knowledge,
         signed_nostr,
     )
-    web_network_policy = verify_web_network_policy(root)
+    web_network_policy = verify_web_network_policy(root, civic_projection_route)
     participant_gateway_objects = (
         verify_participant_gateway(root, participant_policy)
         if participant_gateway
         else None
     )
+    require(
+        not civic_projection_route
+        or (
+            participant_gateway_objects is not None
+            and participant_gateway_objects["civicProjectionRoute"] is True
+        ),
+        "Web civic projection route requires exact reciprocal workbench ingress",
+    )
+    require(
+        civic_projection_route
+        or participant_gateway_objects is None
+        or participant_gateway_objects["civicProjectionRoute"] is False,
+        "Workbench civic projection ingress requires the Web route",
+    )
     web_ingress = verify_web_ingress(root, signed_nostr, participant_gateway)
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
-        participant_gateway, participant_gateway_objects,
+        participant_gateway, participant_gateway_objects, civic_projection_route,
     )
     objects = [
         deployments["public-mecky"],
@@ -4181,7 +4328,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
         signed_nostr_objects = verify_signed_nostr(root)
         checksum_payload["signedNostr"] = signed_nostr_objects
     if participant_gateway:
-        checksum_payload["stagingParticipantGateway"] = participant_gateway_objects
+        checksum_payload["stagingParticipantGateway"] = {
+            key: value
+            for key, value in participant_gateway_objects.items()
+            if key != "civicProjectionRoute"
+        }
     require(integrity["desiredRenderSha256"] == digest(checksum_payload), "reviewed render checksum mismatch")
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
     verify_kustomizations(root, signed_nostr, participant_gateway, True)
@@ -4214,6 +4365,49 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_participant_gateway = candidate["renderFileSet"] in {
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
+    base_civic_projection_route = bool(
+        base["stagingParticipantGateway"]
+        and base["stagingParticipantGateway"]["civicProjectionRoute"]
+    )
+    candidate_civic_projection_route = bool(
+        candidate["stagingParticipantGateway"]
+        and candidate["stagingParticipantGateway"]["civicProjectionRoute"]
+    )
+
+    require(
+        not (base_civic_projection_route and not candidate_civic_projection_route),
+        "Web civic projection route cannot regress",
+    )
+    if candidate_civic_projection_route and not base_civic_projection_route:
+        require(
+            base_participant_gateway and candidate_participant_gateway,
+            "Web civic projection route requires the admitted participant gateway render",
+        )
+        require(
+            candidate["renderFileSet"] == base["renderFileSet"],
+            "Web civic projection route may not change the render shape",
+        )
+        require(
+            candidate["head"] == base["head"],
+            "Web civic projection route must preserve the Release Set head",
+        )
+        require(
+            candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+            "Web civic projection route may not change Public Mecky egress",
+        )
+        require(
+            (candidate_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes()
+            == (base_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes(),
+            "Web civic projection route must preserve live preconditions",
+        )
+        candidate_files = repository_files(candidate_root)
+        require(candidate_files == repository_files(base_root), "Web civic projection route file set drift")
+        for relative in sorted(candidate_files - CIVIC_PROJECTION_ROUTE_TRANSITION_FILES):
+            require(
+                (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
+                f"Web civic projection route changed protected file: {relative}",
+            )
+        return
 
     if candidate["stagingParticipantGatewayPolicy"] != base["stagingParticipantGatewayPolicy"]:
         try:

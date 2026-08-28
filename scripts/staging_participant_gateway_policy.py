@@ -73,11 +73,21 @@ GATEWAY_LABELS = {
     "stadtstack.io/civic-authority": "none",
     "stadtstack.io/environment": "staging",
 }
+WEB_PRESENTATION_LABELS = {
+    "app.kubernetes.io/component": "readonly-presentation",
+    "app.kubernetes.io/name": "roebel-web-presentation",
+    "app.kubernetes.io/part-of": "stadtstack",
+    "stadtstack.io/authority": "none",
+}
 WORKBENCH_SELECTOR = {
     "app.kubernetes.io/component": "e2e-workbench",
     "app.kubernetes.io/name": WORKBENCH_NAME,
     "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
 }
+WEB_CIVIC_PROJECTION_UPSTREAM_URL = (
+    "http://e2e-workbench.stadtstack-roebel-staging-lab."
+    "svc.cluster.local:18083/stadtstack-test/api"
+)
 WORKBENCH_INGRESS_POLICY_LABELS = {
     "app.kubernetes.io/component": "staging-participant-workbench-ingress",
     "app.kubernetes.io/name": WORKBENCH_INGRESS_POLICY_NAME,
@@ -1021,8 +1031,22 @@ def _flux_objects(owner: str, *, suspended: bool) -> dict[str, dict[str, Any]]:
     }
 
 
-def expected_workbench_ingress_network_policy() -> dict[str, Any]:
+def expected_workbench_ingress_network_policy(
+    *,
+    include_web_presentation: bool = False,
+) -> dict[str, Any]:
     validate_activation_policy(STATIC_ACTIVATION_POLICY)
+    sources = [{
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": GATEWAY_NAMESPACE}},
+        "podSelector": {"matchLabels": GATEWAY_LABELS},
+    }]
+    if include_web_presentation:
+        sources.append({
+            "namespaceSelector": {
+                "matchLabels": {"kubernetes.io/metadata.name": GATEWAY_NAMESPACE}
+            },
+            "podSelector": {"matchLabels": WEB_PRESENTATION_LABELS},
+        })
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -1033,10 +1057,7 @@ def expected_workbench_ingress_network_policy() -> dict[str, Any]:
         },
         "spec": {
             "ingress": [{
-                "from": [{
-                    "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": GATEWAY_NAMESPACE}},
-                    "podSelector": {"matchLabels": GATEWAY_LABELS},
-                }],
+                "from": sources,
                 "ports": [{"port": WORKBENCH_PORT, "protocol": "TCP"}],
             }],
             "podSelector": {"matchLabels": WORKBENCH_SELECTOR},
@@ -1127,8 +1148,16 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
     }
 
 
-def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Build the exact two-path render from protected policy only."""
+def expected_gateway_resources(
+    policy: dict[str, Any] | None = None,
+    *,
+    include_web_presentation: bool = False,
+) -> dict[str, Any]:
+    """Build the exact gateway render from protected policy only.
+
+    The web presentation read path is deliberately an explicit additive
+    choice.  The caller must never infer it from a broad namespace rule.
+    """
     value = assert_activation_ready(policy)
     runtime_pin = expected_runtime_pin(value)
     endpoints = value["endpoints"]
@@ -1320,7 +1349,9 @@ def expected_gateway_resources(policy: dict[str, Any] | None = None) -> dict[str
         "deployment": deployment,
         "ingress": expected_gateway_ingress(value),
         "kustomization": gateway_kustomization,
-        "workbenchIngressNetworkPolicy": expected_workbench_ingress_network_policy(),
+        "workbenchIngressNetworkPolicy": expected_workbench_ingress_network_policy(
+            include_web_presentation=include_web_presentation,
+        ),
         "workbenchIngressKustomization": (
             "apiVersion: kustomize.config.k8s.io/v1beta1\n"
             "kind: Kustomization\n"

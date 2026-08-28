@@ -76,6 +76,30 @@
             "protocol": "TCP"
           }
         ]
+      },
+      {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "e2e-workbench",
+                "app.kubernetes.io/name": "e2e-workbench",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18083,
+            "protocol": "TCP"
+          }
+        ]
       }
     ],
     "ingress": [

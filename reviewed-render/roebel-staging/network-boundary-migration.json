@@ -75,19 +75,51 @@
       "namespace": "stadtstack-roebel-staging-lab",
       "port": 18083,
       "existingPolicyMutation": "forbidden",
+      "sources": [
+        {
+          "namespace": "stadtstack-roebel-web-preview",
+          "podSelector": {
+            "app.kubernetes.io/component": "staging-participant-gateway",
+            "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/authority": "none",
+            "stadtstack.io/civic-authority": "none",
+            "stadtstack.io/environment": "staging"
+          }
+        },
+        {
+          "namespace": "stadtstack-roebel-web-preview",
+          "podSelector": {
+            "app.kubernetes.io/component": "readonly-presentation",
+            "app.kubernetes.io/name": "roebel-web-presentation",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/authority": "none"
+          }
+        }
+      ]
+    },
+    "signedNostr": "not-present",
+    "webCivicProjection": {
+      "authority": "none",
+      "destinationNamespace": "stadtstack-roebel-staging-lab",
+      "destinationPodLabels": {
+        "app.kubernetes.io/component": "e2e-workbench",
+        "app.kubernetes.io/name": "e2e-workbench",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+      },
+      "port": 18083,
+      "protocol": "TCP",
       "source": {
         "namespace": "stadtstack-roebel-web-preview",
         "podSelector": {
-          "app.kubernetes.io/component": "staging-participant-gateway",
-          "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+          "app.kubernetes.io/component": "readonly-presentation",
+          "app.kubernetes.io/name": "roebel-web-presentation",
           "app.kubernetes.io/part-of": "stadtstack",
-          "stadtstack.io/authority": "none",
-          "stadtstack.io/civic-authority": "none",
-          "stadtstack.io/environment": "staging"
+          "stadtstack.io/authority": "none"
         }
-      }
-    },
-    "signedNostr": "not-present"
+      },
+      "upstreamUrl": "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/stadtstack-test/api"
+    }
   },
   "effects": {
     "civicMutation": false,
@@ -100,7 +132,7 @@
       "kind": "NetworkPolicy",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:4c2bd4a40609f4e2920023364025bf55af167d39e25804701ad65f109b42b482"
+      "sha256": "sha256:b7315ec8535908ad54d79729e1590fea0c96ac1c73cfdc6c3053763232b8f34e"
     },
     {
       "kind": "Ingress",
@@ -142,7 +174,7 @@
       "kind": "NetworkPolicy",
       "name": "roebel-staging-participant-workbench-ingress",
       "namespace": "stadtstack-roebel-staging-lab",
-      "sha256": "sha256:40b5d1e99ec3d78a36037cbc584218062aa1810aebc85ca3f6b5e4179e7e44f5"
+      "sha256": "sha256:7c203757a2745ff6375cb1ec8d4f2c923e7d7dad5118aef8e64cf6f9abf61444"
     }
   ],
   "rbacBootstrap": {
