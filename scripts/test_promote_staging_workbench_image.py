@@ -59,6 +59,19 @@ def deployment() -> dict[str, Any]:
                         "name": MODULE.WORKBENCH_CONTAINER_NAME,
                         "image": MODULE.OLD_IMAGE,
                         "imagePullPolicy": "IfNotPresent",
+                        "env": [
+                            {"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"},
+                            {"name": "WORKBENCH_PORT", "value": "18083"},
+                            {"name": "CITIZEN_RELAY_URL", "value": "http://citizen-relay:18080"},
+                            {"name": "AGENT_RELAY_URL", "value": "http://agent-relay:18080"},
+                            {"name": "STADTSTACK_PUBLIC_BASE_URL", "value": "http://stadtstack-public:18080"},
+                            {"name": "STADTSTACK_CONTROL_BASE_URL", "value": "http://stadtstack-control:18080"},
+                            {"name": "MECKY_PUBKEY", "value": "a" * 64},
+                            {"name": "SYNTHETIC_CITIZENS_JSON", "valueFrom": {"secretKeyRef": {"name": "synthetic-citizens", "key": "json"}}},
+                            {"name": "CASE_STEWARD_TOKEN", "valueFrom": {"secretKeyRef": {"name": "case-steward", "key": "token"}}},
+                            {"name": "CITIZEN_RELAY_ADMISSION_TOKEN", "valueFrom": {"secretKeyRef": {"name": "citizen-relay", "key": "admission-token"}}},
+                            {"name": "GNOSIS_RPC_URL", "value": "https://rpc.example.invalid"},
+                        ],
                         "ports": [{"name": "http", "containerPort": 18083}],
                     }],
                 },
@@ -238,8 +251,19 @@ class FakeKubernetes:
         if self.raise_before_apply:
             raise TimeoutError("response lost before server apply")
         current = self.objects["deployment"]
-        image = operations[-1]["value"]
-        current["spec"]["template"]["spec"]["containers"][0]["image"] = image
+        container = current["spec"]["template"]["spec"]["containers"][0]
+        image = operations[5]["value"]
+        container["image"] = image
+        for operation in operations[6:]:
+            path = operation["path"]
+            if path.endswith("/-"):
+                container["env"].append(copy.deepcopy(operation["value"]))
+            else:
+                index = int(path.rsplit("/", 1)[1])
+                if operation["op"] == "remove":
+                    container["env"].pop(index)
+                else:
+                    container["env"].insert(index, copy.deepcopy(operation["value"]))
         current["metadata"]["resourceVersion"] = str(int(current["metadata"]["resourceVersion"]) + 1)
         self.pods = [pod(image)]
         if self.drift_after_apply:
@@ -319,10 +343,13 @@ class PromotionTests(unittest.TestCase):
         )
         return result, kube, journal, receipt
 
-    def test_patch_is_exactly_five_tests_and_one_image_replace(self) -> None:
+    def test_patch_is_exact_public_mode_transition(self) -> None:
         before = deployment()
         patch = MODULE.build_image_patch(before)
-        self.assertEqual([item["op"] for item in patch], ["test"] * 5 + ["replace"])
+        self.assertEqual(
+            [item["op"] for item in patch],
+            ["test"] * 5 + ["replace"] + ["remove"] * 4 + ["add"],
+        )
         self.assertEqual({item["path"] for item in patch[:5]}, {
             "/metadata/uid",
             "/metadata/resourceVersion",
@@ -330,14 +357,45 @@ class PromotionTests(unittest.TestCase):
             "/spec/template/spec/containers/0/name",
             "/spec/template/spec/containers/0/image",
         })
-        self.assertEqual(patch[-1], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.TARGET_IMAGE})
+        self.assertEqual(patch[5], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.TARGET_IMAGE})
+        self.assertEqual(
+            [item["path"] for item in patch[6:10]],
+            [
+                "/spec/template/spec/containers/0/env/8",
+                "/spec/template/spec/containers/0/env/7",
+                "/spec/template/spec/containers/0/env/5",
+                "/spec/template/spec/containers/0/env/4",
+            ],
+        )
+        self.assertEqual(
+            patch[10],
+            {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}},
+        )
 
-    def test_rollback_patch_is_the_same_cas_shape_with_inverse_image(self) -> None:
+    def test_rollback_patch_restores_exact_old_public_environment(self) -> None:
+        before = deployment()
         current = deployment()
         current["spec"]["template"]["spec"]["containers"][0]["image"] = MODULE.TARGET_IMAGE
-        patch = MODULE.build_rollback_patch(current)
-        self.assertEqual([item["op"] for item in patch], ["test"] * 5 + ["replace"])
-        self.assertEqual(patch[-1], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.OLD_IMAGE})
+        current["spec"]["template"]["spec"]["containers"][0]["env"] = [
+            entry for entry in current["spec"]["template"]["spec"]["containers"][0]["env"]
+            if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
+        ] + [{"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}]
+        patch = MODULE.build_rollback_patch(current, before=before)
+        self.assertEqual(
+            [item["op"] for item in patch],
+            ["test"] * 5 + ["replace", "remove"] + ["add"] * 4,
+        )
+        self.assertEqual(patch[5], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.OLD_IMAGE})
+        self.assertEqual(patch[6], {"op": "remove", "path": "/spec/template/spec/containers/0/env/7"})
+        self.assertEqual(
+            [item["path"] for item in patch[7:]],
+            [
+                "/spec/template/spec/containers/0/env/4",
+                "/spec/template/spec/containers/0/env/5",
+                "/spec/template/spec/containers/0/env/7",
+                "/spec/template/spec/containers/0/env/8",
+            ],
+        )
 
     def test_success_proves_rollout_pod_digest_probes_and_preservation(self) -> None:
         result, kube, journal, receipt = self.invoke(FakeKubernetes())
@@ -456,6 +514,14 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(result["status"], "preflight-failed")
         self.assertEqual(kube.patch_calls, [])
 
+    def test_literal_synthetic_personas_are_rejected_before_patch(self) -> None:
+        kube = FakeKubernetes()
+        env = kube.objects["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        env[7] = {"name": "SYNTHETIC_CITIZENS_JSON", "value": "[]"}
+        result, kube, _journal, _receipt = self.invoke(kube)
+        self.assertEqual(result["status"], "preflight-failed")
+        self.assertEqual(kube.patch_calls, [])
+
     def test_service_selector_or_target_port_drift_fails_before_patch(self) -> None:
         for field, value in (("selector", {"app": "foreign"}), ("targetPort", "http"), ("targetPort", 18084)):
             kube = FakeKubernetes()
@@ -474,7 +540,7 @@ class PromotionTests(unittest.TestCase):
         result, kube, _journal, _receipt = self.invoke(kube)
         self.assertEqual(result["status"], "rolled-back")
         self.assertEqual(len(kube.patch_calls), 2)
-        self.assertEqual(kube.patch_calls[-1][-1]["value"], MODULE.OLD_IMAGE)
+        self.assertEqual(kube.patch_calls[-1][5]["value"], MODULE.OLD_IMAGE)
 
     def test_endpoint_slice_address_and_family_drift_roll_back_before_probes(self) -> None:
         duplicate = endpoint_slice(); duplicate["endpoints"][0]["addresses"] = ["10.0.0.12", "10.0.0.12"]
@@ -490,7 +556,7 @@ class PromotionTests(unittest.TestCase):
                 result, kube, _journal, _receipt = self.invoke(kube)
                 self.assertEqual(result["status"], "rolled-back")
                 self.assertEqual(len(kube.patch_calls), 2)
-                self.assertEqual(kube.patch_calls[-1][-1]["value"], MODULE.OLD_IMAGE)
+                self.assertEqual(kube.patch_calls[-1][5]["value"], MODULE.OLD_IMAGE)
 
     def test_rollout_failure_rolls_back_with_inverse_cas_patch(self) -> None:
         kube = FakeKubernetes()
@@ -498,7 +564,7 @@ class PromotionTests(unittest.TestCase):
         result, kube, _journal, _receipt = self.invoke(kube)
         self.assertEqual(result["status"], "rolled-back")
         self.assertEqual(len(kube.patch_calls), 2)
-        self.assertEqual(kube.patch_calls[1][-1]["value"], MODULE.OLD_IMAGE)
+        self.assertEqual(kube.patch_calls[1][5]["value"], MODULE.OLD_IMAGE)
         self.assertTrue(result["effects"]["rollbackApplied"])
         self.assertEqual(kube.objects["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"], MODULE.OLD_IMAGE)
 
@@ -641,7 +707,7 @@ class PromotionTests(unittest.TestCase):
         resumed, kube, _journal, receipt = self.invoke(kube, journal=journal, receipt=MODULE.MemoryReceipt())
         self.assertEqual(resumed["status"], "rolled-back")
         self.assertEqual(len(kube.patch_calls), 2)
-        self.assertEqual(kube.patch_calls[-1][-1]["value"], MODULE.OLD_IMAGE)
+        self.assertEqual(kube.patch_calls[-1][5]["value"], MODULE.OLD_IMAGE)
         self.assertEqual(receipt.value["status"], "rolled-back")
 
     def test_spec_drift_blocks_unsafe_rollback_without_second_patch(self) -> None:
@@ -716,10 +782,13 @@ class PromotionTests(unittest.TestCase):
 
     def test_value_free_guard_only_allows_boolean_secret_effect_flag(self) -> None:
         MODULE._reject_secret_shaped({"effects": {"secretValuesRead": False}})
+        MODULE._reject_secret_shaped({"environment": {"valueFrom": {"secretKeyRef": {"name": "x", "key": "y"}}}})
         with self.assertRaises(MODULE.PromotionError):
             MODULE._reject_secret_shaped({"effects": {"secretValuesRead": "false"}})
         with self.assertRaises(MODULE.PromotionError):
             MODULE._reject_secret_shaped({"effects": {"apiKey": "redacted"}})
+        with self.assertRaises(MODULE.PromotionError):
+            MODULE._reject_secret_shaped({"environment": {"valueFrom": {"configMapKeyRef": {"name": "x", "key": "y"}}}})
 
     def test_probe_schemas_reject_provenance_and_credential_shaped_extras(self) -> None:
         config_with_provenance = public_config()

@@ -1725,6 +1725,20 @@ def verify_workbench_image_promotion_evidence(
         and isinstance(preservation.get("networkPolicy"), dict),
         "workbench image promotion preservation proof drift",
     )
+    deployment = evidence.get("deployment")
+    require(
+        isinstance(deployment, dict)
+        and deployment.get("environmentTransition") == {
+            "added": {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+            "removedNames": [
+                "CASE_STEWARD_TOKEN",
+                "STADTSTACK_CONTROL_BASE_URL",
+                "STADTSTACK_PUBLIC_BASE_URL",
+                "SYNTHETIC_CITIZENS_JSON",
+            ],
+        },
+        "workbench image promotion public-mode transition proof drift",
+    )
     rollout = evidence.get("rollout")
     backend = evidence.get("backendBinding")
     probes = evidence.get("probes")
@@ -1866,11 +1880,16 @@ def verify_workbench_image_promotion_evidence(
     deployment = evidence.get("deployment")
     require(
         isinstance(before, dict)
-        and set(before) == {"deploymentUid", "resourceVersion", "specSha256", "normalizedSpecSha256", "service", "serviceRouting", "networkPolicy"}
+        and set(before) == {"deploymentUid", "resourceVersion", "specSha256", "normalizedSpecSha256", "environment", "service", "serviceRouting", "networkPolicy"}
         and before.get("deploymentUid") == deployment.get("uid")
         and before.get("resourceVersion") == deployment.get("beforeResourceVersion")
         and before.get("specSha256") == deployment.get("beforeSpecSha256")
         and before.get("normalizedSpecSha256") == deployment.get("beforeNormalizedSpecSha256")
+        and isinstance(before.get("environment"), dict)
+        and set(before["environment"]) == {"containerIndex", "entries"}
+        and isinstance(before["environment"].get("containerIndex"), int)
+        and not isinstance(before["environment"].get("containerIndex"), bool)
+        and isinstance(before["environment"].get("entries"), list)
         and before.get("service") == preservation.get("service")
         and before.get("networkPolicy") == preservation.get("networkPolicy")
         and before.get("serviceRouting") == {key: backend.get(key) for key in ("selector", "servicePort", "targetPort", "containerPort")}

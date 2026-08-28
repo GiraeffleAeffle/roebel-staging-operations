@@ -846,7 +846,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             },
             "mutationSurface": [
                 "GET Deployment/Service/NetworkPolicy",
-                "PATCH Deployment image with exact CAS",
+                "PATCH Deployment image and public-mode environment with exact CAS",
                 "GET rollout/pods/service-proxy-config/service-proxy-feed",
             ],
             "preservation": ["Service", "NetworkPolicy", "Secrets", "civic-authority-effects"],
