@@ -112,6 +112,25 @@ class RecoveryTests(unittest.TestCase):
         adapter._run = fake_run
         return adapter, calls
 
+    def completed_terminal(self, prior_revision):
+        kube = FakeKube()
+        kube.objects[key(MODULE.source_target())] = source_live(prior_revision)
+        baseline = kube.get(MODULE.baseline_target()); assert baseline is not None
+        origin, attempt, inspection = self.inputs(baseline)
+        journal = MODULE.MemoryJournal()
+        with self.patched_constants(origin, attempt, inspection, baseline):
+            result = MODULE.run(
+                kube=kube, revision=prior_revision,
+                origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                journal=journal, receipt=MODULE.MemoryReceipt(),
+            )
+        self.assertEqual(result["status"], "completed")
+        terminal_state = copy.deepcopy(journal.state); assert terminal_state is not None
+        terminal_with_checksum = copy.deepcopy(terminal_state)
+        terminal_with_checksum["journalSha256"] = MODULE.digest(terminal_state)
+        raw_terminal_sha256 = MODULE.bytes_digest((MODULE.canonical(terminal_with_checksum) + "\n").encode())
+        return kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256
+
     def test_kubernetes_get_retries_exact_tls_transport_then_succeeds(self):
         identity = MODULE.baseline_target()
         adapter, calls = self.adapter_with_runs([
@@ -379,6 +398,189 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual(kube.deletes, deletes_before)
         self.assertEqual(recovered_receipt.value["journal"]["terminalJournalSha256"], MODULE.digest(journal.state))
+
+    def test_pinned_prior_terminal_journal_finalizes_against_current_source_with_gets_only(self):
+        prior_revision = "e" * 40
+        kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256 = self.completed_terminal(prior_revision)
+        deletes_before = list(kube.deletes)
+        gets_before = len(kube.gets)
+
+        class PinnedTerminalJournal(MODULE.MemoryJournal):
+            def raw_sha256(self):
+                return raw_terminal_sha256
+
+        pinned = PinnedTerminalJournal(terminal_state)
+        current_source = source_live(REVISION)
+        current_source["metadata"]["generation"] = terminal_state["source"]["generation"]
+        current_source["status"]["observedGeneration"] = terminal_state["source"]["generation"]
+        kube.objects[key(MODULE.source_target())] = current_source
+        receipt = MODULE.MemoryReceipt()
+        with self.patched_constants(origin, attempt, inspection, baseline), patch.multiple(
+            MODULE,
+            TERMINAL_RECOVERY_REVISION=prior_revision,
+            TERMINAL_RECOVERY_JOURNAL_FILE_SHA256=raw_terminal_sha256,
+            TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256=MODULE.digest(terminal_state),
+            create=True,
+        ):
+            result = MODULE.run(
+                kube=kube, revision=REVISION,
+                origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                journal=pinned, receipt=receipt, terminal_finalize=True,
+            )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(kube.deletes, deletes_before)
+        self.assertEqual(pinned.values, [])
+        self.assertEqual(pinned.state, terminal_state)
+        self.assertIsNotNone(receipt.value)
+        self.assertEqual(result["protectedRevision"], REVISION)
+        self.assertEqual(result["terminalRecoveryRevision"], prior_revision)
+        self.assertEqual(result["sourceAtRecovery"], terminal_state["source"])
+        self.assertEqual(result["sourceAtFinalization"]["revision"], f"main@sha1:{REVISION}")
+        self.assertEqual(result["journal"]["terminalJournalFileSha256"], raw_terminal_sha256)
+        self.assertTrue(result["effects"]["getOnlyFinalization"])
+        self.assertTrue(result["effects"]["historicalDeleteOnlyRecovery"])
+        self.assertFalse(result["effects"]["deleteOnlyMutation"])
+        self.assertEqual(result["effects"]["clusterMutationCount"], 0)
+        self.assertEqual(result["effects"]["newDeletes"], 0)
+        self.assertEqual(
+            kube.gets[gets_before:],
+            [
+                MODULE.target(MODULE.expected_objects()[name]) for name in MODULE.OBJECT_ORDER
+            ] + [MODULE.baseline_target(), MODULE.source_target()],
+        )
+
+    def test_terminal_finalizer_rejects_raw_journal_drift_before_cluster_contact(self):
+        prior_revision = "e" * 40
+        kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256 = self.completed_terminal(prior_revision)
+
+        class DriftedJournal(MODULE.MemoryJournal):
+            def raw_sha256(self):
+                return "sha256:" + "0" * 64
+
+        class NoClusterContact:
+            def get(self, identity):
+                raise AssertionError("journal drift must block before Kubernetes GET")
+            def delete(self, identity, *, uid, resource_version):
+                raise AssertionError("terminal finalization must never DELETE")
+
+        with self.patched_constants(origin, attempt, inspection, baseline), patch.multiple(
+            MODULE,
+            TERMINAL_RECOVERY_REVISION=prior_revision,
+            TERMINAL_RECOVERY_JOURNAL_FILE_SHA256=raw_terminal_sha256,
+            TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256=MODULE.digest(terminal_state),
+        ):
+            with self.assertRaisesRegex(MODULE.RecoveryError, "file checksum drift"):
+                MODULE.run(
+                    kube=NoClusterContact(), revision=REVISION,
+                    origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                    journal=DriftedJournal(terminal_state), receipt=MODULE.MemoryReceipt(), terminal_finalize=True,
+                )
+
+    def test_prior_terminal_journal_requires_explicit_get_only_finalization_mode(self):
+        prior_revision = "e" * 40
+        _kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256 = self.completed_terminal(prior_revision)
+
+        class PinnedTerminalJournal(MODULE.MemoryJournal):
+            def raw_sha256(self):
+                return raw_terminal_sha256
+
+        class NoClusterContact:
+            def get(self, identity):
+                raise AssertionError("ordinary recovery must reject the prior terminal journal before GET")
+            def delete(self, identity, *, uid, resource_version):
+                raise AssertionError("ordinary recovery must reject the prior terminal journal before DELETE")
+
+        with self.patched_constants(origin, attempt, inspection, baseline), patch.multiple(
+            MODULE,
+            TERMINAL_RECOVERY_REVISION=prior_revision,
+            TERMINAL_RECOVERY_JOURNAL_FILE_SHA256=raw_terminal_sha256,
+            TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256=MODULE.digest(terminal_state),
+        ):
+            with self.assertRaisesRegex(MODULE.RecoveryError, "explicit terminal-finalization mode"):
+                MODULE.run(
+                    kube=NoClusterContact(), revision=REVISION,
+                    origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                    journal=PinnedTerminalJournal(terminal_state), receipt=MODULE.MemoryReceipt(),
+                )
+
+    def test_terminal_finalization_mode_rejects_missing_incomplete_or_unrelated_journal_before_get(self):
+        prior_revision = "e" * 40
+        _kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256 = self.completed_terminal(prior_revision)
+
+        class NoClusterContact:
+            def get(self, identity):
+                raise AssertionError("invalid terminal journal must block before Kubernetes GET")
+            def delete(self, identity, *, uid, resource_version):
+                raise AssertionError("terminal-finalization mode must never DELETE")
+
+        states = {
+            "missing": None,
+            "pending": terminal_state | {"status": "pending"},
+            "unrelated-revision": terminal_state | {"protectedRevision": "d" * 40},
+            "altered-terminal": terminal_state | {"operationMarker": "00000000-0000-4000-8000-000000000000"},
+        }
+        for label, candidate in states.items():
+            with self.subTest(label=label):
+                class CandidateJournal(MODULE.MemoryJournal):
+                    def raw_sha256(self):
+                        return raw_terminal_sha256
+
+                with self.patched_constants(origin, attempt, inspection, baseline), patch.multiple(
+                    MODULE,
+                    TERMINAL_RECOVERY_REVISION=prior_revision,
+                    TERMINAL_RECOVERY_JOURNAL_FILE_SHA256=raw_terminal_sha256,
+                    TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256=MODULE.digest(terminal_state),
+                ):
+                    with self.assertRaises(MODULE.RecoveryError):
+                        MODULE.run(
+                            kube=NoClusterContact(), revision=REVISION,
+                            origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                            journal=CandidateJournal(candidate), receipt=MODULE.MemoryReceipt(), terminal_finalize=True,
+                        )
+
+    def test_terminal_finalizer_rejects_source_baseline_or_absence_drift_without_mutation(self):
+        prior_revision = "e" * 40
+        for drift in ("source-uid", "source-generation", "source-revision", "source-spec", "source-ready", "baseline", "reappeared"):
+            with self.subTest(drift=drift):
+                kube, baseline, origin, attempt, inspection, terminal_state, raw_terminal_sha256 = self.completed_terminal(prior_revision)
+                kube.objects[key(MODULE.source_target())] = source_live(REVISION)
+                source = kube.objects[key(MODULE.source_target())]
+                source["metadata"]["generation"] = terminal_state["source"]["generation"]
+                source["status"]["observedGeneration"] = terminal_state["source"]["generation"]
+                if drift == "source-uid":
+                    source["metadata"]["uid"] = "00000000-0000-4000-8000-000000000099"
+                elif drift == "source-generation":
+                    source["metadata"]["generation"] += 1; source["status"]["observedGeneration"] += 1
+                elif drift == "source-revision":
+                    source["status"]["artifact"]["revision"] = "main@sha1:" + "d" * 40
+                elif drift == "source-spec":
+                    source["spec"]["timeout"] = "31s"
+                elif drift == "source-ready":
+                    source["status"]["conditions"][0]["status"] = "False"
+                elif drift == "baseline":
+                    kube.objects[key(MODULE.baseline_target())]["metadata"]["resourceVersion"] = "301"
+                else:
+                    kube.objects[key(MODULE.target(MODULE.expected_objects()["role"]))] = object_live("role")
+
+                class PinnedTerminalJournal(MODULE.MemoryJournal):
+                    def raw_sha256(self):
+                        return raw_terminal_sha256
+
+                deletes_before = list(kube.deletes)
+                with self.patched_constants(origin, attempt, inspection, baseline), patch.multiple(
+                    MODULE,
+                    TERMINAL_RECOVERY_REVISION=prior_revision,
+                    TERMINAL_RECOVERY_JOURNAL_FILE_SHA256=raw_terminal_sha256,
+                    TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256=MODULE.digest(terminal_state),
+                ):
+                    with self.assertRaises(MODULE.RecoveryError):
+                        MODULE.run(
+                            kube=kube, revision=REVISION,
+                            origin_journal=origin, attempt_receipt=attempt, inspection=inspection,
+                            journal=PinnedTerminalJournal(terminal_state), receipt=MODULE.MemoryReceipt(), terminal_finalize=True,
+                        )
+                self.assertEqual(kube.deletes, deletes_before)
 
     def test_receipt_is_immutable_and_cli_surface_has_no_mutating_escape_hatches(self):
         with tempfile.TemporaryDirectory() as directory:

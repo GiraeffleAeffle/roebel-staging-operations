@@ -179,7 +179,24 @@
       "forbidden": ["create", "patch", "apply", "list", "secrets", "civic-authority-effects"],
       "deleteOrder": ["Kustomization", "RoleBinding", "Role", "ServiceAccount"],
       "automaticRetry": false,
-      "resume": "same-journal-same-protected-revision-same-origin-evidence-and-exact-uids-only"
+      "resume": "same-journal-same-protected-revision-same-origin-evidence-and-exact-uids-only",
+      "terminalReceiptFinalization": {
+        "outerModeFlag": "--workbench-baseline-recovery-finalize",
+        "innerModeFlag": "--terminal-finalize",
+        "terminalRecoveryRevision": "18b1780be9b2e1d8bad05e27f81f11d9b104ab06",
+        "terminalJournalFileSha256": "sha256:d6e16407761ecbf2d6ce29aab48f10f4420770a7b97b393b53b9753152f5f604",
+        "terminalJournalCanonicalSha256": "sha256:cdeab725635754bb4a220bc915e4ff69a46246b6336ca954681d7ff6e7497613",
+        "requiredSoleParentRevision": "9f7a7a1e96065e849a8b7a9879de1fadb9ec6e2f",
+        "preTransportJournalBinding": "exact-existing-private-file-only",
+        "mutationSurface": ["GET"],
+        "clusterMutationCount": 0,
+        "newDeletes": 0,
+        "historicalDeleteOnlyRecovery": true,
+        "deleteOnlyMutation": false,
+        "journalMutation": false,
+        "invalidJournal": "fail-before-transport",
+        "receiptProvenance": "terminal-recovery-and-finalization-revisions"
+      }
     },
     "liveTransport": {
       "modeFlag": "--workbench-baseline-handover",

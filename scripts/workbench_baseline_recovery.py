@@ -30,6 +30,10 @@ ORIGIN_JOURNAL_FILE_SHA256 = "sha256:70015e2728bf8e30491862687c3b507aa3d4d03e4f9
 ORIGIN_JOURNAL_EMBEDDED_SHA256 = "sha256:cd15195c7d1ce3209f65ab6b579d6c5926db4e730272e64da8894a9fc19d7a18"
 ATTEMPT_RECEIPT_SHA256 = "sha256:55a7cfac98cdb40aa49a46a00abbd47d8305cff4d001f8984c57a0c964d51ee9"
 INSPECTION_SHA256 = "sha256:d7a94d4e27c18317ede34f6700a7c4a27081133bd7f881e46d5bd30466430755"
+TERMINAL_RECOVERY_REVISION = "18b1780be9b2e1d8bad05e27f81f11d9b104ab06"
+TERMINAL_RECOVERY_JOURNAL_FILE_SHA256 = "sha256:d6e16407761ecbf2d6ce29aab48f10f4420770a7b97b393b53b9753152f5f604"
+TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256 = "sha256:cdeab725635754bb4a220bc915e4ff69a46246b6336ca954681d7ff6e7497613"
+TERMINAL_FINALIZATION_PARENT_REVISION = "9f7a7a1e96065e849a8b7a9879de1fadb9ec6e2f"
 OPERATION_ID = "b6b52abc-4b28-4db0-b4ef-74041f41d7c6"
 OPERATION_MARKER = "77157c24-d1d0-4cb8-850b-538f380c16fd"
 BASELINE_UID = "298b0f92-0d6b-4563-b141-f93aa8c8fd8f"
@@ -487,6 +491,10 @@ class JsonJournal:
         if current[2] == 0:
             return None
         return _decode_checksummed(_read_private(self.path, "recovery journal", self.MAX_BYTES), "recovery journal", "journalSha256")
+    def raw_sha256(self) -> str:
+        current = _private_file_identity(self.path, "recovery journal", allow_empty=False)
+        require(current == self.identity, "recovery journal reservation identity changed")
+        return bytes_digest(_read_private(self.path, "recovery journal", self.MAX_BYTES))
     def commit(self, value: dict[str, Any]) -> None:
         self.identity = _atomic_private_json(self.path, self.identity, value, "journalSha256", self.MAX_BYTES)
 
@@ -631,15 +639,45 @@ def _preflight(
     return baseline, source, values
 
 
-def run(*, kube: Any, revision: str, origin_journal: bytes, attempt_receipt: bytes, inspection: bytes, journal: Any, receipt: Any) -> dict[str, Any]:
+def run(
+    *,
+    kube: Any,
+    revision: str,
+    origin_journal: bytes,
+    attempt_receipt: bytes,
+    inspection: bytes,
+    journal: Any,
+    receipt: Any,
+    terminal_finalize: bool = False,
+) -> dict[str, Any]:
     require(REVISION.fullmatch(revision) is not None, "protected revision invalid")
+    require(isinstance(terminal_finalize, bool), "terminal-finalization mode invalid")
     _validate_output_separation(journal, receipt)
     evidence = _validate_origin_inputs(origin_journal, attempt_receipt, inspection)
     state = journal.load()
+    if terminal_finalize:
+        require(isinstance(state, dict), "terminal-finalization mode requires the exact existing journal")
+        require(state.get("status") == "completed", "terminal-finalization mode requires a completed journal")
+        require(state.get("protectedRevision") == TERMINAL_RECOVERY_REVISION, "terminal-finalization journal revision drift")
+        baseline, source, final_absence, journal_file_sha256 = _reprove_pinned_terminal_cleanup(
+            kube, state, revision, evidence, journal
+        )
+        result = _completed_terminal_finalization_receipt(
+            revision=revision,
+            evidence=evidence,
+            baseline=baseline,
+            source=source,
+            state=state,
+            final_absence=final_absence,
+            journal_file_sha256=journal_file_sha256,
+        )
+        receipt.commit(result)
+        return result
     if state is None:
         baseline, source, objects = _preflight(kube, revision)
         state = _initial_state(revision, evidence, baseline, source, objects); journal.commit(state)
     elif state.get("status") == "completed":
+        require(state.get("protectedRevision") == revision, "prior terminal journal requires explicit terminal-finalization mode")
         baseline, source, final_absence = _reprove_terminal_cleanup(kube, state, revision, evidence)
         result = _completed_receipt(revision=revision, evidence=evidence, baseline=baseline, source=source, state=state, final_absence=final_absence)
         receipt.commit(result)
@@ -731,8 +769,90 @@ def _reprove_terminal_cleanup(kube: Any, state: dict[str, Any], revision: str, e
     return baseline, source, copy.deepcopy(final_absence)
 
 
+def _reprove_pinned_terminal_cleanup(
+    kube: Any,
+    state: dict[str, Any],
+    revision: str,
+    evidence: dict[str, str],
+    journal: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+    """Finalize only the exact historical terminal journal with GETs."""
+    require(revision != TERMINAL_RECOVERY_REVISION, "terminal finalization revision did not advance")
+    _validate_state(state, TERMINAL_RECOVERY_REVISION, evidence)
+    require(state.get("status") == "completed", "recovery journal is not terminal")
+    require(digest(state) == TERMINAL_RECOVERY_JOURNAL_CANONICAL_SHA256, "terminal recovery journal canonical checksum drift")
+    raw_sha256 = getattr(journal, "raw_sha256", None)
+    require(callable(raw_sha256), "terminal recovery journal raw binding unavailable")
+    journal_file_sha256 = raw_sha256()
+    require(journal_file_sha256 == TERMINAL_RECOVERY_JOURNAL_FILE_SHA256, "terminal recovery journal file checksum drift")
+
+    final_absence = state.get("finalAbsence")
+    require(isinstance(final_absence, dict) and set(final_absence) == set(OBJECT_ORDER), "terminal final-absence proof drift")
+    for name in OBJECT_ORDER:
+        identity = target(expected_objects()[name])
+        require(final_absence[name] == {"target": identity, "uid": OBJECT_UIDS[name], "absent": True}, f"terminal {name} absence proof drift")
+        require(state["objects"][name].get("status") == "absent", f"terminal {name} state drift")
+        require(kube.get(identity) is None, f"terminal {name} reappeared; receipt finalization forbidden")
+
+    baseline = _validate_baseline(kube.get(baseline_target()))
+    require(baseline == state.get("baseline"), "terminal baseline drift")
+    source = _validate_source(kube.get(source_target()), revision)
+    source_at_recovery = state.get("source")
+    require(
+        isinstance(source_at_recovery, dict)
+        and source["uid"] == source_at_recovery.get("uid")
+        and source["generation"] == source_at_recovery.get("generation"),
+        "terminal shared source identity/generation drift",
+    )
+    _terminal_journal_binding(state)
+    return baseline, source, copy.deepcopy(final_absence), journal_file_sha256
+
+
 def _completed_receipt(*, revision: str, evidence: dict[str, str], baseline: dict[str, Any], source: dict[str, Any], state: dict[str, Any], final_absence: dict[str, Any]) -> dict[str, Any]:
     return {"schemaVersion": RECEIPT_SCHEMA, "status": "completed", "protectedRevision": revision, "originRevision": ORIGIN_REVISION, "operationId": OPERATION_ID, "operationMarker": OPERATION_MARKER, "evidence": evidence, "baseline": baseline, "source": source, "objects": copy.deepcopy(state["objects"]), "finalAbsence": copy.deepcopy(final_absence), "journal": _terminal_journal_binding(state), "effects": _effects(True)}
+
+
+def _completed_terminal_finalization_receipt(
+    *,
+    revision: str,
+    evidence: dict[str, str],
+    baseline: dict[str, Any],
+    source: dict[str, Any],
+    state: dict[str, Any],
+    final_absence: dict[str, Any],
+    journal_file_sha256: str,
+) -> dict[str, Any]:
+    journal_binding = _terminal_journal_binding(state) | {
+        "protectedRevision": TERMINAL_RECOVERY_REVISION,
+        "terminalJournalFileSha256": journal_file_sha256,
+    }
+    effects = _effects(True) | {
+        "historicalDeleteOnlyRecovery": True,
+        "deleteOnlyMutation": False,
+        "getOnlyFinalization": True,
+        "clusterMutationCount": 0,
+        "newDeletes": 0,
+    }
+    return {
+        "schemaVersion": RECEIPT_SCHEMA,
+        "status": "completed",
+        "protectedRevision": revision,
+        "finalizedAgainstRevision": revision,
+        "finalizationParentRevision": TERMINAL_FINALIZATION_PARENT_REVISION,
+        "terminalRecoveryRevision": TERMINAL_RECOVERY_REVISION,
+        "originRevision": ORIGIN_REVISION,
+        "operationId": OPERATION_ID,
+        "operationMarker": OPERATION_MARKER,
+        "evidence": evidence,
+        "baseline": baseline,
+        "source": source,
+        "sourceAtRecovery": copy.deepcopy(state["source"]),
+        "sourceAtFinalization": copy.deepcopy(source),
+        "objects": copy.deepcopy(state["objects"]),
+        "finalAbsence": copy.deepcopy(final_absence),
+        "journal": journal_binding,
+        "effects": effects,
+    }
 
 
 def _read_fd(fd: int, label: str) -> bytes:
@@ -749,6 +869,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--inspection-fd", required=True, type=int)
     parser.add_argument("--recovery-journal", required=True, type=Path)
     parser.add_argument("--receipt", required=True, type=Path)
+    parser.add_argument("--terminal-finalize", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -760,7 +881,16 @@ def main(argv: list[str] | None = None) -> int:
     origin_journal = _read_fd(args.origin_journal_fd, "origin journal")
     attempt_receipt = _read_fd(args.attempt_receipt_fd, "attempt receipt")
     inspection = _read_fd(args.inspection_fd, "inspection")
-    result = run(kube=KubernetesAdapter(args.kubeconfig), revision=args.expected_protected_revision, origin_journal=origin_journal, attempt_receipt=attempt_receipt, inspection=inspection, journal=journal, receipt=receipt)
+    result = run(
+        kube=KubernetesAdapter(args.kubeconfig),
+        revision=args.expected_protected_revision,
+        origin_journal=origin_journal,
+        attempt_receipt=attempt_receipt,
+        inspection=inspection,
+        journal=journal,
+        receipt=receipt,
+        terminal_finalize=args.terminal_finalize,
+    )
     print(canonical({"status": result["status"], "protectedRevision": result["protectedRevision"], "civicAuthorityEffects": False}))
     return 0
 
