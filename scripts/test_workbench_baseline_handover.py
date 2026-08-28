@@ -1312,6 +1312,104 @@ class WorkbenchBaselineHandoverTests(unittest.TestCase):
             },
         )
 
+    def adapter_with_runs(self, responses):
+        adapter = MODULE.KubernetesAdapter.__new__(MODULE.KubernetesAdapter)
+        calls = []
+
+        def fake_run(arguments, *, input_text=None):
+            calls.append((arguments, input_text))
+            response = responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        adapter._run = fake_run
+        return adapter, calls
+
+    def test_kubernetes_get_retries_exact_tls_transport_then_succeeds(self):
+        identity = MODULE.target(MODULE.expected_before_network_policy())
+        adapter, calls = self.adapter_with_runs([
+            (1, "", "Unable to connect to the server: net/http: TLS handshake timeout\n"),
+            (1, "", "net/http: TLS handshake timeout"),
+            (0, '{"ok":true}', ""),
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertEqual(adapter.get(identity), {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25, 0.75])
+
+    def test_kubernetes_get_surfaces_bounded_failure_after_three_exact_tls_failures(self):
+        identity = MODULE.target(MODULE.expected_before_network_policy())
+        adapter, calls = self.adapter_with_runs([
+            (1, "", "net/http: TLS handshake timeout") for _ in range(MODULE.GET_MAX_ATTEMPTS)
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            with self.assertRaisesRegex(MODULE.HandoverError, "GET failed after 3 attempts"):
+                adapter.get(identity)
+        self.assertEqual(len(calls), MODULE.GET_MAX_ATTEMPTS)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25, 0.75])
+
+    def test_kubernetes_get_retries_timeout_expired_then_succeeds(self):
+        identity = MODULE.target(MODULE.expected_before_network_policy())
+        adapter, calls = self.adapter_with_runs([
+            MODULE.subprocess.TimeoutExpired(["kubectl"], 40),
+            (0, '{"ok":true}', ""),
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertEqual(adapter.get(identity), {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25])
+
+    def test_kubernetes_get_does_not_retry_non_transport_failures(self):
+        identity = MODULE.target(MODULE.expected_before_network_policy())
+        cases = (
+            ((1, "", "Error from server (Forbidden): denied"), MODULE.HandoverError),
+            ((1, "", "Error from server (Unauthorized): denied"), MODULE.HandoverError),
+            ((0, "[]", ""), MODULE.HandoverError),
+            ((1, "", "request timed out"), MODULE.HandoverError),
+            ((1, '{"partial":true}', "net/http: TLS handshake timeout"), MODULE.HandoverError),
+            ((1, "", "net/http: TLS handshake timeout with context"), MODULE.HandoverError),
+        )
+        for response, error_type in cases:
+            adapter, calls = self.adapter_with_runs([response])
+            with patch.object(MODULE.time, "sleep") as sleep:
+                with self.assertRaises(error_type):
+                    adapter.get(identity)
+            self.assertEqual(len(calls), 1)
+            sleep.assert_not_called()
+
+        adapter, calls = self.adapter_with_runs([(1, "", "Error from server (NotFound): absent")])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertIsNone(adapter.get(identity))
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_kubernetes_get_validates_target_before_any_attempt(self):
+        adapter, calls = self.adapter_with_runs([(0, '{"ok":true}', "")])
+        with self.assertRaisesRegex(MODULE.HandoverError, "outside protected handover scope"):
+            adapter.get({"apiVersion": "v1", "kind": "ConfigMap", "namespace": "other", "name": "not-allowed"})
+        self.assertEqual(calls, [])
+
+    def test_kubernetes_mutation_delete_remains_single_attempt(self):
+        adapter = MODULE.KubernetesAdapter.__new__(MODULE.KubernetesAdapter)
+        calls = []
+
+        def fake_run(arguments, *, input_text=None):
+            calls.append((arguments, input_text))
+            return 0, "{}", ""
+
+        adapter._run = fake_run
+        identity = MODULE.target(MODULE.expected_flux_objects()["serviceAccount"])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            MODULE.KubernetesAdapter.delete(
+                adapter,
+                identity,
+                uid="00000000-0000-4000-8000-000000000001",
+                resource_version="17000001",
+            )
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
     def test_journal_sink_persists_checksum_bound_state_and_reloads(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = temporary_root(directory) / "handover.journal"

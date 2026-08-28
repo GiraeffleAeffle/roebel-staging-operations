@@ -17,6 +17,7 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,10 @@ OBJECT_UIDS = {
     "serviceAccount": "c0829ad9-ab20-43a0-9c84-a122098864f0",
 }
 MARKER_REMAINS = frozenset({"kustomization"})
+GET_MAX_ATTEMPTS = 3
+GET_RETRY_DELAYS_SECONDS = (0.25, 0.75)
+GET_TLS_HANDSHAKE_TIMEOUT = "net/http: TLS handshake timeout"
+GET_ERROR_MAX_CHARS = 320
 
 
 class RecoveryError(RuntimeError):
@@ -76,6 +81,26 @@ def digest(value: Any) -> str:
 
 def bytes_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _bounded_get_error(value: Any) -> str:
+    """Normalize and cap a kubectl GET error before it enters a receipt."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return " ".join(str(value).split())[:GET_ERROR_MAX_CHARS]
+
+
+def _normalized_get_transport_error(value: Any) -> str:
+    """Return only the exact kubectl client transport error token."""
+    normalized = _bounded_get_error(value)
+    prefix = "Unable to connect to the server: "
+    if normalized.startswith(prefix):
+        normalized = normalized[len(prefix):]
+    return normalized
+
+
+def _is_retryable_get_transport_failure(code: int, out: Any, err: Any) -> bool:
+    return code != 0 and not out and _normalized_get_transport_error(err) == GET_TLS_HANDSHAKE_TIMEOUT
 
 
 def _json_object(raw: bytes, label: str) -> dict[str, Any]:
@@ -502,7 +527,7 @@ def _validate_output_separation(journal: Any, receipt: Any) -> None:
 
 
 class KubernetesAdapter:
-    """Closed GET plus preconditioned DELETE adapter; no patch/create/apply/list."""
+    """Closed GET with bounded transport retry plus preconditioned DELETE."""
     def __init__(self, kubeconfig: Path, *, kubectl: Path | None = None) -> None:
         self.kubeconfig = _private_path(kubeconfig, "kubeconfig", allow_missing=False)
         self.kubectl = KUBECTL_BIN if kubectl is None else kubectl
@@ -512,10 +537,28 @@ class KubernetesAdapter:
         return result.returncode, result.stdout, result.stderr
     def get(self, identity: dict[str, str]) -> dict[str, Any] | None:
         require(identity in _allowed_targets(), "GET target outside recovery scope")
-        code, out, err = self._run(["-n", identity["namespace"], "get", identity["kind"].lower(), identity["name"], "-o", "json"])
-        if code != 0 and re.search(r"notfound|not found|404", err, re.I): return None
-        require(code == 0, f"GET failed for {identity['kind']}/{identity['name']}: {err.strip()}")
-        return _json_object(out.encode(), f"GET {identity['kind']}/{identity['name']}")
+        arguments = ["-n", identity["namespace"], "get", identity["kind"].lower(), identity["name"], "-o", "json"]
+        for attempt in range(GET_MAX_ATTEMPTS):
+            try:
+                code, out, err = self._run(arguments)
+            except subprocess.TimeoutExpired as error:
+                if attempt + 1 < GET_MAX_ATTEMPTS:
+                    time.sleep(GET_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                raise RecoveryError(
+                    f"GET failed after {GET_MAX_ATTEMPTS} attempts for {identity['kind']}/{identity['name']}: command timeout"
+                ) from error
+            if code != 0 and re.search(r"notfound|not found|404", err, re.I): return None
+            if _is_retryable_get_transport_failure(code, out, err):
+                if attempt + 1 < GET_MAX_ATTEMPTS:
+                    time.sleep(GET_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                raise RecoveryError(
+                    f"GET failed after {GET_MAX_ATTEMPTS} attempts for {identity['kind']}/{identity['name']}: {_bounded_get_error(err)}"
+                )
+            require(code == 0, f"GET failed for {identity['kind']}/{identity['name']}: {_bounded_get_error(err)}")
+            return _json_object(out.encode(), f"GET {identity['kind']}/{identity['name']}")
+        raise AssertionError("unreachable GET retry loop")
     def delete(self, identity: dict[str, str], *, uid: str, resource_version: str) -> None:
         require(identity in _delete_targets(), "DELETE target outside recovery scope")
         require(UUID.fullmatch(uid) is not None and isinstance(resource_version, str) and resource_version.isdigit(), "DELETE preconditions invalid")
