@@ -973,7 +973,9 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         self.assertIn("--dry-run", workflow)
         self.assertNotIn("--live", workflow)
         self.assertNotIn("kubeconfig", workflow.lower())
-        self.assertNotIn("secrets.", workflow)
+        # Match the GitHub Actions secret-expression surface, not a harmless
+        # test filename such as ``test_*_secrets.py``.
+        self.assertNotIn("${{ secrets.", workflow.lower())
         self.assertNotIn("secret_materialization_v4", source)
         self.assertNotIn('["get", "secret"', source)
 
