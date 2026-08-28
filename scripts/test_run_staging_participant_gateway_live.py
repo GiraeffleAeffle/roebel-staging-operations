@@ -438,6 +438,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_final_status("activated", activation_committed=True, operation_succeeded=True, cleanup_complete=False), ("activated-cleanup-incomplete", 3))
         self.assertEqual(MODULE.classify_final_status("activated", activation_committed=True, operation_succeeded=True, cleanup_complete=True), ("activated", 0))
         self.assertEqual(MODULE.classify_final_status("dormant-torn-down", activation_committed=False, operation_succeeded=True, cleanup_complete=False), ("dormant-teardown-cleanup-incomplete", 3))
+        self.assertEqual(MODULE.classify_final_status("participant-secrets-torn-down", activation_committed=False, operation_succeeded=True, cleanup_complete=True), ("participant-secrets-torn-down", 0))
         source = inspect.getsource(MODULE.main)
         for check in ("bootstrap.returncode != 0", "teardown_returncode != 0", "activation.returncode != 0"):
             self.assertIn(check, source)
@@ -453,7 +454,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("BrokenPipeError", logging_error)
 
     def test_signal_state_prebinds_every_transitive_blob_before_snapshot_and_decrypt(self):
-        expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}
+        expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, MODULE.SECRET_RUNNER, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}
         self.assertEqual(set(MODULE.PROTECTED_PATHS), expected)
         source = inspect.getsource(MODULE.main)
         self.assertLess(source.index("cancellation.install()"), source.index("bind_protected_checkout(revision)"))
@@ -467,7 +468,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         source = inspect.getsource(MODULE.main)
         self.assertIn("bootstrap_runner.command(", source)
         self.assertIn("activation_runner.command(", source)
-        for forbidden in ("str(ROOT / BOOTSTRAP_RUNNER)", "str(ROOT / ACTIVATION_RUNNER)", "kubectl apply", "kubectl create", "kubectl patch", "kubectl delete", "--server", "--token"):
+        self.assertIn("secret_runner.command(", source)
+        for forbidden in ("str(ROOT / BOOTSTRAP_RUNNER)", "str(ROOT / ACTIVATION_RUNNER)", "str(ROOT / SECRET_RUNNER)", "kubectl apply", "kubectl create", "kubectl patch", "kubectl delete", "--server", "--token"):
             self.assertNotIn(forbidden, source)
         self.assertEqual(set(MODULE.EXPECTED_BINARIES), {"age", "kubectl", "talosctl", "wireproxy"})
         self.assertTrue(all(MODULE.SHA256.fullmatch(value) for value in MODULE.EXPECTED_BINARIES.values()))
@@ -492,6 +494,28 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         for forbidden in ("bootstrap_runner", "activation_runner", "run_dormant_teardown", "--teardown"):
             self.assertNotIn(forbidden, source)
         self.assertIn("workbench_implementation_command", source)
+
+    def test_participant_secret_modes_are_explicit_and_mutually_exclusive(self):
+        common = [
+            "--participant-gateway", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+        ]
+        activation = MODULE.parse_args([*common, "--participant-secret-bundle", "/private/secrets"])
+        self.assertEqual(activation.participant_secret_bundle, Path("/private/secrets"))
+        teardown = MODULE.parse_args([*common, "--teardown-participant-secret-receipt", "/private/materialization.json"])
+        self.assertEqual(teardown.teardown_participant_secret_receipt, Path("/private/materialization.json"))
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires an explicit private Secret bundle"):
+            MODULE.parse_args(common)
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "may not combine"):
+            MODULE.parse_args([*common, "--teardown-participant-secret-receipt", "/private/materialization.json", "--teardown-dormant-receipt", "/private/dormant.json"])
+        source = inspect.getsource(MODULE.main)
+        materialization_call = source[
+            source.index("secret_materialization = session.run_child("):
+            source.index("secret_materialization_bound = snapshot_owned_receipt(")
+        ]
+        self.assertIn("forward_signals=False", materialization_call)
 
     def test_workbench_recovery_mode_is_explicit_delete_only_and_requires_all_evidence(self):
         arguments = [

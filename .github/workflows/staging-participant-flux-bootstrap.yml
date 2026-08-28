@@ -29,6 +29,7 @@ jobs:
           python3 -I scripts/test_staging_participant_gateway_policy.py -v
           python3 -I scripts/test_staging_participant_flux_bootstrap.py -v
           python3 -I scripts/test_activate_staging_participant_gateway.py -v
+          python3 -I scripts/test_materialize_staging_participant_gateway_secrets.py -v
           python3 -I scripts/test_run_staging_participant_gateway_live.py -v
           python3 -I scripts/test_verify_reviewed_render.py -v
       - name: Verify protected repository

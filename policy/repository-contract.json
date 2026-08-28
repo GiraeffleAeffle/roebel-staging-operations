@@ -115,6 +115,26 @@
       ]
     },
     "normalReleaseSetPromotionMayChange": false,
+    "secretMaterialization": {
+      "runner": "scripts/materialize-staging-participant-gateway-secrets.py",
+      "inputTransport": "owned-private-inherited-descriptors-only",
+      "exactSecretNames": [
+        "roebel-staging-participant-gateway-config",
+        "roebel-staging-participant-gateway-runtime"
+      ],
+      "initialState": "both-exact-secret-names-absent",
+      "createOrder": ["config", "runtime"],
+      "adoption": "forbidden",
+      "receiptSchemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
+      "receiptContainsValues": false,
+      "teardown": {
+        "sourceReceiptRequired": true,
+        "afterParticipantDeactivationOnly": true,
+        "deleteOrder": ["runtime", "config"],
+        "uidResourceVersionPreconditions": true,
+        "receiptSchemaVersion": "roebel_staging_participant_secret_teardown_receipt_v1"
+      }
+    },
     "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
     "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
     "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",

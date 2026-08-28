@@ -239,6 +239,21 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertEqual(contract["sharedSourceMutation"], "forbidden")
         self.assertEqual(contract["secretAccess"], "forbidden")
 
+    def test_participant_secret_materializer_is_descriptor_bound_and_receipt_owned(self):
+        contract = POLICY.activation_policy_descriptor()["runtime"]["secretMaterializer"]
+        self.assertEqual(contract, POLICY.secret_materializer_contract())
+        self.assertEqual(contract["runner"], POLICY.SECRET_MATERIALIZER_RUNNER)
+        self.assertEqual(contract["inputTransport"], "owned-private-inherited-descriptors-only")
+        self.assertEqual(contract["createOrder"], ["config", "runtime"])
+        self.assertEqual(contract["initialState"], "both-exact-secret-names-absent")
+        self.assertEqual(contract["adoption"], "forbidden")
+        self.assertFalse(contract["receiptContainsValues"])
+        self.assertEqual(contract["receiptSchemaVersion"], POLICY.SECRET_MATERIALIZATION_RECEIPT_SCHEMA)
+        self.assertEqual(contract["teardownReceiptSchemaVersion"], POLICY.SECRET_TEARDOWN_RECEIPT_SCHEMA)
+        self.assertEqual(contract["teardown"]["deleteOrder"], ["runtime", "config"])
+        self.assertTrue(contract["teardown"]["uidResourceVersionPreconditions"])
+        self.assertEqual(len(contract["teardown"]["requiredAbsentTargets"]), 8)
+
     def test_reciprocal_network_policy_is_additive_and_does_not_adopt_workbench_policy(self):
         policy = POLICY.expected_workbench_ingress_network_policy()
         self.assertEqual(policy["metadata"]["name"], POLICY.WORKBENCH_INGRESS_POLICY_NAME)

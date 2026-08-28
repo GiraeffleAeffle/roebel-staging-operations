@@ -429,6 +429,31 @@
         "namespace": "stadtstack-roebel-web-preview"
       }
     },
+    "secretMaterializer": {
+      "adoption": "forbidden",
+      "createOrder": ["config", "runtime"],
+      "initialState": "both-exact-secret-names-absent",
+      "inputTransport": "owned-private-inherited-descriptors-only",
+      "receiptContainsValues": false,
+      "receiptSchemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
+      "runner": "scripts/materialize-staging-participant-gateway-secrets.py",
+      "teardown": {
+        "deleteOrder": ["runtime", "config"],
+        "requiredAbsentTargets": [
+          {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+          {"apiVersion": "v1", "kind": "ServiceAccount", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+          {"apiVersion": "v1", "kind": "Service", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+          {"apiVersion": "apps/v1", "kind": "Deployment", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+          {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "name": "roebel-staging-participant-gateway", "namespace": "stadtstack-roebel-web-preview"},
+          {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "name": "roebel-staging-participant-workbench-ingress", "namespace": "stadtstack-roebel-staging-lab"},
+          {"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "name": "roebel-staging-participant-gateway", "namespace": "flux-roebel-staging"},
+          {"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "name": "roebel-staging-participant-workbench-ingress", "namespace": "flux-roebel-staging"}
+        ],
+        "sourceReceiptRequired": true,
+        "uidResourceVersionPreconditions": true
+      },
+      "teardownReceiptSchemaVersion": "roebel_staging_participant_secret_teardown_receipt_v1"
+    },
     "serviceAccountToken": false
   },
   "schemaVersion": "roebel_staging_participant_gateway_activation_policy_v4",

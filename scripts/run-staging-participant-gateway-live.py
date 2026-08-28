@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SELF_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_RUNNER = "scripts/bootstrap-staging-participant-flux.py"
 ACTIVATION_RUNNER = "scripts/activate-staging-participant-gateway.py"
+SECRET_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
 WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
 WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
 WORKBENCH_RECOVERY_IMPLEMENTATION = "scripts/workbench_baseline_recovery.py"
@@ -28,6 +29,7 @@ PROTECTED_PATHS = (
     SELF_PATH,
     BOOTSTRAP_RUNNER,
     ACTIVATION_RUNNER,
+    SECRET_RUNNER,
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
     "policy/staging-participant-gateway-activation-policy.json",
@@ -72,7 +74,7 @@ sys.argv=[path,*sys.argv[5:]]
 scope={'__name__':'__main__','__file__':path,'__package__':None,'__cached__':None}
 exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
-WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v2"
+WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_ORIGIN_REVISION = "3be9405c6bfd6b4caf0423b137f969aab3bef323"
@@ -1607,6 +1609,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--kubectl-bin", required=True, type=Path)
     parser.add_argument("--receipt-directory", required=True, type=Path)
     parser.add_argument("--teardown-dormant-receipt", type=Path)
+    parser.add_argument("--participant-secret-bundle", type=Path)
+    parser.add_argument("--teardown-participant-secret-receipt", type=Path)
     parser.add_argument("--workbench-handover-receipt", type=Path)
     parser.add_argument("--workbench-handover-journal", type=Path)
     parser.add_argument("--workbench-recovery-receipt", type=Path)
@@ -1618,14 +1622,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.workbench_baseline_handover:
         require(args.teardown_dormant_receipt is None, "workbench handover may not request participant teardown")
+        require(args.participant_secret_bundle is None and args.teardown_participant_secret_receipt is None, "workbench handover may not receive participant Secret inputs")
         require(args.workbench_handover_receipt is not None and args.workbench_handover_journal is not None, "workbench handover requires explicit receipt and journal paths for resume")
         require(all(value is None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench handover may not receive recovery paths")
     elif args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
         require(args.teardown_dormant_receipt is None, "workbench recovery may not request participant teardown")
+        require(args.participant_secret_bundle is None and args.teardown_participant_secret_receipt is None, "workbench recovery may not receive participant Secret inputs")
         require(all(value is not None for value in (args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "workbench recovery requires exact evidence, receipt, and journal paths")
         require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "workbench recovery may not receive handover paths")
     else:
         require(all(value is None for value in (args.workbench_handover_receipt, args.workbench_handover_journal, args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "participant mode may not receive workbench paths")
+        if args.teardown_participant_secret_receipt is not None:
+            require(args.teardown_dormant_receipt is None, "participant Secret teardown may not combine with dormant Flux teardown")
+            require(args.participant_secret_bundle is None, "participant Secret teardown accepts no Secret input bundle")
+        elif args.teardown_dormant_receipt is not None:
+            require(args.participant_secret_bundle is None, "dormant Flux teardown accepts no Secret input bundle")
+        else:
+            require(args.participant_secret_bundle is not None, "participant activation requires an explicit private Secret bundle")
     return args
 
 def run_dormant_teardown(
@@ -1692,6 +1705,8 @@ def classify_final_status(
         return ("activated", 0) if cleanup_complete else ("activated-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "dormant-torn-down":
         return ("dormant-torn-down", 0) if cleanup_complete else ("dormant-teardown-cleanup-incomplete", 3)
+    if operation_succeeded and base_status == "participant-secrets-torn-down":
+        return ("participant-secrets-torn-down", 0) if cleanup_complete else ("participant-secret-teardown-cleanup-incomplete", 3)
     if not cleanup_complete:
         return (f"{base_status}-cleanup-incomplete", 3)
     return base_status, 2
@@ -1924,12 +1939,18 @@ def main(argv: list[str] | None = None) -> int:
     source_dormant_receipt: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
     activation_bound: BoundBlob | None = None
+    secret_config_input: BoundBlob | None = None; secret_runtime_input: BoundBlob | None = None
+    source_secret_receipt: BoundBlob | None = None; secret_materialization_bound: BoundBlob | None = None
+    secret_teardown_bound: BoundBlob | None = None
     bootstrap_receipt: Path | None = None; recovery_receipt: Path | None = None
     teardown_receipt: Path | None = None; activation_receipt: Path | None = None
     source_dormant_projection: dict[str, Any] | None = None
     bootstrap_projection: dict[str, Any] | None = None
     teardown_projection: dict[str, Any] | None = None
     activation_projection: dict[str, Any] | None = None
+    source_secret_projection: dict[str, Any] | None = None
+    secret_materialization_projection: dict[str, Any] | None = None
+    secret_teardown_projection: dict[str, Any] | None = None
     recovery_attempted = False; recovery_returncode: int | None = None
     child_cleanup_errors: list[str] = []
     base_status = "blocked"; error: str | None = None
@@ -1968,7 +1989,7 @@ def main(argv: list[str] | None = None) -> int:
 
         temp = Path(tempfile.mkdtemp(prefix="roebel-participant-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
         binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
-        for runner_path in (BOOTSTRAP_RUNNER, ACTIVATION_RUNNER):
+        for runner_path in (BOOTSTRAP_RUNNER, ACTIVATION_RUNNER, SECRET_RUNNER):
             runner_blob = bind_bytes_to_fd(
                 protected_blobs[runner_path],
                 binding_dir / (Path(runner_path).name + ".bound"),
@@ -1996,6 +2017,45 @@ def main(argv: list[str] | None = None) -> int:
                 "dormant-ready",
                 allow_cancelled=False,
             )
+        elif args.teardown_participant_secret_receipt is not None:
+            source_secret_receipt = snapshot_owned_receipt(
+                args.teardown_participant_secret_receipt,
+                binding_dir / "source-secret-materialization-receipt.bound",
+                "source Secret materialization receipt",
+            )
+            bound_receipts.append(source_secret_receipt)
+            source_secret_projection = verify_receipt_with_protected_cli(
+                cancellation,
+                bound_runners[SECRET_RUNNER],
+                "--verify-materialization-receipt-fd",
+                source_secret_receipt,
+                revision,
+                verifier_environment,
+                "materialized",
+                allow_cancelled=False,
+            )
+        else:
+            bundle_source = Path(os.path.abspath(args.participant_secret_bundle)); bundle_source_info = os.lstat(bundle_source)
+            require(not stat.S_ISLNK(bundle_source_info.st_mode), "participant Secret bundle must not be a symlink")
+            secret_bundle = Path(os.path.realpath(bundle_source)); secret_bundle_info = os.lstat(secret_bundle)
+            require(
+                secret_bundle == bundle_source
+                and stat.S_ISDIR(secret_bundle_info.st_mode)
+                and secret_bundle_info.st_uid == os.geteuid()
+                and stat.S_IMODE(secret_bundle_info.st_mode) & 0o077 == 0,
+                "participant Secret bundle must be a private owned directory",
+            )
+            secret_config_input = snapshot_owned_receipt(
+                private_file(secret_bundle / "config.env", "participant config input", 256 * 1024),
+                binding_dir / "participant-config-input.bound",
+                "participant config input",
+            )
+            secret_runtime_input = snapshot_owned_receipt(
+                private_file(secret_bundle / "runtime.env", "participant runtime input", 256 * 1024),
+                binding_dir / "participant-runtime-input.bound",
+                "participant runtime input",
+            )
+            bound_receipts.extend((secret_config_input, secret_runtime_input))
 
         executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
         binary_sources = {
@@ -2074,9 +2134,56 @@ def main(argv: list[str] | None = None) -> int:
         }
         bootstrap_runner = bound_runners[BOOTSTRAP_RUNNER]
         activation_runner = bound_runners[ACTIVATION_RUNNER]
+        secret_runner = bound_runners[SECRET_RUNNER]
         kubectl_fd = executable_bindings["kubectl"].fd
 
-        if source_dormant_receipt is not None:
+        if source_secret_receipt is not None:
+            secret_teardown_receipt = receipt_dir / "participant-secret-teardown.json"
+            secret_teardown = session.run_child(
+                secret_runner.command([
+                    "--teardown",
+                    "--expected-protected-revision",
+                    revision,
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "--source-materialization-receipt-fd",
+                    str(source_secret_receipt.fd),
+                    "--receipt",
+                    str(secret_teardown_receipt),
+                ]),
+                child_environment,
+                allow_cancelled=True,
+                forward_signals=False,
+                receipt_pending=True,
+                pass_fds=(secret_runner.blob.fd, source_secret_receipt.fd, kubectl_fd),
+            )
+            try:
+                secret_teardown_bound = snapshot_owned_receipt(
+                    secret_teardown_receipt,
+                    binding_dir / "secret-teardown-receipt.bound",
+                    "participant Secret teardown receipt",
+                )
+                bound_receipts.append(secret_teardown_bound)
+                secret_teardown_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    secret_runner,
+                    "--verify-teardown-receipt-fd",
+                    secret_teardown_bound,
+                    revision,
+                    child_environment,
+                    "torn-down",
+                    allow_cancelled=True,
+                    expected_source_sha256=source_secret_projection["receiptSha256"],
+                )
+            finally:
+                session.receipt_reconciled()
+            logging_error = best_effort_print_child(secret_teardown)
+            if logging_error is not None:
+                child_cleanup_errors.append(logging_error)
+            if secret_teardown.returncode != 0:
+                child_cleanup_errors.append(f"protected Secret teardown exited {secret_teardown.returncode} after durable commit")
+            base_status = "participant-secrets-torn-down"; operation_succeeded = True
+        elif source_dormant_receipt is not None:
             teardown_receipt = receipt_dir / "participant-flux-dormant-teardown.json"
             teardown_projection, teardown_returncode, teardown_bound, teardown_logging_error = run_dormant_teardown(
                 session,
@@ -2098,6 +2205,50 @@ def main(argv: list[str] | None = None) -> int:
             if teardown_returncode != 0:
                 child_cleanup_errors.append(f"protected dormant teardown exited {teardown_returncode} after durable commit")
         else:
+            secret_materialization_receipt = receipt_dir / "participant-secret-materialization.json"
+            secret_materialization = session.run_child(
+                secret_runner.command([
+                    "--materialize",
+                    "--expected-protected-revision",
+                    revision,
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "--config-input-fd",
+                    str(secret_config_input.fd),
+                    "--runtime-input-fd",
+                    str(secret_runtime_input.fd),
+                    "--receipt",
+                    str(secret_materialization_receipt),
+                ]),
+                child_environment,
+                forward_signals=False,
+                pass_fds=(secret_runner.blob.fd, secret_config_input.fd, secret_runtime_input.fd, kubectl_fd),
+            )
+            try:
+                require(secret_materialization_receipt.exists(), "Secret materializer produced no durable receipt")
+                secret_materialization_bound = snapshot_owned_receipt(
+                    secret_materialization_receipt,
+                    binding_dir / "secret-materialization-receipt.bound",
+                    "participant Secret materialization receipt",
+                )
+                bound_receipts.append(secret_materialization_bound)
+                secret_materialization_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    secret_runner,
+                    "--verify-materialization-receipt-fd",
+                    secret_materialization_bound,
+                    revision,
+                    child_environment,
+                    "materialized",
+                    allow_cancelled=True,
+                )
+            finally:
+                session.receipt_reconciled()
+            materialization_logging_error = best_effort_print_child(secret_materialization)
+            if materialization_logging_error is not None:
+                child_cleanup_errors.append(materialization_logging_error)
+            require(secret_materialization.returncode == 0, "protected Secret materialization did not complete cleanly")
+
             bootstrap_receipt = receipt_dir / "participant-flux-bootstrap.json"
             bootstrap = session.run_child(
                 bootstrap_runner.command([
@@ -2312,6 +2463,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     source_record = receipt_record(source_dormant_projection, source_dormant_receipt)
+    source_secret_record = receipt_record(source_secret_projection, source_secret_receipt)
+    secret_materialization_record = receipt_record(secret_materialization_projection, secret_materialization_bound)
+    secret_teardown_record = receipt_record(secret_teardown_projection, secret_teardown_bound)
     bootstrap_record = receipt_record(bootstrap_projection, bootstrap_bound)
     teardown_record = receipt_record(teardown_projection, teardown_bound)
     activation_record = receipt_record(activation_projection, activation_bound)
@@ -2354,6 +2508,9 @@ def main(argv: list[str] | None = None) -> int:
             "wrapperReceiptCommit": "atomic-replace-file-and-parent-fsync",
         },
         "sourceDormant": source_record,
+        "sourceSecretMaterialization": source_secret_record,
+        "secretMaterialization": secret_materialization_record,
+        "secretTeardown": secret_teardown_record,
         "bootstrap": bootstrap_record,
         "recovery": recovery_record | {"attempted": recovery_attempted, "runnerReturnCode": recovery_returncode},
         "teardown": teardown_record,
@@ -2363,6 +2520,13 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "--teardown-dormant-receipt",
             "requiresClosedDormantPreflight": True,
             "adoptsArbitraryObjects": False,
+        },
+        "secretContinuation": {
+            "required": secret_materialization_projection is not None and not activation_committed and secret_teardown_projection is None,
+            "mode": "--teardown-participant-secret-receipt",
+            "requiresParticipantDeactivation": True,
+            "sourceReceiptSha256": secret_materialization_projection.get("receiptSha256") if secret_materialization_projection is not None else None,
+            "deletesOnlyReceiptBoundUidResourceVersions": True,
         },
         "interrupted": interrupted,
         "signalsObserved": cancellation.signals,
