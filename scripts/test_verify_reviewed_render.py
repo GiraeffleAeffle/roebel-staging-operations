@@ -235,6 +235,21 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         if not participant.is_dir():
             return
         shutil.rmtree(participant)
+        web_path = destination / "reviewed-render/roebel-staging/web/deployment.json"
+        web = json.loads(web_path.read_text())
+        env = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        env[:] = [
+            item
+            for item in env
+            if item["name"] != "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL"
+        ]
+        web_path.write_text(json.dumps(web, indent=2) + "\n")
+        network_policy_path = (
+            destination / "reviewed-render/roebel-staging/web/networkpolicy.json"
+        )
+        network_policy_path.write_text(
+            json.dumps(VERIFIER.expected_web_network_policy(False), indent=2) + "\n",
+        )
         self.refresh_current_integrity(destination)
 
     def normalize_inert_participant_seed(self, destination: Path) -> None:
@@ -2579,6 +2594,61 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             path.write_text(json.dumps(value, indent=2) + "\n")
             with self.assertRaisesRegex(VERIFIER.VerificationError, "Web NetworkPolicy drift"):
                 VERIFIER.verify(candidate)
+
+    def test_civic_projection_route_is_exactly_private_and_read_only(self) -> None:
+        result = VERIFIER.verify(ROOT)
+        self.assertEqual(result["renderFileSet"], "reviewed-public-knowledge-participant-gateway")
+        render = ROOT / "reviewed-render/roebel-staging"
+        web = json.loads((render / "web/deployment.json").read_text())
+        env = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertIn(
+            {
+                "name": "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL",
+                "value": VERIFIER.CIVIC_PROJECTION_UPSTREAM_URL,
+            },
+            env,
+        )
+        policy = json.loads((render / "web/networkpolicy.json").read_text())
+        self.assertIn(
+            {
+                "to": [
+                    {
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": VERIFIER.PARTICIPANT_POLICY.WORKBENCH_NAMESPACE,
+                            },
+                        },
+                        "podSelector": {
+                            "matchLabels": VERIFIER.PARTICIPANT_POLICY.WORKBENCH_SELECTOR,
+                        },
+                    },
+                ],
+                "ports": [
+                    {
+                        "port": VERIFIER.PARTICIPANT_POLICY.WORKBENCH_PORT,
+                        "protocol": "TCP",
+                    },
+                ],
+            },
+            policy["spec"]["egress"],
+        )
+        reciprocal = json.loads(
+            (
+                render
+                / "staging-participant-gateway/workbench-ingress/networkpolicy.json"
+            ).read_text(),
+        )
+        self.assertEqual(
+            reciprocal["spec"]["ingress"][0]["from"][1],
+            {
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview",
+                    },
+                },
+                "podSelector": {"matchLabels": VERIFIER.WEB_PRESENTATION_LABELS},
+            },
+        )
 
     def test_web_ingress_cannot_widen_mecky_post_path(self) -> None:
         for replacement in (

@@ -127,6 +127,10 @@
                 }
               },
               {
+                "name": "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL",
+                "value": "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/stadtstack-test/api"
+              },
+              {
                 "name": "PUBLIC_MECKY_CHAT_URL",
                 "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084"
               }

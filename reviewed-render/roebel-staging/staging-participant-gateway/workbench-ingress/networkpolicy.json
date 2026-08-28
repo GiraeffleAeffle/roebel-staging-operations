@@ -34,6 +34,21 @@
                 "stadtstack.io/environment": "staging"
               }
             }
+          },
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "readonly-presentation",
+                "app.kubernetes.io/name": "roebel-web-presentation",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none"
+              }
+            }
           }
         ],
         "ports": [
