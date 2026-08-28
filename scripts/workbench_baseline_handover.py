@@ -79,6 +79,10 @@ HANDOVER_OPERATION_ANNOTATION = "stadtstack.io/workbench-handover-operation"
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+GET_MAX_ATTEMPTS = 3
+GET_RETRY_DELAYS_SECONDS = (0.25, 0.75)
+GET_TLS_HANDSHAKE_TIMEOUT = "net/http: TLS handshake timeout"
+GET_ERROR_MAX_CHARS = 320
 
 GIT_BIN = Path("/usr/bin/git")
 KUBECTL_BIN = Path("/Users/max/.local/bin/kubectl-v1.36.0")
@@ -126,6 +130,26 @@ def digest(value: Any) -> str:
 
 def bytes_digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _bounded_get_error(value: Any) -> str:
+    """Normalize and cap a kubectl GET error before it enters a receipt."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return " ".join(str(value).split())[:GET_ERROR_MAX_CHARS]
+
+
+def _normalized_get_transport_error(value: Any) -> str:
+    """Return only the exact kubectl client transport error token."""
+    normalized = _bounded_get_error(value)
+    prefix = "Unable to connect to the server: "
+    if normalized.startswith(prefix):
+        normalized = normalized[len(prefix):]
+    return normalized
+
+
+def _is_retryable_get_transport_failure(code: int, out: Any, err: Any) -> bool:
+    return code != 0 and not out and _normalized_get_transport_error(err) == GET_TLS_HANDSHAKE_TIMEOUT
 
 
 def _json_object(raw: str | bytes, label: str) -> dict[str, Any]:
@@ -1446,7 +1470,7 @@ def _receipt_created_record(name: str, identity: dict[str, str], desired: dict[s
 
 
 class KubernetesAdapter:
-    """Narrow kubectl adapter; all resource names come from the protected plan."""
+    """Narrow kubectl adapter; GET retries transport blips, mutations do not."""
 
     def __init__(self, kubeconfig: str, *, kubectl: Path = KUBECTL_BIN) -> None:
         require(isinstance(kubeconfig, str) and kubeconfig, "handover requires explicit kubeconfig")
@@ -1501,11 +1525,29 @@ class KubernetesAdapter:
 
     def get(self, value: dict[str, str]) -> dict[str, Any] | None:
         require(any(value == allowed for allowed in _allowed_read_targets()), "GET target outside protected handover scope")
-        code, out, err = self._run(self._args(value, "get") + ["-o", "json"])
-        if code != 0 and re.search(r"notfound|not found|404", err, re.I):
-            return None
-        require(code == 0, f"GET failed for {value['kind']}/{value['name']}: {err.strip()}")
-        return _json_object(out, f"GET {value['kind']}/{value['name']}")
+        arguments = self._args(value, "get") + ["-o", "json"]
+        for attempt in range(GET_MAX_ATTEMPTS):
+            try:
+                code, out, err = self._run(arguments)
+            except subprocess.TimeoutExpired as error:
+                if attempt + 1 < GET_MAX_ATTEMPTS:
+                    time.sleep(GET_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                raise HandoverError(
+                    f"GET failed after {GET_MAX_ATTEMPTS} attempts for {value['kind']}/{value['name']}: command timeout"
+                ) from error
+            if code != 0 and re.search(r"notfound|not found|404", err, re.I):
+                return None
+            if _is_retryable_get_transport_failure(code, out, err):
+                if attempt + 1 < GET_MAX_ATTEMPTS:
+                    time.sleep(GET_RETRY_DELAYS_SECONDS[attempt])
+                    continue
+                raise HandoverError(
+                    f"GET failed after {GET_MAX_ATTEMPTS} attempts for {value['kind']}/{value['name']}: {_bounded_get_error(err)}"
+                )
+            require(code == 0, f"GET failed for {value['kind']}/{value['name']}: {_bounded_get_error(err)}")
+            return _json_object(out, f"GET {value['kind']}/{value['name']}")
+        raise AssertionError("unreachable GET retry loop")
 
     def create(self, value: dict[str, Any]) -> dict[str, Any]:
         identity = target(value)

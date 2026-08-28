@@ -98,6 +98,145 @@ class RecoveryTests(unittest.TestCase):
         with self.patched_constants(origin, attempt, inspection, baseline):
             return MODULE.run(kube=kube, revision=REVISION, origin_journal=origin, attempt_receipt=attempt, inspection=inspection, journal=journal_sink or MODULE.MemoryJournal(), receipt=receipt or MODULE.MemoryReceipt())
 
+    def adapter_with_runs(self, responses):
+        adapter = MODULE.KubernetesAdapter.__new__(MODULE.KubernetesAdapter)
+        calls = []
+
+        def fake_run(arguments, *, input_text=None):
+            calls.append((arguments, input_text))
+            response = responses.pop(0)
+            if isinstance(response, BaseException):
+                raise response
+            return response
+
+        adapter._run = fake_run
+        return adapter, calls
+
+    def test_kubernetes_get_retries_exact_tls_transport_then_succeeds(self):
+        identity = MODULE.baseline_target()
+        adapter, calls = self.adapter_with_runs([
+            (1, "", "Unable to connect to the server: net/http: TLS handshake timeout\n"),
+            (1, "", "net/http: TLS handshake timeout"),
+            (0, '{"ok":true}', ""),
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertEqual(adapter.get(identity), {"ok": True})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25, 0.75])
+
+    def test_kubernetes_get_surfaces_bounded_failure_after_three_exact_tls_failures(self):
+        identity = MODULE.baseline_target()
+        adapter, calls = self.adapter_with_runs([
+            (1, "", "net/http: TLS handshake timeout") for _ in range(MODULE.GET_MAX_ATTEMPTS)
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            with self.assertRaisesRegex(MODULE.RecoveryError, "GET failed after 3 attempts"):
+                adapter.get(identity)
+        self.assertEqual(len(calls), MODULE.GET_MAX_ATTEMPTS)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25, 0.75])
+
+    def test_kubernetes_get_retries_timeout_expired_then_succeeds(self):
+        identity = MODULE.baseline_target()
+        adapter, calls = self.adapter_with_runs([
+            MODULE.subprocess.TimeoutExpired(["kubectl"], 40),
+            (0, '{"ok":true}', ""),
+        ])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertEqual(adapter.get(identity), {"ok": True})
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25])
+
+    def test_kubernetes_get_does_not_retry_non_transport_failures(self):
+        identity = MODULE.baseline_target()
+        cases = (
+            ((1, "", "Error from server (Forbidden): denied"), MODULE.RecoveryError),
+            ((1, "", "Error from server (Unauthorized): denied"), MODULE.RecoveryError),
+            ((0, "[]", ""), MODULE.RecoveryError),
+            ((1, "", "request timed out"), MODULE.RecoveryError),
+            ((1, '{"partial":true}', "net/http: TLS handshake timeout"), MODULE.RecoveryError),
+            ((1, "", "net/http: TLS handshake timeout with context"), MODULE.RecoveryError),
+        )
+        for response, error_type in cases:
+            adapter, calls = self.adapter_with_runs([response])
+            with patch.object(MODULE.time, "sleep") as sleep:
+                with self.assertRaises(error_type):
+                    adapter.get(identity)
+            self.assertEqual(len(calls), 1)
+            sleep.assert_not_called()
+
+        adapter, calls = self.adapter_with_runs([(1, "", "Error from server (NotFound): absent")])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            self.assertIsNone(adapter.get(identity))
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
+    def test_kubernetes_get_validates_target_before_any_attempt(self):
+        adapter, calls = self.adapter_with_runs([(0, '{"ok":true}', "")])
+        with self.assertRaisesRegex(MODULE.RecoveryError, "outside recovery scope"):
+            adapter.get({"apiVersion": "v1", "kind": "ConfigMap", "namespace": "other", "name": "not-allowed"})
+        self.assertEqual(calls, [])
+
+    def test_recovery_retries_transient_post_delete_get_without_duplicate_deletes(self):
+        class RetryingKube(FakeKube):
+            def __init__(self):
+                super().__init__()
+                self.transient_pending = False
+                self.adapter = MODULE.KubernetesAdapter.__new__(MODULE.KubernetesAdapter)
+                self.adapter._run = self.transport_run
+
+            def transport_run(self, arguments, *, input_text=None):
+                identity = next(
+                    allowed
+                    for allowed in MODULE._allowed_targets()
+                    if allowed["namespace"] == arguments[1]
+                    and allowed["kind"].lower() == arguments[3]
+                    and allowed["name"] == arguments[4]
+                )
+                if self.transient_pending:
+                    self.transient_pending = False
+                    return 1, "", "Unable to connect to the server: net/http: TLS handshake timeout"
+                value = FakeKube.get(self, identity)
+                if value is None:
+                    return 1, "", "Error from server (NotFound): absent"
+                return 0, json.dumps(value), ""
+
+            def get(self, identity):
+                return self.adapter.get(identity)
+
+            def delete(self, identity, *, uid, resource_version):
+                super().delete(identity, uid=uid, resource_version=resource_version)
+                if len(self.deletes) == 1:
+                    self.transient_pending = True
+
+        kube = RetryingKube()
+        journal = MODULE.MemoryJournal()
+        with patch.object(MODULE.time, "sleep") as sleep:
+            result = self.invoke(kube, journal, MODULE.MemoryReceipt())
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual([item[0]["kind"] for item in kube.deletes], ["Kustomization", "RoleBinding", "Role", "ServiceAccount"])
+        self.assertEqual(len(kube.deletes), 4)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [0.25])
+
+    def test_kubernetes_mutation_delete_remains_single_attempt(self):
+        adapter = MODULE.KubernetesAdapter.__new__(MODULE.KubernetesAdapter)
+        calls = []
+
+        def fake_run(arguments, *, input_text=None):
+            calls.append((arguments, input_text))
+            return 0, "{}", ""
+
+        adapter._run = fake_run
+        identity = MODULE.target(MODULE.expected_objects()["serviceAccount"])
+        with patch.object(MODULE.time, "sleep") as sleep:
+            MODULE.KubernetesAdapter.delete(
+                adapter,
+                identity,
+                uid=MODULE.OBJECT_UIDS["serviceAccount"],
+                resource_version="17000001",
+            )
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
     def test_success_is_exact_ordered_delete_only_and_reproves_predecessors(self):
         kube = FakeKube(); journal = MODULE.MemoryJournal(); receipt = MODULE.MemoryReceipt(); result = self.invoke(kube, journal, receipt)
         self.assertEqual(result["status"], "completed")
