@@ -18,11 +18,13 @@ import argparse
 import copy
 import datetime as dt
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import re
 import signal
+import ssl
 import stat
 import subprocess
 import sys
@@ -108,27 +110,32 @@ PROBE_CONFIG_PATH = "/stadtstack-test/api/config"
 PROBE_FEED_PATH = "/stadtstack-test/api/feed?profile=public"
 PUBLIC_CONFIG_SCHEMA = "roebel_e2e_workbench_config_v1"
 PUBLIC_FEED_SCHEMA = "roebel_staging_mixed_feed_v1"
-# The reviewed workbench is a cluster-local Service. The public web origin is
-# intentionally not a valid probe target: it is a different presentation
-# boundary and must not be silently substituted for the workbench process.
-WORKBENCH_SERVICE_URL = "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/"
-WORKBENCH_SERVICE_BASE_URL = WORKBENCH_SERVICE_URL.rstrip("/")
+# Functional verification uses the exact public staging origin exercised by a
+# participant browser.  It is fixed in the protected runner and is never a
+# caller-selected destination.
+WORKBENCH_PUBLIC_HOSTNAME = "roebel-web.staging.agentcart.eu"
+WORKBENCH_PUBLIC_PORT = 443
+WORKBENCH_PUBLIC_ORIGIN = f"https://{WORKBENCH_PUBLIC_HOSTNAME}"
+WORKBENCH_PROBE_TIMEOUT_SECONDS = 15
+WORKBENCH_PROBE_MAX_BODY_BYTES = 8 * 1024 * 1024
+# The Service identity and port remain independently verified against the
+# target Pod and EndpointSlice before any public functional probe is trusted.
 WORKBENCH_SERVICE_PORT = 18083
 WORKBENCH_SERVICE_PORT_NAME = "http"
-WORKBENCH_SERVICE_PROXY_PATH = (
-    f"/api/v1/namespaces/{WORKBENCH_NAMESPACE}/services/{SERVICE_NAME}:{WORKBENCH_SERVICE_PORT}/proxy"
-)
 WORKBENCH_PROBE_PATHS = (PROBE_CONFIG_PATH, PROBE_FEED_PATH)
-WORKBENCH_RAW_PROBE_PATHS = {
-    path: WORKBENCH_SERVICE_PROXY_PATH + path for path in WORKBENCH_PROBE_PATHS
-}
 _PROBE_BINDING_DESCRIPTOR = json.dumps(
     {
-        "transport": "kubectl-get-raw",
-        "namespace": WORKBENCH_NAMESPACE,
-        "service": SERVICE_NAME,
-        "port": WORKBENCH_SERVICE_PORT,
-        "proxyPath": WORKBENCH_SERVICE_PROXY_PATH,
+        "transport": "python-stdlib-direct-https",
+        "origin": WORKBENCH_PUBLIC_ORIGIN,
+        "hostname": WORKBENCH_PUBLIC_HOSTNAME,
+        "port": WORKBENCH_PUBLIC_PORT,
+        "method": "GET",
+        "expectedStatus": 200,
+        "tlsVerification": "default-ca-and-hostname",
+        "environmentProxyUse": False,
+        "redirectsFollowed": False,
+        "timeoutSeconds": WORKBENCH_PROBE_TIMEOUT_SECONDS,
+        "maxBodyBytes": WORKBENCH_PROBE_MAX_BODY_BYTES,
         "allowedPaths": list(WORKBENCH_PROBE_PATHS),
     },
     sort_keys=True,
@@ -1281,16 +1288,22 @@ def _receipt_base(
         "operation": {"operationId": operation_id},
         "protectedRevision": protected_revision,
         "protectedGitBlobSha256": copy.deepcopy(protected_hashes),
-        # Bind every functional proof to the reviewed Service proxy path.
-        # The public web origin is a separate presentation boundary and is
-        # deliberately not interchangeable with this endpoint.
+        # Bind every functional proof to the exact public staging origin. The
+        # destination is protected source, never caller input; backend identity
+        # remains a separate Pod/Service/EndpointSlice postcondition.
         "probeBinding": {
-            "kind": "kubernetes-service-proxy",
-            "transport": "kubectl-get-raw",
-            "namespace": WORKBENCH_NAMESPACE,
-            "service": SERVICE_NAME,
-            "port": WORKBENCH_SERVICE_PORT,
-            "proxyPath": WORKBENCH_SERVICE_PROXY_PATH,
+            "kind": "fixed-public-https-origin",
+            "transport": "python-stdlib-direct-https",
+            "origin": WORKBENCH_PUBLIC_ORIGIN,
+            "hostname": WORKBENCH_PUBLIC_HOSTNAME,
+            "port": WORKBENCH_PUBLIC_PORT,
+            "method": "GET",
+            "expectedStatus": 200,
+            "tlsVerification": "default-ca-and-hostname",
+            "environmentProxyUse": False,
+            "redirectsFollowed": False,
+            "timeoutSeconds": WORKBENCH_PROBE_TIMEOUT_SECONDS,
+            "maxBodyBytes": WORKBENCH_PROBE_MAX_BODY_BYTES,
             "allowedPaths": list(WORKBENCH_PROBE_PATHS),
             "bindingSha256": WORKBENCH_PROBE_BINDING_SHA256,
         },
@@ -1574,10 +1587,6 @@ class KubernetesAdapter:
         require(bytes_digest(kubectl.read_bytes()) == KUBECTL_SHA256, "kubectl executable digest drift")
         self.kubeconfig = str(selected)
         self.kubectl = Path(kubectl)
-        # Functional probes are an intrinsic capability of this exact runner,
-        # not a caller-selected network destination.  Requests still travel
-        # exclusively through kubectl's apiserver Service proxy below.
-        self.probe_base_url = WORKBENCH_SERVICE_BASE_URL
 
     def _run(self, args: list[str], *, input_text: str | None = None, timeout: float = 40) -> subprocess.CompletedProcess[str]:
         environment = {
@@ -1660,21 +1669,39 @@ class KubernetesAdapter:
             raise PostconditionFailure(f"workbench rollout did not complete: {_bounded_error(result.stderr)}")
 
     def probe_get(self, path: str) -> dict[str, Any]:
-        require(self.probe_base_url == WORKBENCH_SERVICE_BASE_URL, "functional probe service binding drift")
         require(path in WORKBENCH_PROBE_PATHS, "probe path outside workbench promotion scope")
-        raw_path = WORKBENCH_RAW_PROBE_PATHS[path]
-        result = self._run(["get", "--raw", raw_path], timeout=40)
-        if result.returncode != 0:
-            # kubectl does not expose a stable typed HTTP response object for
-            # --raw. A non-zero response is therefore not safe to interpret
-            # as a successful application response or to retry.
-            message = _bounded_error(result.stderr or result.stdout)
-            lowered = message.lower()
-            if "notfound" in lowered or "not found" in lowered or "status code" in lowered:
-                raise PostconditionFailure(f"GET probe {path} failed: {message}")
-            raise TransportUncertain(f"GET probe {path} transport failed: {message}")
-        raw = result.stdout.encode("utf-8")
-        require(len(raw) <= MAX_FILE_BYTES, "GET probe response exceeds bound", PostconditionFailure)
+        context = getattr(self, "_probe_tls_context", None)
+        if context is None:
+            context = ssl.create_default_context()
+            self._probe_tls_context = context
+        require(
+            context.check_hostname is True and context.verify_mode == ssl.CERT_REQUIRED,
+            "functional probe TLS verification disabled",
+        )
+        connection: http.client.HTTPSConnection | None = None
+        try:
+            connection = http.client.HTTPSConnection(
+                WORKBENCH_PUBLIC_HOSTNAME,
+                WORKBENCH_PUBLIC_PORT,
+                timeout=WORKBENCH_PROBE_TIMEOUT_SECONDS,
+                context=context,
+            )
+            connection.request(
+                "GET",
+                path,
+                headers={"Accept": "application/json", "Connection": "close"},
+            )
+            response = connection.getresponse()
+            require(response.status == 200, f"GET probe {path} returned HTTP {response.status}", PostconditionFailure)
+            raw = response.read(WORKBENCH_PROBE_MAX_BODY_BYTES + 1)
+        except PromotionError:
+            raise
+        except (OSError, TimeoutError, http.client.HTTPException, ssl.SSLError) as error:
+            raise TransportUncertain(f"GET probe {path} transport failed: {_bounded_error(error)}") from error
+        finally:
+            if connection is not None:
+                connection.close()
+        require(len(raw) <= WORKBENCH_PROBE_MAX_BODY_BYTES, "GET probe response exceeds bound", PostconditionFailure)
         return parse_object(raw, f"GET probe {path}")
 
 

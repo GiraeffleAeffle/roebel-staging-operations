@@ -28,6 +28,7 @@ WORKBENCH_PROMOTER = "scripts/promote-staging-workbench-image.py"
 WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
 WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
 WORKBENCH_RECOVERY_IMPLEMENTATION = "scripts/workbench_baseline_recovery.py"
+RELAY_FIXTURE_RESET_RUNNER = "scripts/reset-staging-relay-fixtures.py"
 PROTECTED_PATHS = (
     SELF_PATH,
     BOOTSTRAP_RUNNER,
@@ -122,6 +123,15 @@ WORKBENCH_PROMOTION_PROTECTED_PATHS = (
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
 )
+# Relay emptyDir fixture removal is a distinct one-time capability.  Its
+# protected child owns the two exact Pod DELETE requests; this wrapper owns
+# only the fixed authenticated transport and immutable executable bindings.
+RELAY_FIXTURE_RESET_PROTECTED_PATHS = (
+    SELF_PATH,
+    RELAY_FIXTURE_RESET_RUNNER,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
 API_HOST, API_PORT, TALOS_PORT = "10.255.240.11", 6443, 50000
 PROXY_USERNAME = "stadtstack-participant"
 GIT_BIN = Path("/usr/bin/git")
@@ -139,12 +149,29 @@ WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
 WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v1"
+RELAY_FIXTURE_RESET_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_relay_fixture_reset_live_transport_receipt_v1"
+# The approved reset is callable only with the strict final-v2 evidence
+# verifier below.  Keep this guard before output reservation, credential
+# decryption, and cluster contact so any future verifier disablement fails shut.
+RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED = True
 WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b"
 WORKBENCH_PROMOTION_SOURCE_REVISION = "36ac41d7049df815aaebbe4301c098a0ec7e4101"
 WORKBENCH_PROMOTION_TARGET_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
     "sha256:2158831bd76865db483ca6a8dc211e7d5c3de51d0113613fc0a22a4ca27fc6ce"
 )
+RELAY_FIXTURE_RESET_TARGET_IMAGE = (
+    "ghcr.io/giraeffleaeffle/roebel-staging-relay@"
+    "sha256:6def2f468e3fad47cf17c0287a9215bbdc299b0d7d3b7fc58927b2f2169650ad"
+)
+WORKBENCH_PUBLIC_PROBE_HOSTNAME = "roebel-web.staging.agentcart.eu"
+WORKBENCH_PUBLIC_PROBE_ORIGIN = f"https://{WORKBENCH_PUBLIC_PROBE_HOSTNAME}"
+WORKBENCH_PUBLIC_PROBE_PATHS = (
+    "/stadtstack-test/api/config",
+    "/stadtstack-test/api/feed?profile=public",
+)
+WORKBENCH_PUBLIC_PROBE_TIMEOUT_SECONDS = 15
+WORKBENCH_PUBLIC_PROBE_MAX_BODY_BYTES = 8 * 1024 * 1024
 WORKBENCH_RECOVERY_ORIGIN_REVISION = "3be9405c6bfd6b4caf0423b137f969aab3bef323"
 WORKBENCH_RECOVERY_OPERATION_ID = "b6b52abc-4b28-4db0-b4ef-74041f41d7c6"
 WORKBENCH_RECOVERY_MARKER = "77157c24-d1d0-4cb8-850b-538f380c16fd"
@@ -199,6 +226,28 @@ def file_sha256(path: Path) -> str:
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""): digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+def workbench_public_probe_binding() -> dict[str, Any]:
+    """Return the promoter's exact fixed-origin functional-probe binding."""
+    descriptor = {
+        "transport": "python-stdlib-direct-https",
+        "origin": WORKBENCH_PUBLIC_PROBE_ORIGIN,
+        "hostname": WORKBENCH_PUBLIC_PROBE_HOSTNAME,
+        "port": 443,
+        "method": "GET",
+        "expectedStatus": 200,
+        "tlsVerification": "default-ca-and-hostname",
+        "environmentProxyUse": False,
+        "redirectsFollowed": False,
+        "timeoutSeconds": WORKBENCH_PUBLIC_PROBE_TIMEOUT_SECONDS,
+        "maxBodyBytes": WORKBENCH_PUBLIC_PROBE_MAX_BODY_BYTES,
+        "allowedPaths": list(WORKBENCH_PUBLIC_PROBE_PATHS),
+    }
+    return {
+        "kind": "fixed-public-https-origin",
+        **descriptor,
+        "bindingSha256": bytes_sha256(canonical(descriptor).encode("ascii")),
+    }
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -643,9 +692,9 @@ WORKBENCH_PROMOTER_LAUNCHER = (
     .replace("HandoverError", "PromotionError")
     .replace("pinned kubectl snapshot differs before workbench execution", "pinned kubectl snapshot differs before workbench promotion")
     .replace("workbench KubernetesAdapter kubectl override forbidden", "workbench promoter kubectl override forbidden")
-    # The promoter hard-binds its functional probes to the reviewed
-    # apiserver Service proxy.  Do not expose an arbitrary network destination
-    # through the protected launcher.
+    # The promoter hard-binds its functional probes to the fixed public HTTPS
+    # origin while independently proving Service/EndpointSlice-to-Pod binding.
+    # Do not expose an arbitrary network destination through the launcher.
     .replace("def _run(self,args,*,input_text=None):", "def _run(self,args,*,input_text=None,timeout=40):")
     .replace("super()._run(args,input_text=input_text)", "super()._run(args,input_text=input_text,timeout=timeout)")
 )
@@ -666,6 +715,43 @@ def workbench_promoter_command(
         str(promoter.blob.fd),
         str(promoter.blob.size),
         promoter.blob.sha256,
+        str(kubectl.path),
+        str(kubectl.fd),
+        str(kubectl.device),
+        str(kubectl.inode),
+        str(kubectl.size),
+        kubectl.sha256,
+        *arguments,
+    ]
+
+# The relay reset child has its own exact gated two-Pod reset plus public-Mecky
+# Flux suspend/scale/restore capability and error type. Reuse the
+# descriptor-pinned launcher shape without introducing a generic Kubernetes
+# command executor or permitting caller-selected targets.
+RELAY_FIXTURE_RESET_LAUNCHER = (
+    WORKBENCH_PROMOTER_LAUNCHER
+    .replace("protected_workbench_image_promotion", "protected_relay_fixture_reset")
+    .replace("PromotionError", "RelayResetError")
+    .replace("pinned kubectl snapshot differs before workbench promotion", "pinned kubectl snapshot differs before relay fixture reset")
+    .replace("workbench promoter kubectl override forbidden", "relay fixture reset kubectl override forbidden")
+)
+
+def relay_fixture_reset_command(
+    runner: BoundRunner,
+    kubectl: PinnedExecutableSnapshot,
+    arguments: list[str],
+) -> list[str]:
+    """Return the only command shape admitted for relay fixture reset mode."""
+    require(kubectl.fd >= 0 and kubectl.path.exists(), "pinned relay reset kubectl snapshot unavailable")
+    return [
+        sys.executable,
+        "-I",
+        "-c",
+        RELAY_FIXTURE_RESET_LAUNCHER,
+        str(ROOT / runner.logical_path),
+        str(runner.blob.fd),
+        str(runner.blob.size),
+        runner.blob.sha256,
         str(kubectl.path),
         str(kubectl.fd),
         str(kubectl.device),
@@ -1584,10 +1670,592 @@ def private_workbench_promotion_outputs(receipt_path: Path, journal_path: Path) 
     return receipt, journal
 
 
+def private_relay_fixture_reset_outputs(receipt_path: Path, journal_path: Path) -> tuple[Path, Path]:
+    """Require two fresh outputs because destructive reset attempts are never retried blindly."""
+    receipt = private_new_workbench_output(receipt_path, "relay fixture reset receipt")
+    journal = private_new_workbench_output(journal_path, "relay fixture reset journal")
+    require(
+        os.path.normcase(os.path.normpath(os.fspath(receipt)))
+        != os.path.normcase(os.path.normpath(os.fspath(journal))),
+        "relay fixture reset receipt and journal paths must be distinct",
+    )
+    return receipt, journal
+
+
 def read_bound_json(receipt: BoundBlob, label: str) -> dict[str, Any]:
     raw = os.pread(receipt.fd, receipt.size + 1, 0)
     require(len(raw) == receipt.size, f"{label} bound receipt size drift")
     return json_object(raw.decode("utf-8"), label)
+
+def require_value_free_relay_reset_evidence(value: Any, path: str = "$") -> None:
+    """Reject captured Secret values while allowing exact value-free refs."""
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).lower().replace("_", "").replace("-", "")
+            require(
+                normalized not in {"data", "stringdata"},
+                f"relay reset evidence contains secret-shaped data at {path}.{key}",
+            )
+            if normalized == "secretkeyref":
+                require(
+                    isinstance(child, dict)
+                    and set(child) == {"name", "key", "optional"}
+                    and isinstance(child.get("name"), str)
+                    and bool(child["name"])
+                    and isinstance(child.get("key"), str)
+                    and bool(child["key"])
+                    and child.get("optional") is False,
+                    f"relay reset Secret reference drift at {path}.{key}",
+                )
+                continue
+            if normalized in {"secretvaluesread", "civicauthorityeffects", "secretread", "secretwrite"}:
+                require(isinstance(child, bool), f"relay reset effect flag at {path}.{key} must be boolean")
+            require_value_free_relay_reset_evidence(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            require_value_free_relay_reset_evidence(child, f"{path}[{index}]")
+
+
+def verify_relay_fixture_reset_evidence(
+    receipt: BoundBlob,
+    journal: BoundBlob,
+    revision: str,
+    protected_hashes: dict[str, str],
+    artifact_pin_sha256: str,
+) -> dict[str, Any]:
+    """Verify the reset runner's exact completed v2 receipt and journal."""
+    namespace = "stadtstack-roebel-staging-lab"
+    components = ("citizen-relay", "agent-relay")
+    sequence = [
+        "gate-workbench", "suspend-public-mecky", "scale-public-mecky-zero",
+        "delete-citizen-relay", "delete-agent-relay", "scale-public-mecky-one",
+        "restore-public-mecky-flux", "restore-workbench-gate",
+    ]
+    relay_digest = RELAY_FIXTURE_RESET_TARGET_IMAGE.rsplit("@", 1)[1]
+    expected_profile = {
+        "kind0Count": 1,
+        "kind1Count": 0,
+        "validKind0Count": 1,
+        "expectedAuthorHash": True,
+        "eventIdVerified": True,
+        "signatureVerified": True,
+        "bot": True,
+        "identityVerified": True,
+        "aboutNonempty": True,
+        "agentTagVerified": True,
+    }
+    ingress_target = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "namespace": namespace,
+        "name": "stadtstack-test-workbench",
+    }
+    deployment_target = {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "namespace": namespace,
+        "name": "public-mecky",
+    }
+    kustomization_target = {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+        "kind": "Kustomization",
+        "namespace": "flux-roebel-staging",
+        "name": "roebel-staging-public-mecky-workload",
+    }
+
+    def exact_dict(value: Any, fields: set[str], label: str) -> dict[str, Any]:
+        require(isinstance(value, dict) and set(value) == fields, f"relay reset {label} field set drift")
+        return value
+
+    def exact_sha(value: Any, label: str) -> str:
+        require(isinstance(value, str) and SHA256.fullmatch(value) is not None, f"relay reset {label} SHA-256 invalid")
+        return value
+
+    def exact_uuid(value: Any, label: str) -> str:
+        require(isinstance(value, str) and UUID.fullmatch(value) is not None, f"relay reset {label} UUID invalid")
+        return value
+
+    def resource_version(value: Any, label: str) -> str:
+        require(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) is not None, f"relay reset {label} resourceVersion invalid")
+        return value
+
+    def positive_generation(value: Any, label: str) -> int:
+        require(isinstance(value, int) and not isinstance(value, bool) and value >= 1, f"relay reset {label} generation invalid")
+        return value
+
+    def validate_object_proof(value: Any, fields: set[str], label: str) -> dict[str, Any]:
+        item = exact_dict(value, fields, label)
+        exact_uuid(item.get("uid"), f"{label} uid")
+        if "resourceVersion" in fields:
+            resource_version(item.get("resourceVersion"), label)
+        if "generation" in fields:
+            positive_generation(item.get("generation"), label)
+        if "object" in fields:
+            require(isinstance(item.get("object"), dict), f"relay reset {label} object absent")
+            require(
+                item.get("objectSha256") == bytes_sha256(canonical(item["object"]).encode("utf-8")),
+                f"relay reset {label} object checksum drift",
+            )
+        if "specSha256" in fields:
+            exact_sha(item.get("specSha256"), f"{label} spec")
+        return item
+
+    def validate_inventory(value: Any, component: str, *, empty: bool, profile: bool) -> dict[str, Any]:
+        item = exact_dict(value, {"health", "eventStore", "admissionStore", "profile", "valueFree"}, f"{component} inventory")
+        require(item.get("valueFree") is True, f"relay reset {component} inventory is not value-free")
+        health = exact_dict(item.get("health"), {"component", "identityVerified", "events", "empty"}, f"{component} health")
+        require(
+            health == {
+                "component": component,
+                "identityVerified": True,
+                "events": 0 if empty else health.get("events"),
+                "empty": empty,
+            }
+            and isinstance(health.get("events"), int)
+            and not isinstance(health["events"], bool)
+            and (health["events"] == 0 if empty else health["events"] > 0),
+            f"relay reset {component} health proof drift",
+        )
+        event_store = exact_dict(item.get("eventStore"), {"present", "bytes", "records"}, f"{component} event store")
+        require(
+            isinstance(event_store.get("present"), bool)
+            and all(isinstance(event_store.get(key), int) and not isinstance(event_store[key], bool) and event_store[key] >= 0 for key in ("bytes", "records")),
+            f"relay reset {component} event-store counters invalid",
+        )
+        if empty:
+            require(event_store["bytes"] == 0 and event_store["records"] == 0, f"relay reset {component} event store not empty")
+        admission = exact_dict(item.get("admissionStore"), {"applicable", "present", "bytes", "records"}, f"{component} admission store")
+        require(
+            admission.get("applicable") is (component == "citizen-relay")
+            and isinstance(admission.get("present"), bool)
+            and admission.get("bytes") == 0
+            and admission.get("records") == 0,
+            f"relay reset {component} admission-store boundary drift",
+        )
+        if component == "agent-relay":
+            require(admission == {"applicable": False, "present": False, "bytes": 0, "records": 0}, "relay reset agent admission store widened")
+        if profile:
+            require(item.get("profile") == expected_profile, "relay reset Mecky profile proof drift")
+            require(health["events"] == 1 and event_store["records"] == 1 and event_store["bytes"] > 0, "relay reset Mecky profile inventory drift")
+        else:
+            require(item.get("profile") is None, f"relay reset {component} unexpected profile evidence")
+        return item
+
+    def validate_pod(value: Any, component: str, label: str, expected_digest: str) -> dict[str, Any]:
+        pod = exact_dict(value, {"name", "uid", "resourceVersion", "replicaSetUid", "addresses", "ready", "imageDigest"}, label)
+        require(isinstance(pod.get("name"), str) and pod["name"].startswith(f"{component}-"), f"relay reset {label} name drift")
+        exact_uuid(pod.get("uid"), f"{label} uid")
+        exact_uuid(pod.get("replicaSetUid"), f"{label} ReplicaSet uid")
+        resource_version(pod.get("resourceVersion"), label)
+        require(
+            pod.get("ready") is True
+            and pod.get("imageDigest") == expected_digest
+            and isinstance(pod.get("addresses"), list)
+            and bool(pod["addresses"])
+            and len(pod["addresses"]) == len(set(pod["addresses"])),
+            f"relay reset {label} readiness/image/address drift",
+        )
+        return pod
+
+    def validate_endpoint(value: Any, component: str, pod: dict[str, Any], label: str, port: int) -> dict[str, Any]:
+        endpoint = exact_dict(value, {"service", "podUid", "podName", "addresses", "endpointSliceUids", "port", "ready"}, label)
+        require(
+            endpoint.get("service") == component
+            and endpoint.get("podUid") == pod["uid"]
+            and endpoint.get("podName") == pod["name"]
+            and endpoint.get("addresses") == pod["addresses"]
+            and endpoint.get("port") == port
+            and endpoint.get("ready") is True
+            and isinstance(endpoint.get("endpointSliceUids"), list)
+            and bool(endpoint["endpointSliceUids"])
+            and len(endpoint["endpointSliceUids"]) == len(set(endpoint["endpointSliceUids"])),
+            f"relay reset {label} Pod/Service binding drift",
+        )
+        for uid in endpoint["endpointSliceUids"]:
+            exact_uuid(uid, f"{label} EndpointSlice uid")
+        return endpoint
+
+    def validate_snapshot(value: Any, *, after: bool) -> dict[str, Any]:
+        expected_fields = {
+            "resources", "runtime", "networkPolicies", "publicMecky", "publicMeckyRuntime", "ingress",
+        } | (
+            {"participantGateway", "feed", "feedObservations", "exact"}
+            if after
+            else {"workbench", "participantAdmissionBoundary"}
+        )
+        snapshot = exact_dict(value, expected_fields, "after snapshot" if after else "before snapshot")
+        resources = exact_dict(snapshot.get("resources"), set(components), "relay resources")
+        runtime = exact_dict(snapshot.get("runtime"), set(components), "relay runtime")
+        for component in components:
+            resource = exact_dict(resources.get(component), {"deployment", "service"}, f"{component} resources")
+            validate_object_proof(resource.get("deployment"), {"uid", "resourceVersion", "generation", "specSha256"}, f"{component} Deployment")
+            validate_object_proof(resource.get("service"), {"uid", "resourceVersion", "object", "objectSha256"}, f"{component} Service")
+            running = exact_dict(runtime.get(component), {"pod", "endpointSlice", "inventory"}, f"{component} runtime")
+            pod = validate_pod(running.get("pod"), component, f"{component} Pod", relay_digest)
+            validate_endpoint(running.get("endpointSlice"), component, pod, f"{component} EndpointSlice", 18081)
+            validate_inventory(running.get("inventory"), component, empty=after and component == "citizen-relay", profile=after and component == "agent-relay")
+        policies = snapshot.get("networkPolicies")
+        require(isinstance(policies, list) and bool(policies), "relay reset NetworkPolicy inventory absent")
+        policy_names: list[str] = []
+        for index, policy_value in enumerate(policies):
+            policy = validate_object_proof(policy_value, {"name", "uid", "generation", "object", "objectSha256"}, f"NetworkPolicy[{index}]")
+            require(isinstance(policy.get("name"), str) and bool(policy["name"]), "relay reset NetworkPolicy name invalid")
+            policy_names.append(policy["name"])
+        require(policy_names == sorted(set(policy_names)), "relay reset NetworkPolicy inventory order/cardinality drift")
+        ingress = validate_object_proof(snapshot.get("ingress"), {"uid", "resourceVersion", "generation", "policy", "object", "objectSha256", "specSha256"}, "workbench Ingress")
+        require(
+            ingress.get("uid") == "02cc55b5-30c5-46dd-b819-727e53c58806"
+            and ingress.get("generation") == 1
+            and isinstance(ingress.get("object"), dict)
+            and ingress.get("specSha256") == bytes_sha256(canonical(ingress["object"].get("spec")).encode("utf-8")),
+            "relay reset workbench Ingress identity/spec drift",
+        )
+        public_mecky = exact_dict(snapshot.get("publicMecky"), {"deployment", "service", "kustomization"}, "public-Mecky resources")
+        deployment = validate_object_proof(public_mecky.get("deployment"), {"uid", "resourceVersion", "generation", "replicas", "specSha256"}, "public-Mecky Deployment")
+        require(deployment.get("uid") == "96987f99-0fb7-4149-a5e7-f0b7c469ab75" and deployment.get("replicas") == 1, "relay reset public-Mecky Deployment state drift")
+        validate_object_proof(public_mecky.get("service"), {"uid", "object", "objectSha256"}, "public-Mecky Service")
+        flux = validate_object_proof(public_mecky.get("kustomization"), {"uid", "resourceVersion", "generation", "suspended", "suspendExplicit", "specSha256"}, "public-Mecky Kustomization")
+        require(
+            flux.get("uid") == "4d49b8eb-c84b-442a-a96e-26c94f24177a"
+            and flux.get("suspended") is False
+            and isinstance(flux.get("suspendExplicit"), bool),
+            "relay reset public-Mecky Kustomization state drift",
+        )
+        mecky_runtime = exact_dict(snapshot.get("publicMeckyRuntime"), {"pod", "endpointSlice"}, "public-Mecky runtime")
+        mecky_pod = validate_pod(mecky_runtime.get("pod"), "public-mecky", "public-Mecky Pod", "sha256:aa66c9b8bb75989e1c47b628845523fa345a944b0a1a82bd17863f96c1f128e4")
+        validate_endpoint(mecky_runtime.get("endpointSlice"), "public-mecky", mecky_pod, "public-Mecky EndpointSlice", 18084)
+        return snapshot
+
+    require(REVISION.fullmatch(revision) is not None, "relay reset protected revision invalid")
+    require(
+        artifact_pin_sha256 == WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        "relay reset artifact pin argument drift",
+    )
+    require(
+        set(protected_hashes) == set(RELAY_FIXTURE_RESET_PROTECTED_PATHS)
+        and all(isinstance(value, str) and SHA256.fullmatch(value) is not None for value in protected_hashes.values()),
+        "relay reset expected protected closure invalid",
+    )
+    evidence = read_bound_json(receipt, "relay fixture reset receipt")
+    state = read_bound_json(journal, "relay fixture reset journal")
+    require_value_free_relay_reset_evidence(evidence)
+    require_value_free_relay_reset_evidence(state)
+    receipt_checksum = evidence.pop("canonicalSha256", None)
+    exact_sha(receipt_checksum, "receipt canonical")
+    require(receipt_checksum == bytes_sha256(canonical(evidence).encode("utf-8")), "relay reset receipt checksum drift")
+    require(
+        set(evidence) == {
+            "schemaVersion", "status", "operationId", "protectedRevision", "protectedGitBlobSha256",
+            "artifact", "mode", "namespace", "sequence", "before", "gate", "meckyLifecycle",
+            "resets", "after", "restoration", "uncertainOutcome", "failure", "authority", "effects",
+            "completedAt",
+        },
+        "relay reset receipt field set drift",
+    )
+    require(
+        evidence.get("schemaVersion") == "roebel_staging_relay_fixture_reset_receipt_v2"
+        and evidence.get("status") == "completed"
+        and evidence.get("mode") == "live-one-shot"
+        and evidence.get("namespace") == namespace
+        and evidence.get("protectedRevision") == revision
+        and evidence.get("protectedGitBlobSha256") == protected_hashes
+        and evidence.get("sequence") == sequence
+        and evidence.get("uncertainOutcome") is None
+        and evidence.get("failure") is None
+        and isinstance(evidence.get("completedAt"), str)
+        and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", evidence["completedAt"]) is not None,
+        "relay reset completed receipt identity/status drift",
+    )
+    exact_uuid(evidence.get("operationId"), "operation")
+    artifact = exact_dict(evidence.get("artifact"), {"receiptSha256", "sourceRevision", "component", "repository", "manifestDigest", "image", "civicAuthority", "deploymentEffect"}, "artifact")
+    require(
+        artifact == {
+            "receiptSha256": artifact_pin_sha256,
+            "sourceRevision": WORKBENCH_PROMOTION_SOURCE_REVISION,
+            "component": "roebel-staging-relay",
+            "repository": RELAY_FIXTURE_RESET_TARGET_IMAGE.rsplit("@", 1)[0],
+            "manifestDigest": relay_digest,
+            "image": RELAY_FIXTURE_RESET_TARGET_IMAGE,
+            "civicAuthority": "none",
+            "deploymentEffect": False,
+        },
+        "relay reset artifact binding drift",
+    )
+    require(
+        evidence.get("authority") == {"civicAuthority": "none", "municipalDecision": False, "voteMutation": False, "treasuryMutation": False},
+        "relay reset civic-authority boundary drift",
+    )
+    effects = exact_dict(
+        evidence.get("effects"),
+        {"clusterMutationAttempted", "ingressPatchRequests", "kustomizationPatchRequests", "deploymentPatchRequests", "podDeleteRequests", "readOnlyExecRequests", "secretValuesRead", "eventContentsEmitted", "publicKeysEmitted", "civicAuthorityEffects", "admissionStoreContentRead", "dataRollbackPossible", "automaticMutationRetry"},
+        "effects",
+    )
+    require(
+        effects.get("clusterMutationAttempted") is True
+        and effects.get("ingressPatchRequests") == 2
+        and effects.get("kustomizationPatchRequests") == 2
+        and effects.get("deploymentPatchRequests") == 2
+        and effects.get("podDeleteRequests") == 2
+        and isinstance(effects.get("readOnlyExecRequests"), int)
+        and not isinstance(effects["readOnlyExecRequests"], bool)
+        and effects["readOnlyExecRequests"] >= 13
+        and all(effects.get(key) is False for key in ("secretValuesRead", "eventContentsEmitted", "publicKeysEmitted", "civicAuthorityEffects", "admissionStoreContentRead", "dataRollbackPossible", "automaticMutationRetry")),
+        "relay reset mutation/effect boundary drift",
+    )
+    before = validate_snapshot(evidence.get("before"), after=False)
+    after = validate_snapshot(evidence.get("after"), after=True)
+    require(after.get("exact") is True, "relay reset final preservation flag absent")
+
+    workbench = exact_dict(before.get("workbench"), {"config", "feed"}, "workbench preflight")
+    config = exact_dict(workbench.get("config"), {"schemaVersion", "authorityBinding", "mode", "personaCount", "meckyPubkeyHashVerified", "canonicalSha256"}, "workbench config")
+    require(config.get("schemaVersion") == "roebel_e2e_workbench_config_v1" and config.get("authorityBinding") == "none" and config.get("meckyPubkeyHashVerified") is True and isinstance(config.get("personaCount"), int) and config["personaCount"] >= 0, "relay reset workbench config proof drift")
+    exact_sha(config.get("canonicalSha256"), "workbench config")
+    before_feed = exact_dict(workbench.get("feed"), {"postCount", "allSynthetic", "canonicalSha256"}, "workbench feed")
+    require(isinstance(before_feed.get("postCount"), int) and before_feed["postCount"] > 0 and before_feed.get("allSynthetic") is True, "relay reset preflight synthetic feed proof drift")
+    exact_sha(before_feed.get("canonicalSha256"), "workbench feed")
+    participant_before = exact_dict(before.get("participantAdmissionBoundary"), {"status", "runtimeTargets", "fluxReconcilers", "secretValuesRead", "realAdmissionObserved", "writeIngressQuiescent", "admissionStoreZeroProven", "proofScope", "admissionStoreContentRead"}, "participant admission boundary")
+    require(
+        participant_before.get("status") == "no-active-participant-gateway"
+        and participant_before.get("secretValuesRead") is False
+        and participant_before.get("realAdmissionObserved") is False
+        and participant_before.get("writeIngressQuiescent") is False
+        and participant_before.get("admissionStoreZeroProven") is True
+        and participant_before.get("admissionStoreContentRead") is False
+        and isinstance(participant_before.get("runtimeTargets"), list)
+        and isinstance(participant_before.get("fluxReconcilers"), list)
+        and isinstance(participant_before.get("proofScope"), str),
+        "relay reset participant/admission precondition drift",
+    )
+    participant_after = exact_dict(after.get("participantGateway"), {"status", "runtimeTargets", "fluxReconcilers", "secretValuesRead"}, "final participant boundary")
+    require(participant_after == {key: participant_before[key] for key in participant_after}, "relay reset participant inactive boundary changed")
+    final_feed = exact_dict(after.get("feed"), {"postCount", "allSynthetic", "canonicalSha256"}, "final feed")
+    require(final_feed.get("postCount") == 0 and final_feed.get("allSynthetic") is True, "relay reset final feed is not empty")
+    exact_sha(final_feed.get("canonicalSha256"), "final feed")
+    require(after.get("feedObservations") == [final_feed, final_feed], "relay reset final empty-feed observations drift")
+
+    gate = exact_dict(evidence.get("gate"), {"applied", "quietObservations", "restored"}, "gate")
+    quiet = gate.get("quietObservations")
+    require(gate.get("applied") is True and gate.get("restored") is True and isinstance(quiet, list) and len(quiet) == 3 and quiet[0] == quiet[1] == quiet[2], "relay reset write gate/quiescence proof drift")
+    for observation in quiet:
+        observation = exact_dict(observation, {"feedSha256", "ingressObjectSha256", "relayInventorySha256", "admissionStoreZero"}, "quiet observation")
+        require(observation.get("feedSha256") == before_feed["canonicalSha256"] and observation.get("admissionStoreZero") is True, "relay reset quiet observation drift")
+        exact_sha(observation.get("ingressObjectSha256"), "gated Ingress object")
+        exact_sha(observation.get("relayInventorySha256"), "quiet relay inventory")
+    lifecycle = exact_dict(evidence.get("meckyLifecycle"), {"fluxSuspended", "scaledToZero", "scaledToOne", "profile", "fluxRestored"}, "Mecky lifecycle")
+    require(lifecycle == {"fluxSuspended": True, "scaledToZero": True, "scaledToOne": True, "profile": expected_profile, "fluxRestored": True}, "relay reset public-Mecky lifecycle drift")
+    restoration = exact_dict(evidence.get("restoration"), {"required", "scaleUp", "flux", "ingress", "complete"}, "restoration")
+    for key in ("scaleUp", "flux", "ingress"):
+        exact_dict(restoration.get(key), {"attempted", "proven"}, f"restoration {key}")
+    require(
+        restoration == {
+            "required": True,
+            "scaleUp": {"attempted": False, "proven": True},
+            "flux": {"attempted": True, "proven": True},
+            "ingress": {"attempted": True, "proven": True},
+            "complete": True,
+        },
+        "relay reset restoration proof drift",
+    )
+
+    require(before["networkPolicies"] == after["networkPolicies"], "relay reset NetworkPolicy preservation drift")
+    for component in components:
+        before_resource = before["resources"][component]
+        after_resource = after["resources"][component]
+        require(
+            before_resource["deployment"]["uid"] == after_resource["deployment"]["uid"]
+            and before_resource["deployment"]["generation"] == after_resource["deployment"]["generation"]
+            and before_resource["deployment"]["specSha256"] == after_resource["deployment"]["specSha256"]
+            and before_resource["service"]["uid"] == after_resource["service"]["uid"]
+            and before_resource["service"]["object"] == after_resource["service"]["object"]
+            and before_resource["service"]["objectSha256"] == after_resource["service"]["objectSha256"],
+            f"relay reset {component} workload/Service preservation drift",
+        )
+    before_mecky = before["publicMecky"]
+    after_mecky = after["publicMecky"]
+    require(
+        before_mecky["deployment"]["uid"] == after_mecky["deployment"]["uid"]
+        and before_mecky["deployment"]["specSha256"] == after_mecky["deployment"]["specSha256"]
+        and before_mecky["deployment"]["replicas"] == after_mecky["deployment"]["replicas"] == 1
+        and after_mecky["deployment"]["generation"] >= before_mecky["deployment"]["generation"]
+        and before_mecky["service"] == after_mecky["service"]
+        and before_mecky["kustomization"]["uid"] == after_mecky["kustomization"]["uid"]
+        and before_mecky["kustomization"]["specSha256"] == after_mecky["kustomization"]["specSha256"]
+        and before_mecky["kustomization"]["suspendExplicit"] == after_mecky["kustomization"]["suspendExplicit"]
+        and after_mecky["kustomization"]["generation"] >= before_mecky["kustomization"]["generation"]
+        and before_mecky["kustomization"]["suspended"] is False
+        and after_mecky["kustomization"]["suspended"] is False,
+        "relay reset public-Mecky Deployment/Service/Flux preservation drift",
+    )
+    require(
+        before["ingress"]["uid"] == after["ingress"]["uid"]
+        and before["ingress"]["generation"] == after["ingress"]["generation"]
+        and before["ingress"]["policy"] == after["ingress"]["policy"]
+        and before["ingress"]["object"] == after["ingress"]["object"]
+        and before["ingress"]["objectSha256"] == after["ingress"]["objectSha256"]
+        and before["ingress"]["specSha256"] == after["ingress"]["specSha256"],
+        "relay reset Ingress restoration drift",
+    )
+    require(before["publicMeckyRuntime"]["pod"]["uid"] != after["publicMeckyRuntime"]["pod"]["uid"], "relay reset public-Mecky Pod did not restart")
+
+    resets = evidence.get("resets")
+    require(isinstance(resets, list) and len(resets) == 2, "relay reset must contain exactly two Pod resets")
+    for index, component in enumerate(components):
+        reset = exact_dict(resets[index], {"component", "oldPodUid", "newPodUid", "endpointBindingSha256", "eventStoreEmpty", "admissionStoreReset", "requestSha256"}, f"{component} reset")
+        before_pod = before["runtime"][component]["pod"]
+        after_pod = after["runtime"][component]["pod"]
+        expected_delete = {
+            "method": "DELETE",
+            "path": f"/api/v1/namespaces/{namespace}/pods/{before_pod['name']}",
+            "body": {
+                "apiVersion": "v1",
+                "kind": "DeleteOptions",
+                "preconditions": {"uid": before_pod["uid"], "resourceVersion": before_pod["resourceVersion"]},
+            },
+        }
+        require(
+            reset.get("component") == component
+            and reset.get("oldPodUid") == before_pod["uid"]
+            and reset.get("newPodUid") == after_pod["uid"]
+            and reset["oldPodUid"] != reset["newPodUid"]
+            and reset.get("endpointBindingSha256") == bytes_sha256(canonical(after["runtime"][component]["endpointSlice"]).encode("utf-8"))
+            and reset.get("eventStoreEmpty") is True
+            and reset.get("admissionStoreReset") is (component == "citizen-relay")
+            and reset.get("requestSha256") == bytes_sha256(canonical(expected_delete).encode("utf-8")),
+            f"relay reset {component} delete/replacement binding drift",
+        )
+    require(after["runtime"]["agent-relay"]["inventory"]["profile"] == expected_profile, "relay reset final Mecky profile missing")
+
+    journal_checksum = state.pop("journalSha256", None)
+    exact_sha(journal_checksum, "journal canonical")
+    require(journal_checksum == bytes_sha256(canonical(state).encode("utf-8")), "relay reset journal checksum drift")
+    require(
+        set(state) == {"schemaVersion", "status", "operationId", "protectedRevision", "protectedGitBlobSha256", "artifact", "namespace", "sequence", "before", "gate", "meckyLifecycle", "resets", "after", "restoration", "events"},
+        "relay reset journal field set drift",
+    )
+    require(
+        state.get("schemaVersion") == "roebel_staging_relay_fixture_reset_journal_v2"
+        and state.get("status") == "completed"
+        and state.get("operationId") == evidence["operationId"]
+        and state.get("protectedRevision") == revision
+        and state.get("protectedGitBlobSha256") == protected_hashes
+        and state.get("artifact") == artifact
+        and state.get("namespace") == namespace
+        and state.get("sequence") == sequence
+        and state.get("before") == evidence["before"]
+        and state.get("gate") == gate
+        and state.get("meckyLifecycle") == lifecycle
+        and state.get("resets") == resets
+        and state.get("after") == evidence["after"]
+        and state.get("restoration") == restoration,
+        "relay reset receipt/journal binding drift",
+    )
+    events = state.get("events")
+    require(isinstance(events, list) and len(events) == 25, "relay reset completed journal grammar length drift")
+    previous: str | None = None
+    for index, event_value in enumerate(events, start=1):
+        require(isinstance(event_value, dict), f"relay reset journal event {index} invalid")
+        event = dict(event_value)
+        entry_sha = event.pop("entrySha256", None)
+        exact_sha(entry_sha, f"journal event {index}")
+        require(
+            event.get("sequence") == index
+            and event.get("previousEntrySha256") == previous
+            and entry_sha == bytes_sha256(canonical(event).encode("utf-8")),
+            f"relay reset journal event {index} hash-chain drift",
+        )
+        previous = entry_sha
+
+    base_fields = {"sequence", "operation", "stage", "previousEntrySha256", "entrySha256"}
+    def journal_event(index: int, operation: str, stages: set[str], detail_fields: set[str]) -> dict[str, Any]:
+        event = events[index - 1]
+        require(
+            set(event) == base_fields | detail_fields
+            and event.get("operation") == operation
+            and event.get("stage") in stages,
+            f"relay reset journal event {index} grammar drift",
+        )
+        return event
+
+    preflight = journal_event(1, "preflight", {"after"}, {"snapshotSha256", "feedSha256", "admissionStoreZero", "participantInactive"})
+    exact_sha(preflight.get("snapshotSha256"), "preflight snapshot")
+    require(preflight["feedSha256"] == before_feed["canonicalSha256"] and preflight["admissionStoreZero"] is True and preflight["participantInactive"] is True, "relay reset preflight journal binding drift")
+
+    mutation_specs = (
+        (2, "gate-workbench", ingress_target, "GET-HEAD-POST-to-GET-HEAD", "desiredStateObserved"),
+        (4, "suspend-public-mecky", kustomization_target, "false-to-true", "desiredStateObserved"),
+        (6, "scale-public-mecky-zero", deployment_target, "1-to-0", "requestAccepted"),
+        (15, "scale-public-mecky-one", deployment_target, "0-to-1", "requestAccepted"),
+        (18, "restore-public-mecky-flux", kustomization_target, "true-to-original-false", "desiredStateObserved"),
+        (20, "restore-workbench-gate", ingress_target, "GET-HEAD-to-GET-HEAD-POST", "desiredStateObserved"),
+    )
+    for index, operation, target, transition, after_field in mutation_specs:
+        intent = journal_event(index, operation, {"intent"}, {"target", "requestSha256", "transition"})
+        require(intent.get("target") == target and intent.get("transition") == transition, f"relay reset {operation} intent drift")
+        exact_sha(intent.get("requestSha256"), f"{operation} request")
+        resolution = events[index]
+        if resolution.get("stage") == "after":
+            resolution = journal_event(index + 1, operation, {"after"}, {"requestSha256", after_field})
+            require(resolution.get(after_field) is True, f"relay reset {operation} success proof drift")
+        else:
+            resolution = journal_event(index + 1, operation, {"classified"}, {"requestSha256", "classification", "mutationRetried"})
+            require(resolution.get("classification") == "desired-observed" and resolution.get("mutationRetried") is False, f"relay reset {operation} classification drift")
+        require(resolution.get("requestSha256") == intent["requestSha256"], f"relay reset {operation} request/result binding drift")
+
+    zero_event = journal_event(8, "wait-public-mecky-zero", {"after"}, {"deploymentSha256", "selectedPodCount"})
+    require(exact_sha(zero_event.get("deploymentSha256"), "scaled-zero Deployment") and zero_event.get("selectedPodCount") == 0, "relay reset zero-replica journal proof drift")
+    for reset_index, (intent_index, wait_index, component) in enumerate(((9, 11, "citizen-relay"), (12, 14, "agent-relay"))):
+        reset = resets[reset_index]
+        before_pod = before["runtime"][component]["pod"]
+        target = {"apiVersion": "v1", "kind": "Pod", "namespace": namespace, "name": before_pod["name"]}
+        intent = journal_event(intent_index, f"delete-{component}-pod", {"intent"}, {"target", "uid", "resourceVersion", "requestSha256"})
+        require(intent.get("target") == target and intent.get("uid") == before_pod["uid"] and intent.get("resourceVersion") == before_pod["resourceVersion"] and intent.get("requestSha256") == reset["requestSha256"], f"relay reset {component} DELETE intent drift")
+        resolution = events[intent_index]
+        if resolution.get("stage") == "after":
+            resolution = journal_event(intent_index + 1, f"delete-{component}-pod", {"after"}, {"requestSha256", "requestAccepted"})
+            require(resolution.get("requestAccepted") is True, f"relay reset {component} DELETE success drift")
+        else:
+            resolution = journal_event(intent_index + 1, f"delete-{component}-pod", {"classified"}, {"requestSha256", "classification", "mutationRetried"})
+            require(resolution.get("classification") == "old-pod-absent" and resolution.get("mutationRetried") is False, f"relay reset {component} DELETE classification drift")
+        require(resolution.get("requestSha256") == reset["requestSha256"], f"relay reset {component} DELETE result drift")
+        wait = journal_event(wait_index, f"wait-{component}-replacement", {"after"}, set(reset))
+        require({key: wait[key] for key in reset} == reset, f"relay reset {component} replacement journal drift")
+    profile_event = journal_event(17, "wait-public-mecky-profile", {"after"}, {"newPodUid", "profileProofSha256", "kind0Count", "kind1Count"})
+    require(
+        profile_event.get("newPodUid") == after["publicMeckyRuntime"]["pod"]["uid"]
+        and profile_event.get("profileProofSha256") == bytes_sha256(canonical(expected_profile).encode("utf-8"))
+        and profile_event.get("kind0Count") == 1
+        and profile_event.get("kind1Count") == 0,
+        "relay reset Mecky profile journal proof drift",
+    )
+    postconditions = journal_event(22, "postconditions", {"after"}, {"snapshotSha256", "preservationExact", "emptyFeedObservations"})
+    exact_sha(postconditions.get("snapshotSha256"), "postcondition snapshot")
+    require(postconditions.get("preservationExact") is True and postconditions.get("emptyFeedObservations") == 2, "relay reset final preservation journal drift")
+    transaction = journal_event(23, "transaction", {"final"}, {"status"})
+    require(transaction.get("status") == "completed", "relay reset terminal journal status drift")
+    receipt_intent = journal_event(24, "receipt", {"intent"}, {"requestSha256", "status"})
+    receipt_after = journal_event(25, "receipt", {"after"}, {"requestSha256", "status"})
+    require(
+        receipt_intent.get("requestSha256") == receipt_checksum
+        and receipt_after.get("requestSha256") == receipt_checksum
+        and receipt_intent.get("status") == receipt_after.get("status") == "completed",
+        "relay reset receipt commit/journal binding drift",
+    )
+    return {
+        "receiptSha256": receipt.sha256,
+        "receiptCanonicalSha256": receipt_checksum,
+        "journalSha256": journal.sha256,
+        "journalCanonicalSha256": journal_checksum,
+        "artifactPinSha256": artifact_pin_sha256,
+        "targetImage": RELAY_FIXTURE_RESET_TARGET_IMAGE,
+        "mutationSequence": sequence,
+        "deleteCount": 2,
+        "gateRestored": True,
+        "fluxReady": True,
+        "admissionsZero": True,
+        "meckyProfileProven": True,
+        "preservationExact": True,
+        "cleanupComplete": True,
+    }
 
 
 def verify_workbench_handover_evidence(
@@ -1678,6 +2346,10 @@ def verify_workbench_image_promotion_evidence(
         and evidence.get("protectedRevision") == revision
         and evidence.get("protectedGitBlobSha256") == protected_hashes,
         "workbench image promotion protected operation binding drift",
+    )
+    require(
+        evidence.get("probeBinding") == workbench_public_probe_binding(),
+        "workbench image promotion fixed public HTTPS probe binding drift",
     )
     artifact = evidence.get("artifact")
     require(
@@ -2135,6 +2807,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--workbench-baseline-recovery", action="store_true")
     mode.add_argument("--workbench-baseline-recovery-finalize", action="store_true")
     mode.add_argument("--workbench-image-promotion", action="store_true")
+    mode.add_argument("--relay-fixture-reset", action="store_true")
     parser.add_argument("--expected-protected-revision", required=True)
     parser.add_argument("--age-bin", required=True, type=Path)
     parser.add_argument("--age-identity", required=True, type=Path)
@@ -2163,6 +2836,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workbench-artifact-pin", type=Path)
     parser.add_argument("--workbench-promotion-receipt", type=Path)
     parser.add_argument("--workbench-promotion-journal", type=Path)
+    parser.add_argument("--relay-reset-artifact-pin", type=Path)
+    parser.add_argument("--relay-reset-receipt", type=Path)
+    parser.add_argument("--relay-reset-journal", type=Path)
     parser.add_argument("--live", action="store_true")
     args = parser.parse_args(argv)
     promotion_paths = (
@@ -2170,7 +2846,40 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.workbench_promotion_receipt,
         args.workbench_promotion_journal,
     )
-    if args.workbench_image_promotion:
+    relay_reset_paths = (
+        args.relay_reset_artifact_pin,
+        args.relay_reset_receipt,
+        args.relay_reset_journal,
+    )
+    if args.relay_fixture_reset:
+        require(args.live is True, "relay fixture reset requires --live")
+        require(all(value is not None for value in relay_reset_paths), "relay fixture reset requires artifact pin, receipt, and journal")
+        require(all(value is None for value in promotion_paths), "relay fixture reset may not receive workbench promotion inputs")
+        require(
+            all(value is None for value in (
+                args.teardown_dormant_receipt,
+                args.participant_secret_bundle,
+                args.teardown_participant_secret_receipt,
+                args.handover_dormant_receipt,
+                args.participant_secret_materialization_receipt,
+                args.workbench_handover_receipt,
+                args.workbench_handover_journal,
+                args.workbench_recovery_receipt,
+                args.workbench_recovery_journal,
+                args.workbench_origin_journal,
+                args.workbench_attempt_receipt,
+                args.workbench_inspection,
+            )),
+            "relay fixture reset may not receive participant or baseline inputs",
+        )
+        require(
+            os.path.normcase(os.path.normpath(os.fspath(args.relay_reset_receipt)))
+            != os.path.normcase(os.path.normpath(os.fspath(args.relay_reset_journal))),
+            "relay fixture reset receipt and journal paths must be distinct",
+        )
+    elif any(value is not None for value in relay_reset_paths):
+        raise LiveTransportError("relay fixture reset paths require --relay-fixture-reset")
+    elif args.workbench_image_promotion:
         require(args.live is True, "workbench image promotion requires --live")
         require(
             all(value is None for value in (
@@ -2527,6 +3236,263 @@ def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
     return 0 if completed and cleanup_complete and committed else 3 if completed else 2
 
 
+def run_relay_fixture_reset_transport(args: argparse.Namespace) -> int:
+    """Run the one-shot protected relay fixture reset over pinned transport.
+
+    The child alone owns its exact Ingress write gate/restore, the two ordered
+    citizen-then-agent Pod DELETE requests, and the public-Mecky Flux suspend,
+    Deployment scale 1-to-0-to-1, and restore sequence.  This wrapper binds the
+    child source from the protected Git revision, copies and verifies the
+    immutable relay runtime pin, snapshots every executable, and exposes only
+    authenticated fixed CONNECT guards and descriptor-pinned kubectl. Outputs
+    must be fresh because an interrupted destructive attempt is never retried.
+    """
+    receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
+    temp: Path | None = None; session: LiveSession | None = None
+    cancellation = CancellationState(); installed = False
+    snapshots: dict[str, PinnedExecutableSnapshot] = {}
+    bindings: dict[str, PersistentPinnedExecutable] = {}
+    bound: list[BoundRunner] = []; evidence: list[BoundBlob] = []
+    protected_hashes: dict[str, str] = {}; credentials: list[str] = []
+    cleanup_errors: list[str] = []; error: str | None = None; completed = False
+    listener_verified = False; proof: dict[str, Any] | None = None
+    revision = args.expected_protected_revision
+    reset_receipt = Path(args.relay_reset_receipt)
+    reset_journal = Path(args.relay_reset_journal)
+    artifact_pin_copy: Path | None = None
+    try:
+        require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")
+        require(args.live is True and args.relay_fixture_reset is True, "relay fixture reset requires explicit mode and --live")
+        require(REVISION.fullmatch(revision) is not None, "protected revision must be lowercase SHA-1")
+        require(
+            RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED is True,
+            "relay fixture reset strict v2 evidence guard is disabled",
+        )
+        reset_receipt, reset_journal = private_relay_fixture_reset_outputs(reset_receipt, reset_journal)
+        cancellation.install(); installed = True
+        receipt_dir = reserve_output_directory(args.receipt_directory)
+        receipt_sink = WrapperReceiptSink.reserve(receipt_dir / "relay-fixture-reset-transport-attempt.json")
+        cancellation.checkpoint()
+        protected_hashes, protected_blobs = bind_protected_checkout(
+            revision,
+            paths=RELAY_FIXTURE_RESET_PROTECTED_PATHS,
+        )
+        identity = private_file(args.age_identity, "age identity")
+        bundle_source = Path(os.path.abspath(args.bootstrap_bundle)); bundle_source_info = os.lstat(bundle_source)
+        require(not stat.S_ISLNK(bundle_source_info.st_mode), "bootstrap bundle must not be a symlink")
+        bundle = Path(os.path.realpath(bundle_source)); bundle_info = os.lstat(bundle)
+        require(
+            bundle == bundle_source
+            and stat.S_ISDIR(bundle_info.st_mode)
+            and bundle_info.st_uid == os.geteuid()
+            and stat.S_IMODE(bundle_info.st_mode) & 0o077 == 0,
+            "bootstrap bundle must be a private owned directory",
+        )
+        encrypted_wg = private_file(bundle / "wireguard-daily.conf.age", "encrypted WireGuard input")
+        encrypted_talos = private_file(bundle / "talosconfig.yaml.age", "encrypted Talos input")
+
+        temp = Path(tempfile.mkdtemp(prefix="roebel-relay-fixture-reset-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
+        binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
+        runner_blob = bind_bytes_to_fd(
+            protected_blobs[RELAY_FIXTURE_RESET_RUNNER],
+            binding_dir / "reset-staging-relay-fixtures.py.bound",
+            "protected relay fixture reset runner",
+        )
+        bound.append(BoundRunner(RELAY_FIXTURE_RESET_RUNNER, runner_blob))
+        runner = bound[0]
+        artifact_pin_copy = temp / "relay-runtime-pin.json"
+        snapshot_owned_file_path(
+            Path(args.relay_reset_artifact_pin),
+            artifact_pin_copy,
+            "relay fixture reset artifact pin",
+            max_bytes=MAX_RECEIPT_BYTES,
+        )
+        require(
+            file_sha256(artifact_pin_copy) == WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+            "relay fixture reset artifact pin checksum drift",
+        )
+        executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
+        for label, source in sorted({
+            "age": args.age_bin,
+            "kubectl": args.kubectl_bin,
+            "talosctl": args.talosctl_bin,
+            "wireproxy": args.wireproxy_bin,
+        }.items()):
+            snapshot = snapshot_binary(source, label, executable_dir / label)
+            seal_pinned_snapshot(snapshot)
+            snapshots[label] = snapshot
+            bindings[label] = PersistentPinnedExecutable(snapshot)
+            cancellation.checkpoint()
+        fsync_directory(executable_dir)
+        wireguard = temp / "wireguard.conf"; talosconfig = temp / "talosconfig.yaml"
+        decrypt(cancellation, bindings["age"], identity, encrypted_wg, wireguard)
+        decrypt(cancellation, bindings["age"], identity, encrypted_talos, talosconfig)
+        wireguard_bytes = wireguard.read_bytes(); wireguard.unlink(); fsync_directory(wireguard.parent)
+        api_config = wireproxy_config(f"{API_HOST}:{API_PORT}", wireguard_bytes)
+        talos_config = wireproxy_config(f"{API_HOST}:{TALOS_PORT}", wireguard_bytes)
+        api_password = secrets.token_hex(32); talos_password = secrets.token_hex(32)
+        credentials = [api_password, talos_password]
+        for index, config in enumerate((api_config, talos_config)):
+            config_blob = bind_bytes_to_fd(
+                config,
+                binding_dir / f"wireproxy-config-{index}.bound",
+                f"relay fixture reset fixed-target wireproxy config {index}",
+            )
+            try:
+                checked = cancellation.run(
+                    [str(bindings["wireproxy"].path), "-n", "-c", f"/dev/fd/{config_blob.fd}"],
+                    timeout=10,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=sanitized_environment(),
+                    pass_fds=(config_blob.fd,),
+                    executable_binding=bindings["wireproxy"],
+                )
+                require(checked.returncode == 0, f"wireproxy rejected protected fixed-target config {index}")
+            finally:
+                config_blob.close()
+        session = LiveSession(
+            bindings["wireproxy"], api_config, talos_config, binding_dir,
+            api_password, talos_password, cancellation,
+        )
+        api_port, talos_port = session.start_proxy(); listener_verified = session.listener_verified
+        kubeconfig = temp / "admin-kubeconfig.json"
+        create_admin_kubeconfig(
+            session,
+            bindings["talosctl"],
+            bindings["kubectl"],
+            talosconfig,
+            kubeconfig,
+            proxy_url(talos_password, talos_port),
+            proxy_url(api_password, api_port),
+            temp,
+        )
+        child_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
+        child = session.run_child(
+            relay_fixture_reset_command(
+                runner,
+                snapshots["kubectl"],
+                [
+                    "--artifact-pin", str(artifact_pin_copy),
+                    "--kubeconfig", str(kubeconfig),
+                    "--receipt", str(reset_receipt),
+                    "--journal", str(reset_journal),
+                    "--protected-revision", revision,
+                    "--protected-hashes", canonical(protected_hashes),
+                ],
+            ),
+            child_environment,
+            receipt_pending=True,
+            pass_fds=(runner.blob.fd, snapshots["kubectl"].fd),
+        )
+        try:
+            require(child.returncode == 0, f"protected relay fixture reset runner exited {child.returncode}")
+            receipt_bound = snapshot_owned_receipt(
+                reset_receipt,
+                binding_dir / "relay-fixture-reset-receipt.bound",
+                "relay fixture reset receipt",
+            )
+            journal_bound = snapshot_owned_receipt(
+                reset_journal,
+                binding_dir / "relay-fixture-reset-journal.bound",
+                "relay fixture reset journal",
+            )
+            evidence.extend((receipt_bound, journal_bound))
+            proof = verify_relay_fixture_reset_evidence(
+                receipt_bound,
+                journal_bound,
+                revision,
+                protected_hashes,
+                WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+            )
+            bindings["kubectl"]._verify()
+            logging_error = best_effort_print_child(child)
+            require(logging_error is None, logging_error or "protected relay fixture reset output forwarding failed")
+            completed = True
+        finally:
+            session.receipt_reconciled()
+    except BaseException as exc:
+        error = str(exc) or type(exc).__name__
+        best_effort_stderr(f"relay fixture reset wrapper blocked: {error}")
+    if installed: cancellation.begin_finalization()
+    session_cleanup: dict[str, Any] = {"wireproxyProcessGroupStopped": True, "allGuardWorkersStopped": True}
+    if session is not None:
+        try: session_cleanup = session.close()
+        except BaseException as exc: cleanup_errors.append(f"transport cleanup: {exc}")
+    process_cleanup = {"ownedProcessGroupsStopped": True, "ownedProcessGroupCount": 0}
+    if installed:
+        try: process_cleanup = cancellation.cleanup_processes()
+        except BaseException as exc: cleanup_errors.append(f"process cleanup: {exc}")
+    for snapshot in snapshots.values():
+        try: unseal_pinned_snapshot(snapshot)
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot unseal: {exc}")
+        try: snapshot.close()
+        except BaseException as exc: cleanup_errors.append(f"pinned snapshot close: {exc}")
+    for item in evidence:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"relay reset evidence close: {exc}")
+    for item in bound:
+        try: item.close()
+        except BaseException as exc: cleanup_errors.append(f"protected relay reset runner close: {exc}")
+    plaintext_removed = temp is None
+    if temp is not None:
+        try: shutil.rmtree(temp)
+        except BaseException as exc: cleanup_errors.append(f"private relay reset temp cleanup: {exc}")
+        plaintext_removed = not temp.exists()
+    cleanup_complete = (
+        not cleanup_errors
+        and session_cleanup.get("wireproxyProcessGroupStopped") is True
+        and session_cleanup.get("allGuardWorkersStopped") is True
+        and process_cleanup["ownedProcessGroupsStopped"] is True
+        and plaintext_removed
+    )
+    status = "completed" if completed and cleanup_complete else ("completed-cleanup-incomplete" if completed else "blocked")
+    payload = {
+        "schemaVersion": RELAY_FIXTURE_RESET_TRANSPORT_RECEIPT_SCHEMA,
+        "status": status,
+        "protectedRevision": revision,
+        "protectedGitBlobSha256": protected_hashes,
+        "binarySha256": {name: snapshot.sha256 for name, snapshot in sorted(snapshots.items())},
+        "artifactPinSha256": WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        "targetImage": RELAY_FIXTURE_RESET_TARGET_IMAGE,
+        "transport": {
+            "mode": "authenticated-exact-connect-guards-spawning-protected-relay-fixture-reset",
+            "apiAuthority": f"{API_HOST}:{API_PORT}",
+            "talosAuthority": f"{API_HOST}:{TALOS_PORT}",
+            "listenerOwnershipAndAuthenticationVerified": listener_verified,
+            "temporaryTransportStopped": session_cleanup.get("wireproxyProcessGroupStopped") is True,
+            "plaintextTransportInputsRemoved": plaintext_removed,
+        },
+        "reset": proof or {
+            "receiptSha256": None,
+            "journalSha256": None,
+            "cleanupComplete": False,
+        },
+        "resume": {
+            "explicitReceiptPath": str(reset_receipt),
+            "explicitJournalPath": str(reset_journal),
+            "automaticRetry": False,
+            "sameProtectedRevisionRequired": True,
+            "freshOutputsRequired": True,
+        },
+        "cleanup": {"complete": cleanup_complete, "errors": cleanup_errors, "processes": process_cleanup},
+        "failure": error,
+        "containsSecretMaterial": False,
+        "civicAuthorityEffects": False,
+        "automaticRetry": False,
+    }
+    committed = False
+    if receipt_sink is not None:
+        try:
+            encoded = canonical(payload)
+            require(not any(value in encoded for value in credentials), "relay fixture reset wrapper receipt contains transport credential")
+            receipt_sink.commit(payload); committed = True
+        except BaseException as exc:
+            best_effort_stderr(f"relay fixture reset wrapper receipt-incomplete: {exc}")
+    if installed: cancellation.restore()
+    return 0 if completed and cleanup_complete and committed else 3 if completed else 2
+
+
 def run_workbench_image_promotion_transport(args: argparse.Namespace) -> int:
     """Promote the reviewed workbench image through the protected promoter.
 
@@ -2535,7 +3501,8 @@ def run_workbench_image_promotion_transport(args: argparse.Namespace) -> int:
     the exact protected Git revision, snapshots the immutable artifact pin,
     and gives the child only the two explicit output paths plus the inherited
     pinned kubectl descriptor.  The promoter itself owns the narrow Deployment
-    CAS mutation and Service-proxy GET proofs.
+    CAS mutation, a fixed public HTTPS functional probe, and the separately
+    bound Service/EndpointSlice-to-target-Pod proof.
     """
     receipt_dir: Path | None = None; receipt_sink: WrapperReceiptSink | None = None
     temp: Path | None = None; session: LiveSession | None = None
@@ -2796,6 +3763,8 @@ def main(argv: list[str] | None = None) -> int:
         args = parse_args(argv)
         if args.workbench_baseline_handover or args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
             return run_workbench_baseline_handover_transport(args)
+        if args.relay_fixture_reset:
+            return run_relay_fixture_reset_transport(args)
         if args.workbench_image_promotion:
             return run_workbench_image_promotion_transport(args)
         require(sys.flags.isolated == 1 and bool(sys.flags.safe_path), "wrapper requires python3 -I isolated safe-path mode")

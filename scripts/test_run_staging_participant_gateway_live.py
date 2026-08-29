@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import importlib.util, inspect, json, os, socket, stat, sys, tempfile, threading, time, unittest
+import copy, importlib.util, inspect, json, os, socket, stat, sys, tempfile, threading, time, unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -10,6 +10,47 @@ SPEC = importlib.util.spec_from_file_location(
     ROOT / "scripts/run-staging-participant-gateway-live.py",
 )
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
+
+
+def relay_reset_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
+    """Produce the real protected runner's completed v2 evidence for its consumer."""
+    import scripts.test_reset_staging_relay_fixtures as reset_test
+
+    case = reset_test.RelayResetTests()
+    case.setUp()
+    try:
+        receipt_path = case.root / "wrapper-verifier-receipt.json"
+        journal_path = case.root / "wrapper-verifier-journal.json"
+        kube = reset_test.FakeKubernetes()
+        result, _, _ = case.execute(
+            kube,
+            receipt=reset_test.MODULE.JsonReceipt(receipt_path),
+            journal=reset_test.MODULE.JsonJournal(journal_path),
+        )
+        assert result["status"] == "completed"
+        return (
+            json.loads(receipt_path.read_text(encoding="utf-8")),
+            json.loads(journal_path.read_text(encoding="utf-8")),
+            case.revision,
+            case.hashes,
+        )
+    finally:
+        case.tearDown()
+
+
+def reseal_relay_reset_evidence(payload: dict, journal: dict) -> None:
+    payload.pop("canonicalSha256", None)
+    payload["canonicalSha256"] = MODULE.bytes_sha256(MODULE.canonical(payload).encode())
+    journal["events"][-2]["requestSha256"] = payload["canonicalSha256"]
+    journal["events"][-1]["requestSha256"] = payload["canonicalSha256"]
+    previous = None
+    for event in journal["events"]:
+        event.pop("entrySha256", None)
+        event["previousEntrySha256"] = previous
+        event["entrySha256"] = MODULE.bytes_sha256(MODULE.canonical(event).encode())
+        previous = event["entrySha256"]
+    journal.pop("journalSha256", None)
+    journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(journal).encode())
 
 
 def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
@@ -55,7 +96,7 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
     payload = {
         "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v1", "status": "completed", "mode": "live",
         "operation": {"operationId": operation_id}, "protectedRevision": revision, "protectedGitBlobSha256": protected,
-        "probeBinding": {}, "artifact": artifact, "target": target,
+        "probeBinding": MODULE.workbench_public_probe_binding(), "artifact": artifact, "target": target,
         "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"added": {"name": "WORKBENCH_MODE", "value": "public-signed-only"}, "removedNames": ["CASE_STEWARD_TOKEN", "STADTSTACK_CONTROL_BASE_URL", "STADTSTACK_PUBLIC_BASE_URL", "SYNTHETIC_CITIZENS_JSON"]}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
         "preservation": {"service": service, "networkPolicy": network, "unchanged": True},
         "rollout": {"podImageProof": {"expectedImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "pods": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "podIPs": ["10.0.0.12"]}]}},
@@ -653,6 +694,256 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("private_workbench_promotion_outputs", source)
         self.assertNotIn("probe-base-url", source)
 
+    def test_workbench_promotion_verifier_binds_exact_public_https_probe(self):
+        self.assertEqual(MODULE.workbench_public_probe_binding(), {
+            "kind": "fixed-public-https-origin",
+            "transport": "python-stdlib-direct-https",
+            "origin": "https://roebel-web.staging.agentcart.eu",
+            "hostname": "roebel-web.staging.agentcart.eu",
+            "port": 443,
+            "method": "GET",
+            "expectedStatus": 200,
+            "tlsVerification": "default-ca-and-hostname",
+            "environmentProxyUse": False,
+            "redirectsFollowed": False,
+            "timeoutSeconds": 15,
+            "maxBodyBytes": 8 * 1024 * 1024,
+            "allowedPaths": [
+                "/stadtstack-test/api/config",
+                "/stadtstack-test/api/feed?profile=public",
+            ],
+            "bindingSha256": "sha256:e32a4862f72017db2751280caae8b541286a8d859b5618a0a02ac4cb8b3550c0",
+        })
+
+    def test_relay_fixture_reset_mode_is_exact_and_isolated(self):
+        arguments = [
+            "--relay-fixture-reset", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt", "--relay-reset-artifact-pin", "/private/pin.json",
+            "--relay-reset-receipt", "/private/reset.json", "--relay-reset-journal", "/private/reset.journal",
+        ]
+        parsed = MODULE.parse_args(arguments)
+        self.assertTrue(parsed.relay_fixture_reset)
+        self.assertEqual(parsed.relay_reset_artifact_pin, Path("/private/pin.json"))
+        self.assertEqual(
+            MODULE.RELAY_FIXTURE_RESET_PROTECTED_PATHS,
+            (
+                MODULE.SELF_PATH,
+                MODULE.RELAY_FIXTURE_RESET_RUNNER,
+                "scripts/verify-reviewed-render.py",
+                "policy/repository-contract.json",
+            ),
+        )
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires artifact pin, receipt, and journal"):
+            MODULE.parse_args([value for value in arguments if value not in {"--relay-reset-journal", "/private/reset.journal"}])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "may not receive workbench promotion inputs"):
+            MODULE.parse_args([*arguments, "--workbench-artifact-pin", "/private/workbench-pin.json"])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "paths require --relay-fixture-reset"):
+            MODULE.parse_args([value for value in arguments if value != "--relay-fixture-reset"])
+
+    def test_relay_fixture_reset_launcher_argv_is_descriptor_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runner_path = root / "reset.bound"
+            runner_bytes = b"protected reset bytes"
+            runner_path.write_bytes(runner_bytes)
+            runner_fd = os.open(runner_path, os.O_RDONLY)
+            kubectl_path = root / "kubectl"
+            kubectl_bytes = b"protected kubectl bytes"
+            kubectl_path.write_bytes(kubectl_bytes)
+            kubectl_fd = os.open(kubectl_path, os.O_RDONLY)
+            runner_blob = MODULE.BoundBlob(runner_fd, len(runner_bytes), MODULE.bytes_sha256(runner_bytes), "reset")
+            kubectl_info = os.fstat(kubectl_fd)
+            kubectl = MODULE.PinnedExecutableSnapshot(
+                kubectl_path, kubectl_fd, kubectl_info.st_dev, kubectl_info.st_ino, kubectl_info.st_size, MODULE.bytes_sha256(kubectl_bytes)
+            )
+            try:
+                command = MODULE.relay_fixture_reset_command(
+                    MODULE.BoundRunner(MODULE.RELAY_FIXTURE_RESET_RUNNER, runner_blob),
+                    kubectl,
+                    [
+                        "--artifact-pin", "/private/pin.json", "--kubeconfig", "/private/kubeconfig",
+                        "--receipt", "/private/r.json", "--journal", "/private/j.json",
+                        "--protected-revision", "a" * 40, "--protected-hashes", '{"fixture":"' + "b" * 64 + '"}',
+                    ],
+                )
+                self.assertEqual(command[:4], [sys.executable, "-I", "-c", MODULE.RELAY_FIXTURE_RESET_LAUNCHER])
+                self.assertEqual(command[4:14], [
+                    str(MODULE.ROOT / MODULE.RELAY_FIXTURE_RESET_RUNNER), str(runner_fd), str(len(runner_bytes)), MODULE.bytes_sha256(runner_bytes),
+                    str(kubectl_path), str(kubectl_fd), str(kubectl_info.st_dev), str(kubectl_info.st_ino), str(kubectl_info.st_size), MODULE.bytes_sha256(kubectl_bytes),
+                ])
+                self.assertEqual(command[14:], [
+                    "--artifact-pin", "/private/pin.json", "--kubeconfig", "/private/kubeconfig",
+                    "--receipt", "/private/r.json", "--journal", "/private/j.json",
+                    "--protected-revision", "a" * 40, "--protected-hashes", '{"fixture":"' + "b" * 64 + '"}',
+                ])
+            finally:
+                runner_blob.close()
+                kubectl.close()
+
+    def test_relay_fixture_reset_outputs_are_fresh_private_and_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); root.chmod(0o700)
+            receipt = root / "reset.receipt"; journal = root / "reset.journal"
+            self.assertEqual(MODULE.private_relay_fixture_reset_outputs(receipt, journal), (receipt, journal))
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "must be distinct"):
+                MODULE.private_relay_fixture_reset_outputs(receipt, receipt)
+            receipt.touch(mode=0o600); receipt.chmod(0o600)
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "must not already exist"):
+                MODULE.private_relay_fixture_reset_outputs(receipt, journal)
+            receipt.unlink(); journal.touch(mode=0o600); journal.chmod(0o600)
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "must not already exist"):
+                MODULE.private_relay_fixture_reset_outputs(receipt, journal)
+
+    def test_relay_fixture_reset_value_free_boundary_rejects_secret_material(self):
+        MODULE.require_value_free_relay_reset_evidence({
+            "secretKeyRef": {"name": "inference", "key": "api-key", "optional": False},
+            "effects": {"secretValuesRead": False, "civicAuthorityEffects": False},
+        })
+        for label, value in (
+            ("data", {"data": {"api-key": "captured"}}),
+            ("string-data", {"stringData": {"api-key": "captured"}}),
+            ("effect-type", {"effects": {"secretValuesRead": "false"}}),
+            ("reference-shape", {"secretKeyRef": {"name": "inference", "key": "api-key"}}),
+        ):
+            with self.subTest(label=label), self.assertRaises(MODULE.LiveTransportError):
+                MODULE.require_value_free_relay_reset_evidence(value)
+
+    def test_relay_fixture_reset_verifier_accepts_exact_completed_v2_evidence(self):
+        payload, journal, revision, protected = relay_reset_verifier_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            receipt = MODULE.bind_bytes_to_fd(
+                (MODULE.canonical(payload) + "\n").encode(),
+                root / "relay-reset-receipt.bound",
+                "relay reset receipt",
+            )
+            state = MODULE.bind_bytes_to_fd(
+                (MODULE.canonical(journal) + "\n").encode(),
+                root / "relay-reset-journal.bound",
+                "relay reset journal",
+            )
+            try:
+                proof = MODULE.verify_relay_fixture_reset_evidence(
+                    receipt,
+                    state,
+                    revision,
+                    protected,
+                    MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+                )
+                self.assertEqual(proof["deleteCount"], 2)
+                self.assertTrue(proof["gateRestored"])
+                self.assertTrue(proof["meckyProfileProven"])
+                self.assertTrue(proof["admissionsZero"])
+                self.assertTrue(proof["preservationExact"])
+            finally:
+                receipt.close(); state.close()
+
+    def test_relay_fixture_reset_verifier_rejects_resealed_semantic_drift(self):
+        def sequence_drift(payload, journal):
+            payload["sequence"][3:5] = reversed(payload["sequence"][3:5])
+            journal["sequence"] = copy.deepcopy(payload["sequence"])
+
+        def gate_drift(payload, journal):
+            payload["gate"]["restored"] = False
+            journal["gate"] = copy.deepcopy(payload["gate"])
+
+        def profile_drift(payload, journal):
+            payload["meckyLifecycle"]["profile"]["kind1Count"] = 1
+            journal["meckyLifecycle"] = copy.deepcopy(payload["meckyLifecycle"])
+
+        def admission_drift(payload, journal):
+            payload["before"]["participantAdmissionBoundary"]["admissionStoreZeroProven"] = False
+            journal["before"] = copy.deepcopy(payload["before"])
+
+        def reset_count_drift(payload, journal):
+            payload["resets"].pop()
+            journal["resets"] = copy.deepcopy(payload["resets"])
+
+        def preservation_drift(payload, journal):
+            payload["after"]["resources"]["citizen-relay"]["deployment"]["specSha256"] = MODULE.bytes_sha256(b"changed")
+            journal["after"] = copy.deepcopy(payload["after"])
+
+        def protected_drift(payload, journal):
+            path = next(iter(payload["protectedGitBlobSha256"]))
+            payload["protectedGitBlobSha256"][path] = MODULE.bytes_sha256(b"changed")
+            journal["protectedGitBlobSha256"] = copy.deepcopy(payload["protectedGitBlobSha256"])
+
+        cases = (
+            ("sequence", sequence_drift),
+            ("gate", gate_drift),
+            ("profile", profile_drift),
+            ("admissions", admission_drift),
+            ("delete-count", reset_count_drift),
+            ("preservation", preservation_drift),
+            ("protected", protected_drift),
+            ("authority", lambda payload, _journal: payload["authority"].__setitem__("municipalDecision", True)),
+            ("retry", lambda payload, _journal: payload["effects"].__setitem__("automaticMutationRetry", True)),
+            ("journal-grammar", lambda _payload, journal: journal["events"][8].__setitem__("operation", "delete-public-mecky-pod")),
+            ("secret-shaped-data", lambda payload, _journal: payload.__setitem__("data", {"token": "captured"})),
+        )
+        for label, mutate in cases:
+            payload, journal, revision, protected = relay_reset_verifier_fixture()
+            mutate(payload, journal)
+            reseal_relay_reset_evidence(payload, journal)
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                receipt = MODULE.bind_bytes_to_fd(
+                    (MODULE.canonical(payload) + "\n").encode(),
+                    root / "relay-reset-receipt.bound",
+                    "relay reset receipt",
+                )
+                state = MODULE.bind_bytes_to_fd(
+                    (MODULE.canonical(journal) + "\n").encode(),
+                    root / "relay-reset-journal.bound",
+                    "relay reset journal",
+                )
+                try:
+                    with self.assertRaises(MODULE.LiveTransportError):
+                        MODULE.verify_relay_fixture_reset_evidence(
+                            receipt,
+                            state,
+                            revision,
+                            protected,
+                            MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+                        )
+                finally:
+                    receipt.close(); state.close()
+
+    def test_relay_fixture_reset_transport_has_closed_one_shot_lifecycle(self):
+        source = inspect.getsource(MODULE.run_relay_fixture_reset_transport)
+        self.assertTrue(MODULE.RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED)
+        required = (
+            "private_relay_fixture_reset_outputs",
+            'reserve_output_directory(args.receipt_directory)',
+            'WrapperReceiptSink.reserve(receipt_dir / "relay-fixture-reset-transport-attempt.json")',
+            "paths=RELAY_FIXTURE_RESET_PROTECTED_PATHS",
+            "snapshot_owned_file_path",
+            "WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256",
+            "snapshot_binary",
+            "seal_pinned_snapshot",
+            "LiveSession",
+            "create_admin_kubeconfig",
+            "relay_fixture_reset_command",
+            "snapshot_owned_receipt",
+            "verify_relay_fixture_reset_evidence",
+            'bindings["kubectl"]._verify()',
+            "session.receipt_reconciled()",
+            "unseal_pinned_snapshot",
+            "shutil.rmtree(temp)",
+            '"automaticRetry": False',
+        )
+        for primitive in required:
+            with self.subTest(primitive=primitive):
+                self.assertIn(primitive, source)
+        self.assertLess(source.index("private_relay_fixture_reset_outputs"), source.index("cancellation.install()"))
+        self.assertLess(source.index("RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED"), source.index("private_relay_fixture_reset_outputs"))
+        self.assertLess(source.index("cancellation.install()"), source.index("bind_protected_checkout"))
+        self.assertLess(source.index("bind_protected_checkout"), source.index("session = LiveSession("))
+        self.assertLess(source.index("snapshot_owned_receipt"), source.index("verify_relay_fixture_reset_evidence"))
+        self.assertNotIn("private_workbench_promotion_outputs", source)
+
     def test_workbench_promotion_restart_paths_require_exact_reserved_pair_shape(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); root.chmod(0o700)
@@ -796,6 +1087,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
 
         cases = (
             ("operation", lambda value: value[1].__setitem__("operationId", "22345678-1234-4123-8123-123456789abc")),
+            ("probe-binding", lambda value: value[0]["probeBinding"].__setitem__("origin", "https://attacker.invalid")),
             ("artifact", lambda value: value[1]["artifact"].__setitem__("sourceRevision", "b" * 40)),
             ("protected", lambda value: value[1].__setitem__("protectedGitBlobSha256", dict(value[1]["protectedGitBlobSha256"]) | {next(iter(protected)): MODULE.bytes_sha256(b"wrong")})),
             ("grammar", lambda value: value[1]["events"][2].__setitem__("operation", "unknown")),

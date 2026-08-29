@@ -304,10 +304,24 @@
     "mutationSurface": [
       "GET Deployment/Service/NetworkPolicy",
       "PATCH Deployment image and public-mode environment with exact CAS",
-      "GET rollout/pods/service-proxy-config/service-proxy-feed"
+      "GET rollout/pods/Service/EndpointSlice binding",
+      "GET exact public HTTPS config and feed paths"
     ],
     "preservation": ["Service", "NetworkPolicy", "Secrets", "civic-authority-effects"],
-    "probeTransport": "kubectl-apiserver-Service-proxy-GET-only",
+    "probeTransport": {
+      "kind": "fixed-public-https-origin",
+      "origin": "https://roebel-web.staging.agentcart.eu",
+      "method": "GET",
+      "tlsVerification": "default-ca-and-hostname",
+      "environmentProxyUse": false,
+      "redirectsFollowed": false,
+      "timeoutSeconds": 15,
+      "maxBodyBytes": 8388608,
+      "allowedPaths": [
+        "/stadtstack-test/api/config",
+        "/stadtstack-test/api/feed?profile=public"
+      ]
+    },
     "forbidden": [
       "arbitrary probe URL",
       "kubectl apply/create/delete",
@@ -315,6 +329,123 @@
       "secret value reads",
       "automatic mutation retry"
     ],
+    "automaticRetry": false
+  },
+  "ephemeralRelayFixtureResetBoundary": {
+    "modeFlag": "--relay-fixture-reset",
+    "runner": "scripts/reset-staging-relay-fixtures.py",
+    "transportRunner": "scripts/run-staging-participant-gateway-live.py",
+    "protectedClosure": [
+      "scripts/run-staging-participant-gateway-live.py",
+      "scripts/reset-staging-relay-fixtures.py",
+      "scripts/verify-reviewed-render.py",
+      "policy/repository-contract.json"
+    ],
+    "reason": "one-time-gated-removal-of-verified-synthetic-relay-state-and-republication-of-mecky-profile-before-participant-activation",
+    "artifactPin": {
+      "schemaVersion": "roebel_e2e_runtime_pin_v1",
+      "sourceRevision": "36ac41d7049df815aaebbe4301c098a0ec7e4101",
+      "receiptSha256": "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b",
+      "relayImage": "ghcr.io/giraeffleaeffle/roebel-staging-relay@sha256:6def2f468e3fad47cf17c0287a9215bbdc299b0d7d3b7fc58927b2f2169650ad",
+      "publicMeckyImage": "ghcr.io/giraeffleaeffle/public-mecky@sha256:aa66c9b8bb75989e1c47b628845523fa345a944b0a1a82bd17863f96c1f128e4"
+    },
+    "namespace": "stadtstack-roebel-staging-lab",
+    "relayDeleteTargets": [
+      {
+        "deployment": "citizen-relay",
+        "deploymentUid": "86b9aada-2b27-428b-9c98-27376b965f58",
+        "store": "/relay/events.ndjson",
+        "additionalDestroyedStore": "/relay/admissions.ndjson"
+      },
+      {
+        "deployment": "agent-relay",
+        "deploymentUid": "d62fbb00-feed-40aa-ba72-180bfd80c4e7",
+        "store": "/relay/events.ndjson",
+        "additionalDestroyedStore": null
+      }
+    ],
+    "publicMeckyQuiescence": {
+      "kustomization": "roebel-staging-public-mecky-workload",
+      "kustomizationNamespace": "flux-roebel-staging",
+      "kustomizationUid": "4d49b8eb-c84b-442a-a96e-26c94f24177a",
+      "beforeSuspend": false,
+      "temporarySuspend": true,
+      "deployment": "public-mecky",
+      "deploymentUid": "96987f99-0fb7-4149-a5e7-f0b7c469ab75",
+      "beforeReplicas": 1,
+      "temporaryReplicas": 0,
+      "restoreReplicas": 1,
+      "restoreSuspend": false
+    },
+    "writeGate": {
+      "kind": "Ingress",
+      "name": "stadtstack-test-workbench",
+      "uid": "02cc55b5-30c5-46dd-b819-727e53c58806",
+      "annotation": "haproxy-ingress.github.io/config-backend-early",
+      "before": "http-request deny deny_status 405 unless { method GET HEAD POST }\nhttp-request deny deny_status 404 unless { path_beg /stadtstack-test }",
+      "gated": "http-request deny deny_status 405 unless { method GET HEAD }\nhttp-request deny deny_status 404 unless { path_beg /stadtstack-test }",
+      "probeOrigin": "https://roebel-web.staging.agentcart.eu",
+      "restoreRequired": true
+    },
+    "preconditions": [
+      "participant-gateway-kustomizations-suspended-and-workload-absent",
+      "workbench-feed-nonempty-and-every-projected-entry-synthetic",
+      "citizen-admissions-file-absent-or-zero-records",
+      "exact-single-ready-controller-owned-pod-per-target",
+      "exact-relay-image-and-128Mi-emptyDir-mounted-at-/relay",
+      "service-endpoint-bound-to-captured-pod-uid",
+      "public-mecky-exact-image-deployment-and-ready-controller-owned-pod",
+      "deployment-service-networkpolicy-ingress-and-mecky-spec-digests-captured"
+    ],
+    "mutationSurface": [
+      "GET-only-preflight-and-postcondition-reads",
+      "fixed-no-shell-Pod-exec-returning-counts-hashes-and-booleans-only",
+      "PATCH-exact-workbench-Ingress-write-gate-with-uid-resourceVersion-and-value-CAS",
+      "PATCH-exact-public-mecky-Kustomization-suspend-false-to-true-and-back-with-CAS",
+      "PATCH-exact-public-mecky-Deployment-replicas-1-to-0-and-back-with-CAS",
+      "DELETE-exact-generated-Pod-path-with-uid-and-resourceVersion-preconditions",
+      "PATCH-exact-workbench-Ingress-write-gate-restoration-with-uid-resourceVersion-and-value-CAS"
+    ],
+    "deleteOrder": ["citizen-relay", "agent-relay"],
+    "outputs": {
+      "receipt": "explicit-owner-only-nonexisting-path-required",
+      "journal": "explicit-owner-only-nonexisting-path-required",
+      "distinctPaths": true
+    },
+    "preservation": [
+      "Deployment-UID-generation-and-spec",
+      "Service-UID-and-spec",
+      "NetworkPolicy-UID-generation-and-spec",
+      "public-mecky-Deployment-UID-generation-and-spec",
+      "public-mecky-Kustomization-UID-spec-and-original-suspension",
+      "workbench-Ingress-UID-spec-and-original-write-policy",
+      "Kubernetes-Secrets",
+      "civic-authority-effects"
+    ],
+    "success": [
+      "old-pod-uids-absent",
+      "different-ready-replacement-pod-uids",
+      "service-endpoints-bound-to-replacements",
+      "public-mecky-scaled-zero-before-relay-deletes-and-restored-to-one",
+      "mecky-exact-signed-kind-0-profile-with-bot-true-and-zero-kind-1",
+      "two-identical-empty-feed-observations",
+      "write-gate-restored-and-public-route-proven",
+      "preservation-digests-unchanged"
+    ],
+    "forbidden": [
+      "caller-selected-namespace-target-selector-or-probe-url",
+      "ordinary-kubectl-delete-without-preconditions",
+      "force-delete-or-finalizer-removal",
+      "generic-shell-or-caller-selected-exec-command",
+      "Deployment-mutation-outside-exact-public-mecky-replicas-transition",
+      "Kustomization-mutation-outside-exact-public-mecky-suspension-transition",
+      "Service-NetworkPolicy-or-Secret-mutation",
+      "Ingress-mutation-outside-the-exact-write-gate-annotation",
+      "civic-authority-effects",
+      "automatic-mutation-retry"
+    ],
+    "dataRollbackPossible": false,
+    "writeGateRollbackRequired": true,
     "automaticRetry": false
   },
   "requiredBranchProtection": {
