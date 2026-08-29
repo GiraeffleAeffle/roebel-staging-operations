@@ -611,6 +611,54 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 os.close(fd)
         self.assertEqual(set(blobs), expected)
 
+    def test_ordered_eight_object_handover_allows_current_policy_checksum_drift(self):
+        fixture_path = ROOT / "scripts/test_staging_participant_dormant_receipt_handover.py"
+        spec = importlib.util.spec_from_file_location("participant_handover_compatibility_fixture", fixture_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        fixture = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = fixture
+        spec.loader.exec_module(fixture)
+        archived_plan = fixture.participant_plan(fixture.ARCHIVE)
+        current_plan = fixture.participant_plan(fixture.CURRENT)
+        current_plan["activationPolicySha256"] = "sha256:" + "e" * 64
+        current_contract = {
+            "stagingParticipantGatewayBoundary": {
+                "archivedDormantReceiptHandover": {
+                    "currentCompatibility": "ordered-eight-object-plan-only",
+                },
+            },
+        }
+        binding = fixture.MODULE.build_archived_binding(
+            archived_receipt_raw=fixture.archived_receipt(archived_plan),
+            archive_revision=fixture.ARCHIVE,
+            current_revision=fixture.CURRENT,
+            archived_plan=archived_plan,
+            current_plan=current_plan,
+            archived_artifacts=fixture.artifacts(),
+            current_artifacts=fixture.artifacts(),
+            archived_participant_contract={"legacyParticipantBoundary": True},
+            current_participant_contract=current_contract,
+            archived_projection=fixture.archived_projection(archived_plan),
+        )
+        self.assertEqual(binding["activationPolicySha256"], current_plan["activationPolicySha256"])
+
+        changed_plan = copy.deepcopy(current_plan)
+        changed_plan["objects"][0]["desiredSemanticSha256"] = "sha256:" + "f" * 64
+        with self.assertRaisesRegex(fixture.MODULE.HandoverError, "eight-object plan"):
+            fixture.MODULE.build_archived_binding(
+                archived_receipt_raw=fixture.archived_receipt(archived_plan),
+                archive_revision=fixture.ARCHIVE,
+                current_revision=fixture.CURRENT,
+                archived_plan=archived_plan,
+                current_plan=changed_plan,
+                archived_artifacts=fixture.artifacts(),
+                current_artifacts=fixture.artifacts(),
+                archived_participant_contract={"legacyParticipantBoundary": True},
+                current_participant_contract=current_contract,
+                archived_projection=fixture.archived_projection(archived_plan),
+            )
+
     def test_dormant_handover_continuation_invokes_activation_without_rebootstrap_or_materialization(self):
         source = inspect.getsource(MODULE.main)
         start = source.index("if handover_archive_receipt is not None:")

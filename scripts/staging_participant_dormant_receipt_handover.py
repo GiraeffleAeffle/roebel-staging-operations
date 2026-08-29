@@ -241,11 +241,15 @@ def build_archived_binding(
         _require(receipt_checksum == expected_archived_canonical_sha256, "archived receipt canonical checksum drift")
     archived_projection_plan = _plan_projection(archived_plan)
     current_projection_plan = _plan_projection(current_plan)
+    allow_current_compatibility_drift = _current_compatibility_drift_is_explicitly_bound(current_participant_contract)
     _require(
-        archived_projection_plan == current_projection_plan,
+        (
+            archived_projection_plan["objects"] == current_projection_plan["objects"]
+            if allow_current_compatibility_drift
+            else archived_projection_plan == current_projection_plan
+        ),
         "participant policy or eight-object plan changed across handover",
     )
-    allow_current_compatibility_drift = _current_compatibility_drift_is_explicitly_bound(current_participant_contract)
     _require(
         isinstance(archived_artifacts, dict)
         and archived_artifacts
