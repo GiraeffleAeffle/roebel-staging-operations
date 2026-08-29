@@ -271,6 +271,35 @@ def migrated_recovery_verifier_fixture() -> tuple[dict, dict, str, str]:
 
 
 class ParticipantLiveWrapperTests(unittest.TestCase):
+    def test_failed_activation_with_missing_or_empty_reserved_receipt_is_reported_before_success_binding(self):
+        failed = MODULE.ChildResult(2, "", "activation blocked: protected render drift\n", True)
+        with tempfile.TemporaryDirectory() as directory:
+            receipt = Path(directory) / "activation.json"
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "exited 2 without a durable receipt"):
+                MODULE.reject_failed_activation_without_durable_receipt(failed, receipt)
+            receipt.write_bytes(b"")
+            receipt.chmod(0o600)
+            with self.assertRaisesRegex(MODULE.LiveTransportError, "exited 2 without a durable receipt"):
+                MODULE.reject_failed_activation_without_durable_receipt(failed, receipt)
+            receipt.write_text("{}")
+            MODULE.reject_failed_activation_without_durable_receipt(failed, receipt)
+            MODULE.reject_failed_activation_without_durable_receipt(
+                MODULE.ChildResult(0, "", "", True),
+                receipt,
+            )
+
+        source = inspect.getsource(MODULE.main)
+        self.assertEqual(source.count("reject_failed_activation_without_durable_receipt(activation, activation_receipt)"), 2)
+        for section in source.split("activation = session.run_child(")[1:]:
+            self.assertLess(
+                section.index("reject_failed_activation_without_durable_receipt(activation, activation_receipt)"),
+                section.index("snapshot_owned_receipt("),
+            )
+            self.assertLess(
+                section.index("activation_projection = verify_receipt_with_protected_cli("),
+                section.index("best_effort_print_child(activation)"),
+            )
+
     def test_terminal_finalizer_requires_the_exact_single_protected_parent(self):
         revision = "a" * 40
         parent = MODULE.WORKBENCH_RECOVERY_FINALIZATION_PARENT_REVISION
