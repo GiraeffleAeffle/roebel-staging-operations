@@ -1614,6 +1614,27 @@ def best_effort_print_child(result: ChildResult) -> str | None:
     except (BrokenPipeError, OSError) as exc:
         return f"protected child output forwarding failed: {type(exc).__name__}"
 
+def reject_failed_activation_without_durable_receipt(result: ChildResult, receipt: Path) -> None:
+    """Reject a failed child before an empty reserved file masks its error."""
+    if result.returncode == 0:
+        return
+    try:
+        info = os.lstat(receipt)
+    except FileNotFoundError as exc:
+        raise LiveTransportError(
+            f"protected activation exited {result.returncode} without a durable receipt"
+        ) from exc
+    if (
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and info.st_size == 0
+    ):
+        raise LiveTransportError(
+            f"protected activation exited {result.returncode} without a durable receipt"
+        )
+
 def best_effort_stderr(message: str) -> None:
     try: print(message, file=sys.stderr)
     except (BrokenPipeError, OSError): pass
@@ -4122,6 +4143,7 @@ def main(argv: list[str] | None = None) -> int:
                 pass_fds=activation_fds,
             )
             try:
+                reject_failed_activation_without_durable_receipt(activation, activation_receipt)
                 require(activation_receipt.exists(), "activation runner produced no durable receipt")
                 activation_bound = snapshot_owned_receipt(
                     activation_receipt,
@@ -4143,10 +4165,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             finally:
                 session.receipt_reconciled()
+                activation_logging_error = best_effort_print_child(activation)
+                if activation_logging_error is not None:
+                    child_cleanup_errors.append(activation_logging_error)
             activation_committed = True; operation_succeeded = True; base_status = "activated"
-            activation_logging_error = best_effort_print_child(activation)
-            if activation_logging_error is not None:
-                child_cleanup_errors.append(activation_logging_error)
             if activation.returncode != 0:
                 child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
                 raise LiveTransportError("protected activation cleanup incomplete after durable commit")
@@ -4402,6 +4424,7 @@ def main(argv: list[str] | None = None) -> int:
                 pass_fds=activation_fds,
             )
             try:
+                reject_failed_activation_without_durable_receipt(activation, activation_receipt)
                 require(activation_receipt.exists(), "activation runner produced no durable receipt")
                 activation_bound = snapshot_owned_receipt(
                     activation_receipt,
@@ -4421,10 +4444,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
             finally:
                 session.receipt_reconciled()
+                activation_logging_error = best_effort_print_child(activation)
+                if activation_logging_error is not None:
+                    child_cleanup_errors.append(activation_logging_error)
             activation_committed = True; operation_succeeded = True; base_status = "activated"
-            activation_logging_error = best_effort_print_child(activation)
-            if activation_logging_error is not None:
-                child_cleanup_errors.append(activation_logging_error)
             if activation.returncode != 0:
                 child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
                 raise LiveTransportError("protected activation cleanup incomplete after durable commit")

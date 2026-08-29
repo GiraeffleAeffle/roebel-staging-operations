@@ -1403,7 +1403,14 @@ def _checked_error(result: Result, label: str) -> ActivationError:
     return ActivationError(f"{label}: {text[:400]}")
 
 def _expected_render(p: dict[str, Any]) -> dict[str, tuple[str, Any]]:
-    expected = _policy_call(POLICY.expected_gateway_resources, p)
+    # The current protected tracer includes the reviewed Web presentation ->
+    # workbench civic-projection read path.  Keep this an explicit additive
+    # source; the policy builder's default deliberately excludes it.
+    expected = _policy_call(
+        POLICY.expected_gateway_resources,
+        p,
+        include_web_presentation=True,
+    )
     gateway, workbench = POLICY.GATEWAY_ROOT, POLICY.WORKBENCH_INGRESS_ROOT
     return {
         f"{gateway}/networkpolicy.json": ("object", expected["networkPolicy"]),

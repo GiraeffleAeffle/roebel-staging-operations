@@ -1155,6 +1155,26 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaisesRegex(MODULE.ActivationError, "semantic drift"):
                     MODULE.render_v4(REV, value)
 
+    def test_v4_protected_render_admits_only_the_exact_web_civic_projection_source(self):
+        value = ready_policy()
+        path = f"{MODULE.POLICY.WORKBENCH_INGRESS_ROOT}/networkpolicy.json"
+        committed = json.loads((Path(__file__).parents[1] / path).read_text())
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            encoding, expected = MODULE._expected_render(value)[path]
+        self.assertEqual(encoding, "object")
+        MODULE.POLICY.require_semantically_equal(committed, expected, "committed reciprocal policy")
+        sources = expected["spec"]["ingress"][0]["from"]
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(
+            sources[1],
+            {
+                "namespaceSelector": {
+                    "matchLabels": {"kubernetes.io/metadata.name": MODULE.POLICY.GATEWAY_NAMESPACE},
+                },
+                "podSelector": {"matchLabels": MODULE.POLICY.WEB_PRESENTATION_LABELS},
+            },
+        )
+
     def test_v4_internal_status_contract_is_closed_and_not_public_route(self):
         value = ready_policy(); pins = value["productPins"]
         expected = MODULE.expected_database_status_v4(value)
