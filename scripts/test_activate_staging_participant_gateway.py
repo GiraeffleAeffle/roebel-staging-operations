@@ -1298,6 +1298,89 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(MODULE._allows_workbench_port(policy_with(18080, 18090)))
         self.assertFalse(MODULE._allows_workbench_port(policy_with(18084)))
 
+    def test_v4_policy_union_admits_only_explicit_egress_only_workbench_policy(self):
+        labels = {
+            "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
+            "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 1, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
+        }
+        desired = {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {"name": "cluster-dns-egress", "namespace": MODULE.WORKBENCH_NAMESPACE},
+            "spec": {
+                "podSelector": {},
+                "policyTypes": ["Egress"],
+                "egress": [{
+                    "to": [{
+                        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                    }],
+                    "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
+                }],
+            },
+        }
+        for explicit_ingress in (False, True):
+            policy = admitted(desired, "dns-policy-uid", "9662150")
+            if explicit_ingress:
+                policy["spec"]["ingress"] = []
+            listings = [json.dumps({"items": [policy]}), json.dumps({"items": []}), json.dumps({"items": []})]
+            with self.subTest(explicit_ingress=explicit_ingress), patch.object(
+                MODULE,
+                "_target_policy_label_sets_v4",
+                return_value=labels,
+            ), patch.object(MODULE, "checked", side_effect=listings):
+                result = MODULE.policy_union_v4(Fake(), "/tmp/kube")
+                self.assertEqual(result["status"], "no-additive-participant-allow-conflicts")
+                self.assertEqual(
+                    result["compatibleWorkbenchEgressPolicies"],
+                    [{
+                        "namespace": MODULE.WORKBENCH_NAMESPACE,
+                        "name": "cluster-dns-egress",
+                        "uid": "dns-policy-uid",
+                        "semanticSha256": MODULE.POLICY.semantic_sha256(policy),
+                    }],
+                )
+
+    def test_v4_policy_union_rejects_ambiguous_ingress_capable_and_gateway_egress_policies(self):
+        labels = {
+            "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
+            "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 1, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
+        }
+        base = {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {"name": "foreign-policy", "namespace": MODULE.WORKBENCH_NAMESPACE},
+            "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": []},
+        }
+        unsafe = []
+        missing_types = copy.deepcopy(base); missing_types["spec"].pop("policyTypes")
+        unsafe.append(("missing-policy-types", missing_types))
+        both_directions = copy.deepcopy(base); both_directions["spec"]["policyTypes"] = ["Ingress", "Egress"]
+        unsafe.append(("ingress-and-egress", both_directions))
+        ingress_only = copy.deepcopy(base); ingress_only["spec"]["policyTypes"] = ["Ingress"]
+        unsafe.append(("ingress-only", ingress_only))
+        participant_port = copy.deepcopy(base); participant_port["spec"]["ingress"] = [{"ports": [{"port": 18083, "protocol": "TCP"}]}]
+        unsafe.append(("participant-port", participant_port))
+        for label, desired in unsafe:
+            policy = admitted(desired, f"{label}-uid", "10")
+            with self.subTest(label=label), patch.object(
+                MODULE,
+                "_target_policy_label_sets_v4",
+                return_value=labels,
+            ), patch.object(MODULE, "checked", return_value=json.dumps({"items": [policy]})):
+                with self.assertRaisesRegex(MODULE.ActivationError, "pre-existing NetworkPolicy selects workbench"):
+                    MODULE.policy_union_v4(Fake(), "/tmp/kube")
+
+        gateway = admitted(base, "gateway-egress-uid", "11")
+        gateway["metadata"]["namespace"] = MODULE.NAMESPACE
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(
+            MODULE,
+            "checked",
+            return_value=json.dumps({"items": [gateway]}),
+        ):
+            with self.assertRaisesRegex(MODULE.ActivationError, "pre-existing NetworkPolicy can select gateway"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube")
+
     def test_v4_policy_union_uses_runtime_cilium_identity_labels(self):
         labels = {
             "gateway": {
