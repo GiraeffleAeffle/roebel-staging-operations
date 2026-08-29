@@ -576,6 +576,41 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("--verify-success-receipt-fd", source)
         self.assertIn("--teardown-dormant-receipt", inspect.getsource(MODULE.parse_args))
 
+    def test_outer_handover_closure_is_accepted_by_the_get_only_child(self):
+        revision = "a" * 40
+        runner_path = ROOT / MODULE.HANDOVER_RUNNER
+        spec = importlib.util.spec_from_file_location("participant_handover_runner_contract", runner_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        handover = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = handover
+        spec.loader.exec_module(handover)
+        expected = {
+            *((revision, path) for path in MODULE.HANDOVER_PREBOUND_CURRENT_PATHS),
+            *((MODULE.HANDOVER_ARCHIVE_REVISION, path) for path in MODULE.HANDOVER_PREBOUND_ARCHIVE_PATHS),
+        }
+        raw = b"protected-blob-fixture"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "blob"
+            path.write_bytes(raw)
+            path.chmod(0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                descriptors = [
+                    json.dumps({
+                        "revision": blob_revision,
+                        "path": blob_path,
+                        "fd": fd,
+                        "size": len(raw),
+                        "sha256": MODULE.bytes_sha256(raw),
+                    })
+                    for blob_revision, blob_path in sorted(expected)
+                ]
+                blobs = handover.parse_prebound_blob_descriptors(descriptors, revision)
+            finally:
+                os.close(fd)
+        self.assertEqual(set(blobs), expected)
+
     def test_dormant_handover_continuation_invokes_activation_without_rebootstrap_or_materialization(self):
         source = inspect.getsource(MODULE.main)
         start = source.index("if handover_archive_receipt is not None:")
