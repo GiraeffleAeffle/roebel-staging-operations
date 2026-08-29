@@ -919,6 +919,114 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("secret_materialization = session.run_child(", continuation)
         self.assertNotIn("bootstrap = session.run_child(", continuation)
 
+    def test_participant_incident_recovery_mode_requires_only_pinned_failed_and_dormant_receipts(self):
+        common = [
+            "--participant-gateway-recovery", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+            "--handover-dormant-receipt", "/private/dormant.json",
+            "--failed-participant-activation-receipt", "/private/failed.json",
+        ]
+        parsed = MODULE.parse_args(common)
+        self.assertTrue(parsed.participant_gateway_recovery)
+        self.assertEqual(parsed.failed_participant_activation_receipt, Path("/private/failed.json"))
+        self.assertIsNone(parsed.participant_secret_bundle)
+        self.assertIsNone(parsed.participant_secret_materialization_receipt)
+        for forbidden in (
+            ("--participant-secret-bundle", "/private/secrets"),
+            ("--participant-secret-materialization-receipt", "/private/secret.json"),
+            ("--teardown-dormant-receipt", "/private/teardown.json"),
+            ("--teardown-participant-secret-receipt", "/private/secret-teardown.json"),
+            ("--workbench-handover-receipt", "/private/workbench.json"),
+        ):
+            with self.subTest(flag=forbidden[0]), self.assertRaises(MODULE.LiveTransportError):
+                MODULE.parse_args([*common, *forbidden])
+        without_live = [value for value in common if value != "--live"]
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires --live"):
+            MODULE.parse_args(without_live)
+        without_failed = [value for value in common if value not in {"--failed-participant-activation-receipt", "/private/failed.json"}]
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "failed activation receipt"):
+            MODULE.parse_args(without_failed)
+        ordinary = [value for value in common if value != "--participant-gateway-recovery"]
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "require --participant-gateway-recovery"):
+            MODULE.parse_args(ordinary)
+
+    def test_participant_incident_recovery_child_arguments_never_activate_or_materialize(self):
+        arguments = MODULE.incident_recovery_child_arguments(
+            "a" * 40,
+            Path("/private/kube"),
+            11,
+            12,
+            13,
+            ["--prebound-blob", "fixture"],
+            Path("/private/recovery.json"),
+        )
+        self.assertEqual(arguments, [
+            "--recover-rollback-incomplete-receipt-fd", "13",
+            "--expected-protected-revision", "a" * 40,
+            "--kubeconfig", "/private/kube",
+            "--archived-flux-bootstrap-receipt-fd", "11",
+            "--dormant-bootstrap-handover-receipt-fd", "12",
+            "--prebound-blob", "fixture",
+            "--receipt", "/private/recovery.json",
+        ])
+        for forbidden in ("--live", "--secret-materialization-receipt-fd", "--flux-bootstrap-receipt-fd"):
+            self.assertNotIn(forbidden, arguments)
+
+    def test_participant_incident_recovery_is_source_bound_before_transport_and_never_falls_through(self):
+        source = inspect.getsource(MODULE.main)
+        self.assertLess(source.index("source_failed_receipt = snapshot_owned_receipt("), source.index("snapshot_binary("))
+        self.assertLess(source.index("FAILED_ACTIVATION_RAW_SHA256"), source.index("snapshot_binary("))
+        self.assertLess(source.index("--verify-failed-activation-recovery-source-fd"), source.index("snapshot_binary("))
+        recovery_start = source.index("if participant_recovery_mode:", source.index("if handover_archive_receipt is not None:"))
+        recovery_end = source.index("else:", recovery_start)
+        recovery = source[recovery_start:recovery_end]
+        self.assertIn("incident_recovery_child_arguments(", recovery)
+        self.assertIn("--verify-recovery-receipt-fd", recovery)
+        self.assertIn("bind_incident_recovery_handover_projection(", recovery)
+        self.assertIn('base_status = "recovered"', recovery)
+        self.assertNotIn('"--live"', recovery)
+        self.assertNotIn("secret_runner.command(", recovery)
+        self.assertNotIn("bootstrap_runner.command(", recovery)
+        self.assertNotIn("--verify-success-receipt-fd", recovery)
+        for field in ("sourceFailedActivation", "participantIncidentRecovery", "dormantHandoverReceiptSha256", "automaticActivationRetry"):
+            self.assertIn(f'"{field}"', source)
+        self.assertIn("FAILED_ACTIVATION_RAW_SHA256 if participant_recovery_mode", source)
+        self.assertIn("FAILED_ACTIVATION_CANONICAL_SHA256 if participant_recovery_mode", source)
+
+    def test_incident_recovery_projection_must_bind_the_fresh_handover(self):
+        checksum = "sha256:" + "a" * 64
+        self.assertEqual(
+            MODULE.bind_incident_recovery_handover_projection(
+                {"dormantHandoverReceiptSha256": checksum}, {"receiptSha256": checksum},
+            ),
+            checksum,
+        )
+        for recovery, handover in (
+            ({"dormantHandoverReceiptSha256": "sha256:" + "b" * 64}, {"receiptSha256": checksum}),
+            ({"dormantHandoverReceiptSha256": "not-a-digest"}, {"receiptSha256": "not-a-digest"}),
+            ({}, {"receiptSha256": checksum}),
+        ):
+            with self.subTest(recovery=recovery), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "fresh dormant handover",
+            ):
+                MODULE.bind_incident_recovery_handover_projection(recovery, handover)
+
+    def test_incomplete_participant_recovery_keeps_explicit_continuation_required(self):
+        source = inspect.getsource(MODULE.main)
+        self.assertIn("or (participant_recovery_mode and not operation_succeeded)", source)
+
+    def test_recovered_status_is_success_only_after_cleanup(self):
+        self.assertEqual(
+            MODULE.classify_final_status("recovered", activation_committed=False, operation_succeeded=True, cleanup_complete=True),
+            ("recovered", 0),
+        )
+        self.assertEqual(
+            MODULE.classify_final_status("recovered", activation_committed=False, operation_succeeded=True, cleanup_complete=False),
+            ("recovered-cleanup-incomplete", 3),
+        )
+
     def test_wrapper_delegates_kubernetes_writes_to_immutable_protected_runners(self):
         source = inspect.getsource(MODULE.main)
         self.assertIn("bootstrap_runner.command(", source)

@@ -1497,6 +1497,17 @@ def normalize_kubernetes_object(value: Any) -> dict[str, Any]:
             spec.pop("revisionHistoryLimit")
         template_spec = spec.get("template", {}).get("spec", {})
         if isinstance(template_spec, dict):
+            # Kubernetes defaults the deprecated PodSpec `serviceAccount`
+            # alias from `serviceAccountName`. Remove only that exact,
+            # non-empty duplicate; alias-only or conflicting identities stay
+            # security-relevant semantic drift.
+            service_account_name = template_spec.get("serviceAccountName")
+            if (
+                isinstance(service_account_name, str)
+                and service_account_name
+                and template_spec.get("serviceAccount") == service_account_name
+            ):
+                template_spec.pop("serviceAccount")
             defaults = {
                 "dnsPolicy": "ClusterFirst",
                 "enableServiceLinks": True,

@@ -339,6 +339,25 @@ class StaticPolicyTests(unittest.TestCase):
         live["metadata"]["finalizers"].append("example.test/unreviewed")
         self.assertFalse(POLICY.semantically_equal(live, desired))
 
+    def test_deployment_normalizer_accepts_only_matching_defaulted_service_account_alias(self):
+        desired = POLICY.expected_gateway_resources(ready_policy())["deployment"]
+        service_account_name = desired["spec"]["template"]["spec"]["serviceAccountName"]
+        live = copy.deepcopy(desired)
+        live["spec"]["template"]["spec"]["serviceAccount"] = service_account_name
+        self.assertTrue(POLICY.semantically_equal(live, desired))
+        for label, value in (
+            ("mismatch", "different-service-account"),
+            ("wrong-type", [service_account_name]),
+            ("empty", ""),
+        ):
+            widened = copy.deepcopy(live)
+            widened["spec"]["template"]["spec"]["serviceAccount"] = value
+            with self.subTest(label=label):
+                self.assertFalse(POLICY.semantically_equal(widened, desired))
+        alias_only = copy.deepcopy(live)
+        alias_only["spec"]["template"]["spec"].pop("serviceAccountName")
+        self.assertFalse(POLICY.semantically_equal(alias_only, desired))
+
     def test_create_result_binding_rejects_409_and_owns_only_exact_observed_object(self):
         nonce = "9" * 64
         desired = POLICY.with_operation_nonce(POLICY.expected_workbench_ingress_network_policy(), nonce)
