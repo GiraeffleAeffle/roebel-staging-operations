@@ -317,7 +317,8 @@ class CommitThenRaiseReceipt(MODULE.MemoryReceipt):
 
 class PromotionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
+        portable_temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        self.temporary = tempfile.TemporaryDirectory(dir=portable_temp_root)
         self.root = Path(self.temporary.name)
         self.pin, self.pin_sha = write_pin(self.root)
         self.protected_revision = "a" * 40
