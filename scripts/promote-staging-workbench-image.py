@@ -151,7 +151,7 @@ FEED_KEYS = frozenset({"schemaVersion", "posts", "authorityBinding"})
 ORDINARY_POST_KEYS = frozenset({
     "id", "entryType", "event", "author", "content", "createdAt", "replyCount",
     "meckyMentioned", "meckyAnswered", "promotedDiscussionId", "promotedTopicId",
-    "sourceAppPostId", "synthetic", "caseBinding", "sourceConversation",
+    "sourceAppPostId", "synthetic",
 })
 TOPIC_POST_KEYS = frozenset({
     "id", "entryType", "author", "content", "createdAt", "replyCount", "meckyMentioned",
@@ -1071,8 +1071,6 @@ def _validate_common_feed_record(value: dict[str, Any], label: str) -> None:
     _nonnegative_integer(value["replyCount"], f"{label}.replyCount")
     for key in ("meckyMentioned", "meckyAnswered", "synthetic"):
         require(value[key] is False, f"{label}.{key} synthetic/public marker drift", PostconditionFailure)
-    _validate_case_binding(value["caseBinding"], f"{label}.caseBinding")
-    _validate_conversation(value["sourceConversation"], f"{label}.sourceConversation")
 
 
 def _validate_feed_post(value: Any, index: int) -> None:
@@ -1089,6 +1087,8 @@ def _validate_feed_post(value: Any, index: int) -> None:
     require(entry_type == "topic", f"{label} entryType invalid", PostconditionFailure)
     topic = _closed_object(value, TOPIC_POST_KEYS, label)
     _validate_common_feed_record(topic, label)
+    _validate_case_binding(topic["caseBinding"], f"{label}.caseBinding")
+    _validate_conversation(topic["sourceConversation"], f"{label}.sourceConversation")
     _nonempty_string(topic["topicId"], f"{label}.topicId")
     _nonempty_string(topic["topicTitle"], f"{label}.topicTitle")
     _nonempty_string(topic["lastActivityAt"], f"{label}.lastActivityAt")
@@ -1103,6 +1103,8 @@ def _validate_feed_post(value: Any, index: int) -> None:
     for discussion_index, discussion_value in enumerate(discussions):
         discussion = _closed_object(discussion_value, TOPIC_DISCUSSION_KEYS, f"{label}.discussions[{discussion_index}]")
         _validate_common_feed_record(discussion, f"{label}.discussions[{discussion_index}]")
+        _validate_case_binding(discussion["caseBinding"], f"{label}.discussions[{discussion_index}].caseBinding")
+        _validate_conversation(discussion["sourceConversation"], f"{label}.discussions[{discussion_index}].sourceConversation")
         require(discussion["suggestionSigned"] is False or discussion["suggestionSigned"] is True, f"{label}.discussions[{discussion_index}].suggestionSigned invalid", PostconditionFailure)
     source_ids = topic["sourcePostIds"]
     require(isinstance(source_ids, list) and all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) is not None for item in source_ids), f"{label}.sourcePostIds invalid", PostconditionFailure)

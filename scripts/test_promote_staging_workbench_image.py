@@ -177,8 +177,50 @@ def ordinary_post() -> dict[str, Any]:
         "promotedTopicId": None,
         "sourceAppPostId": None,
         "synthetic": False,
+    }
+
+
+def topic_post() -> dict[str, Any]:
+    author = {
+        "name": "Anna",
+        "kind": "citizen",
+        "pubkey": "e" * 64,
+        "synthetic": False,
+    }
+    discussion = {
+        "id": "f" * 64,
+        "author": copy.deepcopy(author),
+        "content": "Die Querung soll gemeinsam geprüft werden.",
+        "createdAt": "2026-08-28T08:05:00Z",
+        "replyCount": 0,
+        "meckyMentioned": False,
+        "meckyAnswered": False,
+        "suggestionSigned": False,
         "caseBinding": None,
         "sourceConversation": None,
+        "synthetic": False,
+    }
+    return {
+        "id": discussion["id"],
+        "entryType": "topic",
+        "author": author,
+        "content": discussion["content"],
+        "createdAt": discussion["createdAt"],
+        "replyCount": 0,
+        "meckyMentioned": False,
+        "meckyAnswered": False,
+        "suggestionSigned": False,
+        "caseBinding": None,
+        "sourceConversation": None,
+        "topicId": "querung-marienfelder-strasse",
+        "topicTitle": "Sichere Querung",
+        "synthetic": False,
+        "lastActivityAt": discussion["createdAt"],
+        "discussionCount": 1,
+        "discussionIds": [discussion["id"]],
+        "discussions": [discussion],
+        "sourcePostIds": ["a" * 64],
+        "activityCount": 1,
     }
 
 
@@ -1021,10 +1063,10 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(summary["postCount"], 1)
         self.assertFalse(summary["syntheticRecords"])
 
-        missing_binding = copy.deepcopy(feed)
-        del missing_binding["posts"][0]["caseBinding"]
+        topic_only_binding = copy.deepcopy(feed)
+        topic_only_binding["posts"][0]["caseBinding"] = None
         with self.assertRaises(MODULE.PostconditionFailure):
-            MODULE.validate_feed_probe(missing_binding)
+            MODULE.validate_feed_probe(topic_only_binding)
 
         fixture_provenance = copy.deepcopy(feed)
         fixture_provenance["posts"][0]["sourceFixture"] = False
@@ -1035,6 +1077,24 @@ class PromotionTests(unittest.TestCase):
         credential_extra["posts"][0]["apiToken"] = "redacted"
         with self.assertRaises(MODULE.PromotionError):
             MODULE.validate_feed_probe(credential_extra)
+
+    def test_topic_records_keep_their_case_and_conversation_fields_closed(self) -> None:
+        feed = {
+            "schemaVersion": MODULE.PUBLIC_FEED_SCHEMA,
+            "posts": [topic_post()],
+            "authorityBinding": "none",
+        }
+        self.assertEqual(MODULE.validate_feed_probe(feed)["postCount"], 1)
+
+        missing_topic_binding = copy.deepcopy(feed)
+        del missing_topic_binding["posts"][0]["caseBinding"]
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(missing_topic_binding)
+
+        missing_discussion_conversation = copy.deepcopy(feed)
+        del missing_discussion_conversation["posts"][0]["discussions"][0]["sourceConversation"]
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(missing_discussion_conversation)
 
     def test_terminal_journal_failure_never_rolls_back_after_receipt_commit(self) -> None:
         kube = FakeKubernetes()
