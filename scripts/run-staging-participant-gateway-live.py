@@ -151,6 +151,8 @@ scope={'__name__':'__main__','__file__':path,'__package__':None,'__cached__':Non
 exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
+FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
+FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
 WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v1"
@@ -1606,6 +1608,20 @@ def verify_receipt_with_protected_cli(
     require(projection.get("civicAuthorityEffects") is False, f"protected receipt widened civic authority: {receipt.label}")
     return projection
 
+def bind_incident_recovery_handover_projection(
+    recovery_projection: Any,
+    handover_projection: Any,
+) -> str:
+    require(
+        isinstance(recovery_projection, dict)
+        and isinstance(handover_projection, dict)
+        and isinstance(recovery_projection.get("dormantHandoverReceiptSha256"), str)
+        and SHA256.fullmatch(recovery_projection["dormantHandoverReceiptSha256"]) is not None
+        and recovery_projection["dormantHandoverReceiptSha256"] == handover_projection.get("receiptSha256"),
+        "participant incident recovery no longer binds the fresh dormant handover",
+    )
+    return recovery_projection["dormantHandoverReceiptSha256"]
+
 def best_effort_print_child(result: ChildResult) -> str | None:
     try:
         if result.stdout: print(result.stdout, end="")
@@ -2846,6 +2862,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # explicit participant flag is useful only when automation wants a fully
     # self-documenting mode selection.
     mode.add_argument("--participant-gateway", action="store_true")
+    mode.add_argument("--participant-gateway-recovery", action="store_true")
     mode.add_argument("--workbench-baseline-handover", action="store_true")
     mode.add_argument("--workbench-baseline-recovery", action="store_true")
     mode.add_argument("--workbench-baseline-recovery-finalize", action="store_true")
@@ -2863,6 +2880,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--participant-secret-bundle", type=Path)
     parser.add_argument("--teardown-participant-secret-receipt", type=Path)
     parser.add_argument("--handover-dormant-receipt", type=Path)
+    parser.add_argument("--failed-participant-activation-receipt", type=Path)
     parser.add_argument(
         "--participant-secret-materialization-receipt",
         "--secret-materialization-receipt",
@@ -2894,7 +2912,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.relay_reset_receipt,
         args.relay_reset_journal,
     )
-    if args.relay_fixture_reset:
+    if args.failed_participant_activation_receipt is not None and not args.participant_gateway_recovery:
+        raise LiveTransportError("failed activation receipt inputs require --participant-gateway-recovery")
+    if args.participant_gateway_recovery:
+        require(args.live is True, "participant gateway recovery requires --live")
+        require(
+            args.handover_dormant_receipt is not None
+            and args.failed_participant_activation_receipt is not None,
+            "participant gateway recovery requires archived dormant and failed activation receipts",
+        )
+        require(
+            all(value is None for value in (
+                args.teardown_dormant_receipt,
+                args.participant_secret_bundle,
+                args.teardown_participant_secret_receipt,
+                args.participant_secret_materialization_receipt,
+                args.workbench_handover_receipt,
+                args.workbench_handover_journal,
+                args.workbench_recovery_receipt,
+                args.workbench_recovery_journal,
+                args.workbench_origin_journal,
+                args.workbench_attempt_receipt,
+                args.workbench_inspection,
+                *promotion_paths,
+                *relay_reset_paths,
+            )),
+            "participant gateway recovery accepts no Secret, teardown, workbench, promotion, or relay inputs",
+        )
+    elif args.relay_fixture_reset:
         require(args.live is True, "relay fixture reset requires --live")
         require(all(value is not None for value in relay_reset_paths), "relay fixture reset requires artifact pin, receipt, and journal")
         require(all(value is None for value in promotion_paths), "relay fixture reset may not receive workbench promotion inputs")
@@ -3059,9 +3104,31 @@ def classify_final_status(
         return ("dormant-torn-down", 0) if cleanup_complete else ("dormant-teardown-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "participant-secrets-torn-down":
         return ("participant-secrets-torn-down", 0) if cleanup_complete else ("participant-secret-teardown-cleanup-incomplete", 3)
+    if operation_succeeded and base_status == "recovered":
+        return ("recovered", 0) if cleanup_complete else ("recovered-cleanup-incomplete", 3)
     if not cleanup_complete:
         return (f"{base_status}-cleanup-incomplete", 3)
     return base_status, 2
+
+def incident_recovery_child_arguments(
+    revision: str,
+    kubeconfig: Path,
+    archived_receipt_fd: int,
+    handover_receipt_fd: int,
+    failed_receipt_fd: int,
+    prebound_blob_args: list[str],
+    output_receipt: Path,
+) -> list[str]:
+    """Closed recovery argv: deliberately contains no ordinary --live mode."""
+    return [
+        "--recover-rollback-incomplete-receipt-fd", str(failed_receipt_fd),
+        "--expected-protected-revision", revision,
+        "--kubeconfig", str(kubeconfig),
+        "--archived-flux-bootstrap-receipt-fd", str(archived_receipt_fd),
+        "--dormant-bootstrap-handover-receipt-fd", str(handover_receipt_fd),
+        *prebound_blob_args,
+        "--receipt", str(output_receipt),
+    ]
 
 
 def run_workbench_baseline_handover_transport(args: argparse.Namespace) -> int:
@@ -3785,6 +3852,7 @@ def main(argv: list[str] | None = None) -> int:
     source_dormant_receipt: BoundBlob | None = None; handover_archive_receipt: BoundBlob | None = None; handover_bound: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
     activation_bound: BoundBlob | None = None
+    source_failed_receipt: BoundBlob | None = None; incident_recovery_bound: BoundBlob | None = None
     secret_config_input: BoundBlob | None = None; secret_runtime_input: BoundBlob | None = None
     source_secret_receipt: BoundBlob | None = None; secret_materialization_bound: BoundBlob | None = None
     secret_teardown_bound: BoundBlob | None = None
@@ -3794,6 +3862,7 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_projection: dict[str, Any] | None = None; handover_projection: dict[str, Any] | None = None
     teardown_projection: dict[str, Any] | None = None
     activation_projection: dict[str, Any] | None = None
+    source_failed_projection: dict[str, Any] | None = None; incident_recovery_projection: dict[str, Any] | None = None
     source_secret_projection: dict[str, Any] | None = None
     secret_materialization_projection: dict[str, Any] | None = None
     secret_teardown_projection: dict[str, Any] | None = None
@@ -3801,9 +3870,11 @@ def main(argv: list[str] | None = None) -> int:
     child_cleanup_errors: list[str] = []
     base_status = "blocked"; error: str | None = None
     activation_committed = False; operation_succeeded = False
+    participant_recovery_mode = False
     listener_verified = False
     try:
         args = parse_args(argv)
+        participant_recovery_mode = args.participant_gateway_recovery
         if args.workbench_baseline_handover or args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
             return run_workbench_baseline_handover_transport(args)
         if args.relay_fixture_reset:
@@ -3859,26 +3930,50 @@ def main(argv: list[str] | None = None) -> int:
                 "archived dormant receipt",
             )
             bound_receipts.append(handover_archive_receipt)
-            source_secret_receipt = snapshot_owned_receipt(
-                args.participant_secret_materialization_receipt,
-                binding_dir / "source-secret-materialization-receipt.bound",
-                "source Secret materialization receipt",
-            )
-            bound_receipts.append(source_secret_receipt)
-            # Verify both prior receipts against protected current code before
-            # opening the transport.  The Secret verifier only inspects the
-            # value-free receipt and never reads or rematerializes a Secret.
-            source_secret_projection = verify_receipt_with_protected_cli(
-                cancellation,
-                bound_runners[ACTIVATION_RUNNER],
-                "--verify-secret-materialization-receipt-fd",
-                source_secret_receipt,
-                revision,
-                verifier_environment,
-                "materialized",
-                allow_cancelled=False,
-                expected_projection_revision=HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION,
-            )
+            if participant_recovery_mode:
+                source_failed_receipt = snapshot_owned_receipt(
+                    args.failed_participant_activation_receipt,
+                    binding_dir / "source-failed-participant-activation-receipt.bound",
+                    "failed participant activation receipt",
+                )
+                bound_receipts.append(source_failed_receipt)
+                require(source_failed_receipt.sha256 == FAILED_ACTIVATION_RAW_SHA256, "failed participant activation receipt raw checksum drift")
+                source_failed_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    bound_runners[ACTIVATION_RUNNER],
+                    "--verify-failed-activation-recovery-source-fd",
+                    source_failed_receipt,
+                    revision,
+                    verifier_environment,
+                    "rollback-incomplete-recovery-source-bound",
+                    allow_cancelled=False,
+                )
+                require(
+                    source_failed_projection.get("receiptSha256") == FAILED_ACTIVATION_CANONICAL_SHA256
+                    and source_failed_projection.get("fileSha256") == FAILED_ACTIVATION_RAW_SHA256,
+                    "failed participant activation receipt source binding drift",
+                )
+            else:
+                source_secret_receipt = snapshot_owned_receipt(
+                    args.participant_secret_materialization_receipt,
+                    binding_dir / "source-secret-materialization-receipt.bound",
+                    "source Secret materialization receipt",
+                )
+                bound_receipts.append(source_secret_receipt)
+                # Verify both prior receipts against protected current code before
+                # opening the transport.  The Secret verifier only inspects the
+                # value-free receipt and never reads or rematerializes a Secret.
+                source_secret_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    bound_runners[ACTIVATION_RUNNER],
+                    "--verify-secret-materialization-receipt-fd",
+                    source_secret_receipt,
+                    revision,
+                    verifier_environment,
+                    "materialized",
+                    allow_cancelled=False,
+                    expected_projection_revision=HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION,
+                )
         elif args.teardown_dormant_receipt is not None:
             source_dormant_receipt = snapshot_owned_receipt(
                 args.teardown_dormant_receipt,
@@ -4101,77 +4196,133 @@ def main(argv: list[str] | None = None) -> int:
             if handover.returncode != 0:
                 child_cleanup_errors.append(f"protected dormant handover exited {handover.returncode} after durable commit")
                 raise LiveTransportError("protected dormant handover cleanup incomplete after durable commit")
-            # Continuation is a separate path: the archived handover already
-            # proved the dormant Flux objects and the Secret receipt was bound
-            # before transport.  Do not materialize Secrets or bootstrap Flux
-            # again; invoke activation directly with the three exact receipt
-            # descriptors while the GET-only transport is still alive.
             if cancellation.signals or not session.transport_alive():
                 base_status = "handover-ready"
-                raise LiveTransportError("activation cancelled after GET-only dormant handover; retry the explicit continuation")
-            activation_receipt = receipt_dir / "participant-gateway-activation.json"
-            require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
-            activation_arguments = [
-                "--archived-flux-bootstrap-receipt-fd",
-                str(handover_archive_receipt.fd),
-                "--dormant-bootstrap-handover-receipt-fd",
-                str(handover_bound.fd),
-                "--secret-materialization-receipt-fd",
-                str(source_secret_receipt.fd),
-            ]
-            activation_fds = (
-                activation_runner.blob.fd,
-                handover_archive_receipt.fd,
-                handover_bound.fd,
-                source_secret_receipt.fd,
-                kubectl_fd,
-                *participant_blob_fds,
-            )
-            activation = session.run_child(
-                activation_runner.command([
-                    "--live",
-                    "--expected-protected-revision",
-                    revision,
-                    "--kubeconfig",
-                    str(kubeconfig),
-                    *activation_arguments,
-                    *participant_blob_args,
-                    "--receipt",
-                    str(activation_receipt),
-                ]),
-                child_environment,
-                pass_fds=activation_fds,
-            )
-            try:
-                reject_failed_activation_without_durable_receipt(activation, activation_receipt)
-                require(activation_receipt.exists(), "activation runner produced no durable receipt")
-                activation_bound = snapshot_owned_receipt(
-                    activation_receipt,
-                    binding_dir / "activation-receipt.bound",
-                    "activation success receipt",
+                raise LiveTransportError("operation cancelled after GET-only dormant handover; retry the explicit mode")
+            if participant_recovery_mode:
+                require(
+                    handover_bound is not None and source_failed_receipt is not None,
+                    "incident recovery receipt bindings unavailable",
                 )
-                bound_receipts.append(activation_bound)
-                activation_projection = verify_receipt_with_protected_cli(
-                    cancellation,
-                    activation_runner,
-                    "--verify-success-receipt-fd",
-                    activation_bound,
-                    revision,
+                incident_recovery_receipt = receipt_dir / "participant-gateway-recovery.json"
+                recovery = session.run_child(
+                    activation_runner.command(incident_recovery_child_arguments(
+                        revision,
+                        kubeconfig,
+                        handover_archive_receipt.fd,
+                        handover_bound.fd,
+                        source_failed_receipt.fd,
+                        participant_blob_args,
+                        incident_recovery_receipt,
+                    )),
                     child_environment,
-                    "activated",
-                    allow_cancelled=True,
-                    extra_args=tuple(participant_blob_args),
-                    extra_pass_fds=tuple(participant_blob_fds),
+                    pass_fds=(
+                        activation_runner.blob.fd,
+                        handover_archive_receipt.fd,
+                        handover_bound.fd,
+                        source_failed_receipt.fd,
+                        kubectl_fd,
+                        *participant_blob_fds,
+                    ),
                 )
-            finally:
-                session.receipt_reconciled()
-                activation_logging_error = best_effort_print_child(activation)
-                if activation_logging_error is not None:
-                    child_cleanup_errors.append(activation_logging_error)
-            activation_committed = True; operation_succeeded = True; base_status = "activated"
-            if activation.returncode != 0:
-                child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
-                raise LiveTransportError("protected activation cleanup incomplete after durable commit")
+                try:
+                    reject_failed_activation_without_durable_receipt(recovery, incident_recovery_receipt)
+                    require(incident_recovery_receipt.exists(), "incident recovery runner produced no durable receipt")
+                    incident_recovery_bound = snapshot_owned_receipt(
+                        incident_recovery_receipt,
+                        binding_dir / "incident-recovery-receipt.bound",
+                        "participant incident recovery receipt",
+                    )
+                    bound_receipts.append(incident_recovery_bound)
+                    incident_recovery_projection = verify_receipt_with_protected_cli(
+                        cancellation,
+                        activation_runner,
+                        "--verify-recovery-receipt-fd",
+                        incident_recovery_bound,
+                        revision,
+                        child_environment,
+                        "recovered",
+                        allow_cancelled=True,
+                    )
+                    bind_incident_recovery_handover_projection(
+                        incident_recovery_projection, handover_projection,
+                    )
+                finally:
+                    session.receipt_reconciled()
+                    recovery_logging_error = best_effort_print_child(recovery)
+                    if recovery_logging_error is not None:
+                        child_cleanup_errors.append(recovery_logging_error)
+                operation_succeeded = True; base_status = "recovered"
+                if recovery.returncode != 0:
+                    child_cleanup_errors.append(f"protected incident recovery exited {recovery.returncode} after durable commit")
+                    raise LiveTransportError("protected incident recovery cleanup incomplete after durable commit")
+            else:
+                # Continuation is a separate path: the archived handover
+                # already proved dormant Flux and the Secret receipt was bound
+                # before transport. Do not bootstrap or materialize again.
+                activation_receipt = receipt_dir / "participant-gateway-activation.json"
+                require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
+                activation_arguments = [
+                    "--archived-flux-bootstrap-receipt-fd",
+                    str(handover_archive_receipt.fd),
+                    "--dormant-bootstrap-handover-receipt-fd",
+                    str(handover_bound.fd),
+                    "--secret-materialization-receipt-fd",
+                    str(source_secret_receipt.fd),
+                ]
+                activation_fds = (
+                    activation_runner.blob.fd,
+                    handover_archive_receipt.fd,
+                    handover_bound.fd,
+                    source_secret_receipt.fd,
+                    kubectl_fd,
+                    *participant_blob_fds,
+                )
+                activation = session.run_child(
+                    activation_runner.command([
+                        "--live",
+                        "--expected-protected-revision",
+                        revision,
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        *activation_arguments,
+                        *participant_blob_args,
+                        "--receipt",
+                        str(activation_receipt),
+                    ]),
+                    child_environment,
+                    pass_fds=activation_fds,
+                )
+                try:
+                    reject_failed_activation_without_durable_receipt(activation, activation_receipt)
+                    require(activation_receipt.exists(), "activation runner produced no durable receipt")
+                    activation_bound = snapshot_owned_receipt(
+                        activation_receipt,
+                        binding_dir / "activation-receipt.bound",
+                        "activation success receipt",
+                    )
+                    bound_receipts.append(activation_bound)
+                    activation_projection = verify_receipt_with_protected_cli(
+                        cancellation,
+                        activation_runner,
+                        "--verify-success-receipt-fd",
+                        activation_bound,
+                        revision,
+                        child_environment,
+                        "activated",
+                        allow_cancelled=True,
+                        extra_args=tuple(participant_blob_args),
+                        extra_pass_fds=tuple(participant_blob_fds),
+                    )
+                finally:
+                    session.receipt_reconciled()
+                    activation_logging_error = best_effort_print_child(activation)
+                    if activation_logging_error is not None:
+                        child_cleanup_errors.append(activation_logging_error)
+                activation_committed = True; operation_succeeded = True; base_status = "activated"
+                if activation.returncode != 0:
+                    child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
+                    raise LiveTransportError("protected activation cleanup incomplete after durable commit")
         elif source_secret_receipt is not None:
             secret_teardown_receipt = receipt_dir / "participant-secret-teardown.json"
             secret_teardown = session.run_child(
@@ -4527,6 +4678,8 @@ def main(argv: list[str] | None = None) -> int:
     handover_record = receipt_record(handover_projection, handover_bound)
     teardown_record = receipt_record(teardown_projection, teardown_bound)
     activation_record = receipt_record(activation_projection, activation_bound)
+    source_failed_record = receipt_record(source_failed_projection, source_failed_receipt)
+    incident_recovery_record = receipt_record(incident_recovery_projection, incident_recovery_bound)
     recovery_record = receipt_record(None, recovery_bound)
     status, exit_code = classify_final_status(
         base_status,
@@ -4572,18 +4725,33 @@ def main(argv: list[str] | None = None) -> int:
             "status": "archived-input-bound" if handover_archive_receipt is not None else None,
         },
         "sourceSecretMaterialization": source_secret_record,
+        "sourceFailedActivation": source_failed_record | {
+            "expectedFileSha256": FAILED_ACTIVATION_RAW_SHA256 if participant_recovery_mode else None,
+            "expectedCanonicalSha256": FAILED_ACTIVATION_CANONICAL_SHA256 if participant_recovery_mode else None,
+        },
         "secretMaterialization": secret_materialization_record,
         "secretTeardown": secret_teardown_record,
         "bootstrap": bootstrap_record,
         "handover": handover_record,
         "recovery": recovery_record | {"attempted": recovery_attempted, "runnerReturnCode": recovery_returncode},
+        "participantIncidentRecovery": incident_recovery_record | {
+            "attempted": participant_recovery_mode,
+            "dormantHandoverReceiptSha256": (
+                incident_recovery_projection.get("dormantHandoverReceiptSha256")
+                if incident_recovery_projection is not None else None
+            ),
+            "automaticActivationRetry": False,
+        },
         "teardown": teardown_record,
         "activation": activation_record,
         "dormantContinuation": {
-            "required": base_status in {"dormant-cleanup-required", "bootstrap-state-indeterminate", "dormant-ready"},
-            "mode": "--handover-dormant-receipt" if handover_archive_receipt is not None else "--teardown-dormant-receipt",
+            "required": (
+                base_status in {"dormant-cleanup-required", "bootstrap-state-indeterminate", "dormant-ready"}
+                or (participant_recovery_mode and not operation_succeeded)
+            ),
+            "mode": "--participant-gateway-recovery" if participant_recovery_mode else ("--handover-dormant-receipt" if handover_archive_receipt is not None else "--teardown-dormant-receipt"),
             "requiresClosedDormantPreflight": True,
-            "requiresExistingSecretMaterializationReceipt": handover_archive_receipt is not None,
+            "requiresExistingSecretMaterializationReceipt": handover_archive_receipt is not None and not participant_recovery_mode,
             "handoverReceiptSha256": handover_projection.get("receiptSha256") if handover_projection is not None else None,
             "adoptsArbitraryObjects": False,
         },

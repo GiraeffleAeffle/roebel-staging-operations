@@ -42,6 +42,291 @@ def dormant_ownership():
         ],
         "bothKustomizationsSuspended": True,
     }
+
+def failed_activation_receipt_fixture():
+    """Synthetic shape of the one pinned aaca3166 incident receipt."""
+    cluster = {
+        "apiOrigin": "https://10.255.240.11:6443",
+        "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+        "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+        "credentialsIncluded": False,
+        "kubeSystemNamespaceResourceVersion": "9",
+        "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
+        "kubeconfigPathIncluded": False,
+    }
+    unsigned = {
+        "schemaVersion": MODULE.RECEIPT_SCHEMA,
+        "status": "rollback-incomplete",
+        "protectedRevision": MODULE.FAILED_ACTIVATION_ORIGIN_REVISION,
+        "failure": MODULE.FAILED_ACTIVATION_FAILURE,
+        "protectedRunnerFileSha256": copy.deepcopy(MODULE.FAILED_ACTIVATION_RUNNER_FILE_SHA256),
+        "objectCreateResults": copy.deepcopy(list(MODULE.FAILED_ACTIVATION_OBJECT_CREATE_RESULTS)),
+        "rollback": {
+            "status": "incomplete",
+            "bothKustomizationsSuspended": False,
+            "flux": {},
+            "deleted": [
+                {
+                    "logicalName": "gateway.service",
+                    "uid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+                    "deleteResourceVersion": "16386566",
+                    "absent": True,
+                    "foregroundPropagation": False,
+                    "finalizersRemovedByRunner": False,
+                },
+                {"logicalName": "gateway.service", "absent": True, "alreadyAbsent": True},
+            ],
+            "finalChecks": {
+                "clusterBindingBeforeRollback": copy.deepcopy(cluster),
+                "exposureBreak": {
+                    "reason": "always-remove-owned-service-before-flux",
+                    "initialIngressAbsenceProved": False,
+                    "serviceUid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+                    "serviceAbsent": True,
+                    "unknownIngressUntouched": True,
+                },
+                "exposureBreakAfterFlux": {
+                    "serviceUid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+                    "serviceAbsent": True,
+                    "sameOwnedUidOnly": True,
+                },
+                "clusterBinding": copy.deepcopy(cluster),
+            },
+            "preservation": {
+                "existingWorkbenchNetworkPolicy": {
+                    "afterCanonicalSha256": "sha256:a125687ad4f00e2fbb921d6f5550f65daa267dfa627a24a598af0cbc1d27eb79",
+                    "beforeCanonicalSha256": "sha256:a125687ad4f00e2fbb921d6f5550f65daa267dfa627a24a598af0cbc1d27eb79",
+                    "byteIdenticalCanonicalJson": True,
+                    "target": {
+                        "apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy",
+                        "name": "e2e-workbench", "namespace": "stadtstack-roebel-staging-lab",
+                    },
+                },
+                "webIngress": {
+                    "afterCanonicalSha256": "sha256:79d2057a3d6755df99f3364b626d6ff7143053f1d7bde581967b4dcbd194a0ec",
+                    "beforeCanonicalSha256": "sha256:79d2057a3d6755df99f3364b626d6ff7143053f1d7bde581967b4dcbd194a0ec",
+                    "byteIdenticalCanonicalJson": True,
+                    "target": {
+                        "apiVersion": "networking.k8s.io/v1", "kind": "Ingress",
+                        "name": "roebel-web-presentation", "namespace": "stadtstack-roebel-web-preview",
+                    },
+                },
+            },
+            "uncertainTarget": "gateway.deployment",
+            "errors": [
+                "gateway rollback suspension timeout",
+                "post-send create outcome unresolved: gateway.deployment",
+            ],
+            "finalizersRemovedByRunner": False,
+        },
+        "termination": {
+            "interrupted": False,
+            "signal": None,
+            "signalsDeferredDuringRollback": True,
+        },
+        "civicAuthorityEffects": False,
+    }
+    return unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+
+def recovery_incident_ownership():
+    return {
+        "originProtectedRevision": MODULE.FAILED_ACTIVATION_ORIGIN_REVISION,
+        "originRawSha256": MODULE.FAILED_ACTIVATION_RAW_SHA256,
+        "originReceiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256,
+        "operationNonce": MODULE.FAILED_ACTIVATION_OPERATION_NONCE,
+        "objects": {
+            logical: copy.deepcopy(record)
+            for logical, record in zip(
+                MODULE.FAILED_ACTIVATION_CREATED_ORDER,
+                MODULE.FAILED_ACTIVATION_OBJECT_CREATE_RESULTS,
+            )
+        },
+        "serviceExposureBreakProved": True,
+        "ingressNeverCreated": True,
+        "civicAuthorityEffects": False,
+    }
+
+def recovery_dormant_ownership():
+    value = dormant_ownership()
+    value["receiptProvenance"] = {"mode": "archived-v1+get-only-handover"}
+    return value
+
+def recovery_cluster(value, resource_version="10"):
+    return {
+        "apiOrigin": value["clusterIdentity"]["apiOrigin"],
+        "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"],
+        "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"],
+        "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"],
+        "kubeSystemNamespaceResourceVersion": resource_version,
+        "credentialsIncluded": False,
+        "kubeconfigPathIncluded": False,
+    }
+
+def recovery_flux(uid, resource_version="20"):
+    return {
+        "uid": uid,
+        "resourceVersion": resource_version,
+        "generation": 1,
+        "observedGeneration": -1,
+        "suspended": True,
+        "reconcilingCurrentGeneration": False,
+    }
+
+def recovery_dependents_absent():
+    return {
+        "status": "deployment-foreground-dependents-absent",
+        "resources": {
+            resource: {"selector": copy.deepcopy(MODULE.POLICY.GATEWAY_LABELS), "count": 0}
+            for resource in ("pods", "replicasets.apps")
+        },
+    }
+
+def recovery_preservation(value, checksum=None):
+    checksum = checksum or sha("c")
+    return {
+        label: {
+            "target": copy.deepcopy(descriptor["target"]),
+            "beforeCanonicalSha256": checksum,
+            "afterCanonicalSha256": checksum,
+            "byteIdenticalCanonicalJson": True,
+        }
+        for label, descriptor in value["preservation"].items()
+    }
+
+def valid_recovery_preflight(value, *, deployment_present=True):
+    gateway_flux = recovery_flux("gateway-flux-uid", "20")
+    workbench_flux = recovery_flux("workbench-flux-uid", "30")
+    targets = {
+        logical: {
+            "state": "present-exact-receipt-owned",
+            "uid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS[logical],
+            "resourceVersion": str(40 + index),
+            "sourceReceiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256,
+        }
+        for index, logical in enumerate((
+            "gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount",
+        ))
+    }
+    targets["gateway.service"] = {
+        "state": "absent-exposure-break-proved",
+        "uid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+        "sourceReceiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256,
+    }
+    targets["gateway.deployment"] = (
+        {
+            "state": "present-exact-failed-nonce-owned",
+            "uid": "deployment-uid",
+            "resourceVersion": "50",
+            "operationNonce": MODULE.FAILED_ACTIVATION_OPERATION_NONCE,
+        }
+        if deployment_present else {
+            "state": "absent-unresolved-create",
+            "dependents": recovery_dependents_absent(),
+        }
+    )
+    targets["gateway.ingress"] = {
+        "state": "absent-never-created",
+        "sourceReceiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256,
+    }
+    cluster = recovery_cluster(value)
+    return {
+        "clusterBinding": {"initial": cluster, "beforeRollback": copy.deepcopy(cluster)},
+        "dormantReceipt": {
+            "receiptSha256": sha("d"),
+            "protectedRevision": REV,
+            "kustomizationUids": {
+                "gateway": gateway_flux["uid"],
+                "workbenchIngress": workbench_flux["uid"],
+            },
+        },
+        "flux": {"gateway": gateway_flux, "workbenchIngress": workbench_flux},
+        "source": {
+            "uid": "source-uid",
+            "resourceVersion": "40",
+            "generation": 2,
+            "observedGeneration": 2,
+            "artifactRevision": f"main@sha1:{REV}",
+            "ready": True,
+        },
+        "targets": targets,
+        "preservation": recovery_preservation(value),
+    }
+
+def valid_recovery_rollback(value, preflight):
+    deployment_present = preflight["targets"]["gateway.deployment"]["state"] == "present-exact-failed-nonce-owned"
+    deleted = [
+        {"logicalName": "gateway.service", "absent": True, "alreadyAbsent": True},
+        {"logicalName": "gateway.service", "absent": True, "alreadyAbsent": True},
+    ]
+    if deployment_present:
+        deleted.append({
+            "logicalName": "gateway.deployment",
+            "uid": preflight["targets"]["gateway.deployment"]["uid"],
+            "deleteResourceVersion": "60",
+            "absent": True,
+            "foregroundPropagation": True,
+            "finalizersRemovedByRunner": False,
+        })
+    for logical in ("gateway.serviceAccount", "workbenchIngress.networkPolicy", "gateway.networkPolicy"):
+        target = preflight["targets"][logical]
+        if target["state"] == "present-exact-receipt-owned":
+            deleted.append({
+                "logicalName": logical,
+                "uid": target["uid"],
+                "deleteResourceVersion": "61",
+                "absent": True,
+                "foregroundPropagation": False,
+                "finalizersRemovedByRunner": False,
+            })
+        else:
+            deleted.append({"logicalName": logical, "absent": True, "alreadyAbsent": True})
+    final = {
+        "clusterBindingBeforeRollback": copy.deepcopy(preflight["clusterBinding"]["initial"]),
+        "exposureBreak": {
+            "reason": "always-remove-owned-service-before-flux",
+            "initialIngressAbsenceProved": False,
+            "serviceUid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+            "serviceAbsent": True,
+            "unknownIngressUntouched": True,
+        },
+        "exposureBreakAfterFlux": {
+            "serviceUid": MODULE.FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+            "serviceAbsent": True,
+            "sameOwnedUidOnly": True,
+        },
+        "absence": {
+            "status": "all-six-names-absent-for-quiet-interval",
+            "quietSeconds": value["httpBoundary"]["timeoutsSeconds"]["rollbackAbsenceQuiet"],
+            "checks": 2,
+        },
+        "flux": copy.deepcopy(preflight["flux"]),
+        "sharedSource": {
+            "uid": preflight["source"]["uid"],
+            "resourceVersion": preflight["source"]["resourceVersion"],
+            "artifactRevision": preflight["source"]["artifactRevision"],
+            "unchanged": True,
+        },
+        "clusterBinding": copy.deepcopy(preflight["clusterBinding"]["initial"]),
+    }
+    if deployment_present:
+        final["deploymentDependents"] = recovery_dependents_absent()
+    else:
+        final["unboundDeploymentRuntime"] = {
+            "deploymentNameAbsent": True,
+            "dependents": recovery_dependents_absent(),
+            "gatewayIsolationRetainedUntilProof": True,
+        }
+    return {
+        "status": "complete",
+        "bothKustomizationsSuspended": True,
+        "flux": copy.deepcopy(preflight["flux"]),
+        "deleted": deleted,
+        "finalChecks": final,
+        "preservation": recovery_preservation(value),
+        "uncertainTarget": None,
+        "errors": [],
+        "finalizersRemovedByRunner": False,
+    }
 def valid_database_status(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid", before="10", after="11", image_id=None):
     """A complete private readiness receipt, including provenance and RBAC."""
     image = value["productPins"]["imageRepository"] + "@" + value["productPins"]["imageManifestDigest"]
@@ -489,7 +774,7 @@ class ExecutorTests(unittest.TestCase):
             "objects": objects,
             "bothKustomizationsSuspended": True,
         }
-        source = {"metadata": {"uid": "source"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        source = {"metadata": {"uid": "source", "resourceVersion": "1"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
         with patch.object(MODULE, "shared_source_revision_v4", return_value=source), patch.object(
             MODULE,
             "_target_live",
@@ -888,6 +1173,31 @@ class ExecutorTests(unittest.TestCase):
             with self.assertRaisesRegex(MODULE.TransportUncertainError, "unresolved"):
                 MODULE.create_v4(Malformed(), "/tmp/kube", "workbenchIngress.networkPolicy", rendered, nonce)
 
+    def test_v4_deployment_http_201_and_nonce_removal_accept_matching_defaulted_service_account_alias(self):
+        value = ready_policy(); nonce = "e" * 64
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
+        rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
+
+        class DefaultingApi(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10):
+                candidate = json.loads(input_text)
+                candidate["metadata"] |= {"uid": "deployment-uid", "resourceVersion": "31"}
+                pod_spec = candidate["spec"]["template"]["spec"]
+                pod_spec["serviceAccount"] = pod_spec["serviceAccountName"]
+                return MODULE.Result(out=json.dumps(candidate))
+
+        created = MODULE.create_v4(DefaultingApi(), "/tmp/kube", "gateway.deployment", rendered, nonce)
+        self.assertEqual(created.receipt["outcome"], "http-201-created")
+        self.assertEqual(created.observed["spec"]["template"]["spec"]["serviceAccount"], MODULE.NAME)
+
+        after = admitted(desired, "deployment-uid", "32")
+        after["spec"]["template"]["spec"]["serviceAccount"] = MODULE.NAME
+        with patch.object(MODULE, "checked", return_value=json.dumps(after)):
+            MODULE.remove_operation_nonce_v4(Fake(), "/snapshot", created, nonce)
+        self.assertTrue(created.receipt["temporaryNonceRemoved"])
+        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "32")
+
     def test_v4_transport_uncertainty_without_discovery_stays_unresolved(self):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy()
         rendered = {"desired": desired, "path": "fixed", "blobSha256": sha()}
@@ -943,7 +1253,7 @@ class ExecutorTests(unittest.TestCase):
         gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "10")
         workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "20")
         active_gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=False)["kustomization"], "g", "11")
-        source = {"metadata": {"uid": "source-uid"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        source = {"metadata": {"uid": "source-uid", "resourceVersion": "1"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
         bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}, "source": source}
         with patch.object(MODULE, "cas_flux_v4", side_effect=[active_gateway, MODULE.ActivationError("second CAS failed")]):
             with self.assertRaisesRegex(MODULE.ActivationError, "second CAS"):
@@ -951,7 +1261,7 @@ class ExecutorTests(unittest.TestCase):
         current = [active_gateway, workbench]
         suspended_gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "12")
         quiescent = {"gateway": {"uid": "g", "suspended": True}, "workbenchIngress": {"uid": "w", "suspended": True}}
-        source_after = {"metadata": {"uid": "source-uid"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        source_after = {"metadata": {"uid": "source-uid", "resourceVersion": "2"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
         with patch.object(MODULE, "_target_live", side_effect=current), patch.object(MODULE, "cas_flux_v4", side_effect=[suspended_gateway]) as suspend, patch.object(MODULE, "wait_both_suspended_v4", return_value=quiescent), patch.object(MODULE, "shared_source_revision_v4", return_value=source_after):
             result = MODULE.rollback_v4(Fake(), "/tmp/kube", policy(), [], bootstrap, None, None)
         self.assertEqual(result["status"], "complete")
@@ -1030,7 +1340,7 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "observedGeneration"):
             MODULE.flux_ready_v4(live, "gateway", "g", REV)
 
-    def test_v4_suspended_flux_requires_observed_generation_and_no_current_reconciling(self):
+    def test_v4_suspended_flux_accepts_never_observed_and_rejects_any_active_reconcile(self):
         desired = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "11")
         desired["metadata"]["generation"] = 8
         desired["status"] = {"observedGeneration": 8, "conditions": [{"type": "Reconciling", "status": "False", "observedGeneration": 8}]}
@@ -1038,9 +1348,56 @@ class ExecutorTests(unittest.TestCase):
         active = copy.deepcopy(desired); active["status"]["conditions"][0]["status"] = "True"
         with self.assertRaisesRegex(MODULE.ActivationError, "still Reconciling"):
             MODULE._flux_suspended_and_quiescent_v4(active, "gateway", "g")
-        stale = copy.deepcopy(desired); stale["status"]["observedGeneration"] = 7
-        with self.assertRaisesRegex(MODULE.ActivationError, "generation not observed"):
-            MODULE._flux_suspended_and_quiescent_v4(stale, "gateway", "g")
+        never_observed = copy.deepcopy(desired); never_observed["status"] = {"observedGeneration": -1, "conditions": []}
+        receipt = MODULE._flux_suspended_and_quiescent_v4(never_observed, "gateway", "g")
+        self.assertEqual(receipt["observedGeneration"], -1)
+        stale_active = copy.deepcopy(never_observed)
+        stale_active["status"]["conditions"] = [{"type": "Reconciling", "status": "True", "observedGeneration": 7}]
+        with self.assertRaisesRegex(MODULE.ActivationError, "still Reconciling"):
+            MODULE._flux_suspended_and_quiescent_v4(stale_active, "gateway", "g")
+        future = copy.deepcopy(never_observed); future["status"]["observedGeneration"] = 9
+        with self.assertRaisesRegex(MODULE.ActivationError, "observedGeneration invalid"):
+            MODULE._flux_suspended_and_quiescent_v4(future, "gateway", "g")
+        boolean_generation = copy.deepcopy(never_observed); boolean_generation["metadata"]["generation"] = True
+        with self.assertRaisesRegex(MODULE.ActivationError, "observedGeneration invalid"):
+            MODULE._flux_suspended_and_quiescent_v4(boolean_generation, "gateway", "g")
+
+    def test_v4_incident_recovery_requires_exact_never_reconciled_generation_one_flux(self):
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "10")
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "20")
+        for current in (gateway, workbench):
+            current["metadata"]["generation"] = 1
+            current["status"] = {"observedGeneration": -1, "conditions": []}
+        bootstrap = {"owners": {
+            "gateway": {"kustomization": gateway},
+            "workbenchIngress": {"kustomization": workbench},
+        }}
+        result = MODULE.recovery_flux_preflight_v4(bootstrap)
+        self.assertEqual(result["gateway"]["observedGeneration"], -1)
+        for generation, observed in ((2, -1), (1, 0)):
+            with self.subTest(generation=generation, observed=observed):
+                drifted = copy.deepcopy(bootstrap)
+                current = drifted["owners"]["gateway"]["kustomization"]
+                current["metadata"]["generation"] = generation
+                current["status"]["observedGeneration"] = observed
+                with self.assertRaisesRegex(MODULE.ActivationError, "exact dormant incident state"):
+                    MODULE.recovery_flux_preflight_v4(drifted)
+
+    def test_v4_wait_both_suspended_requires_full_protected_suspended_semantics(self):
+        value = ready_policy()
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "10")
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "20")
+        for current in (gateway, workbench):
+            current["metadata"]["generation"] = 1
+            current["status"] = {"observedGeneration": -1, "conditions": []}
+        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}}
+        with patch.object(MODULE, "_target_live", side_effect=[gateway, workbench]):
+            result = MODULE.wait_both_suspended_v4(Fake(), "/snapshot", value, bootstrap, MODULE.time.monotonic() + 10.0)
+        self.assertEqual(result["gateway"]["observedGeneration"], -1)
+        drifted = copy.deepcopy(gateway); drifted["spec"]["path"] = "./foreign"
+        with patch.object(MODULE, "_target_live", return_value=drifted):
+            with self.assertRaisesRegex(MODULE.ActivationError, "suspended semantics"):
+                MODULE.wait_both_suspended_v4(Fake(), "/snapshot", value, bootstrap, MODULE.time.monotonic() + 10.0)
 
     def test_v4_rollback_absence_requires_all_six_names_quiet_and_rejects_foreign_uid(self):
         rendered = {f"item-{index}": {"desired": {"kind": "Service", "metadata": {"namespace": "ns", "name": f"name-{index}"}}} for index in range(6)}
@@ -1587,6 +1944,355 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("protected cluster identity changed before rollback", result["errors"][0])
         delete.assert_not_called()
 
+    def test_v4_failed_activation_recovery_source_binds_exact_raw_receipt_and_incident(self):
+        receipt = failed_activation_receipt_fixture()
+        raw = (MODULE.canonical(receipt) + "\n").encode()
+        self.assertEqual(receipt["canonicalSha256"], MODULE.FAILED_ACTIVATION_CANONICAL_SHA256)
+        self.assertEqual(MODULE.bytes_digest(raw), MODULE.FAILED_ACTIVATION_RAW_SHA256)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "failed.json"; path.write_bytes(raw); path.chmod(0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                bound = MODULE.bind_failed_activation_recovery_source_v4(fd)
+            finally:
+                os.close(fd)
+        self.assertEqual(bound["originProtectedRevision"], MODULE.FAILED_ACTIVATION_ORIGIN_REVISION)
+        self.assertEqual(bound["operationNonce"], MODULE.FAILED_ACTIVATION_OPERATION_NONCE)
+        self.assertEqual(list(bound["objects"]), list(MODULE.FAILED_ACTIVATION_CREATED_ORDER))
+        self.assertTrue(bound["serviceExposureBreakProved"])
+        self.assertTrue(bound["ingressNeverCreated"])
+
+        drifted = copy.deepcopy(receipt); drifted["failure"] = "different failure"
+        unsigned = {key: value for key, value in drifted.items() if key != "canonicalSha256"}
+        drifted["canonicalSha256"] = MODULE.digest(unsigned)
+        drifted_raw = (MODULE.canonical(drifted) + "\n").encode()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "drifted.json"; path.write_bytes(drifted_raw); path.chmod(0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                with (
+                    patch.object(MODULE, "FAILED_ACTIVATION_RAW_SHA256", MODULE.bytes_digest(drifted_raw)),
+                    patch.object(MODULE, "FAILED_ACTIVATION_CANONICAL_SHA256", drifted["canonicalSha256"]),
+                    self.assertRaisesRegex(MODULE.ActivationError, "failure drift"),
+                ):
+                    MODULE.bind_failed_activation_recovery_source_v4(fd)
+            finally:
+                os.close(fd)
+
+    def test_v4_recovery_target_preflight_binds_only_exact_incident_objects(self):
+        value = ready_policy(); incident = recovery_incident_ownership()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        desired_by_logical = {
+            "gateway.networkPolicy": resources["networkPolicy"],
+            "workbenchIngress.networkPolicy": MODULE.POLICY.expected_workbench_ingress_network_policy(include_web_presentation=True),
+            "gateway.serviceAccount": resources["serviceAccount"],
+            "gateway.service": resources["service"],
+            "gateway.deployment": resources["deployment"],
+            "gateway.ingress": resources["ingress"],
+        }
+        rendered = {}
+        for logical, desired in desired_by_logical.items():
+            origin = incident["objects"].get(logical)
+            rendered[logical] = {
+                "desired": desired,
+                "path": origin["protectedRenderPath"] if origin else f"protected/{logical}.json",
+                "blobSha256": origin["protectedRenderBlobSha256"] if origin else sha("7"),
+            }
+        live_by_target = {}
+        for logical in ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount"):
+            desired = desired_by_logical[logical]; target = desired["metadata"]
+            live_by_target[(desired["kind"].lower(), target["namespace"], target["name"])] = admitted(
+                desired,
+                incident["objects"][logical]["uid"],
+                "200",
+            )
+        deployment = admitted(
+            MODULE.POLICY.with_operation_nonce(desired_by_logical["gateway.deployment"], incident["operationNonce"]),
+            "deployment-live-uid",
+            "201",
+        )
+        deployment["spec"]["template"]["spec"]["serviceAccount"] = MODULE.NAME
+        target = desired_by_logical["gateway.deployment"]["metadata"]
+        live_by_target[("deployment", target["namespace"], target["name"])] = deployment
+
+        def lookup(_runner, _kube, kind, name, namespace):
+            return copy.deepcopy(live_by_target.get((kind, namespace, name)))
+
+        with patch.object(MODULE, "get_optional", side_effect=lookup):
+            bound = MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+        self.assertEqual([item.logical_name for item in bound["created"]], [
+            "gateway.networkPolicy",
+            "workbenchIngress.networkPolicy",
+            "gateway.serviceAccount",
+            "gateway.service",
+            "gateway.deployment",
+        ])
+        self.assertEqual(bound["classifications"]["gateway.service"]["state"], "absent-exposure-break-proved")
+        self.assertEqual(bound["classifications"]["gateway.ingress"]["state"], "absent-never-created")
+        self.assertEqual(bound["classifications"]["gateway.deployment"]["uid"], "deployment-live-uid")
+
+        foreign = copy.deepcopy(live_by_target)
+        service_account = desired_by_logical["gateway.serviceAccount"]; sa_meta = service_account["metadata"]
+        foreign[("serviceaccount", sa_meta["namespace"], sa_meta["name"])]["metadata"]["uid"] = "foreign-uid"
+        with patch.object(MODULE, "get_optional", side_effect=lambda _r, _k, kind, name, namespace: copy.deepcopy(foreign.get((kind, namespace, name)))):
+            with self.assertRaisesRegex(MODULE.ActivationError, "incident UID drift"):
+                MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+
+        wrong_nonce = copy.deepcopy(live_by_target)
+        wrong_nonce[("deployment", target["namespace"], target["name"])]["metadata"]["annotations"][MODULE.POLICY.OPERATION_NONCE_ANNOTATION] = "f" * 64
+        with patch.object(MODULE, "get_optional", side_effect=lambda _r, _k, kind, name, namespace: copy.deepcopy(wrong_nonce.get((kind, namespace, name)))):
+            with self.assertRaises(MODULE.ActivationError):
+                MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+
+        for logical in ("gateway.service", "gateway.ingress"):
+            present = copy.deepcopy(live_by_target); desired = desired_by_logical[logical]; metadata = desired["metadata"]
+            present[(desired["kind"].lower(), metadata["namespace"], metadata["name"])] = admitted(desired, "unexpected-uid", "300")
+            with self.subTest(logical=logical), patch.object(MODULE, "get_optional", side_effect=lambda _r, _k, kind, name, namespace, values=present: copy.deepcopy(values.get((kind, namespace, name)))):
+                with self.assertRaisesRegex(MODULE.ActivationError, "must remain absent"):
+                    MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+
+    def test_v4_recovery_target_preflight_is_idempotent_only_after_dependent_absence(self):
+        value = ready_policy(); incident = recovery_incident_ownership()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        desired_by_logical = {
+            "gateway.networkPolicy": resources["networkPolicy"],
+            "workbenchIngress.networkPolicy": MODULE.POLICY.expected_workbench_ingress_network_policy(include_web_presentation=True),
+            "gateway.serviceAccount": resources["serviceAccount"],
+            "gateway.service": resources["service"],
+            "gateway.deployment": resources["deployment"],
+            "gateway.ingress": resources["ingress"],
+        }
+        rendered = {
+            logical: {
+                "desired": desired,
+                "path": incident["objects"][logical]["protectedRenderPath"] if logical in incident["objects"] else f"protected/{logical}.json",
+                "blobSha256": incident["objects"][logical]["protectedRenderBlobSha256"] if logical in incident["objects"] else sha("8"),
+            }
+            for logical, desired in desired_by_logical.items()
+        }
+        dependent_proof = {"status": "deployment-foreground-dependents-absent"}
+        with patch.object(MODULE, "get_optional", return_value=None), patch.object(MODULE, "deployment_dependents_absent_v4", return_value=dependent_proof):
+            bound = MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+        self.assertEqual([item.logical_name for item in bound["created"]], list(MODULE.FAILED_ACTIVATION_CREATED_ORDER))
+        self.assertEqual(bound["classifications"]["gateway.deployment"]["dependents"], dependent_proof)
+        with patch.object(MODULE, "get_optional", return_value=None), patch.object(
+            MODULE, "deployment_dependents_absent_v4", side_effect=MODULE.ActivationError("participant pods remain")
+        ):
+            with self.assertRaisesRegex(MODULE.ActivationError, "pods remain"):
+                MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+
+    def test_v4_incident_recovery_rollback_order_keeps_gateway_isolation_last(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        desired = {
+            "gateway.networkPolicy": resources["networkPolicy"],
+            "workbenchIngress.networkPolicy": MODULE.POLICY.expected_workbench_ingress_network_policy(include_web_presentation=True),
+            "gateway.serviceAccount": resources["serviceAccount"],
+            "gateway.service": resources["service"],
+            "gateway.deployment": resources["deployment"],
+        }
+        created = [
+            MODULE.CreatedV4(logical, item, admitted(item, logical + "-uid", str(index + 10)), {"uid": logical + "-uid"})
+            for index, (logical, item) in enumerate(desired.items())
+        ]
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "g", "40")
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "w", "50")
+        source = {"metadata": {"uid": "source", "resourceVersion": "1"}, "status": {"artifact": {"revision": f"main@sha1:{REV}"}}}
+        bootstrap = {"owners": {"gateway": {"kustomization": gateway}, "workbenchIngress": {"kustomization": workbench}}, "source": source}
+        quiescent = {"gateway": {"suspended": True}, "workbenchIngress": {"suspended": True}}
+        deletion_order = []
+        def remove(_runner, _kube, item, _timeout, _snapshot=None):
+            deletion_order.append(item.logical_name)
+            return {"logicalName": item.logical_name, "uid": item.observed["metadata"]["uid"], "absent": True, "foregroundPropagation": item.logical_name == "gateway.deployment"}
+        with (
+            patch.object(MODULE, "delete_with_preconditions_v4", side_effect=remove),
+            patch.object(MODULE, "_target_live", side_effect=[gateway, workbench]),
+            patch.object(MODULE, "wait_both_suspended_v4", side_effect=[quiescent, quiescent]),
+            patch.object(MODULE, "deployment_dependents_absent_v4", return_value={"status": "deployment-foreground-dependents-absent"}),
+            patch.object(MODULE, "_all_targets_absent_quiet_v4", return_value={"status": "all-six-names-absent-for-quiet-interval"}),
+            patch.object(MODULE, "shared_source_revision_v4", return_value=source),
+        ):
+            result = MODULE.rollback_v4(Fake(), "/snapshot", value, created, bootstrap, None, None, rendered={str(i): {} for i in range(6)})
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(deletion_order, [
+            "gateway.service", "gateway.service", "gateway.deployment",
+            "gateway.serviceAccount", "workbenchIngress.networkPolicy", "gateway.networkPolicy",
+        ])
+
+    def test_v4_recovery_blocks_before_rollback_mutation_on_preflight_failure(self):
+        value = ready_policy(); snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        sink = Mock(); cluster = {"cluster": "bound"}; rollback = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with (
+                patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+                patch.object(MODULE, "render_v4", return_value={}),
+                patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+                patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+                patch.object(MODULE, "validate_bound_cluster_identity_v4", return_value=cluster),
+                patch.object(MODULE, "require_same_cluster_identity_v4"),
+                patch.object(MODULE, "preservation_v4", return_value={}),
+                patch.object(MODULE, "require_current_preservation_binding_v4"),
+                patch.object(MODULE, "flux_preflight_v4", return_value={"owners": {}}),
+                patch.object(MODULE, "recovery_flux_preflight_v4", return_value={}),
+                patch.object(MODULE, "bind_recovery_targets_v4", side_effect=MODULE.ActivationError("foreign UID")),
+                patch.object(MODULE, "rollback_v4", rollback),
+                self.assertRaisesRegex(MODULE.ActivationError, "recovery blocked"),
+            ):
+                MODULE.recover_incomplete_activation_v4(
+                    value, REV, str(kube), Fake(), sink, {"runner": sha()}, recovery_dormant_ownership(), recovery_incident_ownership()
+                )
+        rollback.assert_not_called()
+        self.assertEqual(sink.commit.call_args.args[0]["status"], "recovery-blocked")
+        snapshot.close.assert_called_once()
+
+    def test_v4_recovery_reuses_bounded_rollback_and_commits_success_without_activation(self):
+        value = ready_policy(); snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        sink = Mock(); cluster = recovery_cluster(value); preserved = {"webIngress": Mock(), "existingWorkbenchNetworkPolicy": Mock()}
+        bootstrap = {"owners": {}, "source": {"status": {"artifact": {"revision": f"main@sha1:{REV}"}}}}
+        preflight = valid_recovery_preflight(value)
+        desired = {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "fixture", "namespace": MODULE.NAMESPACE}}
+        created = [MODULE.CreatedV4(logical, desired, admitted(desired, logical + "-uid"), {"uid": logical + "-uid"}) for logical in (
+            "gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount", "gateway.service", "gateway.deployment"
+        )]
+        target_binding = {"created": created, "classifications": preflight["targets"]}
+        rollback_receipt = valid_recovery_rollback(value, preflight)
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with (
+                patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+                patch.object(MODULE, "render_v4", return_value={}),
+                patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+                patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+                patch.object(MODULE, "validate_bound_cluster_identity_v4", return_value=cluster),
+                patch.object(MODULE, "require_same_cluster_identity_v4"),
+                patch.object(MODULE, "preservation_v4", return_value=preserved),
+                patch.object(MODULE, "require_current_preservation_binding_v4"),
+                patch.object(MODULE, "flux_preflight_v4", return_value=bootstrap),
+                patch.object(MODULE, "recovery_flux_preflight_v4", return_value=preflight["flux"]),
+                patch.object(MODULE, "recovery_dormant_receipt_preflight_v4", return_value=preflight["dormantReceipt"]),
+                patch.object(MODULE, "recovery_source_preflight_v4", return_value=preflight["source"]),
+                patch.object(MODULE, "bind_recovery_targets_v4", return_value=target_binding),
+                patch.object(MODULE, "verify_preservation_v4", return_value=preflight["preservation"]),
+                patch.object(MODULE, "rollback_v4", return_value=rollback_receipt) as rollback,
+            ):
+                result = MODULE.recover_incomplete_activation_v4(
+                    value, REV, str(kube), Fake(), sink, {"runner": sha()}, recovery_dormant_ownership(), recovery_incident_ownership()
+                )
+        self.assertEqual(result["status"], "recovered")
+        self.assertFalse(result["automaticActivationRetry"])
+        self.assertEqual([item.logical_name for item in rollback.call_args.args[3]], [item.logical_name for item in created])
+        self.assertIsNone(rollback.call_args.args[6])
+        self.assertEqual(sink.commit.call_args.args[0]["status"], "recovered")
+        snapshot.close.assert_called_once()
+
+    def test_v4_recovery_retry_commits_when_deployment_and_receipt_objects_are_already_absent(self):
+        value = ready_policy(); snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        sink = Mock(); cluster = recovery_cluster(value)
+        preserved = {"webIngress": Mock(), "existingWorkbenchNetworkPolicy": Mock()}
+        bootstrap = {"owners": {}, "source": {"status": {"artifact": {"revision": f"main@sha1:{REV}"}}}}
+        preflight = valid_recovery_preflight(value, deployment_present=False)
+        for logical in ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount"):
+            preflight["targets"][logical]["state"] = "already-absent-receipt-owned"
+            preflight["targets"][logical].pop("resourceVersion")
+        desired = {"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "fixture", "namespace": MODULE.NAMESPACE}}
+        created = [
+            MODULE.CreatedV4(logical, desired, admitted(desired, logical + "-uid"), {"uid": logical + "-uid"})
+            for logical in (
+                "gateway.networkPolicy", "workbenchIngress.networkPolicy",
+                "gateway.serviceAccount", "gateway.service",
+            )
+        ]
+        target_binding = {"created": created, "classifications": preflight["targets"]}
+        rollback_receipt = valid_recovery_rollback(value, preflight)
+        self.assertNotIn("gateway.deployment", [item["logicalName"] for item in rollback_receipt["deleted"]])
+        self.assertTrue(all(item.get("alreadyAbsent") is True for item in rollback_receipt["deleted"]))
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with (
+                patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+                patch.object(MODULE, "render_v4", return_value={}),
+                patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+                patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+                patch.object(MODULE, "validate_bound_cluster_identity_v4", return_value=cluster),
+                patch.object(MODULE, "require_same_cluster_identity_v4"),
+                patch.object(MODULE, "preservation_v4", return_value=preserved),
+                patch.object(MODULE, "require_current_preservation_binding_v4"),
+                patch.object(MODULE, "flux_preflight_v4", return_value=bootstrap),
+                patch.object(MODULE, "recovery_flux_preflight_v4", return_value=preflight["flux"]),
+                patch.object(MODULE, "recovery_dormant_receipt_preflight_v4", return_value=preflight["dormantReceipt"]),
+                patch.object(MODULE, "recovery_source_preflight_v4", return_value=preflight["source"]),
+                patch.object(MODULE, "bind_recovery_targets_v4", return_value=target_binding),
+                patch.object(MODULE, "verify_preservation_v4", return_value=preflight["preservation"]),
+                patch.object(MODULE, "rollback_v4", return_value=rollback_receipt) as rollback,
+            ):
+                result = MODULE.recover_incomplete_activation_v4(
+                    value, REV, str(kube), Fake(), sink, {"runner": sha()},
+                    recovery_dormant_ownership(), recovery_incident_ownership(),
+                )
+        self.assertEqual(result["status"], "recovered")
+        self.assertEqual([item.logical_name for item in rollback.call_args.args[3]], [item.logical_name for item in created])
+        self.assertFalse(result["automaticActivationRetry"])
+        self.assertEqual(sink.commit.call_args.args[0]["status"], "recovered")
+        snapshot.close.assert_called_once()
+
+    def test_v4_recovery_receipt_verifier_requires_complete_rollback_and_no_retry(self):
+        value = ready_policy(); runner_hashes = {"runner": sha()}
+        preflight = valid_recovery_preflight(value)
+        rollback = valid_recovery_rollback(value, preflight)
+        unsigned = {
+            "schemaVersion": MODULE.RECOVERY_RECEIPT_SCHEMA,
+            "status": "recovered",
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+            "protectedRunnerFileSha256": runner_hashes,
+            "recoveredIncident": recovery_incident_ownership(),
+            "preflight": preflight,
+            "rollback": rollback,
+            "automaticActivationRetry": False,
+            "civicAuthorityEffects": False,
+        }
+        receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+        bound = MODULE.bind_recovery_receipt_v4(receipt, value, REV, runner_hashes)
+        self.assertEqual(bound["status"], "recovered")
+        self.assertFalse(bound["automaticActivationRetry"])
+        self.assertEqual(bound["dormantHandoverReceiptSha256"], preflight["dormantReceipt"]["receiptSha256"])
+
+        def resign(candidate):
+            candidate["canonicalSha256"] = MODULE.digest({
+                key: item for key, item in candidate.items() if key != "canonicalSha256"
+            })
+            return candidate
+
+        drifts = (
+            ("rollback incomplete", lambda item: item["rollback"].__setitem__("status", "incomplete")),
+            ("rollback incomplete", lambda item: item["rollback"].__setitem__("civicAuthorityEffects", True)),
+            ("final proof incomplete", lambda item: item["rollback"]["finalChecks"].__setitem__("civicAuthorityEffects", True)),
+            ("exposure-break proof drift", lambda item: item["rollback"]["finalChecks"]["exposureBreak"].__setitem__("civicAuthorityEffects", True)),
+            ("present target field set drift", lambda item: item["preflight"]["targets"]["gateway.networkPolicy"].__setitem__("civicAuthorityEffects", True)),
+            ("deletion UID drift", lambda item: item["rollback"]["deleted"][-1].__setitem__("uid", "wrong-uid")),
+            ("Service absence", lambda item: item["rollback"]["deleted"][0].__setitem__("foregroundPropagation", True)),
+            ("deletion UID drift", lambda item: item["rollback"]["deleted"][-1].__setitem__("foregroundPropagation", True)),
+            ("deletion UID drift", lambda item: item["rollback"]["deleted"][-1].__setitem__("finalizersRemovedByRunner", 0)),
+            ("protected cluster binding drift", lambda item: item["rollback"]["finalChecks"]["clusterBinding"].__setitem__("apiOrigin", "https://wrong.invalid")),
+            ("cluster resourceVersion moved backwards", lambda item: item["preflight"]["clusterBinding"]["initial"].__setitem__("kubeSystemNamespaceResourceVersion", "11")),
+            ("exact dormant incident Flux state", lambda item: item["preflight"]["flux"]["gateway"].__setitem__("generation", True)),
+            ("exact dormant incident Flux state", lambda item: item["preflight"]["flux"]["gateway"].__setitem__("resourceVersion", "0")),
+            ("shared Source preflight drift", lambda item: item["preflight"]["source"].__setitem__("observedGeneration", True)),
+            ("shared Source preflight drift", lambda item: item["preflight"]["source"].__setitem__("resourceVersion", "²")),
+            ("shared Source preflight drift", lambda item: item["preflight"]["source"].__setitem__("resourceVersion", "0")),
+            ("shared Source no longer binds preflight", lambda item: item["rollback"]["finalChecks"]["sharedSource"].__setitem__("resourceVersion", "39")),
+            ("quiet absence proof drift", lambda item: item["rollback"]["finalChecks"]["absence"].pop("checks")),
+        )
+        for message, mutate in drifts:
+            with self.subTest(message=message):
+                drifted = copy.deepcopy(receipt); mutate(drifted); resign(drifted)
+                with self.assertRaisesRegex(MODULE.ActivationError, message):
+                    MODULE.bind_recovery_receipt_v4(drifted, value, REV, runner_hashes)
+
     def test_v4_success_receipt_rejects_incomplete_object_set(self):
         value = ready_policy(); facts = valid_success_facts(value)
         facts["objectCreateResults"] = facts["objectCreateResults"][:5]
@@ -1670,6 +2376,40 @@ class ExecutorTests(unittest.TestCase):
         ])
         self.assertEqual(parsed.verify_success_receipt_fd, 17)
         self.assertFalse(parsed.live)
+
+    def test_v4_cli_has_explicit_mutually_exclusive_recovery_and_verifier_modes(self):
+        recover = MODULE.parse_args([
+            "--expected-protected-revision", REV,
+            "--recover-rollback-incomplete-receipt-fd", "21",
+        ])
+        self.assertEqual(recover.recover_rollback_incomplete_receipt_fd, 21)
+        self.assertFalse(recover.live)
+        verify = MODULE.parse_args([
+            "--expected-protected-revision", REV,
+            "--verify-recovery-receipt-fd", "22",
+        ])
+        self.assertEqual(verify.verify_recovery_receipt_fd, 22)
+        source_verify = MODULE.parse_args([
+            "--expected-protected-revision", REV,
+            "--verify-failed-activation-recovery-source-fd", "23",
+        ])
+        self.assertEqual(source_verify.verify_failed_activation_recovery_source_fd, 23)
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args([
+                "--expected-protected-revision", REV,
+                "--live",
+                "--recover-rollback-incomplete-receipt-fd", "21",
+            ])
+        source = inspect.getsource(MODULE.main)
+        start = source.index("if a.recover_rollback_incomplete_receipt_fd is not None:")
+        end = source.index("require(a.live is True", start)
+        recovery_branch = source[start:end]
+        self.assertIn("bind_handover_receipt_pair_v4(", recovery_branch)
+        self.assertIn("bind_failed_activation_recovery_source_v4(", recovery_branch)
+        self.assertIn("recover_incomplete_activation_v4(", recovery_branch)
+        self.assertIn("return 0", recovery_branch)
+        self.assertNotIn("secret_materialization_ownership", recovery_branch)
+        self.assertNotIn("activate(", recovery_branch)
 
     def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
         value = ready_policy()
