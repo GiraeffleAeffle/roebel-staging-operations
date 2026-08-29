@@ -183,7 +183,11 @@ REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_RE = re.compile(r"^[a-z0-9][a-z0-9._:/-]+@sha256:[0-9a-f]{64}$")
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_ERROR_CHARS = 320
+KUBECTL_REQUEST_TIMEOUT_SECONDS = 30
+KUBECTL_PROCESS_TIMEOUT_SECONDS = 40
 ROLLOUT_TIMEOUT_SECONDS = 120
+ROLLOUT_REQUEST_GRACE_SECONDS = 5
+ROLLOUT_PROCESS_GRACE_SECONDS = 10
 
 # This one field is deliberately allowed in a value-free receipt.  It is an
 # effect flag, not a credential or a credential reference.  Keeping the
@@ -1588,7 +1592,21 @@ class KubernetesAdapter:
         self.kubeconfig = str(selected)
         self.kubectl = Path(kubectl)
 
-    def _run(self, args: list[str], *, input_text: str | None = None, timeout: float = 40) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        args: list[str],
+        *,
+        input_text: str | None = None,
+        timeout: float = KUBECTL_PROCESS_TIMEOUT_SECONDS,
+        request_timeout_seconds: int = KUBECTL_REQUEST_TIMEOUT_SECONDS,
+    ) -> subprocess.CompletedProcess[str]:
+        require(
+            isinstance(request_timeout_seconds, int)
+            and not isinstance(request_timeout_seconds, bool)
+            and request_timeout_seconds > 0
+            and request_timeout_seconds < timeout,
+            "kubectl request timeout must be positive and shorter than its process bound",
+        )
         environment = {
             key: value
             for key, value in os.environ.items()
@@ -1596,7 +1614,13 @@ class KubernetesAdapter:
         }
         environment.update({"NO_PROXY": "*", "no_proxy": "*"})
         return subprocess.run(
-            [str(self.kubectl), "--kubeconfig", self.kubeconfig, "--request-timeout=30s", *args],
+            [
+                str(self.kubectl),
+                "--kubeconfig",
+                self.kubeconfig,
+                f"--request-timeout={request_timeout_seconds}s",
+                *args,
+            ],
             env=environment,
             input=input_text,
             text=True,
@@ -1661,9 +1685,16 @@ class KubernetesAdapter:
 
     def rollout_status(self, target: dict[str, str], timeout_seconds: int = ROLLOUT_TIMEOUT_SECONDS) -> None:
         require(target == DEPLOYMENT_TARGET, "rollout target outside workbench scope")
+        require(
+            isinstance(timeout_seconds, int)
+            and not isinstance(timeout_seconds, bool)
+            and 0 < timeout_seconds <= ROLLOUT_TIMEOUT_SECONDS,
+            "rollout timeout outside protected bound",
+        )
         result = self._run(
             ["-n", target["namespace"], "rollout", "status", f"deployment/{target['name']}", f"--timeout={timeout_seconds}s"],
-            timeout=timeout_seconds + 10,
+            timeout=timeout_seconds + ROLLOUT_PROCESS_GRACE_SECONDS,
+            request_timeout_seconds=timeout_seconds + ROLLOUT_REQUEST_GRACE_SECONDS,
         )
         if result.returncode != 0:
             raise PostconditionFailure(f"workbench rollout did not complete: {_bounded_error(result.stderr)}")

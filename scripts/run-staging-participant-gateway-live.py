@@ -695,8 +695,14 @@ WORKBENCH_PROMOTER_LAUNCHER = (
     # The promoter hard-binds its functional probes to the fixed public HTTPS
     # origin while independently proving Service/EndpointSlice-to-Pod binding.
     # Do not expose an arbitrary network destination through the launcher.
-    .replace("def _run(self,args,*,input_text=None):", "def _run(self,args,*,input_text=None,timeout=40):")
-    .replace("super()._run(args,input_text=input_text)", "super()._run(args,input_text=input_text,timeout=timeout)")
+    .replace(
+        "def _run(self,args,*,input_text=None):",
+        "def _run(self,args,*,input_text=None,timeout=40,request_timeout_seconds=30):",
+    )
+    .replace(
+        "super()._run(args,input_text=input_text)",
+        "super()._run(args,input_text=input_text,timeout=timeout,request_timeout_seconds=request_timeout_seconds)",
+    )
 )
 
 def workbench_promoter_command(

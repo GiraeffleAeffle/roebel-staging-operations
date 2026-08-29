@@ -1264,5 +1264,16 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("bool(current.st_flags & stat.UF_IMMUTABLE)", source)
         self.assertIn("result=super()._run(args,input_text=input_text)", source)
 
+    def test_workbench_promoter_launcher_forwards_the_request_timeout_budget(self):
+        source = MODULE.WORKBENCH_PROMOTER_LAUNCHER
+        self.assertIn(
+            "def _run(self,args,*,input_text=None,timeout=40,request_timeout_seconds=30):",
+            source,
+        )
+        self.assertIn(
+            "super()._run(args,input_text=input_text,timeout=timeout,request_timeout_seconds=request_timeout_seconds)",
+            source,
+        )
+
 
 if __name__ == "__main__": unittest.main()

@@ -225,12 +225,14 @@ class FakeKubernetes:
         self.patch_calls: list[list[dict[str, Any]]] = []
         self.get_calls: list[dict[str, str]] = []
         self.rollout_calls = 0
+        self.rollout_timeouts: list[int] = []
         self.probes = {MODULE.PROBE_CONFIG_PATH: public_config(), MODULE.PROBE_FEED_PATH: public_feed()}
         self.raise_after_apply = False
         self.raise_before_apply = False
         self.drift_after_apply = False
         self.synthetic_feed = False
         self.rollout_failure = False
+        self.rollback_rollout_failure = False
         self.service_drift_after_apply = False
 
     def get(self, target: dict[str, str]) -> dict[str, Any] | None:
@@ -277,7 +279,11 @@ class FakeKubernetes:
 
     def rollout_status(self, target: dict[str, str], timeout_seconds: int) -> None:
         self.rollout_calls += 1
-        if self.rollout_failure and self.rollout_calls == 1:
+        self.rollout_timeouts.append(timeout_seconds)
+        if (
+            (self.rollout_failure and self.rollout_calls == 1)
+            or (self.rollback_rollout_failure and self.rollout_calls == 2)
+        ):
             raise MODULE.PostconditionFailure("synthetic rollout failure")
 
     def probe_get(self, path: str) -> dict[str, Any]:
@@ -462,6 +468,67 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(code, 0)
         adapter.assert_called_once_with("/private/owner-only-kubeconfig")
         execute.assert_called_once()
+
+    def test_rollout_observation_outlives_the_declared_rollout_deadline(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        adapter.kubeconfig = "/owner-only/staging.kubeconfig"
+        adapter.kubectl = Path("/pinned/kubectl-v1.36.0")
+        completed = subprocess.CompletedProcess([], 0, stdout="deployment successfully rolled out\n", stderr="")
+
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as execute:
+            adapter.rollout_status(MODULE.DEPLOYMENT_TARGET, MODULE.ROLLOUT_TIMEOUT_SECONDS)
+
+        command = execute.call_args.args[0]
+        self.assertEqual(
+            [item for item in command if item.startswith("--request-timeout=")],
+            [
+                f"--request-timeout={MODULE.ROLLOUT_TIMEOUT_SECONDS + MODULE.ROLLOUT_REQUEST_GRACE_SECONDS}s"
+            ],
+        )
+        self.assertIn(f"--timeout={MODULE.ROLLOUT_TIMEOUT_SECONDS}s", command)
+        self.assertEqual(
+            execute.call_args.kwargs["timeout"],
+            MODULE.ROLLOUT_TIMEOUT_SECONDS + MODULE.ROLLOUT_PROCESS_GRACE_SECONDS,
+        )
+
+    def test_ordinary_kubernetes_requests_keep_the_thirty_second_bound(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        adapter.kubeconfig = "/owner-only/staging.kubeconfig"
+        adapter.kubectl = Path("/pinned/kubectl-v1.36.0")
+        completed = subprocess.CompletedProcess([], 0, stdout="{}", stderr="")
+
+        with patch.object(MODULE.subprocess, "run", return_value=completed) as execute:
+            adapter._run(["version"])
+
+        self.assertEqual(
+            [
+                item
+                for item in execute.call_args.args[0]
+                if item.startswith("--request-timeout=")
+            ],
+            [f"--request-timeout={MODULE.KUBECTL_REQUEST_TIMEOUT_SECONDS}s"],
+        )
+        self.assertEqual(
+            execute.call_args.kwargs["timeout"],
+            MODULE.KUBECTL_PROCESS_TIMEOUT_SECONDS,
+        )
+
+    def test_rollout_timeout_cannot_exceed_the_protected_bound(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        adapter.kubeconfig = "/owner-only/staging.kubeconfig"
+        adapter.kubectl = Path("/pinned/kubectl-v1.36.0")
+
+        for invalid in (0, True, MODULE.ROLLOUT_TIMEOUT_SECONDS + 1):
+            with self.subTest(invalid=invalid):
+                with (
+                    patch.object(
+                        MODULE.subprocess,
+                        "run",
+                        side_effect=AssertionError("invalid timeout reached kubectl"),
+                    ),
+                    self.assertRaisesRegex(MODULE.PromotionError, "protected bound"),
+                ):
+                    adapter.rollout_status(MODULE.DEPLOYMENT_TARGET, invalid)
 
     def test_probe_uses_fixed_direct_tls_https_origin_and_exact_paths(self) -> None:
         adapter = object.__new__(MODULE.KubernetesAdapter)
@@ -649,12 +716,46 @@ class PromotionTests(unittest.TestCase):
         before = deployment()
         kube = FakeKubernetes()
         kube.rollout_failure = True
-        result, kube, _journal, _receipt = self.invoke(kube)
+        result, kube, journal, receipt = self.invoke(kube)
         self.assertEqual(result["status"], "rolled-back")
+        self.assertEqual(result["failure"], {"failureCode": "rollout_or_image_proof_failed"})
         self.assertEqual(len(kube.patch_calls), 2)
         self.assertEqual(kube.patch_calls[1][5]["value"], MODULE.OLD_IMAGE)
+        self.assertEqual(kube.rollout_timeouts, [MODULE.ROLLOUT_TIMEOUT_SECONDS] * 2)
         self.assertTrue(result["effects"]["rollbackApplied"])
         self.assertEqual(kube.objects["deployment"]["spec"], before["spec"])
+        self.assertEqual(result["rollback"]["status"], "rolled-back")
+        self.assertEqual(
+            result["rollback"]["podImageProof"]["expectedImage"],
+            MODULE.OLD_IMAGE,
+        )
+        self.assertIsNone(result["probes"])
+        self.assertEqual(receipt.value["status"], "rolled-back")
+        self.assertEqual(journal.commits[-1]["status"], "rolled-back")
+
+    def test_rollback_rollout_timeout_never_retries_a_mutation(self) -> None:
+        before = deployment()
+        kube = FakeKubernetes()
+        kube.rollout_failure = True
+        kube.rollback_rollout_failure = True
+
+        result, kube, journal, receipt = self.invoke(kube)
+
+        self.assertEqual(result["status"], "rollback-incomplete")
+        self.assertEqual(len(kube.patch_calls), 2)
+        self.assertEqual(kube.rollout_timeouts, [MODULE.ROLLOUT_TIMEOUT_SECONDS] * 2)
+        self.assertTrue(result["effects"]["rollbackApplied"])
+        self.assertEqual(kube.objects["deployment"]["spec"], before["spec"])
+        self.assertEqual(
+            result["rollback"],
+            {
+                "status": "rollback-verification-failed",
+                "failureCode": "rollout_or_image_proof_failed",
+            },
+        )
+        self.assertIsNone(result["probes"])
+        self.assertEqual(receipt.value["status"], "rollback-incomplete")
+        self.assertEqual(journal.commits[-1]["status"], "rollback-incomplete")
 
     def test_rollback_classification_requires_exact_old_environment(self) -> None:
         before = deployment()
