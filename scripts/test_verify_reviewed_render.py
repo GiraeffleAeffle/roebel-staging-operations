@@ -2459,6 +2459,49 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         with self.assertRaisesRegex(VERIFIER.VerificationError, "repository contract drift"):
             VERIFIER.verify(candidate)
 
+    def test_protected_verifier_binds_the_one_time_relay_fixture_reset_boundary(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "policy/repository-contract.json"
+        value = json.loads(path.read_text())
+        boundary = value["ephemeralRelayFixtureResetBoundary"]
+        self.assertEqual(boundary["deleteOrder"], ["citizen-relay", "agent-relay"])
+        self.assertEqual(
+            [target["deploymentUid"] for target in boundary["relayDeleteTargets"]],
+            [
+                "86b9aada-2b27-428b-9c98-27376b965f58",
+                "d62fbb00-feed-40aa-ba72-180bfd80c4e7",
+            ],
+        )
+        self.assertEqual(
+            boundary["publicMeckyQuiescence"]["kustomizationUid"],
+            "4d49b8eb-c84b-442a-a96e-26c94f24177a",
+        )
+        self.assertEqual(boundary["publicMeckyQuiescence"]["temporaryReplicas"], 0)
+        self.assertEqual(boundary["writeGate"]["uid"], "02cc55b5-30c5-46dd-b819-727e53c58806")
+        self.assertTrue(boundary["writeGateRollbackRequired"])
+        self.assertFalse(boundary["dataRollbackPossible"])
+        self.assertFalse(boundary["automaticRetry"])
+        boundary["relayDeleteTargets"].reverse()
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository contract drift"):
+            VERIFIER.verify(candidate)
+
+    def test_protected_verifier_binds_the_public_https_workbench_probe(self) -> None:
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / "policy/repository-contract.json"
+        value = json.loads(path.read_text())
+        probe = value["workbenchImagePromotionBoundary"]["probeTransport"]
+        self.assertEqual(probe["origin"], "https://roebel-web.staging.agentcart.eu")
+        self.assertEqual(probe["tlsVerification"], "default-ca-and-hostname")
+        self.assertFalse(probe["environmentProxyUse"])
+        self.assertFalse(probe["redirectsFollowed"])
+        probe["origin"] = "https://example.invalid"
+        path.write_text(json.dumps(value, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository contract drift"):
+            VERIFIER.verify(candidate)
+
     def test_valid_mixed_source_web_only_transition_is_accepted(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)

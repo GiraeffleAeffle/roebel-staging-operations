@@ -410,7 +410,7 @@ class PromotionTests(unittest.TestCase):
         patch_event = next(item for item in journal.commits[-1]["events"] if item["operation"] == "patch-deployment-image" and item["stage"] == "intent")
         self.assertEqual(patch_event["requestSha256"], result["patch"]["requestSha256"])
 
-    def test_receipt_binds_exact_cluster_local_probe_service(self) -> None:
+    def test_receipt_binds_exact_public_https_probe_origin(self) -> None:
         self.assertNotIn("probe_base_url", inspect.signature(MODULE.KubernetesAdapter).parameters)
         self.assertNotIn("probe-base-url", inspect.getsource(MODULE.main))
         pin = MODULE.validate_artifact_pin(self.pin, expected_receipt_sha256=self.pin_sha)
@@ -421,12 +421,18 @@ class PromotionTests(unittest.TestCase):
             protected_revision=self.protected_revision,
             protected_hashes=self.protected_hashes,
         )
-        self.assertEqual(receipt["probeBinding"]["kind"], "kubernetes-service-proxy")
-        self.assertEqual(receipt["probeBinding"]["transport"], "kubectl-get-raw")
-        self.assertEqual(receipt["probeBinding"]["namespace"], MODULE.WORKBENCH_NAMESPACE)
-        self.assertEqual(receipt["probeBinding"]["service"], MODULE.SERVICE_NAME)
-        self.assertEqual(receipt["probeBinding"]["port"], MODULE.WORKBENCH_SERVICE_PORT)
-        self.assertEqual(receipt["probeBinding"]["proxyPath"], MODULE.WORKBENCH_SERVICE_PROXY_PATH)
+        self.assertEqual(receipt["probeBinding"]["kind"], "fixed-public-https-origin")
+        self.assertEqual(receipt["probeBinding"]["transport"], "python-stdlib-direct-https")
+        self.assertEqual(receipt["probeBinding"]["origin"], MODULE.WORKBENCH_PUBLIC_ORIGIN)
+        self.assertEqual(receipt["probeBinding"]["hostname"], MODULE.WORKBENCH_PUBLIC_HOSTNAME)
+        self.assertEqual(receipt["probeBinding"]["port"], 443)
+        self.assertEqual(receipt["probeBinding"]["method"], "GET")
+        self.assertEqual(receipt["probeBinding"]["expectedStatus"], 200)
+        self.assertEqual(receipt["probeBinding"]["tlsVerification"], "default-ca-and-hostname")
+        self.assertFalse(receipt["probeBinding"]["environmentProxyUse"])
+        self.assertFalse(receipt["probeBinding"]["redirectsFollowed"])
+        self.assertEqual(receipt["probeBinding"]["timeoutSeconds"], MODULE.WORKBENCH_PROBE_TIMEOUT_SECONDS)
+        self.assertEqual(receipt["probeBinding"]["maxBodyBytes"], MODULE.WORKBENCH_PROBE_MAX_BODY_BYTES)
         self.assertEqual(receipt["probeBinding"]["allowedPaths"], list(MODULE.WORKBENCH_PROBE_PATHS))
         self.assertEqual(
             receipt["probeBinding"]["bindingSha256"],
@@ -457,49 +463,130 @@ class PromotionTests(unittest.TestCase):
         adapter.assert_called_once_with("/private/owner-only-kubeconfig")
         execute.assert_called_once()
 
-    def test_probe_uses_only_exact_kubectl_service_proxy_get_raw_argv(self) -> None:
+    def test_probe_uses_fixed_direct_tls_https_origin_and_exact_paths(self) -> None:
         adapter = object.__new__(MODULE.KubernetesAdapter)
         adapter.kubeconfig = "/owner-only/staging.kubeconfig"
         adapter.kubectl = Path("/pinned/kubectl-v1.36.0")
-        adapter.probe_base_url = MODULE.WORKBENCH_SERVICE_BASE_URL
-        calls: list[tuple[list[str], dict[str, Any]]] = []
+        tls_context = Mock(check_hostname=True, verify_mode=MODULE.ssl.CERT_REQUIRED)
+        requests: list[tuple[str, str, dict[str, str]]] = []
+        connections: list[Any] = []
 
-        def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-            calls.append((command, kwargs))
-            path = command[-1]
-            payload = public_config() if path == MODULE.WORKBENCH_RAW_PROBE_PATHS[MODULE.PROBE_CONFIG_PATH] else public_feed()
-            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        class Response:
+            status = 200
 
-        with patch.object(MODULE.subprocess, "run", side_effect=fake_run):
-            adapter.probe_get(MODULE.PROBE_CONFIG_PATH)
-            adapter.probe_get(MODULE.PROBE_FEED_PATH)
+            def __init__(self, payload: dict[str, Any]) -> None:
+                self.payload = payload
+                self.read_limit: int | None = None
 
+            def read(self, limit: int) -> bytes:
+                self.read_limit = limit
+                return json.dumps(self.payload).encode("utf-8")
+
+        class Connection:
+            def __init__(self, hostname: str, port: int, *, timeout: int, context: object) -> None:
+                self.hostname = hostname
+                self.port = port
+                self.timeout = timeout
+                self.context = context
+                self.closed = False
+                self.response: Response | None = None
+                connections.append(self)
+
+            def request(self, method: str, path: str, *, headers: dict[str, str]) -> None:
+                requests.append((method, path, headers))
+                payload = public_config() if path == MODULE.PROBE_CONFIG_PATH else public_feed()
+                self.response = Response(payload)
+
+            def getresponse(self) -> Response:
+                assert self.response is not None
+                return self.response
+
+            def close(self) -> None:
+                self.closed = True
+
+        with (
+            patch("ssl.create_default_context", return_value=tls_context) as create_context,
+            patch("http.client.HTTPSConnection", Connection),
+            patch.dict("os.environ", {"HTTPS_PROXY": "http://attacker.invalid:9999", "HTTP_PROXY": "http://attacker.invalid:9999"}),
+            patch.object(MODULE.subprocess, "run", side_effect=AssertionError("functional probe used kubectl")),
+        ):
+            self.assertEqual(adapter.probe_get(MODULE.PROBE_CONFIG_PATH), public_config())
+            self.assertEqual(adapter.probe_get(MODULE.PROBE_FEED_PATH), public_feed())
+
+        create_context.assert_called_once_with()
         self.assertEqual(
-            [command for command, _kwargs in calls],
+            [(item.hostname, item.port, item.timeout, item.context) for item in connections],
             [
-                [
-                    "/pinned/kubectl-v1.36.0",
-                    "--kubeconfig",
-                    "/owner-only/staging.kubeconfig",
-                    "--request-timeout=30s",
-                    "get",
-                    "--raw",
-                    MODULE.WORKBENCH_RAW_PROBE_PATHS[MODULE.PROBE_CONFIG_PATH],
-                ],
-                [
-                    "/pinned/kubectl-v1.36.0",
-                    "--kubeconfig",
-                    "/owner-only/staging.kubeconfig",
-                    "--request-timeout=30s",
-                    "get",
-                    "--raw",
-                    MODULE.WORKBENCH_RAW_PROBE_PATHS[MODULE.PROBE_FEED_PATH],
-                ],
+                (MODULE.WORKBENCH_PUBLIC_HOSTNAME, 443, MODULE.WORKBENCH_PROBE_TIMEOUT_SECONDS, tls_context),
+                (MODULE.WORKBENCH_PUBLIC_HOSTNAME, 443, MODULE.WORKBENCH_PROBE_TIMEOUT_SECONDS, tls_context),
             ],
         )
+        self.assertEqual(
+            requests,
+            [
+                ("GET", MODULE.PROBE_CONFIG_PATH, {"Accept": "application/json", "Connection": "close"}),
+                ("GET", MODULE.PROBE_FEED_PATH, {"Accept": "application/json", "Connection": "close"}),
+            ],
+        )
+        self.assertTrue(all(item.closed for item in connections))
+        self.assertTrue(all(item.response and item.response.read_limit == MODULE.WORKBENCH_PROBE_MAX_BODY_BYTES + 1 for item in connections))
         with self.assertRaises(MODULE.PromotionError):
             adapter.probe_get("/stadtstack-test/api/other")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(connections), 2)
+
+    def test_probe_rejects_a_non_verifying_tls_context_before_connecting(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        insecure_context = Mock(check_hostname=False, verify_mode=MODULE.ssl.CERT_NONE)
+        with (
+            patch.object(MODULE.ssl, "create_default_context", return_value=insecure_context),
+            patch.object(MODULE.http.client, "HTTPSConnection", side_effect=AssertionError("connected with insecure TLS")),
+        ):
+            with self.assertRaisesRegex(MODULE.PromotionError, "TLS verification disabled"):
+                adapter.probe_get(MODULE.PROBE_CONFIG_PATH)
+
+    def test_probe_rejects_redirect_without_following_it(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        context = Mock(check_hostname=True, verify_mode=MODULE.ssl.CERT_REQUIRED)
+        response = Mock(status=302)
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with (
+            patch.object(MODULE.ssl, "create_default_context", return_value=context),
+            patch.object(MODULE.http.client, "HTTPSConnection", return_value=connection),
+        ):
+            with self.assertRaisesRegex(MODULE.PostconditionFailure, "returned HTTP 302"):
+                adapter.probe_get(MODULE.PROBE_CONFIG_PATH)
+        response.read.assert_not_called()
+        connection.close.assert_called_once_with()
+
+    def test_probe_rejects_a_body_larger_than_the_fixed_limit(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        context = Mock(check_hostname=True, verify_mode=MODULE.ssl.CERT_REQUIRED)
+        response = Mock(status=200)
+        response.read.return_value = b"x" * (MODULE.WORKBENCH_PROBE_MAX_BODY_BYTES + 1)
+        connection = Mock()
+        connection.getresponse.return_value = response
+        with (
+            patch.object(MODULE.ssl, "create_default_context", return_value=context),
+            patch.object(MODULE.http.client, "HTTPSConnection", return_value=connection),
+        ):
+            with self.assertRaisesRegex(MODULE.PostconditionFailure, "response exceeds bound"):
+                adapter.probe_get(MODULE.PROBE_CONFIG_PATH)
+        response.read.assert_called_once_with(MODULE.WORKBENCH_PROBE_MAX_BODY_BYTES + 1)
+        connection.close.assert_called_once_with()
+
+    def test_probe_classifies_a_timeout_as_transport_uncertain(self) -> None:
+        adapter = object.__new__(MODULE.KubernetesAdapter)
+        context = Mock(check_hostname=True, verify_mode=MODULE.ssl.CERT_REQUIRED)
+        connection = Mock()
+        connection.request.side_effect = TimeoutError("timed out")
+        with (
+            patch.object(MODULE.ssl, "create_default_context", return_value=context),
+            patch.object(MODULE.http.client, "HTTPSConnection", return_value=connection),
+        ):
+            with self.assertRaisesRegex(MODULE.TransportUncertain, "transport failed"):
+                adapter.probe_get(MODULE.PROBE_CONFIG_PATH)
+        connection.close.assert_called_once_with()
 
     def test_dry_run_does_not_patch(self) -> None:
         result, kube, _journal, _receipt = self.invoke(FakeKubernetes(), dry_run=True)
