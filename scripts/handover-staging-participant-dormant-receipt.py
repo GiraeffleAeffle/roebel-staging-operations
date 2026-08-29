@@ -68,6 +68,10 @@ CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
     HANDOVER_MODULE_PATH,
     HANDOVER_RUNNER_PATH,
 )))
+CURRENT_PREBOUND_PATHS = tuple(dict.fromkeys((
+    *CURRENT_PROTECTED_PATHS,
+    *COMPATIBILITY_PATHS,
+)))
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 _PREBOUND_BLOBS: dict[tuple[str, str], bytes] | None = None
 
@@ -250,7 +254,7 @@ def set_prebound_blobs(blobs: dict[tuple[str, str], bytes] | None) -> None:
 
 def _required_prebound_keys(current_revision: str) -> set[tuple[str, str]]:
     return {
-        *((current_revision, path) for path in CURRENT_PROTECTED_PATHS),
+        *((current_revision, path) for path in CURRENT_PREBOUND_PATHS),
         *((ARCHIVE_REVISION, path) for path in dict.fromkeys((*ARCHIVED_PROTECTED_PATHS, *COMPATIBILITY_PATHS))),
     }
 
