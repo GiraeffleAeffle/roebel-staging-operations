@@ -10,11 +10,18 @@ SPEC = importlib.util.spec_from_file_location(
     ROOT / "scripts/run-staging-participant-gateway-live.py",
 )
 MODULE = importlib.util.module_from_spec(SPEC); sys.modules[SPEC.name] = MODULE; SPEC.loader.exec_module(MODULE)
+RESET_TEST_SPEC = importlib.util.spec_from_file_location(
+    "relay_reset_test_fixture",
+    Path(__file__).resolve().with_name("test_reset_staging_relay_fixtures.py"),
+)
+if RESET_TEST_SPEC is None or RESET_TEST_SPEC.loader is None:
+    raise RuntimeError("relay reset test fixture is unavailable")
+RESET_TEST = importlib.util.module_from_spec(RESET_TEST_SPEC); sys.modules[RESET_TEST_SPEC.name] = RESET_TEST; RESET_TEST_SPEC.loader.exec_module(RESET_TEST)
 
 
 def relay_reset_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
     """Produce the real protected runner's completed v2 evidence for its consumer."""
-    import scripts.test_reset_staging_relay_fixtures as reset_test
+    reset_test = RESET_TEST
 
     case = reset_test.RelayResetTests()
     case.setUp()
