@@ -2054,7 +2054,8 @@ def _target_policy_label_sets_v4(r: Runner, kubeconfig: str) -> dict[str, dict[s
 def _allows_workbench_port(value: dict[str, Any]) -> bool:
     for rule in value.get("spec", {}).get("ingress", []):
         ports = rule.get("ports")
-        if ports is None: return True
+        # Kubernetes treats an omitted or empty ports list as all ports.
+        if ports is None or ports == []: return True
         for entry in ports:
             if entry.get("protocol", "TCP") != "TCP": continue
             configured = entry.get("port")
@@ -2075,11 +2076,68 @@ def _is_explicit_workbench_egress_only_policy_v4(value: dict[str, Any]) -> bool:
         and spec.get("ingress", []) == []
     )
 
+_REVIEWED_PUBLIC_INGRESS_SOURCE_PEERS_V4 = (
+    {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+    *(
+        {"ipBlock": {"cidr": cidr}}
+        for cidr in (
+            "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+            "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+            "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+        )
+    ),
+)
+_REVIEWED_PUBLIC_WORKBENCH_SELECTOR_V4 = {
+    "matchLabels": {
+        "app.kubernetes.io/component": "e2e-workbench",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+    },
+}
+
+def _is_exact_reviewed_public_workbench_ingress_v4(value: dict[str, Any]) -> bool:
+    """Recognize the existing HAProxy-to-workbench capability, not its name.
+
+    This is the same fixed ingress-system/node/Flannel source boundary already
+    reviewed for the public staging presentation.  The participant path is a
+    direct, non-host-network ClusterIP path and therefore has a Pod source
+    identity rather than any of these exact peers.  Any selector, peer, port,
+    direction, rule, or extra capability drift remains a conflict.
+    """
+    spec = value.get("spec")
+    if not isinstance(spec, dict) or set(spec) - {"podSelector", "policyTypes", "ingress", "egress"}: return False
+    if spec.get("podSelector") != _REVIEWED_PUBLIC_WORKBENCH_SELECTOR_V4: return False
+    if spec.get("policyTypes") != ["Ingress"] or spec.get("egress", []) != []: return False
+    ingress = spec.get("ingress")
+    if not isinstance(ingress, list) or len(ingress) != 1 or not isinstance(ingress[0], dict): return False
+    rule = ingress[0]
+    if set(rule) != {"from", "ports"} or rule.get("ports") != [{"port": POLICY.WORKBENCH_PORT, "protocol": "TCP"}]: return False
+    peers = rule.get("from")
+    if not isinstance(peers, list) or len(peers) != len(_REVIEWED_PUBLIC_INGRESS_SOURCE_PEERS_V4): return False
+    return {canonical(peer) for peer in peers} == {canonical(peer) for peer in _REVIEWED_PUBLIC_INGRESS_SOURCE_PEERS_V4}
+
+def _cilium_api_group_present_v4(r: Runner, kubeconfig: str) -> bool:
+    """Discover Cilium directly from the live API instead of assuming a CRD."""
+    discovery = obj(
+        checked(r, kb(kubeconfig) + ["get", "--raw=/apis"], "fresh Kubernetes API-group discovery"),
+        "Kubernetes API-group discovery",
+    )
+    require(discovery.get("kind") == "APIGroupList" and isinstance(discovery.get("groups"), list), "Kubernetes API-group discovery invalid")
+    names = []
+    for group in discovery["groups"]:
+        require(isinstance(group, dict) and isinstance(group.get("name"), str) and group["name"], "Kubernetes API-group entry invalid")
+        names.append(group["name"])
+    require(len(names) == len(set(names)), "Kubernetes API-group discovery contains duplicates")
+    return "cilium.io" in names
+
 def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], CreatedV4] | None = None) -> dict[str, Any]:
     """Conservatively reject additive K8s/Cilium participant allows."""
-    owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []; compatible_workbench_egress = []
+    owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []; compatible_workbench_egress = []; compatible_workbench = []
+    cilium_present: bool | None = None
     families = (("networkpolicy", ["-A"], "kubernetes"), ("ciliumnetworkpolicies.cilium.io", ["-A"], "cilium"), ("ciliumclusterwidenetworkpolicies.cilium.io", [], "cilium-clusterwide"))
     for resource, extra, family in families:
+        if family != "kubernetes":
+            if cilium_present is None: cilium_present = _cilium_api_group_present_v4(r, kubeconfig)
+            if not cilium_present: break
         listing = obj(checked(r, kb(kubeconfig) + ["get", resource, *extra, "-o", "json"], f"fresh {resource} scan"), resource)
         require(isinstance(listing.get("items"), list), f"{resource} items absent")
         for item in listing["items"]:
@@ -2097,12 +2155,18 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
                     if name == POLICY.WORKBENCH_NAME:
                         require(not _allows_workbench_port(item), "manual workbench policy already allows participant port 18083")
                     else:
-                        require(
-                            _is_explicit_workbench_egress_only_policy_v4(item),
-                            f"pre-existing NetworkPolicy selects workbench: {namespace}/{name}",
+                        classification = (
+                            "no-ingress-allow-for-participant-port"
+                            if not _allows_workbench_port(item)
+                            else "exact-reviewed-public-ingress-boundary"
+                            if _is_exact_reviewed_public_workbench_ingress_v4(item)
+                            else None
                         )
-                        require(isinstance(name, str) and name and isinstance(metadata.get("uid"), str) and metadata["uid"], "compatible workbench egress policy identity absent")
-                        compatible_workbench_egress.append({"namespace": namespace, "name": name, "uid": metadata["uid"], "semanticSha256": POLICY.semantic_sha256(item)})
+                        require(classification is not None, f"pre-existing NetworkPolicy selects workbench: {namespace}/{name}")
+                        require(isinstance(name, str) and name and isinstance(metadata.get("uid"), str) and metadata["uid"], "compatible workbench policy identity absent")
+                        evidence = {"namespace": namespace, "name": name, "uid": metadata["uid"], "semanticSha256": POLICY.semantic_sha256(item)}
+                        compatible_workbench.append(evidence | {"classification": classification})
+                        if _is_explicit_workbench_egress_only_policy_v4(item): compatible_workbench_egress.append(evidence)
             else:
                 specs = item.get("specs") if isinstance(item.get("specs"), list) else [item.get("spec", {})]
                 candidates = []
@@ -2114,7 +2178,8 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
         validated_keys == set(owned) and len(owned_validated) == len(owned),
         "owned NetworkPolicy set absent or incomplete during additive-policy scan",
     )
-    return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "compatibleWorkbenchEgressPolicies": sorted(compatible_workbench_egress, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
+    if cilium_present is None: cilium_present = _cilium_api_group_present_v4(r, kubeconfig)
+    return {"status": "no-additive-participant-allow-conflicts", "families": ["kubernetes", "cilium", "cilium-clusterwide"], "ciliumApiDiscovery": {"apiGroup": "cilium.io", "present": cilium_present}, "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "compatibleWorkbenchEgressPolicies": sorted(compatible_workbench_egress, key=lambda item: (item["namespace"], item["name"])), "compatibleWorkbenchPolicies": sorted(compatible_workbench, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request: Any, file_pointer: Any, code: int, message: str, headers: Any, new_url: str) -> None:

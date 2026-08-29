@@ -1297,6 +1297,63 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(MODULE._allows_workbench_port(policy_with("workbench")))
         self.assertTrue(MODULE._allows_workbench_port(policy_with(18080, 18090)))
         self.assertFalse(MODULE._allows_workbench_port(policy_with(18084)))
+        self.assertTrue(MODULE._allows_workbench_port({"spec": {"ingress": [{"ports": []}]}}))
+
+    def test_v4_policy_union_accepts_exact_live_flannel_workbench_boundaries_without_cilium(self):
+        labels = {
+            "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
+            "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 1, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
+        }
+        selector = {
+            "matchLabels": {
+                "app.kubernetes.io/component": "e2e-workbench",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+            },
+        }
+        default_deny = admitted({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {"name": "default-deny-ingress", "namespace": MODULE.WORKBENCH_NAMESPACE},
+            "spec": {"podSelector": {}, "policyTypes": ["Ingress"]},
+        }, "deny-uid", "20")
+        ingress_sources = [
+            {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+            *[{"ipBlock": {"cidr": cidr}} for cidr in (
+                "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+                "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+                "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+            )],
+        ]
+        public_ingress = admitted({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            # Admission is deliberately capability-shaped, not name-whitelisted.
+            "metadata": {"name": "renamed-public-workbench-ingress", "namespace": MODULE.WORKBENCH_NAMESPACE},
+            "spec": {
+                "podSelector": selector,
+                "policyTypes": ["Ingress"],
+                "ingress": [{"from": ingress_sources, "ports": [{"port": 18083, "protocol": "TCP"}]}],
+            },
+        }, "public-ingress-uid", "21")
+        listings = [
+            json.dumps({"items": [default_deny, public_ingress]}),
+            json.dumps({"apiVersion": "v1", "kind": "APIGroupList", "groups": []}),
+        ]
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(
+            MODULE,
+            "checked",
+            side_effect=listings,
+        ):
+            result = MODULE.policy_union_v4(Fake(), "/tmp/kube")
+        self.assertEqual(result["status"], "no-additive-participant-allow-conflicts")
+        self.assertEqual(result["ciliumApiDiscovery"], {"apiGroup": "cilium.io", "present": False})
+        self.assertEqual(
+            {item["name"]: item["classification"] for item in result["compatibleWorkbenchPolicies"]},
+            {
+                "default-deny-ingress": "no-ingress-allow-for-participant-port",
+                "renamed-public-workbench-ingress": "exact-reviewed-public-ingress-boundary",
+            },
+        )
 
     def test_v4_policy_union_admits_only_explicit_egress_only_workbench_policy(self):
         labels = {
@@ -1323,7 +1380,10 @@ class ExecutorTests(unittest.TestCase):
             policy = admitted(desired, "dns-policy-uid", "9662150")
             if explicit_ingress:
                 policy["spec"]["ingress"] = []
-            listings = [json.dumps({"items": [policy]}), json.dumps({"items": []}), json.dumps({"items": []})]
+            listings = [
+                json.dumps({"items": [policy]}),
+                json.dumps({"apiVersion": "v1", "kind": "APIGroupList", "groups": []}),
+            ]
             with self.subTest(explicit_ingress=explicit_ingress), patch.object(
                 MODULE,
                 "_target_policy_label_sets_v4",
@@ -1341,7 +1401,7 @@ class ExecutorTests(unittest.TestCase):
                     }],
                 )
 
-    def test_v4_policy_union_rejects_ambiguous_ingress_capable_and_gateway_egress_policies(self):
+    def test_v4_policy_union_rejects_participant_ingress_and_gateway_overlap(self):
         labels = {
             "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
             "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 1, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
@@ -1353,14 +1413,28 @@ class ExecutorTests(unittest.TestCase):
             "spec": {"podSelector": {}, "policyTypes": ["Egress"], "egress": []},
         }
         unsafe = []
-        missing_types = copy.deepcopy(base); missing_types["spec"].pop("policyTypes")
-        unsafe.append(("missing-policy-types", missing_types))
-        both_directions = copy.deepcopy(base); both_directions["spec"]["policyTypes"] = ["Ingress", "Egress"]
-        unsafe.append(("ingress-and-egress", both_directions))
-        ingress_only = copy.deepcopy(base); ingress_only["spec"]["policyTypes"] = ["Ingress"]
-        unsafe.append(("ingress-only", ingress_only))
         participant_port = copy.deepcopy(base); participant_port["spec"]["ingress"] = [{"ports": [{"port": 18083, "protocol": "TCP"}]}]
-        unsafe.append(("participant-port", participant_port))
+        unsafe.append(("participant-port-all-sources", participant_port))
+        empty_ports = copy.deepcopy(base); empty_ports["spec"]["ingress"] = [{"ports": []}]
+        unsafe.append(("all-ports-all-sources", empty_ports))
+        widened_public = copy.deepcopy(base)
+        widened_public["spec"] = {
+            "podSelector": {
+                "matchLabels": {
+                    "app.kubernetes.io/component": "e2e-workbench",
+                    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                },
+            },
+            "policyTypes": ["Ingress"],
+            "ingress": [{
+                "from": [
+                    {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+                    {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": MODULE.NAMESPACE}}},
+                ],
+                "ports": [{"port": 18083, "protocol": "TCP"}],
+            }],
+        }
+        unsafe.append(("widened-public-boundary", widened_public))
         for label, desired in unsafe:
             policy = admitted(desired, f"{label}-uid", "10")
             with self.subTest(label=label), patch.object(
@@ -1404,7 +1478,11 @@ class ExecutorTests(unittest.TestCase):
             "metadata": {"name": "unexpected-service-account-allow", "namespace": MODULE.NAMESPACE},
             "spec": {"endpointSelector": {"matchLabels": {"k8s:io.cilium.k8s.policy.serviceaccount": MODULE.NAME}}},
         }
-        listings = [json.dumps({"items": []}), json.dumps({"items": [cilium_policy]})]
+        listings = [
+            json.dumps({"items": []}),
+            json.dumps({"apiVersion": "v1", "kind": "APIGroupList", "groups": [{"name": "cilium.io"}]}),
+            json.dumps({"items": [cilium_policy]}),
+        ]
         with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", side_effect=listings):
             with self.assertRaisesRegex(MODULE.ActivationError, "overlaps participant selectors"):
                 MODULE.policy_union_v4(Fake(), "/tmp/kube")
@@ -1426,9 +1504,24 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": [widened]})):
             with self.assertRaisesRegex(MODULE.ActivationError, "semantics"):
                 MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
-        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", return_value=json.dumps({"items": []})):
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", side_effect=[
+            json.dumps({"items": []}),
+            json.dumps({"apiVersion": "v1", "kind": "APIGroupList", "groups": []}),
+        ]):
             with self.assertRaisesRegex(MODULE.ActivationError, "set absent or incomplete"):
                 MODULE.policy_union_v4(Fake(), "/tmp/kube", owned)
+
+    def test_v4_policy_union_fails_closed_on_malformed_api_group_discovery(self):
+        labels = {
+            "gateway": {"namespace": MODULE.NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.GATEWAY_LABELS], "cilium": [MODULE.POLICY.GATEWAY_LABELS]},
+            "workbench": {"namespace": MODULE.WORKBENCH_NAMESPACE, "podCount": 0, "kubernetes": [MODULE.POLICY.WORKBENCH_SELECTOR], "cilium": [MODULE.POLICY.WORKBENCH_SELECTOR]},
+        }
+        with patch.object(MODULE, "_target_policy_label_sets_v4", return_value=labels), patch.object(MODULE, "checked", side_effect=[
+            json.dumps({"items": []}),
+            json.dumps({"apiVersion": "v1", "kind": "APIGroupList", "groups": [{"preferredVersion": {"groupVersion": "cilium.io/v2"}}]}),
+        ]):
+            with self.assertRaisesRegex(MODULE.ActivationError, "API-group entry invalid"):
+                MODULE.policy_union_v4(Fake(), "/tmp/kube")
 
     def test_v4_rollback_rechecks_ingress_absence_after_dual_suspend(self):
         desired = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": MODULE.NAME, "namespace": MODULE.NAMESPACE}}
