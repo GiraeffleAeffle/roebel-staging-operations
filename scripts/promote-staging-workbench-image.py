@@ -1188,7 +1188,10 @@ def _classify_rollback_state(value: Any, before: dict[str, Any]) -> str:
         return "absent"
     try:
         current = validate_workbench_deployment(value, expected_image=OLD_IMAGE, label="uncertain rollback classification")
-        if current["uid"] == WORKBENCH_DEPLOYMENT_UID and spec_equal_except_image(before, value, index=container_index(before)):
+        if (
+            current["uid"] == WORKBENCH_DEPLOYMENT_UID
+            and spec_digest(value) == spec_digest(before)
+        ):
             return "rolled-back"
     except Exception:
         pass
@@ -1800,7 +1803,7 @@ def _safe_rollback(kube: Any, before: dict[str, Any], receipt: dict[str, Any], j
     require(isinstance(response, dict), "rollback response invalid", PostconditionFailure)
     rolled = _get(kube, DEPLOYMENT_TARGET, "post-rollback workbench Deployment")
     facts = validate_workbench_deployment(rolled, expected_image=OLD_IMAGE, label="post-rollback workbench Deployment")
-    require(spec_equal_except_image(before, rolled, index=index), "post-rollback Deployment spec drift", PostconditionFailure)
+    require(spec_digest(rolled) == spec_digest(before), "post-rollback Deployment spec drift", PostconditionFailure)
     receipt["deployment"]["afterResourceVersion"] = facts["resourceVersion"]
     receipt["deployment"]["afterSpecSha256"] = facts["specSha256"]
     receipt["deployment"]["afterNormalizedSpecSha256"] = facts["normalizedSpecSha256"]

@@ -559,6 +559,7 @@ class PromotionTests(unittest.TestCase):
                 self.assertEqual(kube.patch_calls[-1][5]["value"], MODULE.OLD_IMAGE)
 
     def test_rollout_failure_rolls_back_with_inverse_cas_patch(self) -> None:
+        before = deployment()
         kube = FakeKubernetes()
         kube.rollout_failure = True
         result, kube, _journal, _receipt = self.invoke(kube)
@@ -566,7 +567,17 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(len(kube.patch_calls), 2)
         self.assertEqual(kube.patch_calls[1][5]["value"], MODULE.OLD_IMAGE)
         self.assertTrue(result["effects"]["rollbackApplied"])
-        self.assertEqual(kube.objects["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"], MODULE.OLD_IMAGE)
+        self.assertEqual(kube.objects["deployment"]["spec"], before["spec"])
+
+    def test_rollback_classification_requires_exact_old_environment(self) -> None:
+        before = deployment()
+        incomplete = copy.deepcopy(before)
+        env = incomplete["spec"]["template"]["spec"]["containers"][0]["env"]
+        incomplete["spec"]["template"]["spec"]["containers"][0]["env"] = [
+            entry for entry in env
+            if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
+        ] + [{"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}]
+        self.assertEqual(MODULE._classify_rollback_state(incomplete, before), "ambiguous")
 
     def test_operator_signal_after_patch_enters_rollback_and_terminal_receipt(self) -> None:
         kube = FakeKubernetes()

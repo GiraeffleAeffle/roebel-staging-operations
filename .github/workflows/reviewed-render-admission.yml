@@ -35,7 +35,9 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           path: base
           persist-credentials: false
-          fetch-depth: 1
+          # Existing activation tests bind the exact historical b790 receipt
+          # to its protected Git blob, so the trusted base needs that history.
+          fetch-depth: 0
 
       - name: Check out untrusted candidate as data
         if: github.event_name == 'pull_request_target'
@@ -62,7 +64,8 @@ jobs:
           ref: ${{ github.sha }}
           path: candidate
           persist-credentials: false
-          fetch-depth: 1
+          # The protected-main suite verifies the same historical binding.
+          fetch-depth: 0
 
       - name: Verify protected main
         if: github.event_name == 'push'

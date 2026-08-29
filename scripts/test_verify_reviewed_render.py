@@ -39,6 +39,14 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         VERIFIER.SIGNED_NOSTR_APPROVED_DEACTIVATION_EVIDENCE = None
         VERIFIER.SIGNED_NOSTR_VERIFICATION_TIME_OVERRIDE = None
 
+    def test_reviewed_admission_fetches_history_only_for_trusted_checkouts(self) -> None:
+        workflow = (ROOT / ".github/workflows/reviewed-render-admission.yml").read_text()
+        self.assertEqual(workflow.count("fetch-depth: 0"), 2)
+        self.assertEqual(workflow.count("fetch-depth: 1"), 1)
+        self.assertIn("name: Check out protected base", workflow)
+        self.assertIn("name: Check out untrusted candidate as data", workflow)
+        self.assertIn("name: Check out protected main", workflow)
+
     def repository_shape(self, root: Path) -> str:
         participant = (root / VERIFIER.PARTICIPANT_GATEWAY_ROOT).is_dir()
         signed_nostr = root / "reviewed-render/roebel-staging/signed-nostr"
