@@ -686,8 +686,8 @@ class FastClock:
 
 class RelayResetTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory(dir="/private/tmp")
-        self.root = Path(self.temporary.name)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
         os.chmod(self.root, 0o700)
         self.pin = self.root / "runtime-pin.json"
         self.pin.write_bytes(PIN_BYTES)
