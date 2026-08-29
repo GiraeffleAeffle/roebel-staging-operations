@@ -40,14 +40,23 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
         "schemaVersion": "roebel_staging_workbench_image_promotion_journal_v1", "status": "completed",
         "operationId": operation_id, "protectedRevision": revision, "protectedGitBlobSha256": protected,
         "artifact": artifact, "target": target, "events": events,
-        "before": {"deploymentUid": "f7e99fb3-842d-469b-9196-cd1c6dfe10bb", "resourceVersion": "1", "specSha256": MODULE.bytes_sha256(b"spec"), "normalizedSpecSha256": MODULE.bytes_sha256(b"normalized"), "service": service, "serviceRouting": routing, "networkPolicy": network},
+        "before": {
+            "deploymentUid": "f7e99fb3-842d-469b-9196-cd1c6dfe10bb",
+            "resourceVersion": "1",
+            "specSha256": MODULE.bytes_sha256(b"spec"),
+            "normalizedSpecSha256": MODULE.bytes_sha256(b"normalized"),
+            "environment": {"containerIndex": 0, "entries": [{"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"}]},
+            "service": service,
+            "serviceRouting": routing,
+            "networkPolicy": network,
+        },
     }
     journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(journal).encode())
     payload = {
         "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v1", "status": "completed", "mode": "live",
         "operation": {"operationId": operation_id}, "protectedRevision": revision, "protectedGitBlobSha256": protected,
         "probeBinding": {}, "artifact": artifact, "target": target,
-        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
+        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"added": {"name": "WORKBENCH_MODE", "value": "public-signed-only"}, "removedNames": ["CASE_STEWARD_TOKEN", "STADTSTACK_CONTROL_BASE_URL", "STADTSTACK_PUBLIC_BASE_URL", "SYNTHETIC_CITIZENS_JSON"]}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
         "preservation": {"service": service, "networkPolicy": network, "unchanged": True},
         "rollout": {"podImageProof": {"expectedImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "pods": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "podIPs": ["10.0.0.12"]}]}},
         "backendBinding": routing | {

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """One-time, CAS-bound promotion of the public E2E workbench image.
 
-This runner owns exactly one existing Deployment image transition.  It does
-not adopt a name, apply a manifest, touch a Secret, or change the Service or
-NetworkPolicy which make the workbench reachable.  The live path is bounded
-to one preflight, one JSON Patch, and (when a known postcondition fails) one
-CAS rollback patch.  A lost mutation response is classified with one GET;
-there is deliberately no blind mutation retry.
+This runner owns exactly one existing Deployment public-mode transition.  It
+does not adopt a name, apply a manifest, touch a Secret, or change the
+Service or NetworkPolicy which make the workbench reachable.  The live path
+is bounded to one preflight, one JSON Patch, and (when a known postcondition
+fails) one CAS rollback patch.  A lost mutation response is classified with
+one GET; there is deliberately no blind mutation retry.
 
 The module is dependency-free so the wrapper can execute the protected bytes
 with ``python3 -I``.  Tests inject a narrow Kubernetes-like object instead of
@@ -44,6 +44,26 @@ WORKBENCH_DEPLOYMENT_UID = "f7e99fb3-842d-469b-9196-cd1c6dfe10bb"
 WORKBENCH_CONTAINER_NAME = "e2e-workbench"
 OWNER_LABEL_KEY = "stadtstack.io/owner"
 OWNER_LABEL_VALUE = "stadtstack-operations-private"
+WORKBENCH_MODE_ENV_NAME = "WORKBENCH_MODE"
+WORKBENCH_MODE_ENV_VALUE = "public-signed-only"
+# These four fixture-only inputs are the only environment entries admitted
+# for removal.  Every other entry remains byte-for-byte in its original list
+# position, including SecretKeyRef references (whose values are never read).
+FORBIDDEN_PUBLIC_MODE_ENV_NAMES = (
+    "CASE_STEWARD_TOKEN",
+    "STADTSTACK_CONTROL_BASE_URL",
+    "STADTSTACK_PUBLIC_BASE_URL",
+    "SYNTHETIC_CITIZENS_JSON",
+)
+FORBIDDEN_PUBLIC_MODE_ENV_SET = frozenset(FORBIDDEN_PUBLIC_MODE_ENV_NAMES)
+# These fixture values can contain credential-like material and are therefore
+# admitted in the old Deployment only as a value-free Secret reference. The
+# reference itself is journaled for exact rollback; the Secret is never read.
+PUBLIC_MODE_SECRET_REF_ENV_NAMES = frozenset({
+    "CASE_STEWARD_TOKEN",
+    "CITIZEN_RELAY_ADMISSION_TOKEN",
+    "SYNTHETIC_CITIZENS_JSON",
+})
 
 OLD_IMAGE = (
     "registry.agentcart.eu/civic/roebel-staging-workbench@"
@@ -279,6 +299,24 @@ def _reject_secret_shaped(value: Any, path: str = "$") -> None:
             lowered = str(key).lower().replace("_", "").replace("-", "")
             if lowered in SAFE_VALUE_FREE_KEYS:
                 require(isinstance(child, bool), f"value-free effect flag at {path}.{key} must be boolean")
+            elif lowered == "valuefrom":
+                # A rollback journal may retain Kubernetes references so it
+                # can restore the exact old env list after a process restart.
+                # References are safe only as a closed, value-free object;
+                # literal secret material or arbitrary nested fields remain
+                # rejected.  The referenced Secret value is never read.
+                require(isinstance(child, dict) and len(child) == 1, f"environment reference shape invalid at {path}.{key}")
+                reference_kind, reference = next(iter(child.items()))
+                normalized_kind = str(reference_kind).lower().replace("_", "").replace("-", "")
+                require(normalized_kind == "secretkeyref", f"environment reference kind invalid at {path}.{key}")
+                require(isinstance(reference, dict), f"environment reference value invalid at {path}.{key}")
+                allowed = {"name", "key", "optional"}
+                require(set(reference) <= allowed and {"name", "key"} <= set(reference), f"environment reference fields invalid at {path}.{key}")
+                require(isinstance(reference["name"], str) and bool(reference["name"]), f"environment reference name invalid at {path}.{key}")
+                require(isinstance(reference["key"], str) and bool(reference["key"]), f"environment reference key invalid at {path}.{key}")
+                if "optional" in reference:
+                    require(isinstance(reference["optional"], bool), f"environment reference optional invalid at {path}.{key}")
+                continue
             require(
                 lowered in SAFE_VALUE_FREE_KEYS
                 or not any(token in lowered for token in ("secret", "password", "privatekey", "apikey", "token")),
@@ -385,6 +423,77 @@ def _container_path(index: int, field: str) -> str:
     return f"/spec/template/spec/containers/{index}/{field}"
 
 
+def _container_env(value: dict[str, Any], label: str = "workbench Deployment") -> list[dict[str, Any]]:
+    """Return the named container's environment without reading Secret values."""
+    container = _containers(value, label)[container_index(value)]
+    env = container.get("env")
+    require(isinstance(env, list), f"{label} environment list absent")
+    require(
+        all(isinstance(item, dict) and isinstance(item.get("name"), str) and bool(item["name"]) for item in env),
+        f"{label} environment entry invalid",
+    )
+    return env
+
+
+def _public_mode_source_env(value: dict[str, Any], label: str = "workbench Deployment") -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Validate the exact old fixture environment and return removal indexes."""
+    env = _container_env(value, label)
+    return _public_mode_source_entries(env, label)
+
+
+def _public_mode_source_entries(env: list[dict[str, Any]], label: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Validate a stored old environment without reading referenced Secrets."""
+    require(isinstance(env, list), f"{label} environment list absent")
+    require(
+        all(isinstance(item, dict) and isinstance(item.get("name"), str) and bool(item["name"]) for item in env),
+        f"{label} environment entry invalid",
+    )
+    mode_entries = [item for item in env if item.get("name") == WORKBENCH_MODE_ENV_NAME]
+    require(not mode_entries, f"{label} already has {WORKBENCH_MODE_ENV_NAME}")
+    indexes: dict[str, int] = {}
+    for name in FORBIDDEN_PUBLIC_MODE_ENV_NAMES:
+        matches = [index for index, item in enumerate(env) if item.get("name") == name]
+        require(len(matches) == 1, f"{label} must contain exactly one {name}")
+        indexes[name] = matches[0]
+    for name in FORBIDDEN_PUBLIC_MODE_ENV_NAMES:
+        if name in PUBLIC_MODE_SECRET_REF_ENV_NAMES:
+            entry = env[indexes[name]]
+            require(
+                "value" not in entry
+                and isinstance(entry.get("valueFrom"), dict)
+                and set(entry["valueFrom"]) == {"secretKeyRef"},
+                f"{label} literal credential environment value forbidden: {name}",
+            )
+    return env, indexes
+
+
+def _public_mode_target_env(value: dict[str, Any], label: str = "workbench Deployment") -> list[dict[str, Any]]:
+    """Validate the target's fixture-free public environment."""
+    env = _container_env(value, label)
+    require(
+        not any(item.get("name") in FORBIDDEN_PUBLIC_MODE_ENV_SET for item in env),
+        f"{label} contains forbidden public-mode environment entries",
+    )
+    mode_entries = [item for item in env if item.get("name") == WORKBENCH_MODE_ENV_NAME]
+    require(len(mode_entries) == 1, f"{label} must contain exactly one {WORKBENCH_MODE_ENV_NAME}")
+    require(
+        mode_entries[0] == {"name": WORKBENCH_MODE_ENV_NAME, "value": WORKBENCH_MODE_ENV_VALUE},
+        f"{label} {WORKBENCH_MODE_ENV_NAME} value drift",
+    )
+    return env
+
+
+def _normalized_public_mode_env(env: Any) -> Any:
+    if not isinstance(env, list):
+        return env
+    return [
+        copy.deepcopy(item)
+        for item in env
+        if not isinstance(item, dict)
+        or item.get("name") not in FORBIDDEN_PUBLIC_MODE_ENV_SET | {WORKBENCH_MODE_ENV_NAME}
+    ]
+
+
 def normalized_deployment_spec(value: dict[str, Any], *, index: int | None = None) -> dict[str, Any]:
     result = copy.deepcopy(value.get("spec"))
     require(isinstance(result, dict), "workbench Deployment spec absent")
@@ -395,6 +504,12 @@ def normalized_deployment_spec(value: dict[str, Any], *, index: int | None = Non
     require(isinstance(containers[index], dict), "workbench container invalid")
     containers[index] = copy.deepcopy(containers[index])
     containers[index]["image"] = IMAGE_PLACEHOLDER
+    # The normalized digest is the transition invariant: image, the four
+    # removed fixture entries, and the newly appended public-mode marker are
+    # deliberately omitted.  Any other field, reference, or list ordering
+    # remains part of the digest and therefore cannot drift silently.
+    if "env" in containers[index]:
+        containers[index]["env"] = _normalized_public_mode_env(containers[index]["env"])
     return result
 
 
@@ -403,6 +518,7 @@ def normalized_spec_digest(value: dict[str, Any], *, index: int | None = None) -
 
 
 def spec_equal_except_image(before: dict[str, Any], after: dict[str, Any], *, index: int | None = None) -> bool:
+    """Compare specs after removing only the reviewed public-mode delta."""
     if index is None:
         index = container_index(before)
     try:
@@ -467,15 +583,14 @@ def validate_artifact_pin(
     }
 
 
-def build_image_patch(deployment: dict[str, Any], *, image: str = TARGET_IMAGE) -> list[dict[str, Any]]:
-    """Build the only admitted Deployment mutation: five tests + one replace."""
+def _public_mode_patch_test_operations(deployment: dict[str, Any], *, expected_image: str) -> tuple[list[dict[str, Any]], int]:
     metadata = _metadata(deployment, "workbench Deployment")
     uid = _validate_uuid(metadata.get("uid"), "workbench Deployment")
     resource_version = _validate_resource_version(metadata.get("resourceVersion"), "workbench Deployment")
     require(uid == WORKBENCH_DEPLOYMENT_UID, "workbench Deployment UID drift")
     index = container_index(deployment)
     containers = _containers(deployment, "workbench Deployment")
-    require(containers[index].get("image") == OLD_IMAGE, "workbench Deployment old image drift")
+    require(containers[index].get("image") == expected_image, "workbench Deployment image drift")
     _owner_label(deployment, "workbench Deployment")
     path_name = _container_path(index, "name")
     path_image = _container_path(index, "image")
@@ -484,31 +599,135 @@ def build_image_patch(deployment: dict[str, Any], *, image: str = TARGET_IMAGE) 
         {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
         {"op": "test", "path": "/metadata/labels/stadtstack.io~1owner", "value": OWNER_LABEL_VALUE},
         {"op": "test", "path": path_name, "value": WORKBENCH_CONTAINER_NAME},
-        {"op": "test", "path": path_image, "value": OLD_IMAGE},
-        {"op": "replace", "path": path_image, "value": image},
-    ]
+        {"op": "test", "path": path_image, "value": expected_image},
+    ], index
 
 
-def build_rollback_patch(deployment: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build a CAS rollback which only accepts the exact target image."""
-    metadata = _metadata(deployment, "workbench Deployment rollback")
-    uid = _validate_uuid(metadata.get("uid"), "workbench Deployment rollback")
-    resource_version = _validate_resource_version(metadata.get("resourceVersion"), "workbench Deployment rollback")
-    require(uid == WORKBENCH_DEPLOYMENT_UID, "workbench Deployment rollback UID drift")
-    index = container_index(deployment)
-    containers = _containers(deployment, "workbench Deployment rollback")
-    require(containers[index].get("image") == TARGET_IMAGE, "workbench Deployment rollback target image absent")
-    _owner_label(deployment, "workbench Deployment rollback")
-    path_name = _container_path(index, "name")
-    path_image = _container_path(index, "image")
-    return [
-        {"op": "test", "path": "/metadata/uid", "value": WORKBENCH_DEPLOYMENT_UID},
-        {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
-        {"op": "test", "path": "/metadata/labels/stadtstack.io~1owner", "value": OWNER_LABEL_VALUE},
-        {"op": "test", "path": path_name, "value": WORKBENCH_CONTAINER_NAME},
-        {"op": "test", "path": path_image, "value": TARGET_IMAGE},
-        {"op": "replace", "path": path_image, "value": OLD_IMAGE},
-    ]
+def _validate_public_mode_patch_shape(operations: list[dict[str, Any]]) -> None:
+    """Enforce the closed JSON-Patch grammar at the transport boundary."""
+    require(isinstance(operations, list), "workbench Deployment patch must be a list")
+    require(len(operations) == 11, "workbench Deployment public-mode patch shape widened")
+    require(all(isinstance(item, dict) for item in operations), "workbench Deployment patch entry invalid")
+    require([item.get("op") for item in operations[:5]] == ["test"] * 5, "workbench Deployment CAS tests widened")
+    require(all(set(item) == {"op", "path", "value"} for item in operations[:5]), "workbench Deployment CAS test fields widened")
+    image_path = operations[5].get("path") if len(operations) > 5 and isinstance(operations[5], dict) else None
+    match = re.fullmatch(r"/spec/template/spec/containers/(\d+)/image", image_path or "")
+    require(match is not None, "workbench Deployment image path widened")
+    container_prefix = f"/spec/template/spec/containers/{match.group(1)}"
+    require(
+        {item.get("path") for item in operations[:5]}
+        == {
+            "/metadata/uid",
+            "/metadata/resourceVersion",
+            "/metadata/labels/stadtstack.io~1owner",
+            f"{container_prefix}/name",
+            image_path,
+        },
+        "workbench Deployment CAS test paths widened",
+    )
+    image_operation = operations[5]
+    require(
+        set(image_operation) == {"op", "path", "value"}
+        and
+        image_operation.get("op") == "replace"
+        and image_operation.get("path") == image_path
+        and image_operation.get("value") in {OLD_IMAGE, TARGET_IMAGE},
+        "workbench Deployment image transition widened",
+    )
+    transition = operations[6:]
+    env_paths = [item.get("path") for item in transition]
+    require(all(isinstance(path, str) for path in env_paths), "workbench Deployment environment patch path invalid")
+    env_prefix = f"{container_prefix}/env/"
+
+    def env_index(path: Any) -> int:
+        require(isinstance(path, str) and path.startswith(env_prefix), "workbench Deployment environment patch path invalid")
+        suffix = path[len(env_prefix):]
+        require(re.fullmatch(r"[0-9]+", suffix) is not None, "workbench Deployment environment index invalid")
+        return int(suffix)
+
+    if image_operation["value"] == TARGET_IMAGE:
+        removals = transition[:4]
+        require(
+            all(set(item) == {"op", "path"} and item.get("op") == "remove" for item in removals),
+            "workbench Deployment fixture removal shape widened",
+        )
+        indexes = [env_index(item["path"]) for item in removals]
+        require(indexes == sorted(indexes, reverse=True) and len(set(indexes)) == 4, "workbench Deployment fixture removal order drift")
+        require(
+            set(transition[4]) == {"op", "path", "value"}
+            and
+            transition[4]
+            == {"op": "add", "path": f"{env_prefix}-", "value": {"name": WORKBENCH_MODE_ENV_NAME, "value": WORKBENCH_MODE_ENV_VALUE}},
+            "workbench Deployment public mode addition drift",
+        )
+    else:
+        require(
+            set(transition[0]) == {"op", "path"}
+            and transition[0].get("op") == "remove",
+            "workbench Deployment public mode removal drift",
+        )
+        env_index(transition[0]["path"])
+        require(
+            all(set(item) == {"op", "path", "value"} and item.get("op") == "add" for item in transition[1:]),
+            "workbench Deployment fixture restoration shape widened",
+        )
+        indexes = [env_index(item["path"]) for item in transition[1:]]
+        require(indexes == sorted(indexes) and len(set(indexes)) == 4, "workbench Deployment fixture restoration order drift")
+        require(
+            all(isinstance(item.get("value"), dict) and item["value"].get("name") in FORBIDDEN_PUBLIC_MODE_ENV_SET for item in transition[1:]),
+            "workbench Deployment fixture restoration names drift",
+        )
+
+
+def build_image_patch(deployment: dict[str, Any], *, image: str = TARGET_IMAGE) -> list[dict[str, Any]]:
+    """Build the exact public-mode Deployment transition patch."""
+    require(image == TARGET_IMAGE, "workbench Deployment target image drift")
+    env, indexes = _public_mode_source_env(deployment)
+    tests, index = _public_mode_patch_test_operations(deployment, expected_image=OLD_IMAGE)
+    require(index == container_index(deployment), "workbench container index drift")
+    env_path = _container_path(index, "env")
+    operations = tests + [{"op": "replace", "path": _container_path(index, "image"), "value": TARGET_IMAGE}]
+    operations.extend(
+        {"op": "remove", "path": f"{env_path}/{env_index}"}
+        for env_index in sorted(indexes.values(), reverse=True)
+    )
+    operations.append(
+        {"op": "add", "path": f"{env_path}/-", "value": {"name": WORKBENCH_MODE_ENV_NAME, "value": WORKBENCH_MODE_ENV_VALUE}}
+    )
+    # The transport adapter only accepts the fixed-container path; reject an
+    # unexpected container position before any caller can send this patch.
+    _validate_public_mode_patch_shape(operations)
+    return operations
+
+
+def build_public_mode_patch(deployment: dict[str, Any], *, image: str = TARGET_IMAGE) -> list[dict[str, Any]]:
+    """Named alias making the transition intent explicit to callers/tests."""
+    return build_image_patch(deployment, image=image)
+
+
+def build_rollback_patch(deployment: dict[str, Any], *, before: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build an exact inverse restoring the complete old environment order."""
+    env, indexes = _public_mode_source_env(before)
+    current_env = _public_mode_target_env(deployment)
+    tests, index = _public_mode_patch_test_operations(deployment, expected_image=TARGET_IMAGE)
+    before_index = container_index(before)
+    require(index == before_index, "workbench rollback container index drift")
+    expected_target_env = [
+        copy.deepcopy(item)
+        for item in env
+        if item.get("name") not in FORBIDDEN_PUBLIC_MODE_ENV_SET
+    ] + [{"name": WORKBENCH_MODE_ENV_NAME, "value": WORKBENCH_MODE_ENV_VALUE}]
+    require(current_env == expected_target_env, "workbench rollback public environment drift", PostconditionFailure)
+    env_path = _container_path(index, "env")
+    mode_index = len(current_env) - 1
+    operations = tests + [{"op": "replace", "path": _container_path(index, "image"), "value": OLD_IMAGE}]
+    operations.append({"op": "remove", "path": f"{env_path}/{mode_index}"})
+    operations.extend(
+        {"op": "add", "path": f"{env_path}/{env_index}", "value": copy.deepcopy(env[env_index])}
+        for env_index in sorted(indexes.values())
+    )
+    _validate_public_mode_patch_shape(operations)
+    return operations
 
 
 def _validate_target(value: dict[str, Any], expected: dict[str, str], label: str) -> None:
@@ -544,6 +763,8 @@ def validate_workbench_deployment(value: Any, *, expected_image: str, label: str
         and ports[0].get("protocol", "TCP") == "TCP",
         f"{label} container port drift",
     )
+    if expected_image == TARGET_IMAGE:
+        _public_mode_target_env(value, label)
     return {
         "uid": uid,
         "resourceVersion": resource_version,
@@ -967,7 +1188,10 @@ def _classify_rollback_state(value: Any, before: dict[str, Any]) -> str:
         return "absent"
     try:
         current = validate_workbench_deployment(value, expected_image=OLD_IMAGE, label="uncertain rollback classification")
-        if current["uid"] == WORKBENCH_DEPLOYMENT_UID and spec_equal_except_image(before, value, index=container_index(before)):
+        if (
+            current["uid"] == WORKBENCH_DEPLOYMENT_UID
+            and spec_digest(value) == spec_digest(before)
+        ):
             return "rolled-back"
     except Exception:
         pass
@@ -1083,6 +1307,10 @@ def _receipt_base(
             "container": WORKBENCH_CONTAINER_NAME,
             "oldImage": OLD_IMAGE,
             "targetImage": TARGET_IMAGE,
+            "environmentTransition": {
+                "added": {"name": WORKBENCH_MODE_ENV_NAME, "value": WORKBENCH_MODE_ENV_VALUE},
+                "removedNames": list(FORBIDDEN_PUBLIC_MODE_ENV_NAMES),
+            },
             "beforeResourceVersion": None,
             "afterResourceVersion": None,
             "beforeSpecSha256": None,
@@ -1414,7 +1642,7 @@ class KubernetesAdapter:
 
     def patch(self, target: dict[str, str], operations: list[dict[str, Any]]) -> dict[str, Any]:
         require(target == DEPLOYMENT_TARGET, "patch target outside workbench Deployment scope")
-        require(len(operations) == 6 and [item.get("op") for item in operations] == ["test"] * 5 + ["replace"], "patch operation shape widened")
+        _validate_public_mode_patch_shape(operations)
         result = self._run(
             ["-n", target["namespace"], "patch", "deployment", target["name"], "--type=json", "-p", canonical(operations), "-o", "json"],
         )
@@ -1468,6 +1696,7 @@ def _preflight(kube: Any, pin: dict[str, Any]) -> tuple[dict[str, Any], dict[str
     network_policy = _get(kube, NETWORK_POLICY_TARGET, "workbench NetworkPolicy")
     deployment_facts = validate_workbench_deployment(deployment, expected_image=OLD_IMAGE)
     require(deployment_facts["containerName"] == WORKBENCH_CONTAINER_NAME, "workbench container name drift")
+    _public_mode_source_env(deployment)
     require(pin["image"] == TARGET_IMAGE and pin["manifestDigest"] == TARGET_DIGEST, "artifact pin target drift")
     service_facts = validate_service_or_network_policy(service, SERVICE_TARGET, "workbench Service")
     policy_facts = validate_service_or_network_policy(network_policy, NETWORK_POLICY_TARGET, "workbench NetworkPolicy")
@@ -1553,7 +1782,7 @@ def _safe_rollback(kube: Any, before: dict[str, Any], receipt: dict[str, Any], j
     index = container_index(before)
     require(spec_equal_except_image(before, current, index=index), "rollback Deployment spec drift", PostconditionFailure)
     require(validate_workbench_deployment(current, expected_image=TARGET_IMAGE, label="rollback workbench Deployment")["uid"] == WORKBENCH_DEPLOYMENT_UID, "rollback Deployment identity drift", PostconditionFailure)
-    patch = build_rollback_patch(current)
+    patch = build_rollback_patch(current, before=before)
     receipt["patch"]["rollbackRequestSha256"] = digest(patch)
     _journal_commit(journal, state, "rollback-deployment-image", "intent", {"requestSha256": digest(patch), "target": copy.deepcopy(DEPLOYMENT_TARGET)})
     try:
@@ -1574,7 +1803,7 @@ def _safe_rollback(kube: Any, before: dict[str, Any], receipt: dict[str, Any], j
     require(isinstance(response, dict), "rollback response invalid", PostconditionFailure)
     rolled = _get(kube, DEPLOYMENT_TARGET, "post-rollback workbench Deployment")
     facts = validate_workbench_deployment(rolled, expected_image=OLD_IMAGE, label="post-rollback workbench Deployment")
-    require(spec_equal_except_image(before, rolled, index=index), "post-rollback Deployment spec drift", PostconditionFailure)
+    require(spec_digest(rolled) == spec_digest(before), "post-rollback Deployment spec drift", PostconditionFailure)
     receipt["deployment"]["afterResourceVersion"] = facts["resourceVersion"]
     receipt["deployment"]["afterSpecSha256"] = facts["specSha256"]
     receipt["deployment"]["afterNormalizedSpecSha256"] = facts["normalizedSpecSha256"]
@@ -1729,16 +1958,23 @@ def validate_resume_journal(
     before = state.get("before")
     require(
         isinstance(before, dict)
-        and set(before) == {"deploymentUid", "resourceVersion", "specSha256", "normalizedSpecSha256", "service", "serviceRouting", "networkPolicy"}
+        and set(before) == {"deploymentUid", "resourceVersion", "specSha256", "normalizedSpecSha256", "environment", "service", "serviceRouting", "networkPolicy"}
         and before.get("deploymentUid") == WORKBENCH_DEPLOYMENT_UID
         and isinstance(before.get("resourceVersion"), str)
         and before["resourceVersion"].isdigit()
         and all(isinstance(before.get(key), str) and SHA256_RE.fullmatch(before[key]) for key in ("specSha256", "normalizedSpecSha256"))
+        and isinstance(before.get("environment"), dict)
+        and set(before["environment"]) == {"containerIndex", "entries"}
+        and isinstance(before["environment"].get("containerIndex"), int)
+        and not isinstance(before["environment"].get("containerIndex"), bool)
+        and isinstance(before["environment"].get("entries"), list)
         and isinstance(before.get("service"), dict)
         and isinstance(before.get("serviceRouting"), dict)
         and isinstance(before.get("networkPolicy"), dict),
         "promotion resume preflight binding drift",
     )
+    require(before["environment"]["containerIndex"] >= 0, "promotion resume container index invalid")
+    _public_mode_source_entries(before["environment"]["entries"], "promotion resume environment")
     events = state.get("events")
     require(isinstance(events, list) and events, "promotion resume journal events absent")
     previous: str | None = None
@@ -1873,7 +2109,13 @@ def _resume_transaction(
         current_facts = validate_workbench_deployment(current, expected_image=TARGET_IMAGE, label="promotion resume Deployment")
         require(current_facts["normalizedSpecSha256"] == before_facts["normalizedSpecSha256"], "promotion resume Deployment spec drift", PostconditionFailure)
         reconstructed_before = copy.deepcopy(current)
+        require(
+            before_facts["environment"]["containerIndex"] == current_facts["index"],
+            "promotion resume container index drift",
+            PostconditionFailure,
+        )
         reconstructed_before["spec"]["template"]["spec"]["containers"][current_facts["index"]]["image"] = OLD_IMAGE
+        reconstructed_before["spec"]["template"]["spec"]["containers"][current_facts["index"]]["env"] = copy.deepcopy(before_facts["environment"]["entries"])
         require(spec_digest(reconstructed_before) == before_facts["specSha256"], "promotion resume before-spec reconstruction drift", PostconditionFailure)
         classification = "target-image"
     except Exception:
@@ -1985,6 +2227,10 @@ def _run_transaction(
             "resourceVersion": facts["deployment"]["resourceVersion"],
             "specSha256": facts["deployment"]["specSha256"],
             "normalizedSpecSha256": facts["deployment"]["normalizedSpecSha256"],
+            "environment": {
+                "containerIndex": facts["deployment"]["index"],
+                "entries": copy.deepcopy(_container_env(before)),
+            },
             "service": facts["service"],
             "serviceRouting": facts["serviceRouting"],
             "networkPolicy": facts["networkPolicy"],
