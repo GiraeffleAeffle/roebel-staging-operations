@@ -2066,9 +2066,18 @@ def _allows_workbench_port(value: dict[str, Any]) -> bool:
             if start <= POLICY.WORKBENCH_PORT <= end: return True
     return False
 
+def _is_explicit_workbench_egress_only_policy_v4(value: dict[str, Any]) -> bool:
+    """Recognize a policy that cannot participate in the ingress union."""
+    spec = value.get("spec")
+    return (
+        isinstance(spec, dict)
+        and spec.get("policyTypes") == ["Egress"]
+        and spec.get("ingress", []) == []
+    )
+
 def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], CreatedV4] | None = None) -> dict[str, Any]:
     """Conservatively reject additive K8s/Cilium participant allows."""
-    owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []
+    owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []; compatible_workbench_egress = []
     families = (("networkpolicy", ["-A"], "kubernetes"), ("ciliumnetworkpolicies.cilium.io", ["-A"], "cilium"), ("ciliumclusterwidenetworkpolicies.cilium.io", [], "cilium-clusterwide"))
     for resource, extra, family in families:
         listing = obj(checked(r, kb(kubeconfig) + ["get", resource, *extra, "-o", "json"], f"fresh {resource} scan"), resource)
@@ -2085,8 +2094,15 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
                 selector = item.get("spec", {}).get("podSelector", {})
                 if namespace == NAMESPACE and any(_selector_could_match_with_additional_labels_v4(selector, labels) for labels in label_sets["gateway"]["kubernetes"]): raise ActivationError(f"pre-existing NetworkPolicy can select gateway: {namespace}/{name}")
                 if namespace == WORKBENCH_NAMESPACE and any(_selector_could_match_with_additional_labels_v4(selector, labels) for labels in label_sets["workbench"]["kubernetes"]):
-                    require(name == POLICY.WORKBENCH_NAME, f"pre-existing NetworkPolicy selects workbench: {namespace}/{name}")
-                    require(not _allows_workbench_port(item), "manual workbench policy already allows participant port 18083")
+                    if name == POLICY.WORKBENCH_NAME:
+                        require(not _allows_workbench_port(item), "manual workbench policy already allows participant port 18083")
+                    else:
+                        require(
+                            _is_explicit_workbench_egress_only_policy_v4(item),
+                            f"pre-existing NetworkPolicy selects workbench: {namespace}/{name}",
+                        )
+                        require(isinstance(name, str) and name and isinstance(metadata.get("uid"), str) and metadata["uid"], "compatible workbench egress policy identity absent")
+                        compatible_workbench_egress.append({"namespace": namespace, "name": name, "uid": metadata["uid"], "semanticSha256": POLICY.semantic_sha256(item)})
             else:
                 specs = item.get("specs") if isinstance(item.get("specs"), list) else [item.get("spec", {})]
                 candidates = []
@@ -2098,7 +2114,7 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
         validated_keys == set(owned) and len(owned_validated) == len(owned),
         "owned NetworkPolicy set absent or incomplete during additive-policy scan",
     )
-    return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
+    return {"status": "no-additive-participant-allow-conflicts", "families": [family for _, _, family in families], "objectsScanned": count, "ownedNetworkPoliciesValidated": sorted(owned_validated, key=lambda item: (item["namespace"], item["name"])), "compatibleWorkbenchEgressPolicies": sorted(compatible_workbench_egress, key=lambda item: (item["namespace"], item["name"])), "runtimeSelectorFacts": label_sets}
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request: Any, file_pointer: Any, code: int, message: str, headers: Any, new_url: str) -> None:
