@@ -83,6 +83,10 @@ HANDOVER_COMPATIBILITY_PATHS = (
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
 )
+HANDOVER_CURRENT_PRESERVATION_PATHS = (
+    "reviewed-render/roebel-staging/web/ingress.json",
+    "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+)
 HANDOVER_ARCHIVED_PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
     LIVE_WRAPPER_PATH,
@@ -796,7 +800,12 @@ def load_owned_receipt_fd_v4(fd: int, label: str) -> dict[str, Any]:
     return obj(text, label)
 
 def required_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, str]]:
-    current_paths = tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, SECRET_MATERIALIZER_PATH, *HANDOVER_COMPATIBILITY_PATHS)))
+    current_paths = tuple(dict.fromkeys((
+        *BOOTSTRAP_PROTECTED_PATHS,
+        SECRET_MATERIALIZER_PATH,
+        *HANDOVER_COMPATIBILITY_PATHS,
+        *HANDOVER_CURRENT_PRESERVATION_PATHS,
+    )))
     archived_paths = tuple(dict.fromkeys((*HANDOVER_ARCHIVED_PROTECTED_PATHS, *HANDOVER_COMPATIBILITY_PATHS)))
     return {
         *((current_revision, path) for path in current_paths),
@@ -1594,14 +1603,40 @@ def require_current_preservation_binding_v4(
     """Revalidate the current (never archived) preservation boundary.
 
     The archived receipt proves only what the old transaction observed.  The
-    handover GET-only phase records a fresh digest for the current objects;
-    activation must bind that value again before its first write.
+    handover GET-only phase records a fresh digest for the current objects and
+    carries the exact Git-derived desired objects outside the receipt payload;
+    activation must bind both proofs again before its first write.
     """
     bound = validate_bound_preservation_v4(ownership.get("preservation"), p)
     require(set(snapshots) == set(bound), "current preservation snapshot set drift")
+    protected = ownership.get("currentProtectedPreservation")
+    if protected is not None:
+        require(
+            isinstance(protected, dict) and set(protected) == set(bound),
+            "current protected preservation set drift",
+        )
     for label, snapshot in snapshots.items():
         expected = bound[label]
         require(snapshot.target == expected["target"], f"current preservation target drift: {label}")
+        if protected is not None:
+            desired_binding = protected[label]
+            require(
+                isinstance(desired_binding, dict)
+                and set(desired_binding) == {"target", "desired", "desiredSemanticSha256"}
+                and desired_binding.get("target") == expected["target"]
+                and isinstance(desired_binding.get("desired"), dict)
+                and isinstance(desired_binding.get("desiredSemanticSha256"), str)
+                and POLICY.SHA256.fullmatch(desired_binding["desiredSemanticSha256"]) is not None
+                and desired_binding["desiredSemanticSha256"]
+                    == _policy_call(POLICY.semantic_sha256, desired_binding["desired"]),
+                f"current protected preservation binding drift: {label}",
+            )
+            _policy_call(
+                POLICY.require_semantically_equal,
+                snapshot.value,
+                desired_binding["desired"],
+                f"current protected {label}",
+            )
         require(snapshot.canonical_sha256 == expected["canonicalSha256"], f"current preservation digest drift: {label}")
 
 def require_secret_materialization_binding_v4(

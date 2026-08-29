@@ -77,6 +77,10 @@ HANDOVER_COMPATIBILITY_PATHS = (
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
 )
+HANDOVER_CURRENT_PRESERVATION_PATHS = (
+    "reviewed-render/roebel-staging/web/ingress.json",
+    "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+)
 HANDOVER_CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
     *HANDOVER_ARCHIVED_PROTECTED_PATHS,
     HANDOVER_IMPLEMENTATION,
@@ -85,6 +89,7 @@ HANDOVER_CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
 HANDOVER_PREBOUND_CURRENT_PATHS = tuple(dict.fromkeys((
     *HANDOVER_CURRENT_PROTECTED_PATHS,
     *HANDOVER_COMPATIBILITY_PATHS,
+    *HANDOVER_CURRENT_PRESERVATION_PATHS,
 )))
 HANDOVER_PREBOUND_ARCHIVE_PATHS = tuple(dict.fromkeys((
     *HANDOVER_ARCHIVED_PROTECTED_PATHS,

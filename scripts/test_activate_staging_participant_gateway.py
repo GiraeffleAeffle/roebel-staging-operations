@@ -110,6 +110,61 @@ class Fake(MODULE.Runner):
         return MODULE.Result()
 
 class ExecutorTests(unittest.TestCase):
+    def test_handover_preservation_digest_is_bound_before_and_after_every_mutation(self):
+        value = ready_policy()
+        snapshots = {}
+        ownership = {"preservation": {}, "currentProtectedPreservation": {}}
+        for index, (label, descriptor) in enumerate(value["preservation"].items(), start=1):
+            checksum = sha(str(index))
+            target = descriptor["target"]
+            desired = {
+                "apiVersion": target["apiVersion"],
+                "kind": target["kind"],
+                "metadata": {"name": target["name"], "namespace": target["namespace"]},
+                "spec": {"fixture": label},
+            }
+            snapshots[label] = MODULE.PreservedV4(label, copy.deepcopy(target), copy.deepcopy(desired), checksum)
+            ownership["preservation"][label] = {
+                "target": copy.deepcopy(target),
+                "canonicalSha256": checksum,
+            }
+            ownership["currentProtectedPreservation"][label] = {
+                "target": copy.deepcopy(target),
+                "desired": copy.deepcopy(desired),
+                "desiredSemanticSha256": MODULE.POLICY.semantic_sha256(desired),
+            }
+        MODULE.require_current_preservation_binding_v4(snapshots, ownership, value)
+        drifted = copy.deepcopy(ownership)
+        drifted["preservation"]["webIngress"]["canonicalSha256"] = sha("f")
+        with self.assertRaisesRegex(MODULE.ActivationError, "current preservation digest drift: webIngress"):
+            MODULE.require_current_preservation_binding_v4(snapshots, drifted, value)
+
+        # A caller can recompute the receipt's unkeyed checksum after replacing
+        # only its full-object digest.  Even when that forged digest matches the
+        # newly drifted live snapshot, the Git-derived desired object must win.
+        resealed = copy.deepcopy(ownership)
+        changed_snapshot = copy.deepcopy(snapshots)
+        changed_live = copy.deepcopy(snapshots["webIngress"].value)
+        changed_live["spec"]["unreviewedRoute"] = "/api/admin"
+        changed_snapshot["webIngress"] = MODULE.PreservedV4(
+            "webIngress",
+            copy.deepcopy(value["preservation"]["webIngress"]["target"]),
+            changed_live,
+            MODULE.digest(changed_live),
+        )
+        resealed["preservation"]["webIngress"]["canonicalSha256"] = MODULE.digest(changed_live)
+        with self.assertRaisesRegex(MODULE.ActivationError, "current protected webIngress semantic drift"):
+            MODULE.require_current_preservation_binding_v4(changed_snapshot, resealed, value)
+
+        source = inspect.getsource(MODULE.activate)
+        self.assertLess(source.index("require_current_preservation_binding_v4"), source.index("mutation_started = True"))
+        with (
+            patch.object(MODULE, "_target_live", return_value={"fixture": "changed"}),
+            patch.object(MODULE, "digest", return_value=sha("f")),
+        ):
+            with self.assertRaisesRegex(MODULE.ActivationError, "preserved webIngress changed"):
+                MODULE.verify_preservation_v4(MODULE.Runner(), "fixture-kubeconfig", {"webIngress": snapshots["webIngress"]})
+
     def test_exact_historical_b790_secret_receipt_is_the_only_accepted_legacy_origin(self):
         value = ready_policy()
         receipt = {
@@ -276,6 +331,9 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(set(blobs), MODULE.required_handover_prebound_keys_v4(REV))
         self.assertIn((REV, MODULE.SECRET_MATERIALIZER_PATH), blobs)
         self.assertIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), blobs)
+        for logical_path in MODULE.HANDOVER_CURRENT_PRESERVATION_PATHS:
+            self.assertIn((REV, logical_path), blobs)
+            self.assertNotIn((MODULE.HANDOVER_ARCHIVE_REVISION, logical_path), blobs)
         self.assertNotIn((REV, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         self.assertNotIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         nested_expected = MODULE.required_nested_handover_prebound_keys_v4(REV)
