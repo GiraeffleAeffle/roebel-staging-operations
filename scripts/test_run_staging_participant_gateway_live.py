@@ -104,7 +104,7 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
         "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v1", "status": "completed", "mode": "live",
         "operation": {"operationId": operation_id}, "protectedRevision": revision, "protectedGitBlobSha256": protected,
         "probeBinding": MODULE.workbench_public_probe_binding(), "artifact": artifact, "target": target,
-        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"added": {"name": "WORKBENCH_MODE", "value": "public-signed-only"}, "removedNames": ["CASE_STEWARD_TOKEN", "STADTSTACK_CONTROL_BASE_URL", "STADTSTACK_PUBLIC_BASE_URL", "SYNTHETIC_CITIZENS_JSON"]}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
+        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"added": [{"name": "WORKBENCH_MODE", "value": "public-signed-only"}, {"name": "LEGACY_SYNTHETIC_PUBKEYS_JSON", "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]"}], "removedNames": ["CASE_STEWARD_TOKEN", "STADTSTACK_CONTROL_BASE_URL", "STADTSTACK_PUBLIC_BASE_URL", "SYNTHETIC_CITIZENS_JSON"]}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
         "preservation": {"service": service, "networkPolicy": network, "unchanged": True},
         "rollout": {"podImageProof": {"expectedImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "pods": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "podIPs": ["10.0.0.12"]}]}},
         "backendBinding": routing | {
@@ -837,7 +837,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                     state,
                     revision,
                     protected,
-                    MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+                    MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
                 )
                 self.assertEqual(proof["deleteCount"], 2)
                 self.assertTrue(proof["gateRestored"])
@@ -913,7 +913,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             state,
                             revision,
                             protected,
-                            MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+                            MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
                         )
                 finally:
                     receipt.close(); state.close()
@@ -927,7 +927,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             'WrapperReceiptSink.reserve(receipt_dir / "relay-fixture-reset-transport-attempt.json")',
             "paths=RELAY_FIXTURE_RESET_PROTECTED_PATHS",
             "snapshot_owned_file_path",
-            "WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256",
+            "RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256",
             "snapshot_binary",
             "seal_pinned_snapshot",
             "LiveSession",
@@ -950,6 +950,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertLess(source.index("bind_protected_checkout"), source.index("session = LiveSession("))
         self.assertLess(source.index("snapshot_owned_receipt"), source.index("verify_relay_fixture_reset_evidence"))
         self.assertNotIn("private_workbench_promotion_outputs", source)
+
+    def test_relay_fixture_reset_pin_stays_independent_from_workbench_promotion(self):
+        self.assertEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, "36ac41d7049df815aaebbe4301c098a0ec7e4101")
+        self.assertEqual(MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256, "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b")
+        self.assertNotEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION)
+        self.assertNotEqual(MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256, MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256)
 
     def test_workbench_promotion_restart_paths_require_exact_reserved_pair_shape(self):
         with tempfile.TemporaryDirectory() as directory:
