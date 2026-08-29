@@ -63,6 +63,10 @@ COMPATIBILITY_PATHS = (
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
 )
+CURRENT_PRESERVATION_RENDER_PATHS = {
+    "webIngress": "reviewed-render/roebel-staging/web/ingress.json",
+    "existingWorkbenchNetworkPolicy": "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+}
 CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
     *ARCHIVED_PROTECTED_PATHS,
     HANDOVER_MODULE_PATH,
@@ -71,6 +75,7 @@ CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
 CURRENT_PREBOUND_PATHS = tuple(dict.fromkeys((
     *CURRENT_PROTECTED_PATHS,
     *COMPATIBILITY_PATHS,
+    *CURRENT_PRESERVATION_RENDER_PATHS.values(),
 )))
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 _PREBOUND_BLOBS: dict[tuple[str, str], bytes] | None = None
@@ -287,7 +292,10 @@ def build_context(current_revision: str, archived_raw: bytes, prebound_blobs: di
     archived_receipt = archived_bootstrap_module._json_object(archived_raw.decode("utf-8"), "archived bootstrap receipt")
     archived_projection = archived_bootstrap_module.bind_success_receipt(archived_plan, archived_receipt)
     compatibility_archive = _hashes(ARCHIVE_REVISION, COMPATIBILITY_PATHS)
-    compatibility_current = _hashes(current_revision, COMPATIBILITY_PATHS)
+    compatibility_current = _hashes(
+        current_revision,
+        tuple(dict.fromkeys((*COMPATIBILITY_PATHS, *CURRENT_PRESERVATION_RENDER_PATHS.values()))),
+    )
     current_plan = copy.deepcopy(current_plan)
     current_plan["sharedSource"] = copy.deepcopy(current_policy["repositories"]["operations"]["fluxSource"])
     current_plan["expectedSharedSource"] = current_policy_module.expected_shared_flux_source_projection()
@@ -295,6 +303,69 @@ def build_context(current_revision: str, archived_raw: bytes, prebound_blobs: di
         current_plan["expectedSharedSource"],
     )
     current_plan["preservation"] = copy.deepcopy(current_policy["preservation"])
+    current_plan["expectedPreservation"] = {}
+    current_repository_contract = json_object(git_blob(current_revision, REPOSITORY_CONTRACT_PATH), "current repository contract")
+    workbench_boundary = current_repository_contract.get("workbenchBaselineBoundary", {})
+    workbench_inventory_labels = workbench_boundary.get("flux", {}).get("inventoryMetadata", {}).get("labels")
+    require(
+        isinstance(workbench_inventory_labels, dict)
+        and set(workbench_inventory_labels) == {
+            "kustomize.toolkit.fluxcd.io/name",
+            "kustomize.toolkit.fluxcd.io/namespace",
+        }
+        and all(isinstance(value, str) and value for value in workbench_inventory_labels.values()),
+        "current workbench preservation inventory labels invalid",
+    )
+    participant_boundary = current_repository_contract.get("stagingParticipantGatewayBoundary", {})
+    handover_boundary = participant_boundary.get("archivedDormantReceiptHandover", {}) if isinstance(participant_boundary, dict) else {}
+    current_preservation_contract = handover_boundary.get("currentPreservationRenders") if isinstance(handover_boundary, dict) else None
+    require(
+        isinstance(current_preservation_contract, dict)
+        and set(current_preservation_contract) == set(CURRENT_PRESERVATION_RENDER_PATHS),
+        "current preservation render contract invalid",
+    )
+    flux_namespace = current_policy["repositories"]["operations"]["fluxSource"]["namespace"]
+    require(
+        set(CURRENT_PRESERVATION_RENDER_PATHS) == set(current_policy["preservation"]),
+        "current preservation render set drift",
+    )
+    for label, path in CURRENT_PRESERVATION_RENDER_PATHS.items():
+        preservation_contract = current_preservation_contract[label]
+        require(
+            isinstance(preservation_contract, dict)
+            and set(preservation_contract) == {"path", "fluxInventoryLabels"}
+            and preservation_contract.get("path") == path
+            and isinstance(preservation_contract.get("fluxInventoryLabels"), dict)
+            and set(preservation_contract["fluxInventoryLabels"]) == {
+                "kustomize.toolkit.fluxcd.io/name",
+                "kustomize.toolkit.fluxcd.io/namespace",
+            }
+            and preservation_contract["fluxInventoryLabels"].get("kustomize.toolkit.fluxcd.io/namespace") == flux_namespace,
+            f"current preservation render contract drift: {label}",
+        )
+        if label == "existingWorkbenchNetworkPolicy":
+            require(
+                preservation_contract["fluxInventoryLabels"] == workbench_inventory_labels,
+                "current workbench preservation inventory contract drift",
+            )
+        desired = json_object(git_blob(current_revision, path), f"current preserved render {label}")
+        metadata = desired.get("metadata", {})
+        require(isinstance(metadata.get("labels"), dict), f"current preserved render labels absent: {label}")
+        metadata["labels"].update(copy.deepcopy(preservation_contract["fluxInventoryLabels"]))
+        target = {
+            "apiVersion": desired.get("apiVersion"),
+            "kind": desired.get("kind"),
+            "namespace": metadata.get("namespace"),
+            "name": metadata.get("name"),
+        }
+        require(target == current_policy["preservation"][label]["target"], f"current preserved render target drift: {label}")
+        current_plan["expectedPreservation"][label] = {
+            "target": copy.deepcopy(target),
+            "desired": desired,
+            "desiredSemanticSha256": current_policy_module.semantic_sha256(desired),
+            "protectedPath": path,
+            "protectedFileSha256": compatibility_current[path],
+        }
     binding = handover_module.build_archived_binding(
         archived_receipt_raw=archived_raw,
         archive_revision=ARCHIVE_REVISION,
@@ -306,6 +377,7 @@ def build_context(current_revision: str, archived_raw: bytes, prebound_blobs: di
         archived_participant_contract=_contract_projection(ARCHIVE_REVISION),
         current_participant_contract=_contract_projection(current_revision),
         archived_projection=archived_projection,
+        current_preservation_semantic_sha256=current_policy_module.semantic_sha256,
         expected_archived_raw_sha256=ARCHIVE_RECEIPT_RAW_SHA256,
         expected_archived_canonical_sha256=ARCHIVE_RECEIPT_CANONICAL_SHA256,
     )

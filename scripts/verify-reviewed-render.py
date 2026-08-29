@@ -668,8 +668,24 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
                 "archiveRevision": "08c4171573bb138845a9160e747f6ac56a3c754e",
                 "archiveReceiptRawSha256": "sha256:32e244e5ba711aa8406a76d8dbf4fdd53289e52e2ced6ff27b77a7ae7577741f",
                 "archiveReceiptCanonicalSha256": "sha256:ab90b49078f423c304b643b9354230611127d0ed6bda0d1022f3abc92772b081",
-                "receiptSchemaVersion": "roebel_staging_participant_dormant_receipt_handover_v1",
+                "receiptSchemaVersion": "roebel_staging_participant_dormant_receipt_handover_v2",
                 "currentCompatibility": "ordered-eight-object-plan-only",
+                "currentPreservationRenders": {
+                    "webIngress": {
+                        "path": "reviewed-render/roebel-staging/web/ingress.json",
+                        "fluxInventoryLabels": {
+                            "kustomize.toolkit.fluxcd.io/name": "roebel-staging-web-workload",
+                            "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+                        },
+                    },
+                    "existingWorkbenchNetworkPolicy": {
+                        "path": "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+                        "fluxInventoryLabels": {
+                            "kustomize.toolkit.fluxcd.io/name": "roebel-staging-workbench-baseline",
+                            "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+                        },
+                    },
+                },
                 "getOnlyEffects": {
                     "verbs": ["GET"],
                     "kubernetesGetCount": 12,

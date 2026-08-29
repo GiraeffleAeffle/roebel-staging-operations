@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 
 ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
-HANDOVER_RECEIPT_SCHEMA = "roebel_staging_participant_dormant_receipt_handover_v1"
+HANDOVER_RECEIPT_SCHEMA = "roebel_staging_participant_dormant_receipt_handover_v2"
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 MAX_RECEIPT_BYTES = 1024 * 1024
@@ -119,6 +119,65 @@ def _current_compatibility_drift_is_explicitly_bound(contract: dict[str, Any]) -
     return isinstance(boundary, dict) and boundary.get("archivedDormantReceiptHandover", {}).get(
         "currentCompatibility",
     ) == "ordered-eight-object-plan-only"
+
+
+def _current_preservation_contract_projection(contract: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the protected current-render map only under both contract flags."""
+    boundary = contract.get("stagingParticipantGatewayBoundary", contract)
+    handover = boundary.get("archivedDormantReceiptHandover", {}) if isinstance(boundary, dict) else {}
+    enabled = (
+        isinstance(handover, dict)
+        and handover.get("currentCompatibility") == "ordered-eight-object-plan-only"
+        and handover.get("preservationBoundary") == "current-policy-boundaries-only"
+    )
+    if not enabled:
+        return None
+    renders = handover.get("currentPreservationRenders")
+    _require(
+        isinstance(renders, dict)
+        and set(renders) == {"webIngress", "existingWorkbenchNetworkPolicy"},
+        "current protected preservation contract set invalid",
+    )
+    return copy.deepcopy(renders)
+
+
+def _current_preservation_projection(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    value = plan.get("expectedPreservation")
+    _require(
+        isinstance(value, dict)
+        and set(value) == {"webIngress", "existingWorkbenchNetworkPolicy"},
+        "current protected preservation render set invalid",
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for label, item in value.items():
+        _require(
+            isinstance(item, dict)
+            and set(item) == {"target", "desired", "desiredSemanticSha256", "protectedPath", "protectedFileSha256"}
+            and isinstance(item.get("target"), dict)
+            and isinstance(item.get("desired"), dict)
+            and isinstance(item.get("desiredSemanticSha256"), str)
+            and SHA256.fullmatch(item["desiredSemanticSha256"]) is not None
+            and isinstance(item.get("protectedPath"), str)
+            and bool(item["protectedPath"])
+            and isinstance(item.get("protectedFileSha256"), str)
+            and SHA256.fullmatch(item["protectedFileSha256"]) is not None,
+            f"current protected preservation render invalid: {label}",
+        )
+        target = item["target"]
+        desired = item["desired"]
+        metadata = desired.get("metadata", {})
+        _require(
+            set(target) == {"apiVersion", "kind", "namespace", "name"}
+            and target == {
+                "apiVersion": desired.get("apiVersion"),
+                "kind": desired.get("kind"),
+                "namespace": metadata.get("namespace") if isinstance(metadata, dict) else None,
+                "name": metadata.get("name") if isinstance(metadata, dict) else None,
+            },
+            f"current protected preservation target drift: {label}",
+        )
+        result[label] = copy.deepcopy(item)
+    return result
 
 
 def _normalized_archived_receipt(
@@ -226,6 +285,7 @@ def build_archived_binding(
     archived_participant_contract: dict[str, Any],
     current_participant_contract: dict[str, Any],
     archived_projection: dict[str, Any] | None = None,
+    current_preservation_semantic_sha256: Callable[[dict[str, Any]], str] | None = None,
     expected_archived_raw_sha256: str | None = None,
     expected_archived_canonical_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -242,6 +302,7 @@ def build_archived_binding(
     archived_projection_plan = _plan_projection(archived_plan)
     current_projection_plan = _plan_projection(current_plan)
     allow_current_compatibility_drift = _current_compatibility_drift_is_explicitly_bound(current_participant_contract)
+    current_preservation_contract = _current_preservation_contract_projection(current_participant_contract)
     _require(
         (
             archived_projection_plan["objects"] == current_projection_plan["objects"]
@@ -279,6 +340,40 @@ def build_archived_binding(
         and normalized["sharedSource"]["semanticSha256"] == expected_source_semantic,
         "shared source semantics changed across handover",
     )
+    current_preservation = _current_preservation_projection(current_plan) if current_preservation_contract is not None else None
+    if current_preservation is not None:
+        _require(
+            callable(current_preservation_semantic_sha256)
+            and all(
+                current_preservation_semantic_sha256(current_preservation[label]["desired"])
+                == current_preservation[label]["desiredSemanticSha256"]
+                for label in current_preservation
+            ),
+            "current protected preservation semantic checksum drift",
+        )
+        _require(
+            all(
+                isinstance(current_preservation_contract[label], dict)
+                and set(current_preservation_contract[label]) == {"path", "fluxInventoryLabels"}
+                and current_preservation[label]["target"] == normalized["preservation"][label]["target"]
+                and current_preservation[label]["protectedPath"] == current_preservation_contract[label]["path"]
+                and current_preservation[label]["protectedFileSha256"]
+                    == current_artifacts.get(current_preservation_contract[label]["path"])
+                and isinstance(current_preservation_contract[label]["fluxInventoryLabels"], dict)
+                and set(current_preservation_contract[label]["fluxInventoryLabels"]) == {
+                    "kustomize.toolkit.fluxcd.io/name",
+                    "kustomize.toolkit.fluxcd.io/namespace",
+                }
+                and all(
+                    isinstance(value, str) and bool(value)
+                    for value in current_preservation_contract[label]["fluxInventoryLabels"].values()
+                )
+                and current_preservation_contract[label]["fluxInventoryLabels"]
+                    .items() <= current_preservation[label]["desired"].get("metadata", {}).get("labels", {}).items()
+                for label in normalized["preservation"]
+            ),
+            "current protected preservation contract changed across handover",
+        )
     return {
         "archivedRevision": ARCHIVE_REVISION,
         "currentRevision": current_revision,
@@ -296,6 +391,7 @@ def build_archived_binding(
             for index in range(8)
         ],
         "preservation": normalized["preservation"],
+        "currentProtectedPreservation": current_preservation,
     }
 
 
@@ -388,11 +484,28 @@ def run_get_only_handover(
         expected = binding["preservation"][label]
         live = kube.get_exact(expected["target"])
         observed_sha = object_sha(live)
-        _require(observed_sha == expected["canonicalSha256"], f"preserved object changed: {label}")
+        _require(isinstance(observed_sha, str) and SHA256.fullmatch(observed_sha) is not None, f"preserved object checksum invalid: {label}")
+        current_preservation = binding.get("currentProtectedPreservation")
+        if current_preservation is None:
+            _require(observed_sha == expected["canonicalSha256"], f"preserved object changed: {label}")
+            current_semantic_match = False
+            current_desired_semantic_sha = None
+        else:
+            _require(
+                isinstance(current_preservation, dict) and set(current_preservation) == set(binding["preservation"]),
+                "current protected preservation binding drift",
+            )
+            current_expected = current_preservation[label]
+            _require(current_expected["target"] == expected["target"], f"current preserved target drift: {label}")
+            semantic_equal(live, current_expected["desired"], f"current preserved {label}")
+            current_semantic_match = True
+            current_desired_semantic_sha = current_expected["desiredSemanticSha256"]
         preserved[label] = {
             "target": copy.deepcopy(expected["target"]),
             "canonicalSha256": observed_sha,
-            "unchangedFromArchivedBootstrap": True,
+            "unchangedFromArchivedBootstrap": observed_sha == expected["canonicalSha256"],
+            "currentProtectedSemanticMatch": current_semantic_match,
+            "currentProtectedDesiredSemanticSha256": current_desired_semantic_sha,
         }
 
     payload = {
@@ -473,6 +586,42 @@ def bind_handover_receipt(binding: dict[str, Any], receipt: dict[str, Any]) -> d
         _require(target_key not in seen_targets, "handover object target is duplicated")
         seen_uids.add(observed["uid"])
         seen_targets.add(target_key)
+    _require(
+        isinstance(payload["preservation"], dict)
+        and set(payload["preservation"]) == set(binding["preservation"]),
+        "handover preservation set drift",
+    )
+    current_preservation = binding.get("currentProtectedPreservation")
+    for label, archived in binding["preservation"].items():
+        observed = payload["preservation"][label]
+        _require(
+            isinstance(observed, dict)
+            and set(observed) == {
+                "target", "canonicalSha256", "unchangedFromArchivedBootstrap",
+                "currentProtectedSemanticMatch", "currentProtectedDesiredSemanticSha256",
+            }
+            and observed.get("target") == archived["target"]
+            and isinstance(observed.get("canonicalSha256"), str)
+            and SHA256.fullmatch(observed["canonicalSha256"]) is not None
+            and observed.get("unchangedFromArchivedBootstrap")
+                is (observed["canonicalSha256"] == archived["canonicalSha256"]),
+            f"handover preservation digest drift: {label}",
+        )
+        if current_preservation is None:
+            _require(
+                observed["canonicalSha256"] == archived["canonicalSha256"]
+                and observed.get("unchangedFromArchivedBootstrap") is True
+                and observed.get("currentProtectedSemanticMatch") is False
+                and observed.get("currentProtectedDesiredSemanticSha256") is None,
+                f"archived preservation proof drift: {label}",
+            )
+        else:
+            current_expected = current_preservation[label]
+            _require(
+                observed.get("currentProtectedSemanticMatch") is True
+                and observed.get("currentProtectedDesiredSemanticSha256") == current_expected["desiredSemanticSha256"],
+                f"current protected preservation proof drift: {label}",
+            )
     source = payload["sharedSource"]
     _require(
         isinstance(source, dict)
@@ -491,16 +640,7 @@ def bind_handover_receipt(binding: dict[str, Any], receipt: dict[str, Any]) -> d
         and isinstance(payload["clusterBinding"].get("kubeSystemNamespaceResourceVersion"), str)
         and payload["clusterBinding"]["kubeSystemNamespaceResourceVersion"].isdigit()
         and payload["clusterBinding"].get("credentialsIncluded") is False
-        and payload["clusterBinding"].get("kubeconfigPathIncluded") is False
-        and set(payload["preservation"]) == set(binding["preservation"])
-        and all(
-            isinstance(payload["preservation"][label], dict)
-            and set(payload["preservation"][label]) == {"target", "canonicalSha256", "unchangedFromArchivedBootstrap"}
-            and payload["preservation"][label].get("target") == binding["preservation"][label]["target"]
-            and payload["preservation"][label].get("canonicalSha256") == binding["preservation"][label]["canonicalSha256"]
-            and payload["preservation"][label].get("unchangedFromArchivedBootstrap") is True
-            for label in binding["preservation"]
-        ),
+        and payload["clusterBinding"].get("kubeconfigPathIncluded") is False,
         "handover source or preservation drift",
     )
     return {
@@ -525,6 +665,23 @@ def bind_handover_receipt(binding: dict[str, Any], receipt: dict[str, Any]) -> d
             }
             for label, value in payload["preservation"].items()
         },
+        # This projection is derived from the exact current Git binding, never
+        # from the caller-supplied receipt.  Activation uses it to repeat the
+        # semantic check before its first write, so resealing the unkeyed
+        # receipt checksum cannot turn an unreviewed live object into trusted
+        # preservation state.
+        "currentProtectedPreservation": (
+            None
+            if current_preservation is None
+            else {
+                label: {
+                    "target": copy.deepcopy(value["target"]),
+                    "desired": copy.deepcopy(value["desired"]),
+                    "desiredSemanticSha256": value["desiredSemanticSha256"],
+                }
+                for label, value in current_preservation.items()
+            }
+        ),
         "bothKustomizationsSuspended": True,
         "handover": copy.deepcopy(payload["archivedReceipt"]),
         "civicAuthorityEffects": False,

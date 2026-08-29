@@ -589,6 +589,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             *((revision, path) for path in MODULE.HANDOVER_PREBOUND_CURRENT_PATHS),
             *((MODULE.HANDOVER_ARCHIVE_REVISION, path) for path in MODULE.HANDOVER_PREBOUND_ARCHIVE_PATHS),
         }
+        self.assertEqual(
+            set(MODULE.HANDOVER_CURRENT_PRESERVATION_PATHS),
+            set(handover.CURRENT_PRESERVATION_RENDER_PATHS.values()),
+        )
+        self.assertTrue(set(MODULE.HANDOVER_CURRENT_PRESERVATION_PATHS) <= set(MODULE.HANDOVER_PREBOUND_CURRENT_PATHS))
+        self.assertTrue(set(MODULE.HANDOVER_CURRENT_PRESERVATION_PATHS).isdisjoint(MODULE.HANDOVER_PREBOUND_ARCHIVE_PATHS))
         raw = b"protected-blob-fixture"
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "blob"
@@ -657,6 +663,213 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 archived_participant_contract={"legacyParticipantBoundary": True},
                 current_participant_contract=current_contract,
                 archived_projection=fixture.archived_projection(archived_plan),
+            )
+
+    def test_ordered_plan_handover_rebaselines_only_the_explicit_current_preservation_boundary(self):
+        fixture_path = ROOT / "scripts/test_staging_participant_dormant_receipt_handover.py"
+        spec = importlib.util.spec_from_file_location("participant_handover_preservation_fixture", fixture_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        fixture = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = fixture
+        spec.loader.exec_module(fixture)
+        archived_plan = fixture.participant_plan(fixture.ARCHIVE)
+        current_plan = fixture.participant_plan(fixture.CURRENT)
+        current_paths = {
+            "webIngress": "reviewed-render/roebel-staging/web/ingress.json",
+            "existingWorkbenchNetworkPolicy": "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
+        }
+        current_inventory_labels = {
+            "webIngress": {
+                "kustomize.toolkit.fluxcd.io/name": "roebel-staging-web-workload",
+                "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+            },
+            "existingWorkbenchNetworkPolicy": {
+                "kustomize.toolkit.fluxcd.io/name": "roebel-staging-workbench-baseline",
+                "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+            },
+        }
+        current_contract = {
+            "stagingParticipantGatewayBoundary": {
+                "archivedDormantReceiptHandover": {
+                    "currentCompatibility": "ordered-eight-object-plan-only",
+                    "preservationBoundary": "current-policy-boundaries-only",
+                    "currentPreservationRenders": {
+                        label: {
+                            "path": current_paths[label],
+                            "fluxInventoryLabels": copy.deepcopy(current_inventory_labels[label]),
+                        }
+                        for label in current_paths
+                    },
+                },
+            },
+        }
+        kube = fixture.GetOnlyKube(current_plan)
+        current_hashes = {
+            "webIngress": "sha256:" + "e" * 64,
+            "existingWorkbenchNetworkPolicy": "sha256:" + "f" * 64,
+        }
+        current_targets = {
+            "webIngress": fixture.WEB,
+            "existingWorkbenchNetworkPolicy": fixture.WORKBENCH,
+        }
+        current_artifacts = fixture.artifacts() | {
+            path: "sha256:" + str(index) * 64
+            for index, path in enumerate(current_paths.values(), start=3)
+        }
+        current_plan["expectedPreservation"] = {}
+        for label, current_hash in current_hashes.items():
+            target = current_targets[label]
+            desired = {
+                "apiVersion": target["apiVersion"],
+                "kind": target["kind"],
+                "metadata": {
+                    "name": target["name"],
+                    "namespace": target["namespace"],
+                    "labels": copy.deepcopy(current_inventory_labels[label]),
+                },
+                "spec": {"canonicalSha256Fixture": current_hash},
+            }
+            current_plan["expectedPreservation"][label] = {
+                "target": copy.deepcopy(target),
+                "desired": desired,
+                "desiredSemanticSha256": fixture.digest(desired),
+                "protectedPath": current_paths[label],
+                "protectedFileSha256": current_artifacts[current_paths[label]],
+            }
+        binding = fixture.MODULE.build_archived_binding(
+            archived_receipt_raw=fixture.archived_receipt(archived_plan),
+            archive_revision=fixture.ARCHIVE,
+            current_revision=fixture.CURRENT,
+            archived_plan=archived_plan,
+            current_plan=current_plan,
+            archived_artifacts=fixture.artifacts(),
+            current_artifacts=current_artifacts,
+            archived_participant_contract={"legacyParticipantBoundary": True},
+            current_participant_contract=current_contract,
+            archived_projection=fixture.archived_projection(archived_plan),
+            current_preservation_semantic_sha256=fixture.digest,
+        )
+        for label, target in current_targets.items():
+            live = kube.objects[fixture.identity_key(target)]
+            live["metadata"]["labels"] = copy.deepcopy(current_inventory_labels[label])
+            live["spec"]["canonicalSha256Fixture"] = current_hashes[label]
+        sink = fixture.MemorySink()
+        result = fixture.MODULE.run_get_only_handover(
+            binding=binding,
+            kube=kube,
+            receipt=sink,
+            cluster_binding=copy.deepcopy(fixture.CLUSTER_BINDING),
+            semantic_object_sha256=lambda _value: fixture.SOURCE_SEMANTIC_SHA,
+        )
+        self.assertEqual(len(kube.calls), 11)
+        self.assertEqual(result["effects"]["clusterMutationCount"], 0)
+        for label, current_hash in current_hashes.items():
+            self.assertEqual(result["preservation"][label]["canonicalSha256"], current_hash)
+            self.assertFalse(result["preservation"][label]["unchangedFromArchivedBootstrap"])
+            self.assertTrue(result["preservation"][label]["currentProtectedSemanticMatch"])
+            self.assertEqual(
+                result["preservation"][label]["currentProtectedDesiredSemanticSha256"],
+                current_plan["expectedPreservation"][label]["desiredSemanticSha256"],
+            )
+        ownership = fixture.MODULE.bind_handover_receipt(binding, result)
+        self.assertEqual(
+            {label: value["canonicalSha256"] for label, value in ownership["preservation"].items()},
+            current_hashes,
+        )
+        self.assertEqual(
+            ownership["currentProtectedPreservation"],
+            {
+                label: {
+                    "target": copy.deepcopy(value["target"]),
+                    "desired": copy.deepcopy(value["desired"]),
+                    "desiredSemanticSha256": value["desiredSemanticSha256"],
+                }
+                for label, value in current_plan["expectedPreservation"].items()
+            },
+        )
+        resealed_digest_receipt = copy.deepcopy(result)
+        resealed_digest_receipt["preservation"]["webIngress"]["canonicalSha256"] = "sha256:" + "9" * 64
+        resealed_digest_receipt["canonicalSha256"] = fixture.digest({
+            key: value for key, value in resealed_digest_receipt.items() if key != "canonicalSha256"
+        })
+        resealed_ownership = fixture.MODULE.bind_handover_receipt(binding, resealed_digest_receipt)
+        self.assertEqual(
+            resealed_ownership["currentProtectedPreservation"]["webIngress"]["desired"],
+            current_plan["expectedPreservation"]["webIngress"]["desired"],
+        )
+        self.assertEqual(
+            resealed_ownership["preservation"]["webIngress"]["canonicalSha256"],
+            "sha256:" + "9" * 64,
+        )
+        tampered_receipt = copy.deepcopy(result)
+        tampered_receipt["preservation"]["webIngress"]["currentProtectedDesiredSemanticSha256"] = "sha256:" + "0" * 64
+        tampered_receipt["canonicalSha256"] = fixture.digest({
+            key: value for key, value in tampered_receipt.items() if key != "canonicalSha256"
+        })
+        with self.assertRaisesRegex(fixture.MODULE.HandoverError, "current protected preservation proof drift"):
+            fixture.MODULE.bind_handover_receipt(binding, tampered_receipt)
+
+        tampered_plan = copy.deepcopy(current_plan)
+        tampered_plan["expectedPreservation"]["webIngress"]["desiredSemanticSha256"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(fixture.MODULE.HandoverError, "semantic checksum drift"):
+            fixture.MODULE.build_archived_binding(
+                archived_receipt_raw=fixture.archived_receipt(archived_plan),
+                archive_revision=fixture.ARCHIVE,
+                current_revision=fixture.CURRENT,
+                archived_plan=archived_plan,
+                current_plan=tampered_plan,
+                archived_artifacts=fixture.artifacts(),
+                current_artifacts=current_artifacts,
+                archived_participant_contract={"legacyParticipantBoundary": True},
+                current_participant_contract=current_contract,
+                archived_projection=fixture.archived_projection(archived_plan),
+                current_preservation_semantic_sha256=fixture.digest,
+            )
+
+        strict_contract = copy.deepcopy(current_contract)
+        strict_contract["stagingParticipantGatewayBoundary"]["archivedDormantReceiptHandover"].pop("preservationBoundary")
+        strict_binding = fixture.MODULE.build_archived_binding(
+            archived_receipt_raw=fixture.archived_receipt(archived_plan),
+            archive_revision=fixture.ARCHIVE,
+            current_revision=fixture.CURRENT,
+            archived_plan=archived_plan,
+            current_plan=current_plan,
+            archived_artifacts=fixture.artifacts(),
+            current_artifacts=current_artifacts,
+            archived_participant_contract={"legacyParticipantBoundary": True},
+            current_participant_contract=strict_contract,
+            archived_projection=fixture.archived_projection(archived_plan),
+        )
+        strict_kube = fixture.GetOnlyKube(current_plan)
+        for label, target in current_targets.items():
+            live = strict_kube.objects[fixture.identity_key(target)]
+            live["metadata"]["labels"] = copy.deepcopy(current_inventory_labels[label])
+            live["spec"]["canonicalSha256Fixture"] = current_hashes[label]
+        with self.assertRaisesRegex(fixture.MODULE.HandoverError, "preserved object changed: webIngress"):
+            fixture.MODULE.run_get_only_handover(
+                binding=strict_binding,
+                kube=strict_kube,
+                receipt=fixture.MemorySink(),
+                cluster_binding=copy.deepcopy(fixture.CLUSTER_BINDING),
+                semantic_object_sha256=lambda _value: fixture.SOURCE_SEMANTIC_SHA,
+            )
+
+        semantic_drift = fixture.GetOnlyKube(current_plan)
+        for label, target in current_targets.items():
+            live = semantic_drift.objects[fixture.identity_key(target)]
+            live["metadata"]["labels"] = copy.deepcopy(current_inventory_labels[label])
+            live["spec"]["canonicalSha256Fixture"] = current_hashes[label]
+        semantic_drift.objects[fixture.identity_key(fixture.WEB)]["spec"].update({
+            "unreviewedRoute": "/api/admin",
+        })
+        with self.assertRaisesRegex(fixture.MODULE.HandoverError, "current preserved webIngress semantic drift"):
+            fixture.MODULE.run_get_only_handover(
+                binding=binding,
+                kube=semantic_drift,
+                receipt=fixture.MemorySink(),
+                cluster_binding=copy.deepcopy(fixture.CLUSTER_BINDING),
+                semantic_object_sha256=lambda _value: fixture.SOURCE_SEMANTIC_SHA,
             )
 
     def test_dormant_handover_continuation_invokes_activation_without_rebootstrap_or_materialization(self):
