@@ -154,12 +154,17 @@ RELAY_FIXTURE_RESET_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_relay_fixture_res
 # verifier below.  Keep this guard before output reservation, credential
 # decryption, and cluster contact so any future verifier disablement fails shut.
 RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED = True
-WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b"
-WORKBENCH_PROMOTION_SOURCE_REVISION = "36ac41d7049df815aaebbe4301c098a0ec7e4101"
+WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:872e3e2180e16f69157c5a142c7aa20e3f2e0ea93c10e5363800148b30c99e4c"
+WORKBENCH_PROMOTION_SOURCE_REVISION = "b57a3ae2e8ce613bfae4b6ab96e20b95f578ca67"
 WORKBENCH_PROMOTION_TARGET_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
-    "sha256:2158831bd76865db483ca6a8dc211e7d5c3de51d0113613fc0a22a4ca27fc6ce"
+    "sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2"
 )
+# The already-reviewed relay-reset capability remains bound to its historical
+# two-component pin.  A workbench-only promotion must not silently retarget
+# that destructive one-shot path to a newer relay artifact.
+RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256 = "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b"
+RELAY_FIXTURE_RESET_SOURCE_REVISION = "36ac41d7049df815aaebbe4301c098a0ec7e4101"
 RELAY_FIXTURE_RESET_TARGET_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-staging-relay@"
     "sha256:6def2f468e3fad47cf17c0287a9215bbdc299b0d7d3b7fc58927b2f2169650ad"
@@ -1934,7 +1939,7 @@ def verify_relay_fixture_reset_evidence(
 
     require(REVISION.fullmatch(revision) is not None, "relay reset protected revision invalid")
     require(
-        artifact_pin_sha256 == WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        artifact_pin_sha256 == RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
         "relay reset artifact pin argument drift",
     )
     require(
@@ -1977,7 +1982,7 @@ def verify_relay_fixture_reset_evidence(
     require(
         artifact == {
             "receiptSha256": artifact_pin_sha256,
-            "sourceRevision": WORKBENCH_PROMOTION_SOURCE_REVISION,
+            "sourceRevision": RELAY_FIXTURE_RESET_SOURCE_REVISION,
             "component": "roebel-staging-relay",
             "repository": RELAY_FIXTURE_RESET_TARGET_IMAGE.rsplit("@", 1)[0],
             "manifestDigest": relay_digest,
@@ -2407,7 +2412,13 @@ def verify_workbench_image_promotion_evidence(
     require(
         isinstance(deployment, dict)
         and deployment.get("environmentTransition") == {
-            "added": {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+            "added": [
+                {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+                {
+                    "name": "LEGACY_SYNTHETIC_PUBKEYS_JSON",
+                    "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]",
+                },
+            ],
             "removedNames": [
                 "CASE_STEWARD_TOKEN",
                 "STADTSTACK_CONTROL_BASE_URL",
@@ -3314,7 +3325,7 @@ def run_relay_fixture_reset_transport(args: argparse.Namespace) -> int:
             max_bytes=MAX_RECEIPT_BYTES,
         )
         require(
-            file_sha256(artifact_pin_copy) == WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+            file_sha256(artifact_pin_copy) == RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
             "relay fixture reset artifact pin checksum drift",
         )
         executable_dir = temp / "executables"; executable_dir.mkdir(mode=0o700)
@@ -3409,7 +3420,7 @@ def run_relay_fixture_reset_transport(args: argparse.Namespace) -> int:
                 journal_bound,
                 revision,
                 protected_hashes,
-                WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+                RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
             )
             bindings["kubectl"]._verify()
             logging_error = best_effort_print_child(child)
@@ -3459,7 +3470,7 @@ def run_relay_fixture_reset_transport(args: argparse.Namespace) -> int:
         "protectedRevision": revision,
         "protectedGitBlobSha256": protected_hashes,
         "binarySha256": {name: snapshot.sha256 for name, snapshot in sorted(snapshots.items())},
-        "artifactPinSha256": WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256,
+        "artifactPinSha256": RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256,
         "targetImage": RELAY_FIXTURE_RESET_TARGET_IMAGE,
         "transport": {
             "mode": "authenticated-exact-connect-guards-spawning-protected-relay-fixture-reset",

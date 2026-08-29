@@ -837,9 +837,24 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             ],
             "artifactPin": {
                 "schemaVersion": "roebel_e2e_runtime_pin_v1",
-                "sourceRevision": "36ac41d7049df815aaebbe4301c098a0ec7e4101",
-                "receiptSha256": "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b",
-                "targetImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:2158831bd76865db483ca6a8dc211e7d5c3de51d0113613fc0a22a4ca27fc6ce",
+                "sourceRevision": "b57a3ae2e8ce613bfae4b6ab96e20b95f578ca67",
+                "receiptSha256": "sha256:872e3e2180e16f69157c5a142c7aa20e3f2e0ea93c10e5363800148b30c99e4c",
+                "targetImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2",
+            },
+            "environmentTransition": {
+                "removedNames": [
+                    "CASE_STEWARD_TOKEN",
+                    "STADTSTACK_CONTROL_BASE_URL",
+                    "STADTSTACK_PUBLIC_BASE_URL",
+                    "SYNTHETIC_CITIZENS_JSON",
+                ],
+                "added": [
+                    {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+                    {
+                        "name": "LEGACY_SYNTHETIC_PUBKEYS_JSON",
+                        "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]",
+                    },
+                ],
             },
             "outputs": {
                 "receipt": "explicit-owner-only-nonexisting-path-required",
@@ -2729,6 +2744,10 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
         if component == "workbench":
             environment = [
                 {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+                {
+                    "name": "LEGACY_SYNTHETIC_PUBKEYS_JSON",
+                    "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]",
+                },
                 {"name": "WORKBENCH_PORT", "value": "18083"},
                 {"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"},
                 {"name": "CITIZEN_RELAY_URL", "value": "ws://citizen-relay.stadtstack-roebel-staging-lab.svc.cluster.local:18081"},

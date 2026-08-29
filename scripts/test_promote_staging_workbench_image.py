@@ -177,8 +177,50 @@ def ordinary_post() -> dict[str, Any]:
         "promotedTopicId": None,
         "sourceAppPostId": None,
         "synthetic": False,
+    }
+
+
+def topic_post() -> dict[str, Any]:
+    author = {
+        "name": "Anna",
+        "kind": "citizen",
+        "pubkey": "e" * 64,
+        "synthetic": False,
+    }
+    discussion = {
+        "id": "f" * 64,
+        "author": copy.deepcopy(author),
+        "content": "Die Querung soll gemeinsam geprüft werden.",
+        "createdAt": "2026-08-28T08:05:00Z",
+        "replyCount": 0,
+        "meckyMentioned": False,
+        "meckyAnswered": False,
+        "suggestionSigned": False,
         "caseBinding": None,
         "sourceConversation": None,
+        "synthetic": False,
+    }
+    return {
+        "id": discussion["id"],
+        "entryType": "topic",
+        "author": author,
+        "content": discussion["content"],
+        "createdAt": discussion["createdAt"],
+        "replyCount": 0,
+        "meckyMentioned": False,
+        "meckyAnswered": False,
+        "suggestionSigned": False,
+        "caseBinding": None,
+        "sourceConversation": None,
+        "topicId": "querung-marienfelder-strasse",
+        "topicTitle": "Sichere Querung",
+        "synthetic": False,
+        "lastActivityAt": discussion["createdAt"],
+        "discussionCount": 1,
+        "discussionIds": [discussion["id"]],
+        "discussions": [discussion],
+        "sourcePostIds": ["a" * 64],
+        "activityCount": 1,
     }
 
 
@@ -355,7 +397,7 @@ class PromotionTests(unittest.TestCase):
         patch = MODULE.build_image_patch(before)
         self.assertEqual(
             [item["op"] for item in patch],
-            ["test"] * 5 + ["replace"] + ["remove"] * 4 + ["add"],
+            ["test"] * 5 + ["replace"] + ["remove"] * 4 + ["add"] * 2,
         )
         self.assertEqual({item["path"] for item in patch[:5]}, {
             "/metadata/uid",
@@ -378,6 +420,10 @@ class PromotionTests(unittest.TestCase):
             patch[10],
             {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}},
         )
+        self.assertEqual(
+            patch[11],
+            {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE}},
+        )
 
     def test_rollback_patch_restores_exact_old_public_environment(self) -> None:
         before = deployment()
@@ -386,16 +432,20 @@ class PromotionTests(unittest.TestCase):
         current["spec"]["template"]["spec"]["containers"][0]["env"] = [
             entry for entry in current["spec"]["template"]["spec"]["containers"][0]["env"]
             if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
-        ] + [{"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}]
+        ] + [
+            {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE},
+            {"name": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE},
+        ]
         patch = MODULE.build_rollback_patch(current, before=before)
         self.assertEqual(
             [item["op"] for item in patch],
-            ["test"] * 5 + ["replace", "remove"] + ["add"] * 4,
+            ["test"] * 5 + ["replace"] + ["remove"] * 2 + ["add"] * 4,
         )
         self.assertEqual(patch[5], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.OLD_IMAGE})
-        self.assertEqual(patch[6], {"op": "remove", "path": "/spec/template/spec/containers/0/env/7"})
+        self.assertEqual(patch[6], {"op": "remove", "path": "/spec/template/spec/containers/0/env/8"})
+        self.assertEqual(patch[7], {"op": "remove", "path": "/spec/template/spec/containers/0/env/7"})
         self.assertEqual(
-            [item["path"] for item in patch[7:]],
+            [item["path"] for item in patch[8:]],
             [
                 "/spec/template/spec/containers/0/env/4",
                 "/spec/template/spec/containers/0/env/5",
@@ -403,6 +453,40 @@ class PromotionTests(unittest.TestCase):
                 "/spec/template/spec/containers/0/env/8",
             ],
         )
+
+    def test_target_requires_exact_nonempty_sorted_legacy_public_keys(self) -> None:
+        target = deployment()
+        target["spec"]["template"]["spec"]["containers"][0]["image"] = MODULE.TARGET_IMAGE
+        base_env = [
+            entry for entry in target["spec"]["template"]["spec"]["containers"][0]["env"]
+            if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
+        ]
+        target["spec"]["template"]["spec"]["containers"][0]["env"] = base_env + [
+            copy.deepcopy(item) for item in MODULE.PUBLIC_MODE_ENV_ADDITIONS
+        ]
+        MODULE.validate_workbench_deployment(target, expected_image=MODULE.TARGET_IMAGE)
+
+        cases = {
+            "missing": None,
+            "empty": "[]",
+            "reversed": json.dumps(list(reversed(MODULE.LEGACY_SYNTHETIC_PUBKEYS)), separators=(",", ":")),
+            "duplicate": json.dumps([MODULE.LEGACY_SYNTHETIC_PUBKEYS[0]] * 2, separators=(",", ":")),
+            "extra": json.dumps([*MODULE.LEGACY_SYNTHETIC_PUBKEYS, "f" * 64], separators=(",", ":")),
+        }
+        for label, value in cases.items():
+            changed = copy.deepcopy(target)
+            env = changed["spec"]["template"]["spec"]["containers"][0]["env"]
+            if value is None:
+                env.pop()
+            else:
+                env[-1]["value"] = value
+            with self.subTest(label=label), self.assertRaises(MODULE.PromotionError):
+                MODULE.validate_workbench_deployment(changed, expected_image=MODULE.TARGET_IMAGE)
+
+        displaced = copy.deepcopy(target)
+        displaced["spec"]["template"]["spec"]["containers"][0]["env"].append({"name": "UNRELATED", "value": "preserved"})
+        with self.assertRaises(MODULE.PromotionError):
+            MODULE.validate_workbench_deployment(displaced, expected_image=MODULE.TARGET_IMAGE)
 
     def test_success_proves_rollout_pod_digest_probes_and_preservation(self) -> None:
         result, kube, journal, receipt = self.invoke(FakeKubernetes())
@@ -765,7 +849,10 @@ class PromotionTests(unittest.TestCase):
         incomplete["spec"]["template"]["spec"]["containers"][0]["env"] = [
             entry for entry in env
             if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
-        ] + [{"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}]
+        ] + [
+            {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE},
+            {"name": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE},
+        ]
         self.assertEqual(MODULE._classify_rollback_state(incomplete, before), "ambiguous")
 
     def test_operator_signal_after_patch_enters_rollback_and_terminal_receipt(self) -> None:
@@ -1021,10 +1108,10 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(summary["postCount"], 1)
         self.assertFalse(summary["syntheticRecords"])
 
-        missing_binding = copy.deepcopy(feed)
-        del missing_binding["posts"][0]["caseBinding"]
+        topic_only_binding = copy.deepcopy(feed)
+        topic_only_binding["posts"][0]["caseBinding"] = None
         with self.assertRaises(MODULE.PostconditionFailure):
-            MODULE.validate_feed_probe(missing_binding)
+            MODULE.validate_feed_probe(topic_only_binding)
 
         fixture_provenance = copy.deepcopy(feed)
         fixture_provenance["posts"][0]["sourceFixture"] = False
@@ -1035,6 +1122,66 @@ class PromotionTests(unittest.TestCase):
         credential_extra["posts"][0]["apiToken"] = "redacted"
         with self.assertRaises(MODULE.PromotionError):
             MODULE.validate_feed_probe(credential_extra)
+
+    def test_real_mecky_markers_are_booleans_while_synthetic_stays_false(self) -> None:
+        feed = {
+            "schemaVersion": MODULE.PUBLIC_FEED_SCHEMA,
+            "posts": [ordinary_post()],
+            "authorityBinding": "none",
+        }
+        feed["posts"][0]["meckyMentioned"] = True
+        feed["posts"][0]["meckyAnswered"] = True
+        self.assertEqual(MODULE.validate_feed_probe(feed)["postCount"], 1)
+
+        non_boolean = copy.deepcopy(feed)
+        non_boolean["posts"][0]["meckyMentioned"] = "true"
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(non_boolean)
+
+        synthetic = copy.deepcopy(feed)
+        synthetic["posts"][0]["synthetic"] = True
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(synthetic)
+
+    def test_topic_records_keep_their_case_and_conversation_fields_closed(self) -> None:
+        feed = {
+            "schemaVersion": MODULE.PUBLIC_FEED_SCHEMA,
+            "posts": [topic_post()],
+            "authorityBinding": "none",
+        }
+        self.assertEqual(MODULE.validate_feed_probe(feed)["postCount"], 1)
+
+        missing_topic_binding = copy.deepcopy(feed)
+        del missing_topic_binding["posts"][0]["caseBinding"]
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(missing_topic_binding)
+
+        missing_discussion_conversation = copy.deepcopy(feed)
+        del missing_discussion_conversation["posts"][0]["discussions"][0]["sourceConversation"]
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(missing_discussion_conversation)
+
+    def test_topic_conversation_allows_null_receipt_with_verified_https_evidence(self) -> None:
+        feed = {
+            "schemaVersion": MODULE.PUBLIC_FEED_SCHEMA,
+            "posts": [topic_post()],
+            "authorityBinding": "none",
+        }
+        feed["posts"][0]["sourceConversation"] = {
+            "sourceAppPostId": "post-1",
+            "sourceAppCommentId": None,
+            "mentionId": "1" * 64,
+            "replyId": "2" * 64,
+            "receiptId": None,
+            "mentionAuthor": copy.deepcopy(feed["posts"][0]["author"]),
+            "evidenceRefs": [{"digest": "sha256:" + "3" * 64, "url": "https://roebel-mueritz.de/quelle"}],
+        }
+        self.assertEqual(MODULE.validate_feed_probe(feed)["postCount"], 1)
+
+        unverified_reference = copy.deepcopy(feed)
+        unverified_reference["posts"][0]["sourceConversation"]["evidenceRefs"][0]["url"] = "http://roebel-mueritz.de/quelle"
+        with self.assertRaises(MODULE.PostconditionFailure):
+            MODULE.validate_feed_probe(unverified_reference)
 
     def test_terminal_journal_failure_never_rolls_back_after_receipt_commit(self) -> None:
         kube = FakeKubernetes()
