@@ -926,7 +926,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_nine_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_ten_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -959,7 +959,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -977,7 +978,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-nine-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-ten-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -990,6 +991,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1010,7 +1012,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1021,7 +1024,8 @@ class ExecutorTests(unittest.TestCase):
             "fifth-to-sixth-successor file set drift",
             "sixth-to-seventh-successor file set drift",
             "seventh-to-eighth-successor file set drift",
-            "eighth-successor-to-acceptor file set drift",
+            "eighth-to-ninth-successor file set drift",
+            "ninth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1062,6 +1066,10 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
             "1995dba981f9413ff5460328a02c79ab563129a5",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
+            "01e115b6fd03dce7900946ac71e2d8f943a6fb74",
         )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
@@ -1104,7 +1112,11 @@ class ExecutorTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
             participant_pair | wrapper_pair,
         )
         widened = copy.deepcopy(receipt)
@@ -1132,8 +1144,8 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
 
-    def test_ninth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
-        parent = MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION
+    def test_tenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION
         child = "c" * 40
         foreign = "d" * 40
         for label, lineage in (
@@ -1147,12 +1159,12 @@ class ExecutorTests(unittest.TestCase):
                 MODULE, "trusted_git_v4", return_value=result
             ) as trusted, self.assertRaisesRegex(
                 MODULE.ActivationError,
-                "eighth-successor-to-acceptor protected parent drift",
+                "ninth-successor-to-acceptor protected parent drift",
             ):
                 MODULE.exact_revision_transition_files_v4(
                     parent,
                     child,
-                    "tracer receipt eighth-successor-to-acceptor",
+                    "tracer receipt ninth-successor-to-acceptor",
                 )
             self.assertEqual(trusted.call_count, 1)
 
@@ -2183,6 +2195,11 @@ class ExecutorTests(unittest.TestCase):
             "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "147", "content-type": "text/html"},
             "body": "<html><body><h1>405 Method Not Allowed</h1>\nA request was made of a resource using a request method not supported by that resource.\n</body></html>\n",
         }
+        not_found = {
+            "status": 404,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "83", "content-type": "text/html"},
+            "body": "<html><body><h1>404 Not Found</h1>\nThe resource could not be found.\n</body></html>\n",
+        }
         def response(request_origin, method, path, headers, body, timeout):
             self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
             if method == "GET" and path == prefix + "/status": return {"status": 200, "headers": cors | {"content-type": "application/json; charset=utf-8"}, "body": json.dumps(status_body)}
@@ -2198,7 +2215,7 @@ class ExecutorTests(unittest.TestCase):
                 if method == "HEAD": denied["body"] = ""
                 return denied
             if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
-            return {"status": 404, "headers": {}, "body": ""}
+            return copy.deepcopy(not_found)
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
             receipt = MODULE.route_matrix_v4(Fake(), value)
         expected_count = len(MODULE.POLICY.ROUTE_EXPECTATIONS)
@@ -2232,6 +2249,11 @@ class ExecutorTests(unittest.TestCase):
             "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "147", "content-type": "text/html"},
             "body": "<html><body><h1>405 Method Not Allowed</h1>\nA request was made of a resource using a request method not supported by that resource.\n</body></html>\n",
         }
+        not_found = {
+            "status": 404,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "83", "content-type": "text/html"},
+            "body": "<html><body><h1>404 Not Found</h1>\nThe resource could not be found.\n</body></html>\n",
+        }
         status_attempts = 0
 
         def response(request_origin, method, path, headers, body, timeout):
@@ -2254,7 +2276,7 @@ class ExecutorTests(unittest.TestCase):
                 if method == "HEAD": denied["body"] = ""
                 return denied
             if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
-            return {"status": 404, "headers": {}, "body": ""}
+            return copy.deepcopy(not_found)
 
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request, patch.object(MODULE.time, "sleep") as sleep:
             receipt = MODULE.route_matrix_v4(Fake(), value)
@@ -2306,6 +2328,33 @@ class ExecutorTests(unittest.TestCase):
                 MODULE._require_haproxy_method_denied_v4(observed, "POST", "/status")
         with self.assertRaises(MODULE.ActivationError):
             MODULE._require_haproxy_method_denied_v4(exact, "HEAD", "/status")
+
+    def test_v4_not_found_binds_haproxy_and_rejects_gateway_empty_cors_or_shape_drift(self):
+        exact = {
+            "status": 404,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "83", "content-type": "text/html"},
+            "body": "<html><body><h1>404 Not Found</h1>\nThe resource could not be found.\n</body></html>\n",
+        }
+        for method, path in (
+            ("GET", "/api/staging-participant/v1/unknown"),
+            ("GET", "/api/staging-participant/v1/status/"),
+            ("OPTIONS", "/api/staging-participant/v1/unknown"),
+        ):
+            with self.subTest(method=method, path=path):
+                MODULE._require_haproxy_not_found_v4(exact, method, path)
+        drift_cases = {
+            "gateway-json": {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'},
+            "old-empty-assumption": {"status": 404, "headers": {}, "body": ""},
+            "body": exact | {"body": exact["body"] + "drift"},
+            "content-length": exact | {"headers": exact["headers"] | {"content-length": "84"}},
+            "cache": exact | {"headers": exact["headers"] | {"cache-control": "public"}},
+            "connection": exact | {"headers": exact["headers"] | {"connection": "keep-alive"}},
+            "content-type": exact | {"headers": exact["headers"] | {"content-type": "text/plain"}},
+            "cors": exact | {"headers": exact["headers"] | {"access-control-allow-origin": "https://roebel-web.staging.agentcart.eu"}},
+        }
+        for label, observed in drift_cases.items():
+            with self.subTest(label=label), self.assertRaises(MODULE.ActivationError):
+                MODULE._require_haproxy_not_found_v4(observed, "GET", "/unknown")
 
     def test_v4_route_matrix_does_not_retry_an_invalid_200_contract_or_other_status(self):
         value = policy(); origin = value["endpoints"]["browserOrigin"]
