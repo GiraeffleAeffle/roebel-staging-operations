@@ -926,7 +926,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_two_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_six_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -950,7 +950,11 @@ class ExecutorTests(unittest.TestCase):
                 try:
                     transition_values = transitions or [
                         set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
-                        set(MODULE.TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_INTERMEDIATE_TO_SECOND_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -968,12 +972,16 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-two-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-six-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
                     MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                     MODULE.TRACER_RECEIPT_INTERMEDIATE_REVISION,
+                    MODULE.TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -985,13 +993,70 @@ class ExecutorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(MODULE.ActivationError, "exact approved run19"):
             bind(receipt, raw_sha=sha("0"))
-        with self.assertRaisesRegex(MODULE.ActivationError, "origin-to-intermediate file set drift"):
-            bind(receipt, transitions=[{"README.md"}])
-        with self.assertRaisesRegex(MODULE.ActivationError, "intermediate-to-acceptor file set drift"):
-            bind(receipt, transitions=[
-                set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
-                {"README.md"},
-            ])
+        transition_sets = [
+            set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
+            set(MODULE.TRACER_RECEIPT_INTERMEDIATE_TO_SECOND_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        ]
+        transition_messages = (
+            "origin-to-intermediate file set drift",
+            "intermediate-to-second-successor file set drift",
+            "second-to-third-successor file set drift",
+            "third-to-fourth-successor file set drift",
+            "fourth-to-fifth-successor file set drift",
+            "fifth-successor-to-acceptor file set drift",
+        )
+        for index, message in enumerate(transition_messages):
+            for variant in (
+                transition_sets[index] | {"README.md"},
+                transition_sets[index] - {next(iter(transition_sets[index]))},
+            ):
+                changed = copy.deepcopy(transition_sets)
+                changed[index] = variant
+                with self.subTest(index=index, variant=variant), self.assertRaisesRegex(
+                    MODULE.ActivationError, message
+                ):
+                    bind(receipt, transitions=changed)
+
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION,
+            "f41bb1ac2ec27c6332a3b5614e65516349f239b0",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
+            "89cc247c412374205d83433dcc5f774f8c705b1b",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
+            "93d9e5bb87acb18887250316fb0b7a1bdf4c7cfa",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
+            "7aa2db7f174742555ec0374725d2c80ee0350e8a",
+        )
+        participant_pair = {
+            "scripts/activate-staging-participant-gateway.py",
+            "scripts/test_activate_staging_participant_gateway.py",
+        }
+        wrapper_pair = {
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+        }
+        self.assertEqual(set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES), participant_pair)
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_INTERMEDIATE_TO_SECOND_SUCCESSOR_FILES),
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(set(MODULE.TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES), participant_pair)
+        self.assertEqual(set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES), wrapper_pair)
+        self.assertEqual(set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES), wrapper_pair)
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            participant_pair | wrapper_pair,
+        )
         widened = copy.deepcopy(receipt)
         widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
         with self.assertRaisesRegex(MODULE.ActivationError, "protected path change drift"):
