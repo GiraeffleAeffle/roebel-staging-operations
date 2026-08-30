@@ -45,13 +45,35 @@ TRACER_POLICY_PATH = "scripts/tracer_data_plane_policy.py"
 TRACER_RENDER_ROOT = "reviewed-render/roebel-staging/tracer-data-plane"
 TRACER_RECEIPT_ORIGIN_REVISION = "068c1248dcbc7e1967b5822abad42a55dce7c0f8"
 TRACER_RECEIPT_INTERMEDIATE_REVISION = "abd199dff25066e1d60911667b23c2655e826b75"
+TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION = "f41bb1ac2ec27c6332a3b5614e65516349f239b0"
+TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION = "89cc247c412374205d83433dcc5f774f8c705b1b"
+TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION = "93d9e5bb87acb18887250316fb0b7a1bdf4c7cfa"
+TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION = "7aa2db7f174742555ec0374725d2c80ee0350e8a"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
 })
-TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_INTERMEDIATE_TO_SECOND_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+})
+TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES = frozenset({
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES = frozenset({
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
@@ -1422,7 +1444,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 two-hop lineage."""
+    """Admit current receipts or the exact successful run19 six-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1464,10 +1486,42 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_INTERMEDIATE_REVISION,
+            TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION,
+            "tracer receipt intermediate-to-second-successor",
+        ) == set(TRACER_RECEIPT_INTERMEDIATE_TO_SECOND_SUCCESSOR_FILES),
+        "tracer receipt intermediate-to-second-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
+            "tracer receipt second-to-third-successor",
+        ) == set(TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES),
+        "tracer receipt second-to-third-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
+            "tracer receipt third-to-fourth-successor",
+        ) == set(TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
+        "tracer receipt third-to-fourth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
+            "tracer receipt fourth-to-fifth-successor",
+        ) == set(TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
+        "tracer receipt fourth-to-fifth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt intermediate-to-acceptor",
-        ) == set(TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES),
-        "tracer receipt intermediate-to-acceptor file set drift",
+            "tracer receipt fifth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt fifth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1484,12 +1538,16 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-two-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-six-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
             TRACER_RECEIPT_ORIGIN_REVISION,
             TRACER_RECEIPT_INTERMEDIATE_REVISION,
+            TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
             rev,
         ],
     }

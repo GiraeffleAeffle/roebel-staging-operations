@@ -1206,7 +1206,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_four_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_six_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1234,6 +1234,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1260,8 +1262,16 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1279,6 +1289,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1314,6 +1332,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1353,6 +1373,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, MODULE.LiveTransportError("second parent drift")],
             [None, None, MODULE.LiveTransportError("third parent drift")],
             [None, None, None, MODULE.LiveTransportError("fourth parent drift")],
+            [None, None, None, None, MODULE.LiveTransportError("fifth parent drift")],
+            [None, None, None, None, None, MODULE.LiveTransportError("sixth parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1366,15 +1388,21 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         second = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES
         third = MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES
         fourth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES
+        fifth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES
+        sixth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES
         cases = (
-            ("first-widened", [first | {"unrelated"}, second, third, fourth], "first-hop"),
-            ("first-omitted", [first - {next(iter(first))}, second, third, fourth], "first-hop"),
-            ("second-widened", [first, second | {"unrelated"}, third, fourth], "second-hop"),
-            ("second-omitted", [first, second - {next(iter(second))}, third, fourth], "second-hop"),
-            ("third-widened", [first, second, third | {"unrelated"}, fourth], "third-hop"),
-            ("third-omitted", [first, second, third - {next(iter(third))}, fourth], "third-hop"),
-            ("fourth-widened", [first, second, third, fourth | {"unrelated"}], "fourth-hop"),
-            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}], "fourth-hop"),
+            ("first-widened", [first | {"unrelated"}, second, third, fourth, fifth, sixth], "first-hop"),
+            ("first-omitted", [first - {next(iter(first))}, second, third, fourth, fifth, sixth], "first-hop"),
+            ("second-widened", [first, second | {"unrelated"}, third, fourth, fifth, sixth], "second-hop"),
+            ("second-omitted", [first, second - {next(iter(second))}, third, fourth, fifth, sixth], "second-hop"),
+            ("third-widened", [first, second, third | {"unrelated"}, fourth, fifth, sixth], "third-hop"),
+            ("third-omitted", [first, second, third - {next(iter(third))}, fourth, fifth, sixth], "third-hop"),
+            ("fourth-widened", [first, second, third, fourth | {"unrelated"}, fifth, sixth], "fourth-hop"),
+            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}, fifth, sixth], "fourth-hop"),
+            ("fifth-widened", [first, second, third, fourth, fifth | {"unrelated"}, sixth], "fifth-hop"),
+            ("fifth-omitted", [first, second, third, fourth, fifth - {next(iter(fifth))}, sixth], "fifth-hop"),
+            ("sixth-widened", [first, second, third, fourth, fifth, sixth | {"unrelated"}], "sixth-hop"),
+            ("sixth-omitted", [first, second, third, fourth, fifth, sixth - {next(iter(sixth))}], "sixth-hop"),
         )
         for label, changed_effect, message in cases:
             with self.subTest(label=label), patch.object(
@@ -1434,6 +1462,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
             "89cc247c412374205d83433dcc5f774f8c705b1b",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
+            "93d9e5bb87acb18887250316fb0b7a1bdf4c7cfa",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+            "7aa2db7f174742555ec0374725d2c80ee0350e8a",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1449,6 +1485,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         )
         self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES, participant_pair)
         self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES, wrapper_pair)
+        self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES, wrapper_pair)
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
+            participant_pair | wrapper_pair,
+        )
 
     def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):
         root = Path("/private/receipts")
