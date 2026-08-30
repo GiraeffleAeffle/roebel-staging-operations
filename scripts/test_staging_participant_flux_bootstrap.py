@@ -183,6 +183,83 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
         )
 
+    def test_run29_teardown_lineage_accepts_original_bridge_and_one_pinned_hotfix_hop(self) -> None:
+        base = "890e001c76a94755d8f25ebfcf83593da24a082e"
+        bridge = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
+        hotfix = "c" * 40
+        bridge_paths = {
+            "scripts/bootstrap-staging-participant-flux.py",
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/staging_participant_flux_bootstrap.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+            "scripts/test_staging_participant_flux_bootstrap.py",
+        }
+        hotfix_paths = {
+            "scripts/bootstrap-staging-participant-flux.py",
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+            "scripts/test_staging_participant_flux_bootstrap.py",
+        }
+        self.assertEqual(CLI.RUN29_TEARDOWN_RECEIPT_PINS, {
+            "archivedDormant": {
+                "rawSha256": "sha256:32e244e5ba711aa8406a76d8dbf4fdd53289e52e2ced6ff27b77a7ae7577741f",
+                "canonicalSha256": "sha256:ab90b49078f423c304b643b9354230611127d0ed6bda0d1022f3abc92772b081",
+            },
+            "dormantHandover": {
+                "rawSha256": "sha256:003c1a7fcbaf43a33872d86420596c4371b0815f4c3bbc1e40f9f5f1c61ead5e",
+                "canonicalSha256": "sha256:9860575a8e378a576615fd28b6e826ab9a7f650ae759d2e396a63234b5c4b21e",
+            },
+            "participantRecovery": {
+                "rawSha256": "sha256:d316bc4309f52e64dee3b4b6d682313caead4c529e184035e540f2814b20652f",
+                "canonicalSha256": "sha256:57f9c8d2d39cd98f4fc239ba1f388f80f7a99d488a9ddabc376372862d2493ea",
+            },
+        })
+
+        def completed(candidate, parent, paths):
+            return [
+                subprocess.CompletedProcess([], 0, stdout=f"{candidate} {parent}\n", stderr=""),
+                subprocess.CompletedProcess(
+                    [], 0,
+                    stdout=b"\0".join(path.encode("utf-8") for path in sorted(paths)) + b"\0",
+                    stderr=b"",
+                ),
+            ]
+
+        with mock.patch.object(CLI, "trusted_git", side_effect=completed(bridge, base, bridge_paths)):
+            self.assertEqual(CLI.require_run29_teardown_lineage(bridge), sorted(bridge_paths))
+        with mock.patch.object(CLI, "trusted_git", side_effect=completed(hotfix, bridge, hotfix_paths)):
+            self.assertEqual(CLI.require_run29_teardown_lineage(hotfix), sorted(hotfix_paths))
+
+    def test_run29_teardown_lineage_rejects_unpinned_parent_and_hotfix_file_set(self) -> None:
+        bridge = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
+        hotfix = "c" * 40
+        hotfix_paths = {
+            "scripts/bootstrap-staging-participant-flux.py",
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+            "scripts/test_staging_participant_flux_bootstrap.py",
+        }
+
+        def completed(parent, paths):
+            return [
+                subprocess.CompletedProcess([], 0, stdout=f"{hotfix} {parent}\n", stderr=""),
+                subprocess.CompletedProcess(
+                    [], 0,
+                    stdout=b"\0".join(path.encode("utf-8") for path in sorted(paths)) + b"\0",
+                    stderr=b"",
+                ),
+            ]
+
+        with mock.patch.object(CLI, "trusted_git", side_effect=completed("d" * 40, hotfix_paths)), self.assertRaisesRegex(
+            CLI.CliError, "protected parent drift",
+        ):
+            CLI.require_run29_teardown_lineage(hotfix)
+        with mock.patch.object(
+            CLI, "trusted_git",
+            side_effect=completed(bridge, hotfix_paths | {"scripts/foreign.py"}),
+        ), self.assertRaisesRegex(CLI.CliError, "protected file set drift"):
+            CLI.require_run29_teardown_lineage(hotfix)
+
     def test_plan_contains_only_the_exact_eight_suspended_flux_objects(self) -> None:
         plan = BOOTSTRAP.build_plan(
             POLICY,

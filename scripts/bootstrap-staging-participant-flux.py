@@ -55,14 +55,22 @@ SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # This is a one-incident capability, not a generic historical receipt bridge.
 # Every source and every dormant identity is pinned to the successful run29-r2
-# recovery evidence.  The accepting revision must be the single reviewed child
-# of this exact base and may change only the five files listed below.
+# recovery evidence.  The original bridge is pinned exactly, and one direct
+# hotfix child may change only the four files needed to repair its wrapper
+# dispatch while retaining the incident receipt pins below.
 RUN29_TEARDOWN_BASE_REVISION = "890e001c76a94755d8f25ebfcf83593da24a082e"
+RUN29_TEARDOWN_BRIDGE_REVISION = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
 RUN29_TEARDOWN_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
 RUN29_TEARDOWN_CHANGED_PATHS = frozenset({
     "scripts/bootstrap-staging-participant-flux.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
+})
+RUN29_TEARDOWN_HOTFIX_CHANGED_PATHS = frozenset({
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/test_staging_participant_flux_bootstrap.py",
 })
@@ -217,7 +225,7 @@ def load_context(rev: str) -> dict[str, Any]:
 
 
 def require_run29_teardown_lineage(current_revision: str) -> list[str]:
-    """Prove the one reviewed 890e -> candidate Git edge and exact file set."""
+    """Prove the pinned bridge or its one closed direct hotfix edge."""
     revision(current_revision)
     require(current_revision != RUN29_TEARDOWN_BASE_REVISION, "run29 teardown candidate revision did not advance")
     try:
@@ -228,10 +236,28 @@ def require_run29_teardown_lineage(current_revision: str) -> list[str]:
             check=False,
             timeout=10,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise CliError("run29 teardown protected lineage timed out") from exc
+    parents = lineage.stdout.strip().split() if lineage.returncode == 0 else []
+    if (
+        current_revision == RUN29_TEARDOWN_BRIDGE_REVISION
+        and parents == [RUN29_TEARDOWN_BRIDGE_REVISION, RUN29_TEARDOWN_BASE_REVISION]
+    ):
+        expected_parent = RUN29_TEARDOWN_BASE_REVISION
+        expected_paths = RUN29_TEARDOWN_CHANGED_PATHS
+    elif (
+        current_revision not in {RUN29_TEARDOWN_BASE_REVISION, RUN29_TEARDOWN_BRIDGE_REVISION}
+        and parents == [current_revision, RUN29_TEARDOWN_BRIDGE_REVISION]
+    ):
+        expected_parent = RUN29_TEARDOWN_BRIDGE_REVISION
+        expected_paths = RUN29_TEARDOWN_HOTFIX_CHANGED_PATHS
+    else:
+        raise CliError("run29 teardown protected parent drift")
+    try:
         changed = trusted_git(
             [
                 "-C", str(ROOT), "diff", "--no-ext-diff", "--no-renames",
-                "--name-only", "-z", RUN29_TEARDOWN_BASE_REVISION, current_revision, "--",
+                "--name-only", "-z", expected_parent, current_revision, "--",
             ],
             capture_output=True,
             check=False,
@@ -239,18 +265,13 @@ def require_run29_teardown_lineage(current_revision: str) -> list[str]:
         )
     except subprocess.TimeoutExpired as exc:
         raise CliError("run29 teardown protected lineage timed out") from exc
-    require(
-        lineage.returncode == 0
-        and lineage.stdout.strip().split() == [current_revision, RUN29_TEARDOWN_BASE_REVISION],
-        "run29 teardown protected parent drift",
-    )
     require(changed.returncode == 0, "run29 teardown protected file set unavailable")
     try:
         paths = [item.decode("utf-8") for item in changed.stdout.split(b"\0") if item]
     except UnicodeDecodeError as exc:
         raise CliError("run29 teardown protected file set is not UTF-8") from exc
     require(len(paths) == len(set(paths)), "run29 teardown protected file set duplicated")
-    require(set(paths) == set(RUN29_TEARDOWN_CHANGED_PATHS), "run29 teardown protected file set drift")
+    require(set(paths) == set(expected_paths), "run29 teardown protected file set drift")
     return sorted(paths)
 
 
