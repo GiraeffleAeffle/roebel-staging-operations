@@ -1,6 +1,6 @@
 {
   "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
-  "activationReady": false,
+  "activationReady": true,
   "authority": {
     "civicAuthority": "none",
     "municipalPublication": false,
@@ -58,7 +58,7 @@
     ],
     "protectedRef": "refs/heads/main",
     "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
-    "sourceRevision": null
+    "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
   },
   "secretReference": {
     "keys": [

@@ -202,18 +202,25 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.PolicyError, "SQL artifact hash drift"):
             POLICY.verify_render(root)
 
-    def test_runtime_pin_records_that_source_revision_is_still_pending(self) -> None:
+    def test_runtime_pin_binds_the_reviewed_product_revision_and_internal_postgrest(self) -> None:
         pin = POLICY.runtime_pin()
-        self.assertIsNone(pin["productSource"]["sourceRevision"])
-        self.assertFalse(pin["activationReady"])
+        self.assertEqual(
+            pin["productSource"]["sourceRevision"],
+            "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
+        )
+        self.assertTrue(pin["activationReady"])
+        self.assertEqual(
+            pin["network"]["postgrestClusterUrl"],
+            "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
+        )
         self.assertEqual(
             pin["productSource"]["artifacts"][0]["sha256"],
             "sha256:f8f9745c1783043334ef24b3cde801d19a609867d12d0c23612bda7c5206ca5a",
         )
 
-    def test_repository_contract_keeps_the_inert_render_out_of_routine_promotions(self) -> None:
+    def test_repository_contract_marks_the_bounded_tracer_ready_but_not_routine(self) -> None:
         boundary = POLICY.contract_boundary()
-        self.assertFalse(boundary["activationReady"])
+        self.assertTrue(boundary["activationReady"])
         self.assertFalse(boundary["normalReleaseSetPromotionMayChange"])
         self.assertFalse(boundary["network"]["externalIngress"])
         self.assertFalse(boundary["storage"]["persistentVolumeClaim"])

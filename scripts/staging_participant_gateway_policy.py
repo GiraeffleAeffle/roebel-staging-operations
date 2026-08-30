@@ -48,6 +48,21 @@ GATEWAY_PORT = 18085
 WORKBENCH_NAMESPACE = "stadtstack-roebel-staging-lab"
 WORKBENCH_NAME = "e2e-workbench"
 WORKBENCH_PORT = 18083
+TRACER_POSTGREST_NAME = "roebel-tracer-postgrest"
+TRACER_POSTGREST_PORT = 3000
+TRACER_POSTGREST_ORIGIN = (
+    "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab."
+    "svc.cluster.local:3000"
+)
+TRACER_POSTGREST_LABELS = {
+    "app.kubernetes.io/component": "tracer-postgrest",
+    "app.kubernetes.io/name": TRACER_POSTGREST_NAME,
+    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+    "stadtstack.io/authority": "none",
+    "stadtstack.io/civic-authority": "none",
+    "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+    "stadtstack.io/environment": "staging",
+}
 WORKBENCH_INGRESS_POLICY_NAME = "roebel-staging-participant-workbench-ingress"
 FLUX_NAMESPACE = "flux-roebel-staging"
 FLUX_SOURCE_NAME = "roebel-staging-operations"
@@ -57,6 +72,7 @@ DORMANT_BOOTSTRAP_RECEIPT_SCHEMA = "roebel_staging_participant_flux_bootstrap_re
 SECRET_MATERIALIZER_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
 SECRET_MATERIALIZATION_RECEIPT_SCHEMA = "roebel_staging_participant_secret_materialization_receipt_v1"
 SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_staging_participant_secret_teardown_receipt_v1"
+PARTICIPANT_POSTGREST_SECRET = "roebel-staging-participant-gateway-postgrest"
 DORMANT_BOOTSTRAP_OBJECT_ORDER = (
     "gateway.serviceAccount",
     "workbenchIngress.serviceAccount",
@@ -230,16 +246,16 @@ def _static_descriptor() -> dict[str, Any]:
             },
         },
         "productPins": {
-            "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
-            "sourceTreeSha256": "sha256:7c537a038c84afe08740dabc1222c7b547a109a4a607b8bbab17bc6664a7bd47",
+            "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
+            "sourceTreeSha256": "sha256:c5a80f3485991f4f4aa284efd088e4cb59b61a96a147c7ac49033bf19fe29dd3",
             "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
             "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-            "imageManifestDigest": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
+            "imageManifestDigest": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
             "workflowIdentity": (
                 "https://github.com/GiraeffleAeffle/Roebel-App/"
                 ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
             ),
-            "workflowSha256": "sha256:0446a7fbf64ea28d4098d79a86e75ae004e3f175eca09186b8c2f18f2ce36d09",
+            "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
             "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
             "migration": {
                 "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
@@ -265,10 +281,13 @@ def _static_descriptor() -> dict[str, Any]:
                 "ipv4Cidrs": ["34.111.230.52/32"],
             },
             "supabase": {
-                "httpsOrigin": "https://vdlksxpihmoumebjpeix.supabase.co",
-                "projectRef": "vdlksxpihmoumebjpeix",
-                "port": 443,
-                "ipv4Cidrs": [],
+                "internalOrigin": TRACER_POSTGREST_ORIGIN,
+                "service": _target(
+                    "v1", "Service", TRACER_POSTGREST_NAME, WORKBENCH_NAMESPACE,
+                ),
+                "port": TRACER_POSTGREST_PORT,
+                "transport": "cluster-http",
+                "externalIngress": False,
             },
             "workbench": {
                 "url": (
@@ -327,6 +346,11 @@ def _static_descriptor() -> dict[str, Any]:
                     "name": "roebel-staging-participant-gateway-runtime",
                     "namespace": GATEWAY_NAMESPACE,
                     "keys": ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
+                },
+                "postgrest": {
+                    "name": PARTICIPANT_POSTGREST_SECRET,
+                    "namespace": GATEWAY_NAMESPACE,
+                    "keys": ["supabase-anon-key", "supabase-rpc-secret"],
                 },
             },
             "secretMaterializer": secret_materializer_contract(),
@@ -545,7 +569,6 @@ APPROVED_ACTIVATION_FACTS = {
         "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
         "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
     },
-    "supabaseIpv4Cidrs": ["104.18.38.10/32", "172.64.149.246/32"],
 }
 APPROVED_ACTIVATION_TRANSITION_PATHS = (
     "activationReady",
@@ -553,16 +576,12 @@ APPROVED_ACTIVATION_TRANSITION_PATHS = (
     "clusterIdentity.caCertificateSha256",
     "clusterIdentity.apiServerSpkiSha256",
     "clusterIdentity.kubeSystemNamespaceUid",
-    "endpoints.supabase.ipv4Cidrs",
 )
 
 
 def _approved_next_activation_policy() -> dict[str, Any]:
     value = copy.deepcopy(STATIC_ACTIVATION_POLICY)
     value["clusterIdentity"] = copy.deepcopy(APPROVED_ACTIVATION_FACTS["clusterIdentity"])
-    value["endpoints"]["supabase"]["ipv4Cidrs"] = list(
-        APPROVED_ACTIVATION_FACTS["supabaseIpv4Cidrs"],
-    )
     value["activationReady"] = True
     return value
 
@@ -604,9 +623,8 @@ def activation_blockers(policy: dict[str, Any] | None = None) -> tuple[str, ...]
         slot = value["clusterIdentity"][name]
         if slot is None:
             blockers.append(f"clusterIdentity.{name}")
-    for endpoint in ("gnosis", "supabase"):
-        if not value["endpoints"][endpoint]["ipv4Cidrs"]:
-            blockers.append(f"endpoints.{endpoint}.ipv4Cidrs")
+    if not value["endpoints"]["gnosis"]["ipv4Cidrs"]:
+        blockers.append("endpoints.gnosis.ipv4Cidrs")
     return tuple(blockers)
 
 
@@ -676,11 +694,6 @@ def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict
     ):
         if previous["clusterIdentity"][key] != ready["clusterIdentity"][key]:
             changed_paths.append(f"clusterIdentity.{key}")
-    if (
-        previous["endpoints"]["supabase"]["ipv4Cidrs"]
-        != ready["endpoints"]["supabase"]["ipv4Cidrs"]
-    ):
-        changed_paths.append("endpoints.supabase.ipv4Cidrs")
     _require(
         tuple(changed_paths) == APPROVED_ACTIVATION_TRANSITION_PATHS,
         "participant activation transition changed field set drift",
@@ -692,7 +705,6 @@ def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict
             "clusterIdentity.caCertificateSha256",
             "clusterIdentity.apiServerSpkiSha256",
             "clusterIdentity.kubeSystemNamespaceUid",
-            "endpoints.supabase.ipv4Cidrs",
         ),
         "participant activation transition base blocker set drift",
     )
@@ -811,20 +823,24 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         "sharedAcrossReplicas": False,
         "aggregateClaimAllowed": False,
     }, "participant HAProxy rate-limit truth drift")
-    for endpoint_name in ("gnosis", "supabase"):
-        for cidr in value["endpoints"][endpoint_name]["ipv4Cidrs"]:
-            network = ipaddress.ip_network(cidr, strict=True)
-            _require(network.version == 4 and network.prefixlen == 32, "participant endpoint CIDR must be IPv4 /32")
+    for cidr in value["endpoints"]["gnosis"]["ipv4Cidrs"]:
+        network = ipaddress.ip_network(cidr, strict=True)
+        _require(
+            network.version == 4 and network.prefixlen == 32,
+            "participant endpoint CIDR must be IPv4 /32",
+        )
     endpoints = value["endpoints"]
     _require(
         endpoints["browserOrigin"] == "https://roebel-web.staging.agentcart.eu"
         and endpoints["gnosis"]["httpsOrigin"] == "https://rpc.gnosischain.com"
         and endpoints["gnosis"]["chainId"] == 100
         and endpoints["gnosis"]["port"] == 443
-        and endpoints["supabase"]["httpsOrigin"]
-        == "https://vdlksxpihmoumebjpeix.supabase.co"
-        and endpoints["supabase"]["projectRef"] == "vdlksxpihmoumebjpeix"
-        and endpoints["supabase"]["port"] == 443
+        and endpoints["supabase"]["internalOrigin"] == TRACER_POSTGREST_ORIGIN
+        and endpoints["supabase"]["service"]
+        == _target("v1", "Service", TRACER_POSTGREST_NAME, WORKBENCH_NAMESPACE)
+        and endpoints["supabase"]["port"] == TRACER_POSTGREST_PORT
+        and endpoints["supabase"]["transport"] == "cluster-http"
+        and endpoints["supabase"]["externalIngress"] is False
         and endpoints["workbench"]["url"]
         == "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/"
         and endpoints["workbench"]["service"]
@@ -854,6 +870,15 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         value["runtime"]["secretReferences"]["runtime"]["keys"]
         == ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
         "participant runtime Secret keyset drift",
+    )
+    _require(
+        value["runtime"]["secretReferences"]["postgrest"]
+        == {
+            "name": PARTICIPANT_POSTGREST_SECRET,
+            "namespace": GATEWAY_NAMESPACE,
+            "keys": ["supabase-anon-key", "supabase-rpc-secret"],
+        },
+        "participant PostgREST projection Secret drift",
     )
     _require(
         value["runtime"]["secretMaterializer"] == secret_materializer_contract(),
@@ -1230,9 +1255,20 @@ def expected_gateway_resources(
         _secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_ALLOWED_WALLETS", refs["config"], "allowed-wallets"),
         _secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SESSION_KEY", refs["runtime"], "session-key"),
         {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": endpoints["gnosis"]["httpsOrigin"]},
-        {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": endpoints["supabase"]["httpsOrigin"]},
-        _secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY", refs["runtime"], "supabase-anon-key"),
-        _secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET", refs["runtime"], "supabase-rpc-secret"),
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL",
+            "value": endpoints["supabase"]["internalOrigin"],
+        },
+        _secret_env(
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY",
+            refs["postgrest"],
+            "supabase-anon-key",
+        ),
+        _secret_env(
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET",
+            refs["postgrest"],
+            "supabase-rpc-secret",
+        ),
         _secret_env("ROEBEL_STAGING_PARTICIPANT_GATEWAY_MECKY_PUBKEY", refs["config"], "mecky-pubkey"),
         {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_PRIVATE_WORKBENCH_URL", "value": endpoints["workbench"]["url"]},
         {
@@ -1348,10 +1384,23 @@ def expected_gateway_resources(
                     "ports": [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}],
                 },
                 *[
-                    {"to": [{"ipBlock": {"cidr": cidr}}], "ports": [{"port": 443, "protocol": "TCP"}]}
-                    for endpoint in (endpoints["gnosis"], endpoints["supabase"])
-                    for cidr in endpoint["ipv4Cidrs"]
+                    {
+                        "to": [{"ipBlock": {"cidr": cidr}}],
+                        "ports": [{"port": 443, "protocol": "TCP"}],
+                    }
+                    for cidr in endpoints["gnosis"]["ipv4Cidrs"]
                 ],
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": WORKBENCH_NAMESPACE,
+                            },
+                        },
+                        "podSelector": {"matchLabels": TRACER_POSTGREST_LABELS},
+                    }],
+                    "ports": [{"port": TRACER_POSTGREST_PORT, "protocol": "TCP"}],
+                },
                 {
                     "to": [{
                         "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": WORKBENCH_NAMESPACE}},

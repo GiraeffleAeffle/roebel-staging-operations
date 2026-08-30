@@ -290,7 +290,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
 
         source = inspect.getsource(MODULE.main)
         self.assertEqual(source.count("reject_failed_activation_without_durable_receipt(activation, activation_receipt)"), 2)
-        for section in source.split("activation = session.run_child(")[1:]:
+        activation_sections = [
+            section for section in source.split("activation = session.run_child(")[1:]
+            if "reject_failed_activation_without_durable_receipt(activation, activation_receipt)" in section
+        ]
+        self.assertEqual(len(activation_sections), 2)
+        for section in activation_sections:
             self.assertLess(
                 section.index("reject_failed_activation_without_durable_receipt(activation, activation_receipt)"),
                 section.index("snapshot_owned_receipt("),
@@ -594,7 +599,25 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("BrokenPipeError", logging_error)
 
     def test_signal_state_prebinds_every_transitive_blob_before_snapshot_and_decrypt(self):
-        expected = {MODULE.SELF_PATH, MODULE.BOOTSTRAP_RUNNER, MODULE.ACTIVATION_RUNNER, MODULE.SECRET_RUNNER, MODULE.HANDOVER_RUNNER, MODULE.HANDOVER_IMPLEMENTATION, "scripts/staging_participant_flux_bootstrap.py", "scripts/staging_participant_gateway_policy.py", "policy/staging-participant-gateway-activation-policy.json", ".github/workflows/staging-participant-flux-bootstrap.yml", ".github/workflows/staging-participant-gateway-activation.yml", "scripts/verify-reviewed-render.py", "policy/repository-contract.json"}
+        expected = {
+            MODULE.SELF_PATH,
+            MODULE.BOOTSTRAP_RUNNER,
+            MODULE.ACTIVATION_RUNNER,
+            MODULE.SECRET_RUNNER,
+            MODULE.TRACER_SECRET_RUNNER,
+            MODULE.TRACER_DATA_PLANE_RUNNER,
+            MODULE.TRACER_POLICY,
+            MODULE.HANDOVER_RUNNER,
+            MODULE.HANDOVER_IMPLEMENTATION,
+            "scripts/staging_participant_flux_bootstrap.py",
+            "scripts/staging_participant_gateway_policy.py",
+            "policy/staging-participant-gateway-activation-policy.json",
+            ".github/workflows/staging-participant-flux-bootstrap.yml",
+            ".github/workflows/staging-participant-gateway-activation.yml",
+            "scripts/verify-reviewed-render.py",
+            "policy/repository-contract.json",
+            *MODULE.TRACER_RENDER_PATHS,
+        }
         self.assertEqual(set(MODULE.PROTECTED_PATHS), expected)
         source = inspect.getsource(MODULE.main)
         self.assertLess(source.index("cancellation.install()"), source.index("bind_protected_checkout(revision)"))
@@ -615,7 +638,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         sys.modules[spec.name] = handover
         spec.loader.exec_module(handover)
         expected = {
-            *((revision, path) for path in MODULE.HANDOVER_PREBOUND_CURRENT_PATHS),
+            *((revision, path) for path in MODULE.HANDOVER_NESTED_PREBOUND_CURRENT_PATHS),
             *((MODULE.HANDOVER_ARCHIVE_REVISION, path) for path in MODULE.HANDOVER_PREBOUND_ARCHIVE_PATHS),
         }
         self.assertEqual(
@@ -910,6 +933,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("session.run_child(", continuation)
         self.assertIn("--dormant-bootstrap-handover-receipt-fd", continuation)
         self.assertIn("--secret-materialization-receipt-fd", continuation)
+        self.assertIn("--tracer-data-plane-activation-receipt-fd", continuation)
         self.assertIn("*participant_blob_args", continuation)
         self.assertIn("*participant_blob_fds", continuation)
         self.assertIn("extra_args=tuple(participant_blob_args)", continuation)
@@ -1065,7 +1089,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
             "--receipt-directory", "/private/attempt",
         ]
-        activation = MODULE.parse_args([*common, "--participant-secret-bundle", "/private/secrets"])
+        activation = MODULE.parse_args([
+            *common,
+            "--participant-secret-bundle", "/private/secrets",
+            "--tracer-data-plane-activation-receipt", "/private/tracer-activation.json",
+        ])
         self.assertEqual(activation.participant_secret_bundle, Path("/private/secrets"))
         teardown = MODULE.parse_args([*common, "--teardown-participant-secret-receipt", "/private/materialization.json"])
         self.assertEqual(teardown.teardown_participant_secret_receipt, Path("/private/materialization.json"))
@@ -1079,6 +1107,119 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             source.index("secret_materialization_bound = snapshot_owned_receipt(")
         ]
         self.assertIn("forward_signals=False", materialization_call)
+
+    def test_tracer_data_plane_cli_modes_are_explicit_and_mutually_exclusive(self):
+        common = [
+            "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id",
+            "--bootstrap-bundle", "/private/bundle", "--wireproxy-bin", "/bin/true",
+            "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+        ]
+        activate = MODULE.parse_args(["--tracer-data-plane-activate", *common])
+        self.assertTrue(activate.tracer_data_plane_activate)
+        continuation = MODULE.parse_args([
+            "--tracer-data-plane-activate", *common,
+            "--tracer-secret-materialization-receipt", "/private/materialized.json",
+        ])
+        self.assertEqual(continuation.tracer_secret_materialization_receipt, Path("/private/materialized.json"))
+        secret_recovery = MODULE.parse_args([
+            "--tracer-data-plane-recover-materialization", *common,
+            "--tracer-secret-materialization-receipt", "/private/materialization.json",
+            "--tracer-secret-materialization-journal", "/private/materialization.journal.json",
+        ])
+        self.assertTrue(secret_recovery.tracer_data_plane_recover_materialization)
+        activation_recovery = MODULE.parse_args([
+            "--tracer-data-plane-recover-activation", *common,
+            "--tracer-data-plane-activation-receipt", "/private/activation.json",
+            "--tracer-data-plane-activation-journal", "/private/activation.journal.json",
+        ])
+        self.assertTrue(activation_recovery.tracer_data_plane_recover_activation)
+        teardown = MODULE.parse_args([
+            "--tracer-data-plane-teardown-secrets", *common,
+            "--tracer-secret-materialization-receipt", "/private/materialized.json",
+        ])
+        self.assertTrue(teardown.tracer_data_plane_teardown_secrets)
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args(["--tracer-data-plane-activate", "--tracer-data-plane-recover-activation", *common])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "exact reserved receipt and journal"):
+            MODULE.parse_args(["--tracer-data-plane-recover-activation", *common])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "no participant"):
+            MODULE.parse_args([
+                "--tracer-data-plane-activate", *common,
+                "--handover-dormant-receipt", "/private/dormant.json",
+            ])
+
+    def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):
+        root = Path("/private/receipts")
+        paths = MODULE.tracer_attempt_paths(root)
+        self.assertEqual(paths.secret_receipt, root / "tracer-secret-materialization.json")
+        self.assertEqual(paths.secret_journal, root / "tracer-secret-materialization.journal.json")
+        self.assertEqual(paths.activation_receipt, root / "tracer-data-plane-activation.json")
+        self.assertEqual(paths.activation_journal, root / "tracer-data-plane-activation.journal.json")
+        revision = "a" * 40; kube = Path("/private/kube")
+        materialize = MODULE.tracer_secret_materialization_child_arguments(
+            revision, kube, paths.secret_receipt, paths.secret_journal,
+        )
+        self.assertEqual(materialize, [
+            "--expected-revision", revision, "--live", "--kubeconfig", str(kube),
+            "--receipt", str(paths.secret_receipt), "--journal", str(paths.secret_journal),
+        ])
+        activate = MODULE.tracer_data_plane_activation_child_arguments(
+            revision, kube, paths.secret_receipt, paths.activation_receipt, paths.activation_journal,
+        )
+        self.assertEqual(activate, [
+            "--expected-revision", revision, "--live", "--kubeconfig", str(kube),
+            "--secret-receipt", str(paths.secret_receipt), "--receipt", str(paths.activation_receipt),
+            "--journal", str(paths.activation_journal),
+        ])
+        recovery = MODULE.tracer_recovery_child_arguments(
+            revision, kube, paths.activation_journal, paths.activation_receipt,
+        )
+        self.assertEqual(recovery, [
+            "--expected-revision", revision, "--recover-journal", str(paths.activation_journal),
+            "--kubeconfig", str(kube), "--receipt", str(paths.activation_receipt),
+        ])
+        self.assertNotIn("--live", recovery)
+        self.assertNotIn("--teardown", recovery)
+
+    def test_tracer_and_participant_handoff_bind_exact_protected_closures_and_fds(self):
+        self.assertIn(MODULE.TRACER_SECRET_RUNNER, MODULE.PROTECTED_PATHS)
+        self.assertIn(MODULE.TRACER_DATA_PLANE_RUNNER, MODULE.PROTECTED_PATHS)
+        self.assertTrue(set(MODULE.TRACER_RENDER_PATHS) <= set(MODULE.PROTECTED_PATHS))
+        self.assertTrue(set(MODULE.TRACER_RENDER_PATHS) <= set(MODULE.HANDOVER_PREBOUND_CURRENT_PATHS))
+        self.assertTrue(set(MODULE.TRACER_RENDER_PATHS).isdisjoint(MODULE.HANDOVER_NESTED_PREBOUND_CURRENT_PATHS))
+        activator_path = ROOT / MODULE.ACTIVATION_RUNNER
+        spec = importlib.util.spec_from_file_location("participant_activator_handoff_contract", activator_path)
+        self.assertIsNotNone(spec); self.assertIsNotNone(spec.loader)
+        activator = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = activator; spec.loader.exec_module(activator)
+        revision = "a" * 40
+        wrapper_keys = {
+            *((revision, path) for path in MODULE.HANDOVER_PREBOUND_CURRENT_PATHS),
+            *((MODULE.HANDOVER_ARCHIVE_REVISION, path) for path in MODULE.HANDOVER_PREBOUND_ARCHIVE_PATHS),
+            (revision, MODULE.SECRET_RUNNER),
+            (MODULE.HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_RUNNER),
+        }
+        self.assertEqual(wrapper_keys, activator.required_handover_prebound_keys_v4(revision))
+        source = inspect.getsource(MODULE.main)
+        self.assertIn('"--tracer-data-plane-activation-receipt-fd"', source)
+        self.assertIn("source_tracer_activation_receipt.fd", source)
+        self.assertIn("pass_fds=(tracer_secret_runner.blob.fd, kubectl_fd)", source)
+        self.assertIn("pass_fds=(tracer_data_plane_runner.blob.fd, kubectl_fd)", source)
+
+    def test_transport_loss_surfaces_explicit_tracer_recovery_without_replay(self):
+        source = inspect.getsource(MODULE.main)
+        start = source.index("if cancellation.signals or not materialization.transport_alive_after:")
+        end = source.index("activation = session.run_child(", start)
+        boundary = source[start:end]
+        self.assertIn('"mode": "--tracer-data-plane-activate"', boundary)
+        self.assertIn('"automaticReplay": False', boundary)
+        self.assertIn("explicit data-plane continuation required", boundary)
+        self.assertNotIn("tracer_secret_runner.command(tracer_recovery_child_arguments", boundary)
+        self.assertIn('"mode": "--tracer-data-plane-recover-materialization"', source)
+        self.assertIn('"mode": "--tracer-data-plane-recover-activation"', source)
+        self.assertIn('"automaticRetry": False', source)
 
     def test_workbench_recovery_mode_is_explicit_delete_only_and_requires_all_evidence(self):
         arguments = [

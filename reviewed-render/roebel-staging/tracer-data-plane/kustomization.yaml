@@ -18,6 +18,7 @@ configMapGenerator:
       - 73-staging-participant-gateway.sql=bootstrap/73-staging-participant-gateway.sql
       - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
 generatorOptions:
+  disableNameSuffixHash: true
   labels:
     app.kubernetes.io/component: tracer-bootstrap
     app.kubernetes.io/part-of: stadtstack-roebel-staging-lab

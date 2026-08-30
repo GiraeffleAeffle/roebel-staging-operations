@@ -52,7 +52,6 @@ class StaticPolicyTests(unittest.TestCase):
                     "clusterIdentity.caCertificateSha256",
                     "clusterIdentity.apiServerSpkiSha256",
                     "clusterIdentity.kubeSystemNamespaceUid",
-                    "endpoints.supabase.ipv4Cidrs",
                 ),
             )
             with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
@@ -77,8 +76,22 @@ class StaticPolicyTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            approved["endpoints"]["supabase"]["ipv4Cidrs"],
-            ["104.18.38.10/32", "172.64.149.246/32"],
+            approved["endpoints"]["supabase"],
+            {
+                "externalIngress": False,
+                "internalOrigin": (
+                    "http://roebel-tracer-postgrest."
+                    "stadtstack-roebel-staging-lab.svc.cluster.local:3000"
+                ),
+                "port": 3000,
+                "service": {
+                    "apiVersion": "v1",
+                    "kind": "Service",
+                    "name": "roebel-tracer-postgrest",
+                    "namespace": "stadtstack-roebel-staging-lab",
+                },
+                "transport": "cluster-http",
+            },
         )
 
     def test_ready_transition_rejects_every_partial_reverse_reordered_or_widened_shape(self):
@@ -89,15 +102,15 @@ class StaticPolicyTests(unittest.TestCase):
             partial = copy.deepcopy(approved)
             partial["clusterIdentity"][key] = None
             mutations.append((f"partial-{key}", partial))
-        partial_cidrs = copy.deepcopy(approved)
-        partial_cidrs["endpoints"]["supabase"]["ipv4Cidrs"] = ["104.18.38.10/32"]
-        mutations.append(("partial-cidrs", partial_cidrs))
-        reordered = copy.deepcopy(approved)
-        reordered["endpoints"]["supabase"]["ipv4Cidrs"].reverse()
-        mutations.append(("reordered-cidrs", reordered))
-        widened = copy.deepcopy(approved)
-        widened["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.1/32")
-        mutations.append(("widened-cidrs", widened))
+        external_origin = copy.deepcopy(approved)
+        external_origin["endpoints"]["supabase"]["internalOrigin"] = "https://example.invalid"
+        mutations.append(("external-origin", external_origin))
+        external_ingress = copy.deepcopy(approved)
+        external_ingress["endpoints"]["supabase"]["externalIngress"] = True
+        mutations.append(("external-ingress", external_ingress))
+        wrong_service = copy.deepcopy(approved)
+        wrong_service["endpoints"]["supabase"]["service"]["name"] = "other-postgrest"
+        mutations.append(("wrong-service", wrong_service))
         authority_widened = copy.deepcopy(approved)
         authority_widened["authority"]["civicAuthority"] = "municipal"
         mutations.append(("widened-authority", authority_widened))

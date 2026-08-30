@@ -36,6 +36,7 @@ POSTGREST_CLUSTER_URL = (
     "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab."
     "svc.cluster.local:3000"
 )
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 
 POSTGRES_IMAGE = (
     "docker.io/supabase/postgres@"
@@ -48,7 +49,8 @@ POSTGREST_IMAGE = (
 
 PRODUCT_REPOSITORY = "https://github.com/GiraeffleAeffle/Roebel-App.git"
 PRODUCT_PROTECTED_REF = "refs/heads/main"
-PRODUCT_SOURCE_REVISION: str | None = None
+INERT_PRODUCT_SOURCE_REVISION: str | None = None
+PRODUCT_SOURCE_REVISION = "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
 PRODUCT_ARTIFACTS = (
     (
         "71-roebel-tracer-baseline.sql",
@@ -76,6 +78,29 @@ RUNTIME_SECRET_KEYS = (
     "postgres-password",
     "postgrest-db-uri",
     "rpc-secret",
+)
+
+FLUX_NAMESPACE = "flux-roebel-staging"
+FLUX_SOURCE_NAME = "roebel-staging-operations"
+FLUX_RECONCILER_NAME = "roebel-tracer-data-plane-reconciler"
+FLUX_KUSTOMIZATION_NAME = "roebel-tracer-data-plane"
+SECRET_MATERIALIZER_RUNNER = "scripts/materialize-tracer-data-plane-secrets.py"
+LIVE_RUNNER = "scripts/run-tracer-data-plane-live.py"
+SECRET_MATERIALIZATION_RECEIPT_SCHEMA = (
+    "roebel_tracer_data_plane_secret_materialization_receipt_v1"
+)
+SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_teardown_receipt_v1"
+SECRET_MATERIALIZATION_JOURNAL_SCHEMA = (
+    "roebel_tracer_data_plane_secret_materialization_journal_v1"
+)
+ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
+PREVIEW_NAMESPACE = "stadtstack-roebel-web-preview"
+WEB_FEED_SECRET = "roebel-tracer-feed-runtime"
+WEB_FEED_SECRET_KEYS = ("supabase-anon-key",)
+PARTICIPANT_POSTGREST_SECRET = "roebel-staging-participant-gateway-postgrest"
+PARTICIPANT_POSTGREST_SECRET_KEYS = (
+    "supabase-anon-key",
+    "supabase-rpc-secret",
 )
 
 WEB_LABELS = {
@@ -217,14 +242,20 @@ SQL
 '''
 
 
-def runtime_pin() -> dict[str, Any]:
+def runtime_pin(
+    source_revision: str | None = PRODUCT_SOURCE_REVISION,
+) -> dict[str, Any]:
+    require(
+        source_revision in {INERT_PRODUCT_SOURCE_REVISION, PRODUCT_SOURCE_REVISION},
+        "tracer product source revision is not the approved predecessor or successor",
+    )
     artifacts = [
         {"configMapFilename": filename, "path": path, "sha256": digest}
         for filename, path, digest in PRODUCT_ARTIFACTS
     ]
     return {
         "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
-        "activationReady": PRODUCT_SOURCE_REVISION is not None,
+        "activationReady": source_revision is not None,
         "authority": {
             "civicAuthority": "none",
             "municipalPublication": False,
@@ -260,7 +291,7 @@ def runtime_pin() -> dict[str, Any]:
             "artifacts": artifacts,
             "protectedRef": PRODUCT_PROTECTED_REF,
             "repository": PRODUCT_REPOSITORY,
-            "sourceRevision": PRODUCT_SOURCE_REVISION,
+            "sourceRevision": source_revision,
         },
         "secretReference": {
             "keys": list(RUNTIME_SECRET_KEYS),
@@ -271,10 +302,283 @@ def runtime_pin() -> dict[str, Any]:
     }
 
 
-def contract_boundary() -> dict[str, Any]:
-    """Return the public repository contract for this inert render."""
+def secret_materialization_contract() -> dict[str, Any]:
+    """Return the value-free, cross-namespace Secret binding contract."""
     return {
-        "activationReady": PRODUCT_SOURCE_REVISION is not None,
+        "runner": SECRET_MATERIALIZER_RUNNER,
+        "receiptSchemaVersion": SECRET_MATERIALIZATION_RECEIPT_SCHEMA,
+        "teardownReceiptSchemaVersion": SECRET_TEARDOWN_RECEIPT_SCHEMA,
+        "journalSchemaVersion": SECRET_MATERIALIZATION_JOURNAL_SCHEMA,
+        "secretValueSource": "runner-csprng-only",
+        "adoption": "forbidden",
+        "createOrder": ["dataPlane", "webFeed", "participantPostgrest"],
+        "initialState": "all-three-exact-secret-names-absent",
+        "receiptContainsValues": False,
+        "crashRecovery": {
+            "journalBeforeFirstMutation": True,
+            "journalBeforeNextMutation": "nonce-plus-each-created-uid-resourceVersion",
+            "mode": "--recover-journal",
+            "runner": SECRET_MATERIALIZER_RUNNER,
+            "secretValuesIncluded": False,
+        },
+        "anonJwt": {
+            "algorithm": "HS256",
+            "encoding": "canonical-unpadded-base64url",
+            "lifetimeDays": 365,
+            "minimumRemainingDaysAtActivation": 30,
+            "role": "anon",
+            "signingSecretEncoding": "ascii-64-lower-hex",
+        },
+        "secrets": {
+            "dataPlane": {
+                "name": RUNTIME_SECRET,
+                "namespace": NAMESPACE,
+                "keys": list(RUNTIME_SECRET_KEYS),
+            },
+            "webFeed": {
+                "name": WEB_FEED_SECRET,
+                "namespace": PREVIEW_NAMESPACE,
+                "keys": list(WEB_FEED_SECRET_KEYS),
+            },
+            "participantPostgrest": {
+                "name": PARTICIPANT_POSTGREST_SECRET,
+                "namespace": PREVIEW_NAMESPACE,
+                "keys": list(PARTICIPANT_POSTGREST_SECRET_KEYS),
+            },
+        },
+        "sharedValueBindings": [
+            {
+                "left": "dataPlane.anon-jwt",
+                "right": "webFeed.supabase-anon-key",
+            },
+            {
+                "left": "dataPlane.anon-jwt",
+                "right": "participantPostgrest.supabase-anon-key",
+            },
+            {
+                "left": "dataPlane.rpc-secret",
+                "right": "participantPostgrest.supabase-rpc-secret",
+            },
+        ],
+        "teardown": {
+            "deleteOrder": ["participantPostgrest", "webFeed", "dataPlane"],
+            "sourceReceiptRequired": True,
+            "uidResourceVersionPreconditions": True,
+            "requiredAbsentTargets": [
+                *application_object_targets(),
+                *[
+                    {
+                        "apiVersion": value["apiVersion"],
+                        "kind": value["kind"],
+                        "name": value["metadata"]["name"],
+                        "namespace": value["metadata"]["namespace"],
+                    }
+                    for value in dormant_flux_objects(suspended=True).values()
+                ],
+            ],
+            "requiredUnreferencedConsumers": [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "roebel-web-presentation",
+                    "namespace": PREVIEW_NAMESPACE,
+                    "secretName": WEB_FEED_SECRET,
+                },
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": "roebel-staging-participant-gateway",
+                    "namespace": PREVIEW_NAMESPACE,
+                    "secretName": PARTICIPANT_POSTGREST_SECRET,
+                },
+            ],
+        },
+        "valuesCommitted": False,
+    }
+
+
+def dormant_flux_objects(*, suspended: bool = True) -> dict[str, dict[str, Any]]:
+    """Render the exact namespace-scoped reconciler bootstrap objects."""
+    labels_value = {
+        "app.kubernetes.io/part-of": "stadtstack",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/environment": "staging",
+        "stadtstack.io/flux-tenant": "roebel-staging",
+        "stadtstack.io/gitops-owner": "tracer-data-plane",
+    }
+    service_account = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "labels": labels_value,
+            "name": FLUX_RECONCILER_NAME,
+            "namespace": FLUX_NAMESPACE,
+        },
+        "automountServiceAccountToken": False,
+    }
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {
+            "labels": labels_value,
+            "name": FLUX_RECONCILER_NAME,
+            "namespace": NAMESPACE,
+        },
+        "rules": [
+            {
+                "apiGroups": [""],
+                "resourceNames": [SERVICE_ACCOUNT_NAME],
+                "resources": ["serviceaccounts"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": [""],
+                "resourceNames": [BOOTSTRAP_CONFIG_MAP],
+                "resources": ["configmaps"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": [""],
+                "resourceNames": [POSTGRES_NAME, POSTGREST_NAME],
+                "resources": ["services"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": ["apps"],
+                "resourceNames": [POSTGRES_NAME, POSTGREST_NAME],
+                "resources": ["deployments"],
+                "verbs": ["get", "patch", "update"],
+            },
+            {
+                "apiGroups": ["networking.k8s.io"],
+                "resourceNames": [POSTGRES_NAME, POSTGREST_NAME],
+                "resources": ["networkpolicies"],
+                "verbs": ["get", "patch", "update"],
+            },
+        ],
+    }
+    role_binding = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "labels": labels_value,
+            "name": FLUX_RECONCILER_NAME,
+            "namespace": NAMESPACE,
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": FLUX_RECONCILER_NAME,
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": FLUX_RECONCILER_NAME,
+                "namespace": FLUX_NAMESPACE,
+            }
+        ],
+    }
+    kustomization = {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+        "kind": "Kustomization",
+        "metadata": {
+            "labels": labels_value,
+            "name": FLUX_KUSTOMIZATION_NAME,
+            "namespace": FLUX_NAMESPACE,
+        },
+        "spec": {
+            "deletionPolicy": "Orphan",
+            "dependsOn": [],
+            "force": False,
+            "healthChecks": [
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": POSTGRES_NAME,
+                    "namespace": NAMESPACE,
+                },
+                {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "name": POSTGREST_NAME,
+                    "namespace": NAMESPACE,
+                },
+            ],
+            "interval": "5m",
+            "path": f"./{RENDER_ROOT}",
+            "prune": False,
+            "retryInterval": "30s",
+            "serviceAccountName": FLUX_RECONCILER_NAME,
+            "sourceRef": {
+                "kind": "GitRepository",
+                "name": FLUX_SOURCE_NAME,
+                "namespace": FLUX_NAMESPACE,
+            },
+            "suspend": suspended,
+            "targetNamespace": NAMESPACE,
+            "timeout": "5m",
+            "wait": True,
+        },
+    }
+    return {
+        "serviceAccount": service_account,
+        "role": role,
+        "roleBinding": role_binding,
+        "kustomization": kustomization,
+    }
+
+
+def dormant_flux_contract() -> dict[str, Any]:
+    objects = dormant_flux_objects(suspended=True)
+    return {
+        "objectOrder": ["serviceAccount", "role", "roleBinding", "kustomization"],
+        "initialState": "all-four-exact-names-absent",
+        "successState": "all-four-exact-uids-present-kustomization-suspended",
+        "adoption": "forbidden",
+        "sharedSourceMutation": "forbidden",
+        "secretAccess": "forbidden",
+        "applicationMutation": False,
+        "civicAuthorityEffects": False,
+        "objects": {
+            name: {
+                "apiVersion": value["apiVersion"],
+                "kind": value["kind"],
+                "name": value["metadata"]["name"],
+                "namespace": value["metadata"]["namespace"],
+                "semanticSha256": canonical_sha256(value),
+            }
+            for name, value in objects.items()
+        },
+        "runner": LIVE_RUNNER,
+        "receiptSchemaVersion": ACTIVATION_RECEIPT_SCHEMA,
+    }
+
+
+def validate_activation_transition(previous: Any, candidate: Any) -> dict[str, Any]:
+    """Admit only the exact null-to-protected-main source binding."""
+    inert = runtime_pin(INERT_PRODUCT_SOURCE_REVISION)
+    ready = runtime_pin(PRODUCT_SOURCE_REVISION)
+    require(previous == inert, "tracer activation transition base drift")
+    require(candidate == ready, "tracer activation transition candidate drift")
+    require(previous["activationReady"] is False, "tracer activation predecessor ready")
+    require(ready["activationReady"] is True, "tracer activation successor blocked")
+    changed = []
+    if previous["activationReady"] != ready["activationReady"]:
+        changed.append("activationReady")
+    if previous["productSource"]["sourceRevision"] != ready["productSource"]["sourceRevision"]:
+        changed.append("productSource.sourceRevision")
+    require(
+        changed == ["activationReady", "productSource.sourceRevision"],
+        "tracer activation transition changed field set drift",
+    )
+    return ready
+
+
+def contract_boundary() -> dict[str, Any]:
+    """Return the public repository contract for this dormant render."""
+    return {
+        "activationReady": True,
         "authority": "none",
         "bootstrap": {
             "configMap": BOOTSTRAP_CONFIG_MAP,
@@ -296,6 +600,26 @@ def contract_boundary() -> dict[str, Any]:
             "postgrestIngress": "web-and-participant-exact-pod-selectors-only",
         },
         "normalReleaseSetPromotionMayChange": False,
+        "dormantFluxBootstrap": dormant_flux_contract(),
+        "activation": {
+            "applicationCreateOrder": list(application_object_order()),
+            "applicationObjectCount": len(application_object_order()),
+            "createBeforeUnsuspend": True,
+            "failureRollback": "exact-operation-owned-uids-only",
+            "journal": {
+                "mode": "--recover-journal",
+                "schemaVersion": "roebel_tracer_data_plane_activation_journal_v1",
+                "uidResourceVersionPersistedBeforeNextMutation": True,
+                "valuesIncluded": False,
+            },
+            "runner": LIVE_RUNNER,
+            "waitsFor": [
+                "flux-kustomization-ready-at-protected-operations-revision",
+                "postgres-deployment-available",
+                "postgrest-deployment-available",
+                "service-endpointslices-ready",
+            ],
+        },
         "renderRoot": str(RENDER_ROOT),
         "runtimePin": str(RENDER_ROOT / "runtime-pin.json"),
         "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
@@ -305,6 +629,7 @@ def contract_boundary() -> dict[str, Any]:
             "namespace": NAMESPACE,
             "valuesCommitted": False,
         },
+        "secretMaterialization": secret_materialization_contract(),
         "storage": {
             "durability": "emptyDir-recreated-baseline",
             "persistentVolumeClaim": False,
@@ -616,6 +941,86 @@ def expected_postgrest_network_policy() -> dict[str, Any]:
     }
 
 
+def expected_bootstrap_config_map(root: Path) -> dict[str, Any]:
+    """Return the stable ConfigMap generated by the checked-in Kustomization."""
+    bootstrap = root / RENDER_ROOT / "bootstrap"
+    filenames = (
+        "zz-roebel-tracer.sh",
+        "71-roebel-tracer-baseline.sql",
+        "72-provision-roebel-vault.sh",
+        "73-staging-participant-gateway.sql",
+        "74-staging-participant-topic-tracer.sql",
+    )
+    for filename in filenames:
+        require((bootstrap / filename).is_file(), f"tracer bootstrap file missing: {filename}")
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "labels": {
+                "app.kubernetes.io/component": "tracer-bootstrap",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none",
+                "stadtstack.io/civic-authority": "none",
+                "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+                "stadtstack.io/environment": "staging",
+            },
+            "name": BOOTSTRAP_CONFIG_MAP,
+            "namespace": NAMESPACE,
+        },
+        "data": {
+            filename: (bootstrap / filename).read_text()
+            for filename in filenames
+        },
+    }
+
+
+def application_object_order() -> tuple[str, ...]:
+    """Closed create order: isolation first, workloads last."""
+    return (
+        "postgresNetworkPolicy",
+        "postgrestNetworkPolicy",
+        "serviceAccount",
+        "bootstrapConfigMap",
+        "postgresService",
+        "postgrestService",
+        "postgresDeployment",
+        "postgrestDeployment",
+    )
+
+
+def application_object_targets() -> list[dict[str, str]]:
+    identities = (
+        ("networking.k8s.io/v1", "NetworkPolicy", POSTGRES_NAME),
+        ("networking.k8s.io/v1", "NetworkPolicy", POSTGREST_NAME),
+        ("v1", "ServiceAccount", SERVICE_ACCOUNT_NAME),
+        ("v1", "ConfigMap", BOOTSTRAP_CONFIG_MAP),
+        ("v1", "Service", POSTGRES_NAME),
+        ("v1", "Service", POSTGREST_NAME),
+        ("apps/v1", "Deployment", POSTGRES_NAME),
+        ("apps/v1", "Deployment", POSTGREST_NAME),
+    )
+    return [
+        {"apiVersion": api_version, "kind": kind, "name": name, "namespace": NAMESPACE}
+        for api_version, kind, name in identities
+    ]
+
+
+def expected_application_objects(root: Path) -> dict[str, dict[str, Any]]:
+    objects = {
+        "postgresNetworkPolicy": expected_postgres_network_policy(),
+        "postgrestNetworkPolicy": expected_postgrest_network_policy(),
+        "serviceAccount": expected_service_account(),
+        "bootstrapConfigMap": expected_bootstrap_config_map(root),
+        "postgresService": expected_postgres_service(),
+        "postgrestService": expected_postgrest_service(),
+        "postgresDeployment": expected_postgres_deployment(),
+        "postgrestDeployment": expected_postgrest_deployment(),
+    }
+    require(tuple(objects) == application_object_order(), "tracer application object order drift")
+    return objects
+
+
 def kustomization_text() -> str:
     return """apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -637,6 +1042,7 @@ configMapGenerator:
       - 73-staging-participant-gateway.sql=bootstrap/73-staging-participant-gateway.sql
       - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
 generatorOptions:
+  disableNameSuffixHash: true
   labels:
     app.kubernetes.io/component: tracer-bootstrap
     app.kubernetes.io/part-of: stadtstack-roebel-staging-lab

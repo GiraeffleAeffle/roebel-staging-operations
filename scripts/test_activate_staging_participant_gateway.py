@@ -13,6 +13,13 @@ MODULE.BOOTSTRAP = MODULE.compile_verified_bootstrap_module_v4(
     Path(__file__).with_name("staging_participant_flux_bootstrap.py").read_bytes(),
     REV,
 )
+TRACER_SPEC = importlib.util.spec_from_file_location(
+    "participant_test_tracer_policy",
+    Path(__file__).with_name("tracer_data_plane_policy.py"),
+)
+assert TRACER_SPEC and TRACER_SPEC.loader
+TRACER_POLICY = importlib.util.module_from_spec(TRACER_SPEC)
+TRACER_SPEC.loader.exec_module(TRACER_POLICY)
 def sha(x="a"): return "sha256:" + x * 64
 def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="10", **extra):
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
@@ -41,6 +48,90 @@ def dormant_ownership():
             for index, logical in enumerate(MODULE.POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER)
         ],
         "bothKustomizationsSuspended": True,
+    }
+
+def tracer_activation_receipt(p):
+    operation_nonce = "d" * 64
+    secret_nonce = "e" * 64
+    secret_contract = TRACER_POLICY.secret_materialization_contract()["secrets"]
+    secret_records = {
+        label: {
+            "target": {
+                "apiVersion": "v1", "kind": "Secret",
+                "name": reference["name"], "namespace": reference["namespace"],
+            },
+            "uid": f"{label}-secret-uid",
+            "resourceVersion": str(30 + index),
+            "keySet": sorted(reference["keys"]),
+            "ownershipNonce": secret_nonce,
+            "valuesRead": False,
+        }
+        for index, (label, reference) in enumerate(secret_contract.items())
+    }
+    application = TRACER_POLICY.expected_application_objects(Path(__file__).resolve().parents[1])
+    flux = TRACER_POLICY.dormant_flux_objects(suspended=True)
+    desired = {
+        **{f"application.{label}": value for label, value in application.items()},
+        **{f"flux.{label}": value for label, value in flux.items()},
+    }
+    object_records = {
+        label: {
+            "target": {
+                "apiVersion": value["apiVersion"], "kind": value["kind"],
+                "namespace": value["metadata"]["namespace"], "name": value["metadata"]["name"],
+            },
+            "uid": f"tracer-object-{index}-uid",
+            "resourceVersion": str(100 + index),
+            "ownershipNonce": operation_nonce,
+            "temporaryNonceRemoved": True,
+        }
+        for index, (label, value) in enumerate(desired.items())
+    }
+    cluster = {
+        **copy.deepcopy(p["clusterIdentity"]),
+        "kubeSystemNamespaceResourceVersion": "23",
+        "credentialsIncluded": False,
+        "kubeconfigPathIncluded": False,
+    }
+    return {
+        "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+        "status": "activated",
+        "protectedRevision": REV,
+        "operationNonce": operation_nonce,
+        "productSourceRevision": p["productPins"]["sourceRevision"],
+        "protectedFileSha256": {
+            path: MODULE.bytes_digest(path.encode())
+            for path in MODULE.TRACER_RECEIPT_PROTECTED_PATHS
+        },
+        "clusterBinding": cluster,
+        "sharedFluxSource": {"revision": f"main@sha1:{REV}", "ready": True, "mutation": False},
+        "secretMaterializationReceiptSha256": sha("c"),
+        "secretRecords": secret_records,
+        "createOrder": list(desired),
+        "objectRecords": object_records,
+        "flux": {
+            "uid": object_records["flux.kustomization"]["uid"],
+            "lastAppliedRevision": f"main@sha1:{REV}",
+            "ready": True,
+        },
+        "serviceBindings": {
+            "postgres": {
+                "serviceUid": "postgres-service-uid", "port": 5432,
+                "readyEndpointAddresses": ["10.244.1.10"],
+            },
+            "postgrest": {
+                "serviceUid": "postgrest-service-uid", "port": p["endpoints"]["supabase"]["port"],
+                "readyEndpointAddresses": ["10.244.1.11"],
+            },
+        },
+        "failureRollback": "exact-operation-owned-uids-only",
+        "secretValuesRead": False,
+        "civicAuthorityEffects": False,
+        "signalsDeferredDuringFinalization": [],
+        "functionalHttpRpcProof": {
+            "status": "pending-participant-gateway-protected-preflight",
+            "secretValuesRead": False,
+        },
     }
 
 def failed_activation_receipt_fixture():
@@ -145,6 +236,23 @@ def recovery_incident_ownership():
         "ingressNeverCreated": True,
         "civicAuthorityEffects": False,
     }
+
+def incident_semantic_hash_fixture(incident, desired_by_logical):
+    """Keep recovery classification tests pinned to the historical incident render."""
+    hashes = {
+        (
+            desired["apiVersion"], desired["kind"],
+            desired["metadata"]["namespace"], desired["metadata"]["name"],
+        ): incident["objects"][logical]["semanticSha256"]
+        for logical, desired in desired_by_logical.items()
+        if logical in incident["objects"]
+    }
+
+    def semantic(value):
+        metadata = value["metadata"]
+        return hashes[(value["apiVersion"], value["kind"], metadata["namespace"], metadata["name"])]
+
+    return semantic
 
 def recovery_dormant_ownership():
     value = dormant_ownership()
@@ -473,6 +581,7 @@ class ExecutorTests(unittest.TestCase):
                 "valuesRead": False,
             }
             for label, reference in value["runtime"]["secretReferences"].items()
+            if label in MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS
         }
 
         def bind(candidate, candidate_policy, revision, hashes):
@@ -553,19 +662,20 @@ class ExecutorTests(unittest.TestCase):
         records = {}
         live = {}
         for label, reference in value["runtime"]["secretReferences"].items():
-            resource_version = MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS[label]
-            records[label] = {
-                "target": {
-                    "apiVersion": "v1",
-                    "kind": "Secret",
-                    "namespace": reference["namespace"],
-                    "name": reference["name"],
-                },
-                "uid": f"{label}-uid",
-                "resourceVersion": resource_version,
-                "keySet": sorted(reference["keys"]),
-                "valuesRead": False,
-            }
+            resource_version = MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS.get(label, "15909999")
+            if label in MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS:
+                records[label] = {
+                    "target": {
+                        "apiVersion": "v1",
+                        "kind": "Secret",
+                        "namespace": reference["namespace"],
+                        "name": reference["name"],
+                    },
+                    "uid": f"{label}-uid",
+                    "resourceVersion": resource_version,
+                    "keySet": sorted(reference["keys"]),
+                    "valuesRead": False,
+                }
             live[label] = {
                 "name": reference["name"],
                 "namespace": reference["namespace"],
@@ -616,12 +726,23 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(set(blobs), MODULE.required_handover_prebound_keys_v4(REV))
         self.assertIn((REV, MODULE.SECRET_MATERIALIZER_PATH), blobs)
         self.assertIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), blobs)
+        tracer_closure = {(REV, path) for path in MODULE.TRACER_RECEIPT_PROTECTED_PATHS}
+        self.assertTrue(tracer_closure <= set(blobs))
         for logical_path in MODULE.HANDOVER_CURRENT_PRESERVATION_PATHS:
             self.assertIn((REV, logical_path), blobs)
             self.assertNotIn((MODULE.HANDOVER_ARCHIVE_REVISION, logical_path), blobs)
         self.assertNotIn((REV, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         self.assertNotIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         nested_expected = MODULE.required_nested_handover_prebound_keys_v4(REV)
+        self.assertTrue(tracer_closure.isdisjoint(nested_expected))
+        self.assertEqual(
+            set(blobs) - nested_expected,
+            tracer_closure
+            | {
+                (REV, MODULE.SECRET_MATERIALIZER_PATH),
+                (MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH),
+            },
+        )
         handover_module = Mock()
         handover_module.bind_handover_receipt.return_value = {
             "protectedRevision": REV,
@@ -730,6 +851,66 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(MODULE.POLICY.validate_activation_policy(value), value)
         self.assertEqual(MODULE.POLICY.assert_activation_ready(value), value)
         self.assertEqual(MODULE.POLICY.activation_blockers(value), ())
+
+    def test_tracer_receipt_binds_current_revision_three_secrets_twelve_objects_and_two_services(self):
+        value = ready_policy()
+        receipt = tracer_activation_receipt(value)
+        self.assertEqual(len(receipt["secretRecords"]), 3)
+        self.assertEqual(len(receipt["objectRecords"]), 12)
+        self.assertEqual(set(receipt["serviceBindings"]), {"postgres", "postgrest"})
+
+        def bind(candidate):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "tracer-receipt.json"
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                path.chmod(0o600)
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()):
+                        return MODULE.bind_tracer_activation_receipt_v4(value, REV, fd)
+                finally:
+                    os.close(fd)
+
+        ownership = bind(receipt)
+        self.assertEqual(ownership["originProtectedRevision"], REV)
+        self.assertEqual(
+            ownership["participantPostgrestSecret"],
+            receipt["secretRecords"]["participantPostgrest"],
+        )
+        self.assertEqual(ownership["postgrestService"], receipt["serviceBindings"]["postgrest"])
+        self.assertFalse(ownership["civicAuthorityEffects"])
+
+        drift_cases = {
+            "revision": lambda candidate: candidate.update(protectedRevision="f" * 40),
+            "secret-set": lambda candidate: candidate["secretRecords"].pop("webFeed"),
+            "object-set": lambda candidate: candidate["objectRecords"].pop("application.postgresService"),
+            "service-set": lambda candidate: candidate["serviceBindings"].pop("postgres"),
+        }
+        for label, mutate in drift_cases.items():
+            with self.subTest(label=label):
+                changed = copy.deepcopy(receipt)
+                mutate(changed)
+                with self.assertRaises(MODULE.ActivationError):
+                    bind(changed)
+
+    def test_live_cli_requires_and_forwards_the_tracer_activation_receipt(self):
+        parsed = MODULE.parse_args([
+            "--expected-protected-revision", REV,
+            "--live",
+            "--kubeconfig", "/fixture/kubeconfig",
+            "--flux-bootstrap-receipt-fd", "21",
+            "--tracer-data-plane-activation-receipt-fd", "22",
+        ])
+        self.assertTrue(parsed.live)
+        self.assertEqual(parsed.tracer_data_plane_activation_receipt_fd, 22)
+        source = inspect.getsource(MODULE.main)
+        start = source.index("require(a.live is True")
+        ordinary = source[start:source.index("print(canonical(result)); return 0", start)]
+        self.assertLess(
+            ordinary.index("bind_tracer_activation_receipt_v4("),
+            ordinary.index("sink = ReceiptSink.reserve"),
+        )
+        self.assertIn("tracer_activation_ownership,\n        )", ordinary)
 
     def test_live_activation_requires_bootstrap_receipt_before_runner_calls(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2198,6 +2379,13 @@ class ExecutorTests(unittest.TestCase):
             "gateway.deployment": resources["deployment"],
             "gateway.ingress": resources["ingress"],
         }
+        semantic_patch = patch.object(
+            MODULE.POLICY,
+            "semantic_sha256",
+            side_effect=incident_semantic_hash_fixture(incident, desired_by_logical),
+        )
+        semantic_patch.start()
+        self.addCleanup(semantic_patch.stop)
         rendered = {}
         for logical, desired in desired_by_logical.items():
             origin = incident["objects"].get(logical)
@@ -2271,6 +2459,13 @@ class ExecutorTests(unittest.TestCase):
             "gateway.deployment": resources["deployment"],
             "gateway.ingress": resources["ingress"],
         }
+        semantic_patch = patch.object(
+            MODULE.POLICY,
+            "semantic_sha256",
+            side_effect=incident_semantic_hash_fixture(incident, desired_by_logical),
+        )
+        semantic_patch.start()
+        self.addCleanup(semantic_patch.stop)
         rendered = {
             logical: {
                 "desired": desired,
@@ -2659,6 +2854,7 @@ class ExecutorTests(unittest.TestCase):
             patch.object(MODULE, "flux_preflight_v4", return_value={}),
             patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
             patch.object(MODULE, "secret_materialization_v4", return_value={}),
+            patch.object(MODULE, "require_tracer_activation_binding_v4"),
             patch.object(MODULE, "policy_union_v4", return_value={}),
             patch.object(MODULE, "create_v4", return_value=created),
             patch.object(MODULE, "remove_operation_nonce_v4", side_effect=MODULE.ActivationError("nonce removal failed")),
@@ -2670,7 +2866,7 @@ class ExecutorTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 entered = [stack.enter_context(item) for item in patches]
                 with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
-                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership(), None, {})
         entered[-2].assert_not_called()
         rollback_call = entered[-1].call_args
         self.assertEqual(rollback_call.args[3], [created])
@@ -2705,6 +2901,7 @@ class ExecutorTests(unittest.TestCase):
             patch.object(MODULE, "flux_preflight_v4", return_value={}),
             patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
             patch.object(MODULE, "secret_materialization_v4", return_value={}),
+            patch.object(MODULE, "require_tracer_activation_binding_v4"),
             patch.object(MODULE, "policy_union_v4", return_value={}),
             patch.object(MODULE, "create_v4", side_effect=MODULE.ActivationInterrupted(MODULE.signal.SIGTERM)),
             patch.object(MODULE, "rediscover_uncertain_create_v4", return_value=None),
@@ -2715,7 +2912,7 @@ class ExecutorTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 entered = [stack.enter_context(item) for item in patches]
                 with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
-                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership(), None, {})
         failure = sink.commit.call_args.args[0]
         self.assertEqual(failure["status"], "rolled-back")
         self.assertEqual(failure["termination"], {"interrupted": True, "signal": MODULE.signal.SIGTERM, "signalsDeferredDuringRollback": True})
@@ -2750,7 +2947,13 @@ class ExecutorTests(unittest.TestCase):
             patch.object(MODULE, "cluster_binding_v4", return_value=cluster), patch.object(MODULE, "anonymous_publication_v4", return_value={"manifestDigest": value["productPins"]["imageManifestDigest"]}),
             patch.object(MODULE, "endpoint_facts_v4", return_value={"ok": True}), patch.object(MODULE, "preservation_v4", return_value={}),
             patch.object(MODULE, "flux_preflight_v4", return_value=dormant), patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
-            patch.object(MODULE, "secret_materialization_v4", return_value={"status": "same", "secrets": {"x": {}}}), patch.object(MODULE, "policy_union_v4", return_value={"ok": True}),
+            patch.object(
+                MODULE,
+                "secret_materialization_v4",
+                return_value={"status": "same", "secrets": {"x": {}}},
+            ),
+            patch.object(MODULE, "require_tracer_activation_binding_v4"),
+            patch.object(MODULE, "policy_union_v4", return_value={"ok": True}),
             patch.object(MODULE, "create_v4", side_effect=create), patch.object(MODULE, "remove_operation_nonce_v4", side_effect=remove),
             patch.object(MODULE, "health_v4", return_value=({}, {"ok": True})), patch.object(MODULE, "runtime_image_v4", return_value={"readyPodCount": 1, "pods": [{}]}),
             patch.object(MODULE, "database_status_v4", return_value=valid_database_status(value)), patch.object(MODULE, "route_matrix_v4", return_value=[{}]),
@@ -2764,7 +2967,7 @@ class ExecutorTests(unittest.TestCase):
             with contextlib.ExitStack() as stack:
                 entered = [stack.enter_context(item) for item in patches]
                 with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
-                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership(), None, {})
         self.assertEqual(sink.commit.call_count, 2)
         self.assertEqual(sink.commit.call_args_list[1].args[0]["status"], "rolled-back")
         entered[-1].assert_called_once(); snapshot.close.assert_called_once()
