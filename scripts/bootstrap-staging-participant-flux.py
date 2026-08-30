@@ -55,9 +55,9 @@ SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 # This is a one-incident capability, not a generic historical receipt bridge.
 # Every source and every dormant identity is pinned to the successful run29-r2
-# recovery evidence.  The original bridge is pinned exactly, and one direct
-# hotfix child may change only the four files needed to repair its wrapper
-# dispatch while retaining the incident receipt pins below.
+# recovery evidence.  The original bridge is pinned exactly, and only a
+# merge-free descendant lineage whose cumulative tree changes remain the four
+# reviewed hotfix files may retain the incident receipt pins below.
 RUN29_TEARDOWN_BASE_REVISION = "890e001c76a94755d8f25ebfcf83593da24a082e"
 RUN29_TEARDOWN_BRIDGE_REVISION = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
 RUN29_TEARDOWN_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
@@ -225,34 +225,55 @@ def load_context(rev: str) -> dict[str, Any]:
 
 
 def require_run29_teardown_lineage(current_revision: str) -> list[str]:
-    """Prove the pinned bridge or its one closed direct hotfix edge."""
+    """Prove the pinned bridge or one linear, path-closed hotfix lineage."""
     revision(current_revision)
     require(current_revision != RUN29_TEARDOWN_BASE_REVISION, "run29 teardown candidate revision did not advance")
     try:
-        lineage = trusted_git(
-            ["-C", str(ROOT), "rev-list", "--parents", "-n", "1", current_revision],
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
+        if current_revision == RUN29_TEARDOWN_BRIDGE_REVISION:
+            lineage = trusted_git(
+                ["-C", str(ROOT), "rev-list", "--parents", "-n", "1", current_revision],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
+        else:
+            lineage = trusted_git(
+                [
+                    "-C", str(ROOT), "rev-list", "--parents", "--reverse", "--ancestry-path",
+                    f"{RUN29_TEARDOWN_BRIDGE_REVISION}..{current_revision}",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=10,
+            )
     except subprocess.TimeoutExpired as exc:
         raise CliError("run29 teardown protected lineage timed out") from exc
-    parents = lineage.stdout.strip().split() if lineage.returncode == 0 else []
-    if (
-        current_revision == RUN29_TEARDOWN_BRIDGE_REVISION
-        and parents == [RUN29_TEARDOWN_BRIDGE_REVISION, RUN29_TEARDOWN_BASE_REVISION]
-    ):
+    if current_revision == RUN29_TEARDOWN_BRIDGE_REVISION:
+        parents = lineage.stdout.strip().split() if lineage.returncode == 0 else []
+        require(
+            parents == [RUN29_TEARDOWN_BRIDGE_REVISION, RUN29_TEARDOWN_BASE_REVISION],
+            "run29 teardown protected parent drift",
+        )
         expected_parent = RUN29_TEARDOWN_BASE_REVISION
         expected_paths = RUN29_TEARDOWN_CHANGED_PATHS
-    elif (
-        current_revision not in {RUN29_TEARDOWN_BASE_REVISION, RUN29_TEARDOWN_BRIDGE_REVISION}
-        and parents == [current_revision, RUN29_TEARDOWN_BRIDGE_REVISION]
-    ):
+    else:
+        require(lineage.returncode == 0, "run29 teardown protected parent drift")
+        rows = [line.split() for line in lineage.stdout.splitlines() if line.strip()]
+        previous = RUN29_TEARDOWN_BRIDGE_REVISION
+        for row in rows:
+            require(
+                len(row) == 2
+                and REVISION.fullmatch(row[0]) is not None
+                and REVISION.fullmatch(row[1]) is not None
+                and row[1] == previous,
+                "run29 teardown protected parent drift",
+            )
+            previous = row[0]
+        require(rows and previous == current_revision, "run29 teardown protected parent drift")
         expected_parent = RUN29_TEARDOWN_BRIDGE_REVISION
         expected_paths = RUN29_TEARDOWN_HOTFIX_CHANGED_PATHS
-    else:
-        raise CliError("run29 teardown protected parent drift")
     try:
         changed = trusted_git(
             [
