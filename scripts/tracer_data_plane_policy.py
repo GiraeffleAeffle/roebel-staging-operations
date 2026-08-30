@@ -451,6 +451,11 @@ def dormant_flux_objects(*, suspended: bool = True) -> dict[str, dict[str, Any]]
                 "verbs": ["get", "patch", "update"],
             },
             {
+                "apiGroups": ["apps"],
+                "resources": ["replicasets"],
+                "verbs": ["get", "list", "watch"],
+            },
+            {
                 "apiGroups": ["networking.k8s.io"],
                 "resourceNames": [POSTGRES_NAME, POSTGREST_NAME],
                 "resources": ["networkpolicies"],

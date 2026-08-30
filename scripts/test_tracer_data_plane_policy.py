@@ -112,6 +112,26 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
             container["volumeMounts"],
         )
 
+    def test_flux_reconciler_can_observe_deployment_health_without_write_widening(self) -> None:
+        role = POLICY.dormant_flux_objects(suspended=True)["role"]
+        replica_set_rules = [
+            rule for rule in role["rules"]
+            if rule.get("apiGroups") == ["apps"]
+            and rule.get("resources") == ["replicasets"]
+        ]
+        self.assertEqual(
+            replica_set_rules,
+            [{
+                "apiGroups": ["apps"],
+                "resources": ["replicasets"],
+                "verbs": ["get", "list", "watch"],
+            }],
+        )
+        self.assertNotIn("secrets", json.dumps(role, sort_keys=True))
+        for rule in role["rules"]:
+            if any(verb in rule["verbs"] for verb in ("create", "delete", "patch", "update")):
+                self.assertIn("resourceNames", rule)
+
     def test_bootstrap_runs_after_image_migrate_and_verifies_before_any_tracer_sql(self) -> None:
         kustomization = POLICY.kustomization_text()
         self.assertIn(f"namespace: {POLICY.NAMESPACE}\n", kustomization)
