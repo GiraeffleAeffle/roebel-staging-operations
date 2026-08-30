@@ -183,10 +183,11 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
         )
 
-    def test_run29_teardown_lineage_accepts_original_bridge_and_one_pinned_hotfix_hop(self) -> None:
+    def test_run29_teardown_lineage_accepts_original_bridge_and_linear_path_closed_hotfix_descendants(self) -> None:
         base = "890e001c76a94755d8f25ebfcf83593da24a082e"
         bridge = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
         hotfix = "c" * 40
+        descendant = "d" * 40
         bridge_paths = {
             "scripts/bootstrap-staging-participant-flux.py",
             "scripts/run-staging-participant-gateway-live.py",
@@ -229,6 +230,20 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             self.assertEqual(CLI.require_run29_teardown_lineage(bridge), sorted(bridge_paths))
         with mock.patch.object(CLI, "trusted_git", side_effect=completed(hotfix, bridge, hotfix_paths)):
             self.assertEqual(CLI.require_run29_teardown_lineage(hotfix), sorted(hotfix_paths))
+        descendant_lineage = [
+            subprocess.CompletedProcess(
+                [], 0,
+                stdout=f"{hotfix} {bridge}\n{descendant} {hotfix}\n",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                [], 0,
+                stdout=b"\0".join(path.encode("utf-8") for path in sorted(hotfix_paths)) + b"\0",
+                stderr=b"",
+            ),
+        ]
+        with mock.patch.object(CLI, "trusted_git", side_effect=descendant_lineage):
+            self.assertEqual(CLI.require_run29_teardown_lineage(descendant), sorted(hotfix_paths))
 
     def test_run29_teardown_lineage_rejects_unpinned_parent_and_hotfix_file_set(self) -> None:
         bridge = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
@@ -259,6 +274,48 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             side_effect=completed(bridge, hotfix_paths | {"scripts/foreign.py"}),
         ), self.assertRaisesRegex(CLI.CliError, "protected file set drift"):
             CLI.require_run29_teardown_lineage(hotfix)
+
+    def test_run29_teardown_lineage_rejects_non_ancestor_merge_and_descendant_path_drift(self) -> None:
+        bridge = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
+        hotfix = "c" * 40
+        descendant = "d" * 40
+        foreign_parent = "e" * 40
+        hotfix_paths = {
+            "scripts/bootstrap-staging-participant-flux.py",
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+            "scripts/test_staging_participant_flux_bootstrap.py",
+        }
+
+        rejected_lineages = (
+            "",
+            f"{hotfix} {bridge}\n{descendant} {hotfix} {foreign_parent}\n",
+            f"{hotfix} {bridge}\n{descendant} {foreign_parent}\n",
+        )
+        for observed in rejected_lineages:
+            with self.subTest(observed=observed), mock.patch.object(
+                CLI,
+                "trusted_git",
+                return_value=subprocess.CompletedProcess([], 0, stdout=observed, stderr=""),
+            ), self.assertRaisesRegex(CLI.CliError, "protected parent drift"):
+                CLI.require_run29_teardown_lineage(descendant)
+
+        valid_lineage = subprocess.CompletedProcess(
+            [], 0,
+            stdout=f"{hotfix} {bridge}\n{descendant} {hotfix}\n",
+            stderr="",
+        )
+        drifted_paths = subprocess.CompletedProcess(
+            [], 0,
+            stdout=b"\0".join(
+                path.encode("utf-8") for path in sorted(hotfix_paths | {"scripts/foreign.py"})
+            ) + b"\0",
+            stderr=b"",
+        )
+        with mock.patch.object(CLI, "trusted_git", side_effect=[valid_lineage, drifted_paths]), self.assertRaisesRegex(
+            CLI.CliError, "protected file set drift",
+        ):
+            CLI.require_run29_teardown_lineage(descendant)
 
     def test_plan_contains_only_the_exact_eight_suspended_flux_objects(self) -> None:
         plan = BOOTSTRAP.build_plan(
