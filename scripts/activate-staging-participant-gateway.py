@@ -29,6 +29,11 @@ WORKBENCH_NAMESPACE, WORKBENCH_POLICY_NAME = "stadtstack-roebel-staging-lab", "r
 RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 RECOVERY_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_recovery_receipt_v1"
 PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS = 0.25
+HAPROXY_METHOD_DENIED_BODY = (
+    "<html><body><h1>405 Method Not Allowed</h1>\n"
+    "A request was made of a resource using a request method not supported by that resource.\n"
+    "</body></html>\n"
+)
 ROOT = Path(__file__).resolve().parent.parent
 GIT_BIN = Path("/usr/bin/git")
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
@@ -52,6 +57,7 @@ TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION = "93d9e5bb87acb18887250316fb0b7a1bdf4c
 TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION = "7aa2db7f174742555ec0374725d2c80ee0350e8a"
 TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e2679e14d5dc8eea96ba0"
 TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9da0db"
+TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -88,7 +94,7 @@ TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
-TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES = frozenset({
     "policy/staging-participant-gateway-activation-policy.json",
     "reviewed-render/roebel-staging/integrity.json",
     "reviewed-render/roebel-staging/network-boundary-migration.json",
@@ -100,6 +106,12 @@ TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/test_staging_participant_gateway_policy.py",
+})
+TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
 })
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
@@ -1466,7 +1478,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 eight-hop lineage."""
+    """Admit current receipts or the exact successful run19 nine-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1556,10 +1568,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
+            "tracer receipt seventh-to-eighth-successor",
+        ) == set(TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
+        "tracer receipt seventh-to-eighth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt seventh-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt seventh-successor-to-acceptor file set drift",
+            "tracer receipt eighth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt eighth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1580,7 +1600,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-eight-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-nine-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1592,6 +1612,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -3663,6 +3684,26 @@ def _require_cors_v4(observed: dict[str, Any], origin: str, *, preflight_method:
         allowed_headers = {item.strip().lower() for item in headers.get("access-control-allow-headers", "").split(",") if item.strip()}
         require(methods == {preflight_method} and allowed_headers == {"content-type"} and headers.get("access-control-max-age") == "600", "route CORS preflight contract drift")
 
+def _require_haproxy_method_denied_v4(observed: dict[str, Any], method: str, path: str) -> None:
+    """Bind the exact HAProxy denial, distinct from the gateway JSON 405."""
+    headers = observed["headers"]
+    label = f"{method} {path}"
+    require(
+        not ({"access-control-allow-origin", "access-control-allow-credentials", "vary"} & set(headers)),
+        f"method boundary exposed CORS authority: {label}",
+    )
+    require(
+        observed["status"] == 405
+        and observed["body"] == ("" if method == "HEAD" else HAPROXY_METHOD_DENIED_BODY)
+        and headers == {
+            "cache-control": "no-cache",
+            "connection": "close",
+            "content-length": str(len(HAPROXY_METHOD_DENIED_BODY.encode("utf-8"))),
+            "content-type": "text/html",
+        },
+        f"method boundary drift: {label}",
+    )
+
 def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     del r  # The fixed urllib transport deliberately cannot inherit shell proxy state.
     boundary = p["httpBoundary"]; timeout = boundary["timeoutsSeconds"]["routeRequest"]
@@ -3722,7 +3763,7 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         result.append({"case": "unauthenticated-post", "method": "POST", "path": path, "status": status})
     for method, path in [("POST", status_path), *[("GET", path) for path in posts], ("HEAD", status_path), ("DELETE", status_path)]:
         observed = call(method, path, body=b"{}" if method == "POST" else None)
-        require(observed["status"] == 405 and observed["body"] == "" and "content-type" not in observed["headers"], f"method boundary drift: {method} {path}")
+        _require_haproxy_method_denied_v4(observed, method, path)
         result.append({"case": "method-denied", "method": method, "path": path, "status": 405})
     for label, method, path in (
         ("unknown", "GET", prefix + "/unknown"),
