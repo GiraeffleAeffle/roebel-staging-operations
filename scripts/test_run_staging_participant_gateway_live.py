@@ -929,7 +929,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
     def test_dormant_handover_continuation_invokes_activation_without_rebootstrap_or_materialization(self):
         source = inspect.getsource(MODULE.main)
         start = source.index("if handover_archive_receipt is not None:")
-        end = source.index("elif source_secret_receipt is not None:", start)
+        end = source.index(
+            "elif source_secret_receipt is not None and args.teardown_participant_secret_receipt is not None:",
+            start,
+        )
         continuation = source[start:end]
         self.assertIn("activation_runner.command(", continuation)
         self.assertIn("session.run_child(", continuation)
@@ -1455,6 +1458,48 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         ]
         self.assertIn("forward_signals=False", materialization_call)
 
+    def test_fresh_flux_bootstrap_can_reuse_the_exact_historical_secret_receipt(self):
+        common = [
+            "--participant-gateway", "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id", "--bootstrap-bundle", "/private/bundle",
+            "--wireproxy-bin", "/bin/true", "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+            "--participant-secret-materialization-receipt", "/private/historical-secret.json",
+            "--tracer-data-plane-activation-receipt", "/private/tracer-activation.json",
+        ]
+        parsed = MODULE.parse_args(common)
+        self.assertEqual(
+            parsed.participant_secret_materialization_receipt,
+            Path("/private/historical-secret.json"),
+        )
+        self.assertIsNone(parsed.handover_dormant_receipt)
+        self.assertIsNone(parsed.participant_secret_bundle)
+
+        for forbidden in (
+            ("--participant-secret-bundle", "/private/secrets"),
+            ("--teardown-dormant-receipt", "/private/dormant.json"),
+            ("--teardown-participant-secret-receipt", "/private/secret.json"),
+        ):
+            with self.subTest(flag=forbidden[0]), self.assertRaises(MODULE.LiveTransportError):
+                MODULE.parse_args([*common, *forbidden])
+
+        source = inspect.getsource(MODULE.main)
+        self.assertIn("elif args.participant_secret_materialization_receipt is not None:", source)
+        materialization = source.index("secret_materialization = session.run_child(")
+        bootstrap = source.index("bootstrap = session.run_child(", materialization)
+        self.assertIn("if source_secret_receipt is None:", source[materialization - 250:materialization])
+        self.assertLess(materialization, bootstrap)
+        activation_start = source.rindex(
+            'activation_receipt = receipt_dir / "participant-gateway-activation.json"'
+        )
+        activation_call = source.index("activation = session.run_child(", activation_start)
+        activation_bindings = source[activation_start:activation_call]
+        ordinary_start = activation_bindings.index("            else:")
+        ordinary = activation_bindings[ordinary_start:]
+        self.assertIn("if source_secret_receipt is not None:", ordinary)
+        self.assertIn('"--secret-materialization-receipt-fd"', ordinary)
+        self.assertIn("source_secret_receipt.fd", ordinary)
+
     def test_tracer_data_plane_cli_modes_are_explicit_and_mutually_exclusive(self):
         common = [
             "--live", "--expected-protected-revision", "a" * 40,
@@ -1524,7 +1569,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_seventeen_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_eighteen_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1565,6 +1610,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1643,8 +1689,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1714,6 +1764,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1762,6 +1816,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1814,6 +1869,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("fifteenth parent drift")],
             [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("sixteenth parent drift")],
             [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("seventeenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("eighteenth parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1827,6 +1883,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             "first", "second", "third", "fourth", "fifth", "sixth",
             "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
             "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth",
+            "eighteenth",
         )
         hops = [
             getattr(MODULE, f"TRACER_ACTIVATION_COMPATIBILITY_{ordinal.upper()}_HOP_FILES")
@@ -1849,6 +1906,68 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         origin,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
                     )
+
+    def test_eighteenth_hop_rejects_wrong_or_merge_parent_before_reading_its_delta(self):
+        origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
+        current = "c" * 40
+        foreign = "d" * 40
+        successors = (
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
+        )
+        predecessors = (origin, *successors[:-1])
+        exact_parent_results = [
+            MODULE.subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=f"{successor} {predecessor}\n", stderr=""
+            )
+            for successor, predecessor in zip(successors, predecessors)
+        ]
+        historical_hops = [
+            getattr(MODULE, f"TRACER_ACTIVATION_COMPATIBILITY_{ordinal}_HOP_FILES")
+            for ordinal in (
+                "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH",
+                "SEVENTH", "EIGHTH", "NINTH", "TENTH", "ELEVENTH", "TWELFTH",
+                "THIRTEENTH", "FOURTEENTH", "FIFTEENTH", "SIXTEENTH", "SEVENTEENTH",
+            )
+        ]
+        expected_parent = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION
+        for label, final_line in (
+            ("wrong-parent", f"{current} {foreign}\n"),
+            ("merge-parent", f"{current} {expected_parent} {foreign}\n"),
+        ):
+            final_result = MODULE.subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=final_line, stderr=""
+            )
+            with self.subTest(label=label), patch.object(
+                MODULE, "trusted_git", side_effect=[*exact_parent_results, final_result]
+            ) as trusted, patch.object(
+                MODULE, "protected_revision_changed_files", side_effect=historical_hops
+            ) as changed, self.assertRaisesRegex(
+                MODULE.LiveTransportError,
+                "terminal finalizer is not the exact protected parent transition",
+            ):
+                MODULE.require_tracer_activation_compatibility_transition(
+                    current,
+                    origin,
+                    MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+                )
+            self.assertEqual(trusted.call_count, 18)
+            self.assertEqual(changed.call_count, 17)
 
     def test_protected_revision_delta_is_exact_nul_delimited_and_duplicate_free(self):
         origin = "a" * 40
@@ -1948,6 +2067,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
             "4de9d00696a7c43694bf66edbf79d1fb1fd080de",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
+            "c126f1f680bd65079a941af61fb108ced777c0dc",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -2040,6 +2163,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 "scripts/staging_participant_gateway_policy.py",
                 "scripts/test_staging_participant_gateway_policy.py",
             }),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES,
+            participant_pair | wrapper_pair,
         )
 
     def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):

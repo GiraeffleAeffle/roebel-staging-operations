@@ -961,6 +961,123 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "identity/keyset drift"):
             MODULE.require_secret_materialization_binding_v4(changed, current_ownership, value)
 
+    def test_fresh_bootstrap_reuse_binds_historical_secret_identity_before_mutation(self):
+        value = ready_policy()
+        current = {
+            "status": "exact-keysets-present-without-reading-values",
+            "secrets": {"fixture": {}},
+        }
+        ownership = {
+            "status": "materialized",
+            "secretRecords": {},
+            "civicAuthorityEffects": False,
+            "receiptProvenance": {"mode": "historical-b790-value-free-secret-materialization"},
+        }
+        snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        cluster = {
+            "apiOrigin": value["clusterIdentity"]["apiOrigin"],
+            "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"],
+            "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"],
+            "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"],
+        }
+        secret_binding = patch.object(MODULE, "require_secret_materialization_binding_v4")
+        patches = (
+            patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+            patch.object(MODULE, "render_v4", return_value={}),
+            patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+            patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+            patch.object(MODULE, "anonymous_publication_v4", return_value={}),
+            patch.object(MODULE, "endpoint_facts_v4", return_value={}),
+            patch.object(MODULE, "preservation_v4", return_value={}),
+            patch.object(MODULE, "flux_preflight_v4", return_value={}),
+            patch.object(MODULE, "exact_absence_preflight_v4", return_value={}),
+            patch.object(MODULE, "secret_materialization_v4", return_value=current),
+            secret_binding,
+            patch.object(MODULE, "require_tracer_activation_binding_v4"),
+            patch.object(MODULE, "policy_union_v4", side_effect=MODULE.ActivationError("pre-mutation stop")),
+        )
+        sink = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kubeconfig"; kube.write_text("fixture")
+            with contextlib.ExitStack() as stack:
+                entered = [stack.enter_context(item) for item in patches]
+                with self.assertRaisesRegex(MODULE.ActivationError, "pre-mutation stop"):
+                    MODULE.activate(
+                        value,
+                        REV,
+                        str(kube),
+                        Fake(),
+                        True,
+                        sink,
+                        {"runner": sha()},
+                        dormant_ownership(),
+                        ownership,
+                        {},
+                    )
+        entered[patches.index(secret_binding)].assert_called_once_with(current, ownership, value)
+        snapshot.close.assert_called_once()
+
+    def test_fresh_bootstrap_secret_reuse_is_accepted_by_live_cli(self):
+        value = ready_policy()
+        bootstrap_module = Mock()
+        bootstrap_value = {"status": "dormant-ready"}
+        bootstrap_module.load_receipt_fd.return_value = bootstrap_value
+        dormant = {"bound": "fresh-bootstrap"}
+        secret = {"bound": "historical-secret"}
+        tracer = {"bound": "tracer"}
+        result = {"status": "activated", "civicAuthorityEffects": False}
+        sink = Mock()
+        order = []
+
+        bind_tracer = Mock(side_effect=lambda *_: order.append("tracer") or tracer)
+        bind_bootstrap = Mock(side_effect=lambda *_: order.append("bootstrap") or dormant)
+        bind_secret = Mock(side_effect=lambda *_: order.append("secret") or secret)
+        activate = Mock(side_effect=lambda *_: order.append("activate") or result)
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(MODULE, "sys", Mock(flags=Mock(isolated=1, safe_path=True))))
+            stack.enter_context(patch.object(MODULE, "revision", return_value=REV))
+            stack.enter_context(patch.object(MODULE, "trusted_git_v4", return_value=Mock(stdout=REV)))
+            stack.enter_context(patch.object(MODULE, "protected_checkout", return_value={"runner": sha()}))
+            stack.enter_context(patch.object(MODULE, "git_blob", return_value=b"verified"))
+            stack.enter_context(patch.object(MODULE, "compile_verified_policy_module_v4", return_value=MODULE.POLICY))
+            stack.enter_context(patch.object(MODULE, "compile_verified_bootstrap_module_v4", return_value=bootstrap_module))
+            stack.enter_context(patch.object(MODULE, "bind_verified_policy_identity_v4"))
+            stack.enter_context(patch.object(MODULE, "policy", return_value=value))
+            stack.enter_context(patch.object(MODULE.POLICY, "assert_activation_ready"))
+            stack.enter_context(patch.object(MODULE, "bind_tracer_activation_receipt_v4", bind_tracer))
+            stack.enter_context(patch.object(MODULE, "bind_flux_bootstrap_receipt_value_v4", bind_bootstrap))
+            stack.enter_context(patch.object(MODULE, "bind_secret_materialization_receipt_v4", bind_secret))
+            stack.enter_context(patch.object(MODULE.ReceiptSink, "reserve", return_value=sink))
+            stack.enter_context(patch.object(MODULE, "activate", activate))
+            stack.enter_context(patch("builtins.print"))
+            return_code = MODULE.main([
+                "--live",
+                "--expected-protected-revision", REV,
+                "--kubeconfig", "/private/kubeconfig",
+                "--flux-bootstrap-receipt-fd", "41",
+                "--secret-materialization-receipt-fd", "42",
+                "--tracer-data-plane-activation-receipt-fd", "43",
+                "--receipt", "/private/activation.json",
+            ])
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(order, ["tracer", "bootstrap", "secret", "activate"])
+        bootstrap_module.load_receipt_fd.assert_called_once_with(41)
+        bind_secret.assert_called_once_with(value, REV, 42)
+        activate.assert_called_once_with(
+            value,
+            REV,
+            "/private/kubeconfig",
+            activate.call_args.args[3],
+            True,
+            sink,
+            {"runner": sha()},
+            dormant,
+            secret,
+            tracer,
+        )
+
     def test_handover_prebound_closure_disables_git_blob_fallback(self):
         raw = b"protected-blob-fixture"
         with tempfile.TemporaryDirectory() as directory:
@@ -1161,7 +1278,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_seventeen_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_eighteen_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -1202,7 +1319,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_THIRTEENTH_TO_FOURTEENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FOURTEENTH_TO_FIFTEENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -1220,7 +1338,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-seventeen-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-eighteen-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -1241,6 +1359,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1269,7 +1388,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_THIRTEENTH_TO_FOURTEENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FOURTEENTH_TO_FIFTEENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1288,7 +1408,8 @@ class ExecutorTests(unittest.TestCase):
             "thirteenth-to-fourteenth-successor file set drift",
             "fourteenth-to-fifteenth-successor file set drift",
             "fifteenth-to-sixteenth-successor file set drift",
-            "sixteenth-successor-to-acceptor file set drift",
+            "sixteenth-to-seventeenth-successor file set drift",
+            "seventeenth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1361,6 +1482,10 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
             "4de9d00696a7c43694bf66edbf79d1fb1fd080de",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
+            "c126f1f680bd65079a941af61fb108ced777c0dc",
         )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
@@ -1449,11 +1574,15 @@ class ExecutorTests(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
             participant_pair | wrapper_pair | {
                 "scripts/staging_participant_gateway_policy.py",
                 "scripts/test_staging_participant_gateway_policy.py",
             },
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            participant_pair | wrapper_pair,
         )
         widened = copy.deepcopy(receipt)
         widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
@@ -1480,8 +1609,8 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
 
-    def test_seventeenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
-        parent = MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION
+    def test_eighteenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION
         child = "c" * 40
         foreign = "d" * 40
         for label, lineage in (
@@ -1495,12 +1624,12 @@ class ExecutorTests(unittest.TestCase):
                 MODULE, "trusted_git_v4", return_value=result
             ) as trusted, self.assertRaisesRegex(
                 MODULE.ActivationError,
-                "sixteenth-successor-to-acceptor protected parent drift",
+                "seventeenth-successor-to-acceptor protected parent drift",
             ):
                 MODULE.exact_revision_transition_files_v4(
                     parent,
                     child,
-                    "tracer receipt sixteenth-successor-to-acceptor",
+                    "tracer receipt seventeenth-successor-to-acceptor",
                 )
             self.assertEqual(trusted.call_count, 1)
 

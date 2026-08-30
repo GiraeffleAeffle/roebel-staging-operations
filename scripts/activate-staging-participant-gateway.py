@@ -71,6 +71,7 @@ TRACER_RECEIPT_THIRTEENTH_SUCCESSOR_REVISION = "4bea54c7823a7da3c60d5c57eb3ad8b1
 TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION = "136f0ac1ca31c9beda8f7208ed01a12201460bd7"
 TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION = "96795cc20a28e93a9ed00208bb2311efcdb8a1ae"
 TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION = "4de9d00696a7c43694bf66edbf79d1fb1fd080de"
+TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION = "c126f1f680bd65079a941af61fb108ced777c0dc"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -161,13 +162,19 @@ TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES = frozenset({
     "scripts/bootstrap-staging-participant-flux.py",
     "scripts/test_staging_participant_flux_bootstrap.py",
 })
-TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/staging_participant_gateway_policy.py",
     "scripts/test_staging_participant_gateway_policy.py",
+})
+TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
 })
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
@@ -1640,7 +1647,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 seventeen-hop lineage."""
+    """Admit current receipts or the exact successful run19 eighteen-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1802,10 +1809,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt sixteenth-to-seventeenth-successor",
+        ) == set(TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
+        "tracer receipt sixteenth-to-seventeenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt sixteenth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt sixteenth-successor-to-acceptor file set drift",
+            "tracer receipt seventeenth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt seventeenth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1826,7 +1841,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-seventeen-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-eighteen-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1847,6 +1862,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -6212,7 +6228,7 @@ def activate(
         absence = exact_absence_preflight_v4(r, snapshot_path, rendered); operation_nonce = secrets.token_hex(32)
         require(bool(POLICY.NONCE.fullmatch(operation_nonce)), "runner CSPRNG operation nonce invalid")
         secret_before = secret_materialization_v4(r, snapshot_path, p)
-        if handover_mode:
+        if secret_materialization_ownership is not None:
             require_secret_materialization_binding_v4(secret_before, secret_materialization_ownership, p)
         require_tracer_activation_binding_v4(
             partial["endpoints"], secret_before, tracer_activation_ownership,
@@ -6458,7 +6474,7 @@ def main(argv: list[str] | None = None) -> int:
             rev,
             a.tracer_data_plane_activation_receipt_fd,
         )
-        handover_flags = (a.archived_flux_bootstrap_receipt_fd, a.dormant_bootstrap_handover_receipt_fd, a.secret_materialization_receipt_fd)
+        handover_flags = (a.archived_flux_bootstrap_receipt_fd, a.dormant_bootstrap_handover_receipt_fd)
         handover_requested = any(value is not None for value in handover_flags)
         if handover_requested:
             require(
@@ -6484,7 +6500,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             require(a.flux_bootstrap_receipt is not None or a.flux_bootstrap_receipt_fd is not None, "live activation requires a Flux bootstrap receipt")
-            require(a.secret_materialization_receipt_fd is None and a.prebound_blob is None, "ordinary activation accepts no continuation Secret receipt or prebound Git closure")
+            require(a.prebound_blob is None, "ordinary activation accepts no prebound Git closure")
             if a.flux_bootstrap_receipt is not None:
                 dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
             else:
@@ -6494,7 +6510,15 @@ def main(argv: list[str] | None = None) -> int:
                     runner_hashes,
                     BOOTSTRAP.load_receipt_fd(a.flux_bootstrap_receipt_fd),
                 )
-            secret_materialization_ownership = None
+            secret_materialization_ownership = (
+                bind_secret_materialization_receipt_v4(
+                    p,
+                    rev,
+                    a.secret_materialization_receipt_fd,
+                )
+                if a.secret_materialization_receipt_fd is not None
+                else None
+            )
         sink = ReceiptSink.reserve(a.receipt)
         result = activate(
             p,
