@@ -45,6 +45,11 @@ ALL_RENDER_FILES = GATEWAY_RENDER_FILES + WORKBENCH_INGRESS_RENDER_FILES
 GATEWAY_NAME = "roebel-staging-participant-gateway"
 GATEWAY_NAMESPACE = "stadtstack-roebel-web-preview"
 GATEWAY_PORT = 18085
+GATEWAY_INGRESS_HOSTNETWORK_SOURCE_CIDRS = (
+    "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+    "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+    "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+)
 WORKBENCH_NAMESPACE = "stadtstack-roebel-staging-lab"
 WORKBENCH_NAME = "e2e-workbench"
 WORKBENCH_PORT = 18083
@@ -488,6 +493,9 @@ def _static_descriptor() -> dict[str, Any]:
             "gatewayIngressNamespaceSelector": {
                 "kubernetes.io/metadata.name": "ingress-system",
             },
+            "gatewayIngressHostNetworkSourceCidrs": list(
+                GATEWAY_INGRESS_HOSTNETWORK_SOURCE_CIDRS
+            ),
             "dnsPodSelector": {"k8s-app": "kube-dns"},
             "dnsNamespaceSelector": {"kubernetes.io/metadata.name": "kube-system"},
             "reciprocalPort": WORKBENCH_PORT,
@@ -920,6 +928,13 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
             "staticInventoryHashes": False,
         },
         "participant additive policy conflict-scan boundary drift",
+    )
+    _require(
+        value["network"]["gatewayIngressNamespaceSelector"]
+        == {"kubernetes.io/metadata.name": "ingress-system"}
+        and value["network"]["gatewayIngressHostNetworkSourceCidrs"]
+        == list(GATEWAY_INGRESS_HOSTNETWORK_SOURCE_CIDRS),
+        "participant ingress source boundary drift",
     )
     _require(value["preservation"]["webIngress"]["mutation"] == "forbidden", "Web Ingress mutation permitted")
     _require(value["preservation"]["existingWorkbenchNetworkPolicy"]["adoption"] == "forbidden", "existing workbench policy adoption permitted")
@@ -1370,9 +1385,17 @@ def expected_gateway_resources(
             "podSelector": {"matchLabels": GATEWAY_LABELS},
             "policyTypes": ["Ingress", "Egress"],
             "ingress": [{
-                "from": [{
-                    "namespaceSelector": {"matchLabels": value["network"]["gatewayIngressNamespaceSelector"]},
-                }],
+                "from": [
+                    {
+                        "namespaceSelector": {
+                            "matchLabels": value["network"]["gatewayIngressNamespaceSelector"],
+                        },
+                    },
+                    *[
+                        {"ipBlock": {"cidr": cidr}}
+                        for cidr in value["network"]["gatewayIngressHostNetworkSourceCidrs"]
+                    ],
+                ],
                 "ports": [{"port": GATEWAY_PORT, "protocol": "TCP"}],
             }],
             "egress": [

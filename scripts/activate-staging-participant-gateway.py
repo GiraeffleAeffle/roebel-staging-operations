@@ -51,6 +51,7 @@ TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION = "89cc247c412374205d83433dcc5f774f8c705
 TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION = "93d9e5bb87acb18887250316fb0b7a1bdf4c7cfa"
 TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION = "7aa2db7f174742555ec0374725d2c80ee0350e8a"
 TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e2679e14d5dc8eea96ba0"
+TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9da0db"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -81,11 +82,24 @@ TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
-TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+    "policy/staging-participant-gateway-activation-policy.json",
+    "reviewed-render/roebel-staging/integrity.json",
+    "reviewed-render/roebel-staging/network-boundary-migration.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_gateway_policy.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_gateway_policy.py",
 })
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
@@ -1452,7 +1466,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 seven-hop lineage."""
+    """Admit current receipts or the exact successful run19 eight-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1534,10 +1548,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
+            "tracer receipt sixth-to-seventh-successor",
+        ) == set(TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
+        "tracer receipt sixth-to-seventh-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt sixth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt sixth-successor-to-acceptor file set drift",
+            "tracer receipt seventh-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt seventh-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1550,11 +1572,15 @@ def bind_tracer_receipt_revision_v4(
         if hashes[path] != current_hashes[path]
     }
     require(
-        changed_protected_paths == {"scripts/activate-staging-participant-gateway.py"},
+        changed_protected_paths == {
+            "scripts/activate-staging-participant-gateway.py",
+            POLICY_MODULE_PATH,
+            POLICY_PATH,
+        },
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-seven-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-eight-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1565,6 +1591,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
