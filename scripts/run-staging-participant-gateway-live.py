@@ -195,6 +195,7 @@ TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e
 TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
 TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION = "01e115b6fd03dce7900946ac71e2d8f943a6fb74"
 TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION = "38cdfbd9748c3481689599c53f4443af11a7df63"
+TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION = "890e001c76a94755d8f25ebfcf83593da24a082e"
 TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
     "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 )
@@ -262,6 +263,13 @@ TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES = frozenset({
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES = frozenset({
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
 })
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
@@ -557,7 +565,7 @@ def require_tracer_activation_compatibility_transition(
     receipt_revision: Any,
     receipt_file_sha256: str,
 ) -> str:
-    """Admit only run19 across its eleven exact, tracer-plane-compatible successors."""
+    """Admit only run19 across its twelve exact, tracer-plane-compatible successors."""
     require(
         receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
@@ -684,16 +692,28 @@ def require_tracer_activation_compatibility_transition(
         "tracer activation compatibility tenth-hop file set drift",
     )
     require_protected_revision_parent(
-        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
         TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
     )
     require(
         protected_revision_changed_files(
             TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
-            current_revision,
+            TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
         )
         == TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
         "tracer activation compatibility eleventh-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
+        "tracer activation compatibility twelfth-hop file set drift",
     )
     return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
@@ -3366,6 +3386,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # self-documenting mode selection.
     mode.add_argument("--participant-gateway", action="store_true")
     mode.add_argument("--participant-gateway-recovery", action="store_true")
+    mode.add_argument("--run29-dormant-handover-teardown", action="store_true")
     mode.add_argument("--tracer-data-plane-activate", action="store_true")
     mode.add_argument("--tracer-data-plane-recover-materialization", action="store_true")
     mode.add_argument("--tracer-data-plane-recover-activation", action="store_true")
@@ -3384,6 +3405,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--kubectl-bin", required=True, type=Path)
     parser.add_argument("--receipt-directory", required=True, type=Path)
     parser.add_argument("--teardown-dormant-receipt", type=Path)
+    parser.add_argument("--run29-archived-dormant-receipt", type=Path)
+    parser.add_argument("--run29-dormant-handover-receipt", type=Path)
+    parser.add_argument("--run29-participant-recovery-receipt", type=Path)
     parser.add_argument("--participant-secret-bundle", type=Path)
     parser.add_argument("--teardown-participant-secret-receipt", type=Path)
     parser.add_argument("--handover-dormant-receipt", type=Path)
@@ -3431,6 +3455,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     participant_paths = (
         args.teardown_dormant_receipt,
+        args.run29_archived_dormant_receipt,
+        args.run29_dormant_handover_receipt,
+        args.run29_participant_recovery_receipt,
         args.participant_secret_bundle,
         args.teardown_participant_secret_receipt,
         args.handover_dormant_receipt,
@@ -3448,6 +3475,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         *promotion_paths,
         *relay_reset_paths,
     )
+    run29_teardown_paths = (
+        args.run29_archived_dormant_receipt,
+        args.run29_dormant_handover_receipt,
+        args.run29_participant_recovery_receipt,
+    )
+    if args.run29_dormant_handover_teardown:
+        require(args.live is True, "run29 dormant handover teardown requires --live")
+        require(
+            all(value is not None for value in run29_teardown_paths),
+            "run29 dormant handover teardown requires its exact three receipts",
+        )
+        require(
+            all(value is None for value in (
+                args.teardown_dormant_receipt,
+                args.participant_secret_bundle,
+                args.teardown_participant_secret_receipt,
+                args.handover_dormant_receipt,
+                args.failed_participant_activation_receipt,
+                args.participant_secret_materialization_receipt,
+                args.tracer_secret_materialization_receipt,
+                args.tracer_secret_materialization_journal,
+                args.tracer_data_plane_activation_receipt,
+                args.tracer_data_plane_activation_journal,
+                *workbench_paths,
+            )),
+            "run29 dormant handover teardown accepts no activation, Secret, tracer, workbench, promotion, or relay inputs",
+        )
+        return args
+    if any(value is not None for value in run29_teardown_paths):
+        raise LiveTransportError("run29 dormant handover teardown receipts require its explicit mode")
     if any(tracer_modes):
         require(args.live is True, "tracer data-plane modes require --live")
         require(
@@ -3686,6 +3743,129 @@ def run_dormant_teardown(
     finally:
         session.receipt_reconciled()
 
+
+def run29_handover_teardown_source_arguments(
+    sources: dict[str, BoundBlob],
+) -> tuple[list[str], tuple[int, ...]]:
+    """Return the closed three-receipt descriptor contract for run29 teardown."""
+    require(
+        set(sources) == {"archivedDormant", "dormantHandover", "participantRecovery"},
+        "run29 dormant handover teardown source set drift",
+    )
+    ordered = (
+        ("--run29-archived-dormant-receipt-fd", sources["archivedDormant"]),
+        ("--run29-dormant-handover-receipt-fd", sources["dormantHandover"]),
+        ("--run29-participant-recovery-receipt-fd", sources["participantRecovery"]),
+    )
+    return (
+        [value for flag, receipt in ordered for value in (flag, str(receipt.fd))],
+        tuple(receipt.fd for _, receipt in ordered),
+    )
+
+
+def verify_run29_handover_teardown_sources_with_protected_cli(
+    cancellation: CancellationState,
+    runner: BoundRunner,
+    revision: str,
+    sources: dict[str, BoundBlob],
+    environment: dict[str, str],
+) -> dict[str, Any]:
+    """Bind all historical run29 inputs before transport or Kubernetes access."""
+    source_args, source_fds = run29_handover_teardown_source_arguments(sources)
+    result = cancellation.run(
+        runner.command([
+            "--verify-run29-handover-teardown-sources",
+            "--expected-protected-revision", revision,
+            *source_args,
+        ]),
+        allow_cancelled=False,
+        forward_signals=False,
+        receipt_pending=False,
+        timeout=60,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+        pass_fds=(runner.blob.fd, *source_fds),
+    )
+    require(result.returncode == 0, "protected run29 teardown source verifier rejected exact inputs")
+    output = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    require(output and "\n" not in output, "protected run29 teardown source verifier output invalid")
+    projection = json_object(output, "verified run29 teardown sources")
+    require(
+        projection.get("schemaVersion") == "roebel_staging_participant_flux_run29_handover_teardown_binding_v1"
+        and projection.get("status") == "run29-handover-teardown-ready"
+        and projection.get("protectedRevision") == revision
+        and projection.get("participantTargetCount") == 6
+        and projection.get("secretAccess") == "none"
+        and projection.get("civicAuthorityEffects") is False
+        and isinstance(projection.get("receiptSha256"), str)
+        and SHA256.fullmatch(projection["receiptSha256"]) is not None
+        and isinstance(projection.get("sources"), dict)
+        and isinstance(projection.get("objects"), list)
+        and len(projection["objects"]) == 8,
+        "protected run29 teardown source projection drift",
+    )
+    return projection
+
+
+def run_run29_handover_teardown(
+    session: LiveSession,
+    cancellation: CancellationState,
+    runner: BoundRunner,
+    revision: str,
+    kubeconfig: Path,
+    sources: dict[str, BoundBlob],
+    output_receipt: Path,
+    snapshot_path: Path,
+    environment: dict[str, str],
+    *,
+    kubectl_fd: int,
+) -> tuple[dict[str, Any], int, BoundBlob, str | None]:
+    """Run and verify the dedicated non-activating run29 dormant teardown."""
+    source_args, source_fds = run29_handover_teardown_source_arguments(sources)
+    result = session.run_child(
+        runner.command([
+            "--teardown-run29-handover",
+            "--expected-protected-revision", revision,
+            "--kubeconfig", str(kubeconfig),
+            *source_args,
+            "--receipt", str(output_receipt),
+        ]),
+        environment,
+        allow_cancelled=True,
+        forward_signals=False,
+        receipt_pending=True,
+        pass_fds=(runner.blob.fd, *source_fds, kubectl_fd),
+    )
+    bound_output: BoundBlob | None = None
+    try:
+        bound_output = snapshot_owned_receipt(
+            output_receipt,
+            snapshot_path,
+            "run29 dormant handover teardown receipt",
+        )
+        projection = verify_receipt_with_protected_cli(
+            cancellation,
+            runner,
+            "--verify-run29-handover-teardown-receipt-fd",
+            bound_output,
+            revision,
+            environment,
+            "dormant-handover-torn-down",
+            allow_cancelled=True,
+            extra_args=tuple(source_args),
+            extra_pass_fds=source_fds,
+        )
+        logging_error = best_effort_print_child(result)
+        return projection, result.returncode, bound_output, logging_error
+    except BaseException:
+        if bound_output is not None:
+            bound_output.close()
+        raise
+    finally:
+        session.receipt_reconciled()
+
 def classify_final_status(
     base_status: str,
     *,
@@ -3697,6 +3877,8 @@ def classify_final_status(
         return ("activated", 0) if cleanup_complete else ("activated-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "dormant-torn-down":
         return ("dormant-torn-down", 0) if cleanup_complete else ("dormant-teardown-cleanup-incomplete", 3)
+    if operation_succeeded and base_status == "dormant-handover-torn-down":
+        return ("dormant-handover-torn-down", 0) if cleanup_complete else ("dormant-handover-teardown-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "participant-secrets-torn-down":
         return ("participant-secrets-torn-down", 0) if cleanup_complete else ("participant-secret-teardown-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "recovered":
@@ -4453,6 +4635,8 @@ def main(argv: list[str] | None = None) -> int:
     handover_prebound: dict[tuple[str, str], BoundBlob] = {}; handover_prebound_owned: list[BoundBlob] = []
     verified_spawn_module: Any | None = None; executable_bindings: dict[str, Any] = {}
     source_dormant_receipt: BoundBlob | None = None; handover_archive_receipt: BoundBlob | None = None; handover_bound: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
+    run29_teardown_sources: dict[str, BoundBlob] = {}
+    run29_teardown_source_projection: dict[str, Any] | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
     activation_bound: BoundBlob | None = None
     source_failed_receipt: BoundBlob | None = None; incident_recovery_bound: BoundBlob | None = None
@@ -4482,6 +4666,7 @@ def main(argv: list[str] | None = None) -> int:
     base_status = "blocked"; error: str | None = None
     activation_committed = False; operation_succeeded = False
     participant_recovery_mode = False
+    run29_handover_teardown_mode = False
     tracer_mode: str | None = None
     tracer_recovery_required: dict[str, Any] | None = None
     tracer_secret_source_path: Path | None = None
@@ -4491,6 +4676,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
         participant_recovery_mode = args.participant_gateway_recovery
+        run29_handover_teardown_mode = args.run29_dormant_handover_teardown
         tracer_mode = next((name for enabled, name in (
             (args.tracer_data_plane_activate, "activate"),
             (args.tracer_data_plane_recover_materialization, "recover-materialization"),
@@ -4552,7 +4738,29 @@ def main(argv: list[str] | None = None) -> int:
         cancellation.checkpoint()
 
         verifier_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
-        if args.tracer_data_plane_activation_receipt is not None and tracer_mode is None:
+        if run29_handover_teardown_mode:
+            run29_sources = (
+                ("archivedDormant", args.run29_archived_dormant_receipt),
+                ("dormantHandover", args.run29_dormant_handover_receipt),
+                ("participantRecovery", args.run29_participant_recovery_receipt),
+            )
+            for label, source in run29_sources:
+                require(source is not None, f"run29 teardown {label} receipt absent")
+                bound = snapshot_owned_receipt(
+                    source,
+                    binding_dir / f"run29-{label}-receipt.bound",
+                    f"run29 {label} receipt",
+                )
+                run29_teardown_sources[label] = bound
+                bound_receipts.append(bound)
+            run29_teardown_source_projection = verify_run29_handover_teardown_sources_with_protected_cli(
+                cancellation,
+                bound_runners[BOOTSTRAP_RUNNER],
+                revision,
+                run29_teardown_sources,
+                verifier_environment,
+            )
+        elif args.tracer_data_plane_activation_receipt is not None and tracer_mode is None:
             source_tracer_activation_receipt = snapshot_owned_receipt(
                 args.tracer_data_plane_activation_receipt,
                 binding_dir / "source-tracer-data-plane-activation-receipt.bound",
@@ -5058,6 +5266,33 @@ def main(argv: list[str] | None = None) -> int:
                     child_cleanup_errors.append(f"protected tracer activation exited {activation.returncode} after durable commit")
                     raise LiveTransportError("tracer activation committed with incomplete child cleanup")
 
+        elif run29_handover_teardown_mode:
+            require(
+                run29_teardown_source_projection is not None
+                and len(run29_teardown_sources) == 3,
+                "run29 teardown source provenance unavailable",
+            )
+            teardown_receipt = receipt_dir / "participant-flux-run29-handover-teardown.json"
+            teardown_projection, teardown_returncode, teardown_bound, teardown_logging_error = run_run29_handover_teardown(
+                session,
+                cancellation,
+                bootstrap_runner,
+                revision,
+                kubeconfig,
+                run29_teardown_sources,
+                teardown_receipt,
+                binding_dir / "run29-handover-teardown-receipt.bound",
+                child_environment,
+                kubectl_fd=kubectl_fd,
+            )
+            bound_receipts.append(teardown_bound)
+            base_status = "dormant-handover-torn-down"; operation_succeeded = True
+            if teardown_logging_error is not None:
+                child_cleanup_errors.append(teardown_logging_error)
+            if teardown_returncode != 0:
+                child_cleanup_errors.append(
+                    f"protected run29 dormant handover teardown exited {teardown_returncode} after durable commit"
+                )
         elif handover_archive_receipt is not None:
             # Revalidate the current cluster against the archived dormant
             # receipt with a strictly GET-only protected child.  This creates
@@ -5702,6 +5937,17 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "automaticActivationRetry": False,
         },
+        "run29HandoverTeardown": {
+            "selected": run29_handover_teardown_mode,
+            "sourceVerification": run29_teardown_source_projection,
+            "sourceFileSha256": {
+                label: receipt.sha256 for label, receipt in sorted(run29_teardown_sources.items())
+            },
+            "teardown": teardown_record if run29_handover_teardown_mode else receipt_record(None, None),
+            "activationAttempted": False,
+            "secretAccess": "none",
+            "civicAuthorityEffects": False,
+        },
         "tracerDataPlane": {
             "mode": tracer_mode,
             "sourceActivation": source_tracer_activation_record,
@@ -5732,7 +5978,15 @@ def main(argv: list[str] | None = None) -> int:
                 base_status in {"dormant-cleanup-required", "bootstrap-state-indeterminate", "dormant-ready"}
                 or (participant_recovery_mode and not operation_succeeded)
             ),
-            "mode": "--participant-gateway-recovery" if participant_recovery_mode else ("--handover-dormant-receipt" if handover_archive_receipt is not None else "--teardown-dormant-receipt"),
+            "mode": (
+                "--run29-dormant-handover-teardown"
+                if run29_handover_teardown_mode
+                else "--participant-gateway-recovery"
+                if participant_recovery_mode
+                else "--handover-dormant-receipt"
+                if handover_archive_receipt is not None
+                else "--teardown-dormant-receipt"
+            ),
             "requiresClosedDormantPreflight": True,
             "requiresExistingSecretMaterializationReceipt": handover_archive_receipt is not None and not participant_recovery_mode,
             "handoverReceiptSha256": handover_projection.get("receiptSha256") if handover_projection is not None else None,

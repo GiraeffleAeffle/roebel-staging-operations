@@ -583,6 +583,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(MODULE.classify_final_status("activated", activation_committed=True, operation_succeeded=True, cleanup_complete=False), ("activated-cleanup-incomplete", 3))
         self.assertEqual(MODULE.classify_final_status("activated", activation_committed=True, operation_succeeded=True, cleanup_complete=True), ("activated", 0))
         self.assertEqual(MODULE.classify_final_status("dormant-torn-down", activation_committed=False, operation_succeeded=True, cleanup_complete=False), ("dormant-teardown-cleanup-incomplete", 3))
+        self.assertEqual(MODULE.classify_final_status("dormant-handover-torn-down", activation_committed=False, operation_succeeded=True, cleanup_complete=True), ("dormant-handover-torn-down", 0))
         self.assertEqual(MODULE.classify_final_status("participant-secrets-torn-down", activation_committed=False, operation_succeeded=True, cleanup_complete=True), ("participant-secrets-torn-down", 0))
         source = inspect.getsource(MODULE.main)
         for check in ("bootstrap.returncode != 0", "teardown_returncode != 0", "activation.returncode != 0"):
@@ -1005,6 +1006,110 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.LiveTransportError, "require --participant-gateway-recovery"):
             MODULE.parse_args(ordinary)
 
+    def test_run29_handover_teardown_cli_is_exact_and_cannot_select_activation(self):
+        common = [
+            "--run29-dormant-handover-teardown", "--live",
+            "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id",
+            "--bootstrap-bundle", "/private/bundle", "--wireproxy-bin", "/bin/true",
+            "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+            "--run29-archived-dormant-receipt", "/private/archive.json",
+            "--run29-dormant-handover-receipt", "/private/handover.json",
+            "--run29-participant-recovery-receipt", "/private/recovery.json",
+        ]
+        parsed = MODULE.parse_args(common)
+        self.assertTrue(parsed.run29_dormant_handover_teardown)
+        self.assertIsNone(parsed.participant_secret_bundle)
+        self.assertIsNone(parsed.tracer_data_plane_activation_receipt)
+        for flag, value in (
+            ("--participant-secret-bundle", "/private/secrets"),
+            ("--teardown-dormant-receipt", "/private/generic.json"),
+            ("--handover-dormant-receipt", "/private/other-handover.json"),
+            ("--tracer-data-plane-activation-receipt", "/private/tracer.json"),
+            ("--workbench-handover-receipt", "/private/workbench.json"),
+        ):
+            with self.subTest(flag=flag), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "accepts no activation"
+            ):
+                MODULE.parse_args([*common, flag, value])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "requires --live"):
+            MODULE.parse_args([value for value in common if value != "--live"])
+        for flag, value in (
+            ("--run29-archived-dormant-receipt", "/private/archive.json"),
+            ("--run29-dormant-handover-receipt", "/private/handover.json"),
+            ("--run29-participant-recovery-receipt", "/private/recovery.json"),
+        ):
+            without_one = list(common)
+            offset = without_one.index(flag)
+            del without_one[offset:offset + 2]
+            with self.subTest(missing=flag), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "exact three receipts"
+            ):
+                MODULE.parse_args(without_one)
+        without_mode = [value for value in common if value != "--run29-dormant-handover-teardown"]
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "require its explicit mode"):
+            MODULE.parse_args(without_mode)
+
+    def test_run29_handover_teardown_source_verifier_is_closed_and_pretransport(self):
+        sources = {
+            "archivedDormant": Mock(fd=11),
+            "dormantHandover": Mock(fd=12),
+            "participantRecovery": Mock(fd=13),
+        }
+        arguments, descriptors = MODULE.run29_handover_teardown_source_arguments(sources)
+        self.assertEqual(arguments, [
+            "--run29-archived-dormant-receipt-fd", "11",
+            "--run29-dormant-handover-receipt-fd", "12",
+            "--run29-participant-recovery-receipt-fd", "13",
+        ])
+        self.assertEqual(descriptors, (11, 12, 13))
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "source set drift"):
+            MODULE.run29_handover_teardown_source_arguments(sources | {"foreign": Mock(fd=14)})
+
+        projection = {
+            "schemaVersion": "roebel_staging_participant_flux_run29_handover_teardown_binding_v1",
+            "status": "run29-handover-teardown-ready",
+            "protectedRevision": "a" * 40,
+            "receiptSha256": "sha256:" + "f" * 64,
+            "sources": {name: {} for name in sources},
+            "objects": [{} for _ in range(8)],
+            "participantTargetCount": 6,
+            "secretAccess": "none",
+            "civicAuthorityEffects": False,
+        }
+        cancellation = Mock()
+        cancellation.run.return_value = MODULE.subprocess.CompletedProcess(
+            [], 0, stdout=MODULE.canonical(projection) + "\n", stderr="",
+        )
+        runner = Mock()
+        runner.blob.fd = 10
+        runner.command.side_effect = lambda argv: argv
+        self.assertEqual(
+            MODULE.verify_run29_handover_teardown_sources_with_protected_cli(
+                cancellation, runner, "a" * 40, sources, {"PATH": "/usr/bin"},
+            ),
+            projection,
+        )
+        invoked = runner.command.call_args.args[0]
+        self.assertEqual(invoked[0], "--verify-run29-handover-teardown-sources")
+        self.assertNotIn("--live", invoked)
+        self.assertEqual(cancellation.run.call_args.kwargs["pass_fds"], (10, 11, 12, 13))
+
+        main_source = inspect.getsource(MODULE.main)
+        self.assertLess(
+            main_source.index("verify_run29_handover_teardown_sources_with_protected_cli("),
+            main_source.index("snapshot_binary("),
+        )
+        execution_source = inspect.getsource(MODULE.run_run29_handover_teardown)
+        self.assertIn("--teardown-run29-handover", execution_source)
+        self.assertIn("--verify-run29-handover-teardown-receipt-fd", execution_source)
+        self.assertNotIn("ACTIVATION_RUNNER", execution_source)
+        self.assertNotIn('"--live"', execution_source)
+        self.assertIn('"run29HandoverTeardown"', main_source)
+        self.assertIn('"activationAttempted": False', main_source)
+        self.assertIn('"secretAccess": "none"', main_source)
+
     def test_participant_incident_recovery_selects_only_two_exact_receipt_checksum_profiles(self):
         historical = MODULE.failed_activation_receipt_sha256_profile(
             "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
@@ -1259,7 +1364,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_eleven_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_twelve_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1294,6 +1399,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1348,8 +1454,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1395,6 +1505,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1437,6 +1551,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1483,6 +1598,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, None, None, None, None, None, None, None, MODULE.LiveTransportError("ninth parent drift")],
             [None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("tenth parent drift")],
             [None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("eleventh parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("twelfth parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1494,7 +1610,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         ordinals = (
             "first", "second", "third", "fourth", "fifth", "sixth",
-            "seventh", "eighth", "ninth", "tenth", "eleventh",
+            "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
         )
         hops = [
             getattr(MODULE, f"TRACER_ACTIVATION_COMPATIBILITY_{ordinal.upper()}_HOP_FILES")
@@ -1592,6 +1708,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
             "38cdfbd9748c3481689599c53f4443af11a7df63",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+            "890e001c76a94755d8f25ebfcf83593da24a082e",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1643,6 +1763,16 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
             participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
+            frozenset({
+                "scripts/bootstrap-staging-participant-flux.py",
+                "scripts/run-staging-participant-gateway-live.py",
+                "scripts/staging_participant_flux_bootstrap.py",
+                "scripts/test_run_staging_participant_gateway_live.py",
+                "scripts/test_staging_participant_flux_bootstrap.py",
+            }),
         )
 
     def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):
