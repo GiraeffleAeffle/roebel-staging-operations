@@ -152,6 +152,22 @@ class NoSignals:
 
 
 class MaterializerTests(unittest.TestCase):
+    def test_dynamic_loader_registers_dataclass_module_during_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "dataclass_probe.py"
+            source.write_text(
+                "from dataclasses import dataclass\n"
+                "@dataclass\n"
+                "class Probe:\n"
+                "    value: int\n",
+            )
+            name = "tracer_materializer_dataclass_probe"
+            sys.modules.pop(name, None)
+            self.addCleanup(sys.modules.pop, name, None)
+            loaded = MODULE.load_module(source, name)
+            self.assertIs(sys.modules[name], loaded)
+            self.assertEqual(loaded.Probe(7).value, 7)
+
     def test_generated_bundle_has_exact_shared_values_without_receipt_exposure(self) -> None:
         values, window = MODULE.generate_bundle(POLICY, now=1_800_000_000)
         self.assertEqual(values["dataPlane"]["anon-jwt"], values["webFeed"]["supabase-anon-key"])
