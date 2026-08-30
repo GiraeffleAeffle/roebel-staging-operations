@@ -926,7 +926,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_eight_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_nine_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -958,7 +958,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -976,7 +977,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-eight-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-nine-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -988,6 +989,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1007,7 +1009,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1017,7 +1020,8 @@ class ExecutorTests(unittest.TestCase):
             "fourth-to-fifth-successor file set drift",
             "fifth-to-sixth-successor file set drift",
             "sixth-to-seventh-successor file set drift",
-            "seventh-successor-to-acceptor file set drift",
+            "seventh-to-eighth-successor file set drift",
+            "eighth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1055,6 +1059,10 @@ class ExecutorTests(unittest.TestCase):
             MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
             "2002f4da021de7188e86ae4cd7a724bf0e9da0db",
         )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
+            "1995dba981f9413ff5460328a02c79ab563129a5",
+        )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1080,7 +1088,7 @@ class ExecutorTests(unittest.TestCase):
             participant_pair | wrapper_pair,
         )
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
             {
                 "policy/staging-participant-gateway-activation-policy.json",
                 "reviewed-render/roebel-staging/integrity.json",
@@ -1094,6 +1102,10 @@ class ExecutorTests(unittest.TestCase):
                 "scripts/test_run_staging_participant_gateway_live.py",
                 "scripts/test_staging_participant_gateway_policy.py",
             },
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            participant_pair | wrapper_pair,
         )
         widened = copy.deepcopy(receipt)
         widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
@@ -1120,8 +1132,8 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
 
-    def test_eighth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
-        parent = MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION
+    def test_ninth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION
         child = "c" * 40
         foreign = "d" * 40
         for label, lineage in (
@@ -1135,12 +1147,12 @@ class ExecutorTests(unittest.TestCase):
                 MODULE, "trusted_git_v4", return_value=result
             ) as trusted, self.assertRaisesRegex(
                 MODULE.ActivationError,
-                "seventh-successor-to-acceptor protected parent drift",
+                "eighth-successor-to-acceptor protected parent drift",
             ):
                 MODULE.exact_revision_transition_files_v4(
                     parent,
                     child,
-                    "tracer receipt seventh-successor-to-acceptor",
+                    "tracer receipt eighth-successor-to-acceptor",
                 )
             self.assertEqual(trusted.call_count, 1)
 
@@ -2166,6 +2178,11 @@ class ExecutorTests(unittest.TestCase):
         value = policy(); origin = value["endpoints"]["browserOrigin"]; prefix = value["httpBoundary"]["prefix"]
         cors = {"access-control-allow-origin": origin, "access-control-allow-credentials": "true", "vary": "Origin"}
         status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
+        method_denied = {
+            "status": 405,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "147", "content-type": "text/html"},
+            "body": "<html><body><h1>405 Method Not Allowed</h1>\nA request was made of a resource using a request method not supported by that resource.\n</body></html>\n",
+        }
         def response(request_origin, method, path, headers, body, timeout):
             self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
             if method == "GET" and path == prefix + "/status": return {"status": 200, "headers": cors | {"content-type": "application/json; charset=utf-8"}, "body": json.dumps(status_body)}
@@ -2176,7 +2193,10 @@ class ExecutorTests(unittest.TestCase):
                 if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
                 status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
                 return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
-            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]: return {"status": 405, "headers": {}, "body": ""}
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
+                denied = copy.deepcopy(method_denied)
+                if method == "HEAD": denied["body"] = ""
+                return denied
             if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
             return {"status": 404, "headers": {}, "body": ""}
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
@@ -2207,6 +2227,11 @@ class ExecutorTests(unittest.TestCase):
         value = policy(); origin = value["endpoints"]["browserOrigin"]; prefix = value["httpBoundary"]["prefix"]
         cors = {"access-control-allow-origin": origin, "access-control-allow-credentials": "true", "vary": "Origin"}
         status_body = MODULE.expected_participant_http_status_v4()
+        method_denied = {
+            "status": 405,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "147", "content-type": "text/html"},
+            "body": "<html><body><h1>405 Method Not Allowed</h1>\nA request was made of a resource using a request method not supported by that resource.\n</body></html>\n",
+        }
         status_attempts = 0
 
         def response(request_origin, method, path, headers, body, timeout):
@@ -2224,7 +2249,10 @@ class ExecutorTests(unittest.TestCase):
                 if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
                 status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
                 return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
-            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]: return {"status": 405, "headers": {}, "body": ""}
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
+                denied = copy.deepcopy(method_denied)
+                if method == "HEAD": denied["body"] = ""
+                return denied
             if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
             return {"status": 404, "headers": {}, "body": ""}
 
@@ -2247,6 +2275,37 @@ class ExecutorTests(unittest.TestCase):
         self.assertNotIn("sensitive upstream body", str(raised.exception))
         self.assertEqual(request.call_count, 1)
         sleep.assert_not_called()
+
+    def test_v4_method_denial_binds_haproxy_and_rejects_gateway_or_proxy_drift(self):
+        exact = {
+            "status": 405,
+            "headers": {"cache-control": "no-cache", "connection": "close", "content-length": "147", "content-type": "text/html"},
+            "body": MODULE.HAPROXY_METHOD_DENIED_BODY,
+        }
+        MODULE._require_haproxy_method_denied_v4(exact, "POST", "/status")
+        head = exact | {"body": ""}
+        MODULE._require_haproxy_method_denied_v4(head, "HEAD", "/status")
+        drift_cases = {
+            "gateway-json": {
+                "status": 405,
+                "headers": {
+                    "access-control-allow-origin": "https://roebel-web.staging.agentcart.eu",
+                    "content-type": "application/json",
+                },
+                "body": '{"error":"method_not_allowed"}',
+            },
+            "old-empty-assumption": {"status": 405, "headers": {}, "body": ""},
+            "body": exact | {"body": exact["body"] + "drift"},
+            "content-length": exact | {"headers": exact["headers"] | {"content-length": "148"}},
+            "cache": exact | {"headers": exact["headers"] | {"cache-control": "public"}},
+            "connection": exact | {"headers": exact["headers"] | {"connection": "keep-alive"}},
+            "cors": exact | {"headers": exact["headers"] | {"vary": "Origin"}},
+        }
+        for label, observed in drift_cases.items():
+            with self.subTest(label=label), self.assertRaises(MODULE.ActivationError):
+                MODULE._require_haproxy_method_denied_v4(observed, "POST", "/status")
+        with self.assertRaises(MODULE.ActivationError):
+            MODULE._require_haproxy_method_denied_v4(exact, "HEAD", "/status")
 
     def test_v4_route_matrix_does_not_retry_an_invalid_200_contract_or_other_status(self):
         value = policy(); origin = value["endpoints"]["browserOrigin"]
