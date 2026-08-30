@@ -38,6 +38,34 @@ LIVE_WRAPPER_PATH = "scripts/run-staging-participant-gateway-live.py"
 HANDOVER_RUNNER_PATH = "scripts/handover-staging-participant-dormant-receipt.py"
 HANDOVER_MODULE_PATH = "scripts/staging_participant_dormant_receipt_handover.py"
 SECRET_MATERIALIZER_PATH = "scripts/materialize-staging-participant-gateway-secrets.py"
+TRACER_ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
+TRACER_ACTIVATION_RUNNER_PATH = "scripts/run-tracer-data-plane-live.py"
+TRACER_MATERIALIZER_PATH = "scripts/materialize-tracer-data-plane-secrets.py"
+TRACER_POLICY_PATH = "scripts/tracer_data_plane_policy.py"
+TRACER_RENDER_ROOT = "reviewed-render/roebel-staging/tracer-data-plane"
+TRACER_RECEIPT_PROTECTED_PATHS = (
+    TRACER_ACTIVATION_RUNNER_PATH,
+    "scripts/activate-staging-participant-gateway.py",
+    TRACER_POLICY_PATH,
+    POLICY_MODULE_PATH,
+    POLICY_PATH,
+    TRACER_MATERIALIZER_PATH,
+    "policy/repository-contract.json",
+    f"{TRACER_RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_RENDER_ROOT}/serviceaccount.json",
+    f"{TRACER_RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_RENDER_ROOT}/postgres-service.json",
+    f"{TRACER_RENDER_ROOT}/postgres-networkpolicy.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-deployment.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-service.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-networkpolicy.json",
+    f"{TRACER_RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    f"{TRACER_RENDER_ROOT}/bootstrap/71-roebel-tracer-baseline.sql",
+    f"{TRACER_RENDER_ROOT}/bootstrap/72-provision-roebel-vault.sh",
+    f"{TRACER_RENDER_ROOT}/bootstrap/73-staging-participant-gateway.sql",
+    f"{TRACER_RENDER_ROOT}/bootstrap/74-staging-participant-topic-tracer.sql",
+)
 BOOTSTRAP_WORKFLOW_PATH = ".github/workflows/staging-participant-flux-bootstrap.yml"
 HANDOVER_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
 # A materialization receipt produced by the reviewed b790 transaction is the
@@ -896,6 +924,7 @@ def required_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, 
     current_paths = tuple(dict.fromkeys((
         *BOOTSTRAP_PROTECTED_PATHS,
         SECRET_MATERIALIZER_PATH,
+        *TRACER_RECEIPT_PROTECTED_PATHS,
         *HANDOVER_COMPATIBILITY_PATHS,
         *HANDOVER_CURRENT_PRESERVATION_PATHS,
     )))
@@ -911,6 +940,7 @@ def required_nested_handover_prebound_keys_v4(current_revision: str) -> set[tupl
     return required_handover_prebound_keys_v4(current_revision) - {
         (current_revision, SECRET_MATERIALIZER_PATH),
         (SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH),
+        *((current_revision, path) for path in TRACER_RECEIPT_PROTECTED_PATHS),
     }
 
 def parse_prebound_git_blob_descriptors_v4(values: list[str] | None, current_revision: str) -> dict[tuple[str, str], bytes]:
@@ -1214,6 +1244,215 @@ def bind_secret_materialization_receipt_v4(
     except Exception as exc:
         raise ActivationError(f"Secret materialization receipt rejected: {exc}") from exc
 
+
+def bind_tracer_activation_receipt_v4(
+    p: dict[str, Any],
+    rev: str,
+    receipt_fd: int,
+) -> dict[str, Any]:
+    """Bind the completed data plane without reading any Secret value."""
+    raw = load_owned_receipt_fd_raw_v4(receipt_fd, "tracer data-plane activation receipt")
+    try:
+        receipt = obj(raw.decode("utf-8"), "tracer data-plane activation receipt")
+    except UnicodeDecodeError as exc:
+        raise ActivationError("tracer data-plane activation receipt must be UTF-8 JSON") from exc
+    expected_fields = {
+        "schemaVersion", "status", "protectedRevision", "operationNonce", "productSourceRevision",
+        "protectedFileSha256", "clusterBinding", "sharedFluxSource",
+        "secretMaterializationReceiptSha256", "secretRecords", "createOrder",
+        "objectRecords", "flux", "serviceBindings", "failureRollback",
+        "secretValuesRead", "civicAuthorityEffects",
+        "signalsDeferredDuringFinalization", "functionalHttpRpcProof",
+    }
+    require(set(receipt) == expected_fields, "tracer data-plane activation receipt field set drift")
+    require(
+        receipt.get("schemaVersion") == TRACER_ACTIVATION_RECEIPT_SCHEMA
+        and receipt.get("status") == "activated"
+        and receipt.get("protectedRevision") == rev
+        and receipt.get("productSourceRevision") == p["productPins"]["sourceRevision"]
+        and isinstance(receipt.get("operationNonce"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", receipt["operationNonce"]) is not None
+        and isinstance(receipt.get("secretMaterializationReceiptSha256"), str)
+        and POLICY.SHA256.fullmatch(receipt["secretMaterializationReceiptSha256"]) is not None
+        and receipt.get("secretValuesRead") is False
+        and receipt.get("civicAuthorityEffects") is False
+        and receipt.get("failureRollback") == "exact-operation-owned-uids-only",
+        "tracer data-plane activation receipt status/source boundary drift",
+    )
+    hashes = receipt.get("protectedFileSha256")
+    require(
+        isinstance(hashes, dict)
+        and set(hashes) == set(TRACER_RECEIPT_PROTECTED_PATHS)
+        and all(
+            isinstance(hashes[path], str)
+            and hashes[path] == bytes_digest(git_blob(rev, path))
+            for path in TRACER_RECEIPT_PROTECTED_PATHS
+        ),
+        "tracer data-plane protected file closure drift",
+    )
+    validate_bound_cluster_identity_v4(receipt.get("clusterBinding"), p, "tracer data-plane")
+    require(
+        receipt.get("sharedFluxSource")
+        == {"revision": f"main@sha1:{rev}", "ready": True, "mutation": False},
+        "tracer shared Flux source receipt drift",
+    )
+    records = receipt.get("secretRecords")
+    secret_contract = {
+        "dataPlane": {
+            "target": {"apiVersion": "v1", "kind": "Secret", "name": "roebel-tracer-data-plane-runtime", "namespace": "stadtstack-roebel-staging-lab"},
+            "keySet": ["anon-jwt", "authenticator-password", "environment-arm", "jwt-secret", "pgsodium-root-key", "postgres-password", "postgrest-db-uri", "rpc-secret"],
+        },
+        "webFeed": {
+            "target": {"apiVersion": "v1", "kind": "Secret", "name": "roebel-tracer-feed-runtime", "namespace": "stadtstack-roebel-web-preview"},
+            "keySet": ["supabase-anon-key"],
+        },
+        "participantPostgrest": {
+            "target": {"apiVersion": "v1", "kind": "Secret", "name": p["runtime"]["secretReferences"]["postgrest"]["name"], "namespace": p["runtime"]["secretReferences"]["postgrest"]["namespace"]},
+            "keySet": sorted(p["runtime"]["secretReferences"]["postgrest"]["keys"]),
+        },
+    }
+    require(isinstance(records, dict) and set(records) == set(secret_contract), "tracer Secret receipt set drift")
+    secret_nonces: set[str] = set()
+    for label, expected in secret_contract.items():
+        record = records[label]
+        require(
+            isinstance(record, dict)
+            and set(record) == {"target", "uid", "resourceVersion", "keySet", "ownershipNonce", "valuesRead"}
+            and record.get("target") == expected["target"]
+            and record.get("keySet") == expected["keySet"]
+            and isinstance(record.get("uid"), str) and bool(record["uid"])
+            and isinstance(record.get("resourceVersion"), str) and record["resourceVersion"].isdigit()
+            and isinstance(record.get("ownershipNonce"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", record["ownershipNonce"]) is not None
+            and record.get("valuesRead") is False,
+            f"tracer Secret projection drift: {label}",
+        )
+        secret_nonces.add(record["ownershipNonce"])
+    require(len(secret_nonces) == 1, "tracer Secret bundle nonce drift")
+    postgrest = records.get("participantPostgrest") if isinstance(records, dict) else None
+    reference = p["runtime"]["secretReferences"]["postgrest"]
+    require(
+        isinstance(postgrest, dict)
+        and postgrest.get("target")
+        == {
+            "apiVersion": "v1", "kind": "Secret",
+            "name": reference["name"], "namespace": reference["namespace"],
+        }
+        and postgrest.get("keySet") == sorted(reference["keys"])
+        and isinstance(postgrest.get("uid"), str)
+        and isinstance(postgrest.get("resourceVersion"), str)
+        and postgrest["resourceVersion"].isdigit()
+        and postgrest.get("valuesRead") is False,
+        "tracer participant PostgREST Secret projection drift",
+    )
+    object_targets = {
+        "application.postgresNetworkPolicy": ("networking.k8s.io/v1", "NetworkPolicy", "stadtstack-roebel-staging-lab", "roebel-tracer-postgres"),
+        "application.postgrestNetworkPolicy": ("networking.k8s.io/v1", "NetworkPolicy", "stadtstack-roebel-staging-lab", "roebel-tracer-postgrest"),
+        "application.serviceAccount": ("v1", "ServiceAccount", "stadtstack-roebel-staging-lab", "roebel-tracer-data-plane"),
+        "application.bootstrapConfigMap": ("v1", "ConfigMap", "stadtstack-roebel-staging-lab", "roebel-tracer-data-plane-bootstrap-v1"),
+        "application.postgresService": ("v1", "Service", "stadtstack-roebel-staging-lab", "roebel-tracer-postgres"),
+        "application.postgrestService": ("v1", "Service", "stadtstack-roebel-staging-lab", "roebel-tracer-postgrest"),
+        "application.postgresDeployment": ("apps/v1", "Deployment", "stadtstack-roebel-staging-lab", "roebel-tracer-postgres"),
+        "application.postgrestDeployment": ("apps/v1", "Deployment", "stadtstack-roebel-staging-lab", "roebel-tracer-postgrest"),
+        "flux.serviceAccount": ("v1", "ServiceAccount", "flux-roebel-staging", "roebel-tracer-data-plane-reconciler"),
+        "flux.role": ("rbac.authorization.k8s.io/v1", "Role", "stadtstack-roebel-staging-lab", "roebel-tracer-data-plane-reconciler"),
+        "flux.roleBinding": ("rbac.authorization.k8s.io/v1", "RoleBinding", "stadtstack-roebel-staging-lab", "roebel-tracer-data-plane-reconciler"),
+        "flux.kustomization": ("kustomize.toolkit.fluxcd.io/v1", "Kustomization", "flux-roebel-staging", "roebel-tracer-data-plane"),
+    }
+    create_order = list(object_targets)
+    object_records = receipt.get("objectRecords")
+    require(receipt.get("createOrder") == create_order and isinstance(object_records, dict) and set(object_records) == set(create_order), "tracer object receipt closure drift")
+    operation_nonce = receipt["operationNonce"]
+    for label, identity in object_targets.items():
+        record = object_records[label]
+        api_version, kind, namespace, name = identity
+        require(
+            isinstance(record, dict)
+            and set(record) == {"target", "uid", "resourceVersion", "ownershipNonce", "temporaryNonceRemoved"}
+            and record.get("target") == {"apiVersion": api_version, "kind": kind, "namespace": namespace, "name": name}
+            and isinstance(record.get("uid"), str) and bool(record["uid"])
+            and isinstance(record.get("resourceVersion"), str) and record["resourceVersion"].isdigit()
+            and record.get("ownershipNonce") == operation_nonce
+            and record.get("temporaryNonceRemoved") is True,
+            f"tracer object ownership receipt drift: {label}",
+        )
+    require(
+        receipt.get("flux") == {
+            "uid": object_records["flux.kustomization"]["uid"],
+            "lastAppliedRevision": f"main@sha1:{rev}",
+            "ready": True,
+        },
+        "tracer Flux readiness receipt drift",
+    )
+    services = receipt.get("serviceBindings")
+    require(isinstance(services, dict) and set(services) == {"postgres", "postgrest"}, "tracer Service receipt set drift")
+    for label, port in (("postgres", 5432), ("postgrest", p["endpoints"]["supabase"]["port"])):
+        binding = services[label]
+        require(
+            isinstance(binding, dict)
+            and set(binding) == {"serviceUid", "port", "readyEndpointAddresses"}
+            and isinstance(binding.get("serviceUid"), str) and bool(binding["serviceUid"])
+            and binding.get("port") == port
+            and isinstance(binding.get("readyEndpointAddresses"), list)
+            and bool(binding["readyEndpointAddresses"])
+            and binding["readyEndpointAddresses"] == sorted(set(binding["readyEndpointAddresses"]))
+            and all(isinstance(address, str) and address for address in binding["readyEndpointAddresses"]),
+            f"tracer Service readiness receipt drift: {label}",
+        )
+    service = services.get("postgrest") if isinstance(services, dict) else None
+    require(
+        isinstance(service, dict)
+        and isinstance(service.get("serviceUid"), str)
+        and service.get("port") == p["endpoints"]["supabase"]["port"]
+        and isinstance(service.get("readyEndpointAddresses"), list)
+        and bool(service["readyEndpointAddresses"])
+        and all(isinstance(address, str) and address for address in service["readyEndpointAddresses"]),
+        "tracer PostgREST Service readiness receipt drift",
+    )
+    require(
+        receipt.get("functionalHttpRpcProof")
+        == {
+            "status": "pending-participant-gateway-protected-preflight",
+            "secretValuesRead": False,
+        },
+        "tracer functional proof handoff drift",
+    )
+    return {
+        "receiptFileSha256": bytes_digest(raw),
+        "originProtectedRevision": receipt["protectedRevision"],
+        "participantPostgrestSecret": copy.deepcopy(postgrest),
+        "postgrestService": copy.deepcopy(service),
+        "civicAuthorityEffects": False,
+    }
+
+
+def require_tracer_activation_binding_v4(
+    endpoints: dict[str, Any],
+    secrets: dict[str, Any],
+    ownership: dict[str, Any],
+) -> None:
+    live_secret = secrets.get("secrets", {}).get("postgrest")
+    owned_secret = ownership["participantPostgrestSecret"]
+    require(
+        isinstance(live_secret, dict)
+        and live_secret.get("name") == owned_secret["target"]["name"]
+        and live_secret.get("namespace") == owned_secret["target"]["namespace"]
+        and live_secret.get("uid") == owned_secret["uid"]
+        and live_secret.get("resourceVersion") == owned_secret["resourceVersion"]
+        and live_secret.get("keys") == owned_secret["keySet"]
+        and live_secret.get("valuesRead") is False,
+        "live participant PostgREST Secret no longer binds tracer receipt",
+    )
+    live_service = endpoints.get("postgrest")
+    owned_service = ownership["postgrestService"]
+    require(
+        isinstance(live_service, dict)
+        and live_service.get("serviceUid") == owned_service["serviceUid"]
+        and live_service.get("readyEndpointAddresses") == owned_service["readyEndpointAddresses"]
+        and live_service.get("externalIngress") is False,
+        "live PostgREST Service no longer binds tracer receipt",
+    )
+
 class ReceiptSink:
     """A pre-reserved, non-overwriting, durably committed receipt target."""
     def __init__(self, path: Path, device: int, inode: int):
@@ -1474,7 +1713,7 @@ def raw_delete(snapshot: KubeconfigSnapshot, resource_path: str, payload: str, t
     """Send one exact UID/resourceVersion DELETE over authenticated API TLS."""
     name = r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?"
     allowed_patterns = (
-        rf"/api/v1/namespaces/{name}/(?:services|serviceaccounts)/{name}",
+        rf"/api/v1/namespaces/{name}/(?:configmaps|secrets|services|serviceaccounts)/{name}",
         rf"/apis/apps/v1/namespaces/{name}/deployments/{name}",
         rf"/apis/networking\.k8s\.io/v1/namespaces/{name}/(?:ingresses|networkpolicies)/{name}",
         rf"/apis/rbac\.authorization\.k8s\.io/v1/namespaces/{name}/(?:roles|rolebindings)/{name}",
@@ -1894,17 +2133,33 @@ def require_secret_materialization_binding_v4(
     ownership: dict[str, Any],
     p: dict[str, Any],
 ) -> None:
-    """Compare value-free live Secret identity/keysets with a prior receipt."""
+    """Bind the two participant-owned Secrets to their prior receipt.
+
+    The PostgREST projection is deliberately owned by the tracer data-plane
+    materializer, not by the older participant materializer.  Its exact live
+    identity and keyset are still checked by :func:`secret_materialization_v4`,
+    but it must not be adopted into (or coupled to teardown of) the participant
+    receipt that owns only ``config`` and ``runtime``.
+    """
     require(
         current.get("status") == "exact-keysets-present-without-reading-values"
         and ownership.get("status") == "materialized"
         and ownership.get("civicAuthorityEffects") is False,
         "Secret materialization continuation status drift",
     )
+    participant_labels = {"config", "runtime"}
     records = ownership.get("secretRecords")
-    require(isinstance(records, dict) and set(records) == set(p["runtime"]["secretReferences"]), "Secret materialization continuation record set drift")
+    require(
+        isinstance(records, dict) and set(records) == participant_labels,
+        "Secret materialization continuation record set drift",
+    )
     live_records = current.get("secrets")
-    require(isinstance(live_records, dict) and set(live_records) == set(records), "current Secret materialization record set drift")
+    require(
+        isinstance(live_records, dict)
+        and set(live_records) == set(p["runtime"]["secretReferences"])
+        and participant_labels < set(live_records),
+        "current Secret materialization record set drift",
+    )
     references = p["runtime"]["secretReferences"]
     for label, record in records.items():
         live = live_records[label]
@@ -2135,23 +2390,103 @@ def require_same_cluster_identity_v4(before: dict[str, Any], after: dict[str, An
     keys = ("apiOrigin", "caCertificateSha256", "apiServerSpkiSha256", "kubeSystemNamespaceUid")
     require(all(before.get(key) == after.get(key) for key in keys), f"protected cluster identity changed {label}")
 
-def endpoint_facts_v4(p: dict[str, Any]) -> dict[str, Any]:
-    """Resolve and TLS-check only the two fixed policy origins."""
-    timeout = p["httpBoundary"]["timeoutsSeconds"]["routeRequest"]; context = ssl.create_default_context(); facts = {}
-    for label in ("gnosis", "supabase"):
-        endpoint = p["endpoints"][label]; parsed = urllib.parse.urlparse(endpoint["httpsOrigin"])
-        require(parsed.scheme == "https" and parsed.hostname and parsed.path in {"", "/"}, f"{label} origin invalid")
-        addresses = sorted({entry[4][0] for entry in socket.getaddrinfo(parsed.hostname, endpoint["port"], type=socket.SOCK_STREAM) if ":" not in entry[4][0]})
-        expected = sorted(cidr.removesuffix("/32") for cidr in endpoint["ipv4Cidrs"])
-        require(addresses == expected and addresses, f"{label} DNS answers differ from protected /32 set")
-        tls = []
-        for address in addresses:
-            with socket.create_connection((address, endpoint["port"]), timeout=timeout) as connection:
-                with context.wrap_socket(connection, server_hostname=parsed.hostname) as secured:
-                    certificate = secured.getpeercert(binary_form=True); require(certificate is not None, f"{label} TLS certificate absent")
-                    tls.append({"ipv4": address, "tlsVersion": secured.version(), "certificateDerSha256": "sha256:" + hashlib.sha256(certificate).hexdigest()})
-        facts[label] = {"origin": endpoint["httpsOrigin"], "port": endpoint["port"], "ipv4Answers": addresses, "protectedIpv4Cidrs": endpoint["ipv4Cidrs"], "tls": tls}
-    return {"status": "fixed-origins-match-protected-ipv4-and-tls", "origins": facts}
+def endpoint_facts_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> dict[str, Any]:
+    """Verify the fixed Gnosis TLS origin and internal PostgREST binding."""
+    timeout = p["httpBoundary"]["timeoutsSeconds"]["routeRequest"]
+    context = ssl.create_default_context()
+    gnosis = p["endpoints"]["gnosis"]
+    parsed = urllib.parse.urlparse(gnosis["httpsOrigin"])
+    require(
+        parsed.scheme == "https" and parsed.hostname and parsed.path in {"", "/"},
+        "gnosis origin invalid",
+    )
+    addresses = sorted({
+        entry[4][0]
+        for entry in socket.getaddrinfo(
+            parsed.hostname,
+            gnosis["port"],
+            type=socket.SOCK_STREAM,
+        )
+        if ":" not in entry[4][0]
+    })
+    expected = sorted(cidr.removesuffix("/32") for cidr in gnosis["ipv4Cidrs"])
+    require(addresses == expected and addresses, "gnosis DNS answers differ from protected /32 set")
+    tls = []
+    for address in addresses:
+        with socket.create_connection((address, gnosis["port"]), timeout=timeout) as connection:
+            with context.wrap_socket(connection, server_hostname=parsed.hostname) as secured:
+                certificate = secured.getpeercert(binary_form=True)
+                require(certificate is not None, "gnosis TLS certificate absent")
+                tls.append({
+                    "ipv4": address,
+                    "tlsVersion": secured.version(),
+                    "certificateDerSha256": "sha256:" + hashlib.sha256(certificate).hexdigest(),
+                })
+
+    postgrest = p["endpoints"]["supabase"]
+    target = postgrest["service"]
+    namespace = target["namespace"]
+    name = target["name"]
+    service = obj(
+        checked(
+            r,
+            kb(kubeconfig) + ["-n", namespace, "get", "service", name, "-o", "json"],
+            "internal PostgREST Service",
+        ),
+        "internal PostgREST Service",
+    )
+    service_spec = service.get("spec", {})
+    require(service_spec.get("type") == "ClusterIP", "internal PostgREST Service type drift")
+    require(
+        service_spec.get("selector") == POLICY.TRACER_POSTGREST_LABELS,
+        "internal PostgREST Service selector drift",
+    )
+    require(
+        service_spec.get("ports") == [{
+            "name": "http",
+            "port": postgrest["port"],
+            "protocol": "TCP",
+            "targetPort": "http",
+        }],
+        "internal PostgREST Service port drift",
+    )
+    slices = obj(
+        checked(
+            r,
+            kb(kubeconfig) + [
+                "-n", namespace, "get", "endpointslices",
+                "-l", f"kubernetes.io/service-name={name}", "-o", "json",
+            ],
+            "internal PostgREST EndpointSlices",
+        ),
+        "internal PostgREST EndpointSlices",
+    )
+    ready_addresses = sorted({
+        address
+        for item in slices.get("items", [])
+        for endpoint in item.get("endpoints", [])
+        if endpoint.get("conditions", {}).get("ready") is True
+        for address in endpoint.get("addresses", [])
+    })
+    require(ready_addresses, "internal PostgREST has no ready endpoint")
+    return {
+        "status": "fixed-external-tls-and-internal-service-binding-match",
+        "gnosis": {
+            "origin": gnosis["httpsOrigin"],
+            "port": gnosis["port"],
+            "ipv4Answers": addresses,
+            "protectedIpv4Cidrs": gnosis["ipv4Cidrs"],
+            "tls": tls,
+        },
+        "postgrest": {
+            "origin": postgrest["internalOrigin"],
+            "service": target,
+            "serviceUid": service.get("metadata", {}).get("uid"),
+            "serviceResourceVersion": service.get("metadata", {}).get("resourceVersion"),
+            "readyEndpointAddresses": ready_addresses,
+            "externalIngress": False,
+        },
+    }
 
 def anonymous_publication_v4(p: dict[str, Any]) -> dict[str, Any]:
     """Fetch the exact public GHCR manifest without ambient credentials."""
@@ -3926,11 +4261,13 @@ def activate(
     runner_hashes: dict[str, str],
     dormant_ownership: dict[str, Any] | None = None,
     secret_materialization_ownership: dict[str, Any] | None = None,
+    tracer_activation_ownership: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute both Flux paths as one guarded transaction; no caller evidence."""
     if not live: return dry_run_plan(p, rev, {})
     _policy_call(POLICY.assert_activation_ready, p); require(kube is not None and Path(kube).is_file(), "live activation requires explicit existing kubeconfig")
     require(dormant_ownership is not None, "live activation requires exact dormant Flux bootstrap receipt")
+    require(tracer_activation_ownership is not None, "live activation requires completed tracer data-plane receipt")
     handover_mode = isinstance(dormant_ownership.get("receiptProvenance"), dict) and dormant_ownership["receiptProvenance"].get("mode") == "archived-v1+get-only-handover"
     if handover_mode:
         require(secret_materialization_ownership is not None, "dormant handover activation requires existing Secret materialization receipt")
@@ -3944,7 +4281,7 @@ def activate(
             bound_cluster = validate_bound_cluster_identity_v4(dormant_ownership.get("clusterBinding"), p, "dormant handover")
             require_same_cluster_identity_v4(partial["clusterBinding"], bound_cluster, "dormant handover continuation")
         partial["publication"] = anonymous_publication_v4(p)
-        partial["endpoints"] = endpoint_facts_v4(p)
+        partial["endpoints"] = endpoint_facts_v4(r, snapshot_path, p)
         preserved = preservation_v4(r, snapshot_path, p)
         if handover_mode:
             require_current_preservation_binding_v4(preserved, dormant_ownership, p)
@@ -3954,6 +4291,9 @@ def activate(
         secret_before = secret_materialization_v4(r, snapshot_path, p)
         if handover_mode:
             require_secret_materialization_binding_v4(secret_before, secret_materialization_ownership, p)
+        require_tracer_activation_binding_v4(
+            partial["endpoints"], secret_before, tracer_activation_ownership,
+        )
         policy_before = policy_union_v4(r, snapshot_path)
         cluster_before_mutation = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_mutation, "before mutation")
         order = ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount", "gateway.service", "gateway.deployment")
@@ -4048,6 +4388,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--archived-flux-bootstrap-receipt-fd", type=int)
     parser.add_argument("--dormant-bootstrap-handover-receipt-fd", type=int)
     parser.add_argument("--secret-materialization-receipt-fd", type=int)
+    parser.add_argument("--tracer-data-plane-activation-receipt-fd", type=int)
     parser.add_argument("--prebound-blob", action="append")
     parser.add_argument("--receipt", type=Path, default=Path("participant-gateway-activation-receipt.json"))
     return parser.parse_args(argv)
@@ -4076,6 +4417,7 @@ def main(argv: list[str] | None = None) -> int:
                 and a.archived_flux_bootstrap_receipt_fd is None
                 and a.dormant_bootstrap_handover_receipt_fd is None
                 and a.secret_materialization_receipt_fd is None
+                and a.tracer_data_plane_activation_receipt_fd is None
                 and a.prebound_blob is None,
                 "dry-run accepts no kubeconfig or continuation receipts",
             )
@@ -4097,7 +4439,8 @@ def main(argv: list[str] | None = None) -> int:
                 and a.flux_bootstrap_receipt_fd is None
                 and a.archived_flux_bootstrap_receipt_fd is None
                 and a.dormant_bootstrap_handover_receipt_fd is None
-                and a.secret_materialization_receipt_fd is None,
+                and a.secret_materialization_receipt_fd is None
+                and a.tracer_data_plane_activation_receipt_fd is None,
                 "receipt verification accepts no kubeconfig or continuation receipts",
             )
             require(a.prebound_blob is None, "receipt verification accepts no prebound Git closure")
@@ -4138,6 +4481,7 @@ def main(argv: list[str] | None = None) -> int:
                 and a.flux_bootstrap_receipt is None
                 and a.flux_bootstrap_receipt_fd is None
                 and a.secret_materialization_receipt_fd is None
+                and a.tracer_data_plane_activation_receipt_fd is None
                 and _PREBOUND_GIT_BLOBS is not None,
                 "incident recovery requires kubeconfig, archived and fresh handover receipts, failed receipt, and prebound Git closure only",
             )
@@ -4163,6 +4507,15 @@ def main(argv: list[str] | None = None) -> int:
             print(canonical(result))
             return 0
         require(a.live is True, "ordinary participant activation requires --live")
+        require(
+            a.tracer_data_plane_activation_receipt_fd is not None,
+            "ordinary participant activation requires completed tracer data-plane receipt",
+        )
+        tracer_activation_ownership = bind_tracer_activation_receipt_v4(
+            p,
+            rev,
+            a.tracer_data_plane_activation_receipt_fd,
+        )
         handover_flags = (a.archived_flux_bootstrap_receipt_fd, a.dormant_bootstrap_handover_receipt_fd, a.secret_materialization_receipt_fd)
         handover_requested = any(value is not None for value in handover_flags)
         if handover_requested:
@@ -4211,6 +4564,7 @@ def main(argv: list[str] | None = None) -> int:
             runner_hashes,
             dormant_ownership,
             secret_materialization_ownership,
+            tracer_activation_ownership,
         )
         print(canonical(result)); return 0
     except (ActivationError, OSError, json.JSONDecodeError) as exc: print(f"activation blocked: {exc}", file=sys.stderr); return 2

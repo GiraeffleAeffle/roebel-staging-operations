@@ -33,6 +33,7 @@
   },
   "publicMetadataBoundary": {
     "allowedKinds": [
+      "ConfigMap",
       "Deployment",
       "Ingress",
       "Service",
@@ -66,6 +67,313 @@
     "renderRoot": "reviewed-render/roebel-staging/signed-nostr",
     "runtimePin": "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
     "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
+  },
+  "ephemeralTracerDataPlaneBoundary": {
+    "activationReady": true,
+    "authority": "none",
+    "bootstrap": {
+      "configMap": "roebel-tracer-data-plane-bootstrap-v1",
+      "hashVerificationBeforeSql": true,
+      "productArtifacts": [
+        {
+          "path": "supabase/staging_incluster_tracer_baseline_v1.sql",
+          "sha256": "sha256:f8f9745c1783043334ef24b3cde801d19a609867d12d0c23612bda7c5206ca5a"
+        },
+        {
+          "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
+          "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
+        },
+        {
+          "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
+          "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+        }
+      ],
+      "vaultBeforeParticipantMigrations": true
+    },
+    "images": {
+      "postgres": "docker.io/supabase/postgres@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b",
+      "postgrest": "docker.io/postgrest/postgrest@sha256:bea1c76a856fa39d1e542d25911cf95d02fe2bf971992d033044ff209f1504b8"
+    },
+    "network": {
+      "externalIngress": false,
+      "postgrestClusterUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
+      "postgresIngress": "postgrest-exact-pod-selector-only",
+      "postgrestIngress": "web-and-participant-exact-pod-selectors-only"
+    },
+    "normalReleaseSetPromotionMayChange": false,
+    "dormantFluxBootstrap": {
+      "objectOrder": [
+        "serviceAccount",
+        "role",
+        "roleBinding",
+        "kustomization"
+      ],
+      "initialState": "all-four-exact-names-absent",
+      "successState": "all-four-exact-uids-present-kustomization-suspended",
+      "adoption": "forbidden",
+      "sharedSourceMutation": "forbidden",
+      "secretAccess": "forbidden",
+      "applicationMutation": false,
+      "civicAuthorityEffects": false,
+      "objects": {
+        "serviceAccount": {
+          "apiVersion": "v1",
+          "kind": "ServiceAccount",
+          "name": "roebel-tracer-data-plane-reconciler",
+          "namespace": "flux-roebel-staging",
+          "semanticSha256": "sha256:14ce76caffbd2fd04312e9ec0fad00de4a786a8d87e6ad94e6cb0261936a2515"
+        },
+        "role": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "Role",
+          "name": "roebel-tracer-data-plane-reconciler",
+          "namespace": "stadtstack-roebel-staging-lab",
+          "semanticSha256": "sha256:1e83d0ab081e19f1761607889b736ad02d82c58805d572633c40de767bfb4462"
+        },
+        "roleBinding": {
+          "apiVersion": "rbac.authorization.k8s.io/v1",
+          "kind": "RoleBinding",
+          "name": "roebel-tracer-data-plane-reconciler",
+          "namespace": "stadtstack-roebel-staging-lab",
+          "semanticSha256": "sha256:47f3636bcb0299771f2ac80b72318807e11af475d7f09132a37bf1979bcb38c7"
+        },
+        "kustomization": {
+          "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+          "kind": "Kustomization",
+          "name": "roebel-tracer-data-plane",
+          "namespace": "flux-roebel-staging",
+          "semanticSha256": "sha256:1bbd95ffb2c2fe98eb48c2c9453083d9d5dee1e16da4b7c43a01151cbfb74d21"
+        }
+      },
+      "runner": "scripts/run-tracer-data-plane-live.py",
+      "receiptSchemaVersion": "roebel_tracer_data_plane_activation_receipt_v1"
+    },
+    "activation": {
+      "applicationCreateOrder": [
+        "postgresNetworkPolicy",
+        "postgrestNetworkPolicy",
+        "serviceAccount",
+        "bootstrapConfigMap",
+        "postgresService",
+        "postgrestService",
+        "postgresDeployment",
+        "postgrestDeployment"
+      ],
+      "applicationObjectCount": 8,
+      "createBeforeUnsuspend": true,
+      "failureRollback": "exact-operation-owned-uids-only",
+      "journal": {
+        "mode": "--recover-journal",
+        "schemaVersion": "roebel_tracer_data_plane_activation_journal_v1",
+        "uidResourceVersionPersistedBeforeNextMutation": true,
+        "valuesIncluded": false
+      },
+      "runner": "scripts/run-tracer-data-plane-live.py",
+      "waitsFor": [
+        "flux-kustomization-ready-at-protected-operations-revision",
+        "postgres-deployment-available",
+        "postgrest-deployment-available",
+        "service-endpointslices-ready"
+      ]
+    },
+    "renderRoot": "reviewed-render/roebel-staging/tracer-data-plane",
+    "runtimePin": "reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json",
+    "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
+    "secretReference": {
+      "keys": [
+        "anon-jwt",
+        "authenticator-password",
+        "environment-arm",
+        "jwt-secret",
+        "pgsodium-root-key",
+        "postgres-password",
+        "postgrest-db-uri",
+        "rpc-secret"
+      ],
+      "name": "roebel-tracer-data-plane-runtime",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "valuesCommitted": false
+    },
+    "secretMaterialization": {
+      "runner": "scripts/materialize-tracer-data-plane-secrets.py",
+      "receiptSchemaVersion": "roebel_tracer_data_plane_secret_materialization_receipt_v1",
+      "teardownReceiptSchemaVersion": "roebel_tracer_data_plane_secret_teardown_receipt_v1",
+      "journalSchemaVersion": "roebel_tracer_data_plane_secret_materialization_journal_v1",
+      "secretValueSource": "runner-csprng-only",
+      "adoption": "forbidden",
+      "createOrder": [
+        "dataPlane",
+        "webFeed",
+        "participantPostgrest"
+      ],
+      "initialState": "all-three-exact-secret-names-absent",
+      "receiptContainsValues": false,
+      "crashRecovery": {
+        "journalBeforeFirstMutation": true,
+        "journalBeforeNextMutation": "nonce-plus-each-created-uid-resourceVersion",
+        "mode": "--recover-journal",
+        "runner": "scripts/materialize-tracer-data-plane-secrets.py",
+        "secretValuesIncluded": false
+      },
+      "anonJwt": {
+        "algorithm": "HS256",
+        "encoding": "canonical-unpadded-base64url",
+        "lifetimeDays": 365,
+        "minimumRemainingDaysAtActivation": 30,
+        "role": "anon",
+        "signingSecretEncoding": "ascii-64-lower-hex"
+      },
+      "secrets": {
+        "dataPlane": {
+          "name": "roebel-tracer-data-plane-runtime",
+          "namespace": "stadtstack-roebel-staging-lab",
+          "keys": [
+            "anon-jwt",
+            "authenticator-password",
+            "environment-arm",
+            "jwt-secret",
+            "pgsodium-root-key",
+            "postgres-password",
+            "postgrest-db-uri",
+            "rpc-secret"
+          ]
+        },
+        "webFeed": {
+          "name": "roebel-tracer-feed-runtime",
+          "namespace": "stadtstack-roebel-web-preview",
+          "keys": [
+            "supabase-anon-key"
+          ]
+        },
+        "participantPostgrest": {
+          "name": "roebel-staging-participant-gateway-postgrest",
+          "namespace": "stadtstack-roebel-web-preview",
+          "keys": [
+            "supabase-anon-key",
+            "supabase-rpc-secret"
+          ]
+        }
+      },
+      "sharedValueBindings": [
+        {
+          "left": "dataPlane.anon-jwt",
+          "right": "webFeed.supabase-anon-key"
+        },
+        {
+          "left": "dataPlane.anon-jwt",
+          "right": "participantPostgrest.supabase-anon-key"
+        },
+        {
+          "left": "dataPlane.rpc-secret",
+          "right": "participantPostgrest.supabase-rpc-secret"
+        }
+      ],
+      "teardown": {
+        "deleteOrder": [
+          "participantPostgrest",
+          "webFeed",
+          "dataPlane"
+        ],
+        "sourceReceiptRequired": true,
+        "uidResourceVersionPreconditions": true,
+        "requiredAbsentTargets": [
+          {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "name": "roebel-tracer-postgres",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "name": "roebel-tracer-postgrest",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "name": "roebel-tracer-data-plane",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "name": "roebel-tracer-data-plane-bootstrap-v1",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "name": "roebel-tracer-postgres",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "name": "roebel-tracer-postgrest",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "roebel-tracer-postgres",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "roebel-tracer-postgrest",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "v1",
+            "kind": "ServiceAccount",
+            "name": "roebel-tracer-data-plane-reconciler",
+            "namespace": "flux-roebel-staging"
+          },
+          {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "name": "roebel-tracer-data-plane-reconciler",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "name": "roebel-tracer-data-plane-reconciler",
+            "namespace": "stadtstack-roebel-staging-lab"
+          },
+          {
+            "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+            "kind": "Kustomization",
+            "name": "roebel-tracer-data-plane",
+            "namespace": "flux-roebel-staging"
+          }
+        ],
+        "requiredUnreferencedConsumers": [
+          {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "roebel-web-presentation",
+            "namespace": "stadtstack-roebel-web-preview",
+            "secretName": "roebel-tracer-feed-runtime"
+          },
+          {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": "roebel-staging-participant-gateway",
+            "namespace": "stadtstack-roebel-web-preview",
+            "secretName": "roebel-staging-participant-gateway-postgrest"
+          }
+        ]
+      },
+      "valuesCommitted": false
+    },
+    "storage": {
+      "durability": "emptyDir-recreated-baseline",
+      "persistentVolumeClaim": false,
+      "sizeLimit": "2Gi"
+    }
   },
   "stagingParticipantGatewayBoundary": {
     "activationPolicy": "policy/staging-participant-gateway-activation-policy.json",
@@ -105,7 +413,9 @@
         }
       },
       "getOnlyEffects": {
-        "verbs": ["GET"],
+        "verbs": [
+          "GET"
+        ],
         "kubernetesGetCount": 12,
         "resourceGetCount": 11,
         "clusterMutationCount": 0,
@@ -162,14 +472,20 @@
         "roebel-staging-participant-gateway-runtime"
       ],
       "initialState": "both-exact-secret-names-absent",
-      "createOrder": ["config", "runtime"],
+      "createOrder": [
+        "config",
+        "runtime"
+      ],
       "adoption": "forbidden",
       "receiptSchemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
       "receiptContainsValues": false,
       "teardown": {
         "sourceReceiptRequired": true,
         "afterParticipantDeactivationOnly": true,
-        "deleteOrder": ["runtime", "config"],
+        "deleteOrder": [
+          "runtime",
+          "config"
+        ],
         "uidResourceVersionPreconditions": true,
         "receiptSchemaVersion": "roebel_staging_participant_secret_teardown_receipt_v1"
       }
@@ -234,9 +550,24 @@
         "attemptReceiptSha256": "sha256:55a7cfac98cdb40aa49a46a00abbd47d8305cff4d001f8984c57a0c964d51ee9",
         "inspectionSha256": "sha256:d7a94d4e27c18317ede34f6700a7c4a27081133bd7f881e46d5bd30466430755"
       },
-      "mutationSurface": ["GET", "DELETE-with-uid-and-resourceVersion-preconditions"],
-      "forbidden": ["create", "patch", "apply", "list", "secrets", "civic-authority-effects"],
-      "deleteOrder": ["Kustomization", "RoleBinding", "Role", "ServiceAccount"],
+      "mutationSurface": [
+        "GET",
+        "DELETE-with-uid-and-resourceVersion-preconditions"
+      ],
+      "forbidden": [
+        "create",
+        "patch",
+        "apply",
+        "list",
+        "secrets",
+        "civic-authority-effects"
+      ],
+      "deleteOrder": [
+        "Kustomization",
+        "RoleBinding",
+        "Role",
+        "ServiceAccount"
+      ],
       "automaticRetry": false,
       "resume": "same-journal-same-protected-revision-same-origin-evidence-and-exact-uids-only",
       "terminalReceiptFinalization": {
@@ -247,7 +578,9 @@
         "terminalJournalCanonicalSha256": "sha256:cdeab725635754bb4a220bc915e4ff69a46246b6336ca954681d7ff6e7497613",
         "requiredSoleParentRevision": "9f7a7a1e96065e849a8b7a9879de1fadb9ec6e2f",
         "preTransportJournalBinding": "exact-existing-private-file-only",
-        "mutationSurface": ["GET"],
+        "mutationSurface": [
+          "GET"
+        ],
         "clusterMutationCount": 0,
         "newDeletes": 0,
         "historicalDeleteOnlyRecovery": true,
@@ -341,7 +674,12 @@
       "GET rollout/pods/Service/EndpointSlice binding",
       "GET exact public HTTPS config and feed paths"
     ],
-    "preservation": ["Service", "NetworkPolicy", "Secrets", "civic-authority-effects"],
+    "preservation": [
+      "Service",
+      "NetworkPolicy",
+      "Secrets",
+      "civic-authority-effects"
+    ],
     "probeTransport": {
       "kind": "fixed-public-https-origin",
       "origin": "https://roebel-web.staging.agentcart.eu",
@@ -440,7 +778,10 @@
       "DELETE-exact-generated-Pod-path-with-uid-and-resourceVersion-preconditions",
       "PATCH-exact-workbench-Ingress-write-gate-restoration-with-uid-resourceVersion-and-value-CAS"
     ],
-    "deleteOrder": ["citizen-relay", "agent-relay"],
+    "deleteOrder": [
+      "citizen-relay",
+      "agent-relay"
+    ],
     "outputs": {
       "receipt": "explicit-owner-only-nonexisting-path-required",
       "journal": "explicit-owner-only-nonexisting-path-required",

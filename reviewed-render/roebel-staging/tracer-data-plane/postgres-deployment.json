@@ -1,0 +1,237 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "annotations": {
+      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:a59f8fd0c737a6b6094998748fd9f44d3d1714368c2e3b54af31b6c2b0175219",
+      "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
+    },
+    "labels": {
+      "app.kubernetes.io/component": "tracer-database",
+      "app.kubernetes.io/name": "roebel-tracer-postgres",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-tracer-postgres",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "progressDeadlineSeconds": 300,
+    "replicas": 1,
+    "revisionHistoryLimit": 1,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "tracer-database",
+        "app.kubernetes.io/name": "roebel-tracer-postgres",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+        "stadtstack.io/environment": "staging"
+      }
+    },
+    "strategy": {
+      "type": "Recreate"
+    },
+    "template": {
+      "metadata": {
+        "annotations": {
+          "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
+        },
+        "labels": {
+          "app.kubernetes.io/component": "tracer-database",
+          "app.kubernetes.io/name": "roebel-tracer-postgres",
+          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+          "stadtstack.io/authority": "none",
+          "stadtstack.io/civic-authority": "none",
+          "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+          "stadtstack.io/environment": "staging"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "PGDATA",
+                "value": "/var/lib/postgresql/data/pgdata"
+              },
+              {
+                "name": "POSTGRES_DB",
+                "value": "postgres"
+              },
+              {
+                "name": "POSTGRES_USER",
+                "value": "supabase_admin"
+              },
+              {
+                "name": "POSTGRES_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "postgres-password",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_TRACER_AUTHENTICATOR_PASSWORD",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "authenticator-password",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_TRACER_ENVIRONMENT_ARM",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "environment-arm",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_TRACER_RPC_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "rpc-secret",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              }
+            ],
+            "image": "docker.io/supabase/postgres@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b",
+            "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "exec": {
+                "command": [
+                  "/usr/bin/pg_isready",
+                  "--username=supabase_admin",
+                  "--dbname=postgres"
+                ]
+              },
+              "failureThreshold": 6,
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "timeoutSeconds": 5
+            },
+            "name": "postgres",
+            "ports": [
+              {
+                "containerPort": 5432,
+                "name": "postgres",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "exec": {
+                "command": [
+                  "/usr/bin/pg_isready",
+                  "--username=supabase_admin",
+                  "--dbname=postgres"
+                ]
+              },
+              "failureThreshold": 3,
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "timeoutSeconds": 5
+            },
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "ephemeral-storage": "3Gi",
+                "memory": "1Gi"
+              },
+              "requests": {
+                "cpu": "100m",
+                "ephemeral-storage": "256Mi",
+                "memory": "256Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "readOnlyRootFilesystem": false
+            },
+            "startupProbe": {
+              "exec": {
+                "command": [
+                  "/usr/bin/pg_isready",
+                  "--username=supabase_admin",
+                  "--dbname=postgres"
+                ]
+              },
+              "failureThreshold": 60,
+              "periodSeconds": 2,
+              "successThreshold": 1,
+              "timeoutSeconds": 5
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/postgresql/data",
+                "name": "postgres-data"
+              },
+              {
+                "mountPath": "/etc/postgresql-custom/pgsodium_root.key",
+                "name": "runtime-secret",
+                "readOnly": true,
+                "subPath": "pgsodium-root-key"
+              },
+              {
+                "mountPath": "/roebel-tracer-bootstrap",
+                "name": "bootstrap",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/docker-entrypoint-initdb.d/zz-roebel-tracer.sh",
+                "name": "bootstrap",
+                "readOnly": true,
+                "subPath": "zz-roebel-tracer.sh"
+              }
+            ]
+          }
+        ],
+        "restartPolicy": "Always",
+        "securityContext": {
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccountName": "roebel-tracer-data-plane",
+        "terminationGracePeriodSeconds": 30,
+        "volumes": [
+          {
+            "emptyDir": {
+              "sizeLimit": "2Gi"
+            },
+            "name": "postgres-data"
+          },
+          {
+            "configMap": {
+              "defaultMode": 365,
+              "name": "roebel-tracer-data-plane-bootstrap-v1",
+              "optional": false
+            },
+            "name": "bootstrap"
+          },
+          {
+            "name": "runtime-secret",
+            "secret": {
+              "defaultMode": 292,
+              "optional": false,
+              "secretName": "roebel-tracer-data-plane-runtime"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

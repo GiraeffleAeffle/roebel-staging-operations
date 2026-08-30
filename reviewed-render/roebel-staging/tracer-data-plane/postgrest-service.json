@@ -1,0 +1,37 @@
+{
+  "apiVersion": "v1",
+  "kind": "Service",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "tracer-postgrest",
+      "app.kubernetes.io/name": "roebel-tracer-postgrest",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-tracer-postgrest",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "ports": [
+      {
+        "name": "http",
+        "port": 3000,
+        "protocol": "TCP",
+        "targetPort": "http"
+      }
+    ],
+    "selector": {
+      "app.kubernetes.io/component": "tracer-postgrest",
+      "app.kubernetes.io/name": "roebel-tracer-postgrest",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+      "stadtstack.io/environment": "staging"
+    },
+    "type": "ClusterIP"
+  }
+}

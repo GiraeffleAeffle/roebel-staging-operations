@@ -58,6 +58,20 @@ def load_workbench_baseline_module():
 
 WORKBENCH_BASELINE = load_workbench_baseline_module()
 
+
+def load_tracer_data_plane_module():
+    """Load the protected, value-free ephemeral tracer data-plane policy."""
+    path = Path(__file__).with_name("tracer_data_plane_policy.py")
+    spec = importlib.util.spec_from_file_location("protected_tracer_data_plane_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected tracer data-plane policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TRACER_DATA_PLANE = load_tracer_data_plane_module()
+
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
 RENDER_ROOT = "reviewed-render/roebel-staging"
@@ -177,6 +191,9 @@ EXPECTED_FILES = {
     "scripts/reset-staging-relay-fixtures.py",
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
+    "scripts/tracer_data_plane_policy.py",
+    "scripts/materialize-tracer-data-plane-secrets.py",
+    "scripts/run-tracer-data-plane-live.py",
     "scripts/test_automatic_promotion_workflow.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/test_run_staging_participant_gateway_live.py",
@@ -186,6 +203,9 @@ EXPECTED_FILES = {
     "scripts/test_reset_staging_relay_fixtures.py",
     "scripts/test_staging_participant_flux_bootstrap.py",
     "scripts/test_staging_participant_gateway_policy.py",
+    "scripts/test_tracer_data_plane_policy.py",
+    "scripts/test_materialize_tracer_data_plane_secrets.py",
+    "scripts/test_run_tracer_data_plane_live.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
@@ -225,6 +245,7 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/web/networkpolicy.json",
     WORKBENCH_BASELINE.NETWORK_POLICY_PATH,
     WORKBENCH_BASELINE.KUSTOMIZATION_PATH,
+    *TRACER_DATA_PLANE.expected_files(),
 }
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
@@ -259,6 +280,131 @@ CIVIC_PROJECTION_ROUTE_TRANSITION_FILES = {
     f"{RENDER_ROOT}/web/deployment.json",
     f"{RENDER_ROOT}/web/networkpolicy.json",
     f"{PARTICIPANT_GATEWAY_ROOT}/workbench-ingress/networkpolicy.json",
+}
+
+# Phase A admits only the inert in-cluster tracer capability.  In particular,
+# none of the currently reconciled Web/Public-Mecky release inputs may change
+# in this transaction.  The inert data-plane render, policy, two live
+# executables, and their focused tests are additions; every other member is an
+# exact predecessor-to-successor update.
+TRACER_PHASE_A_ADDED_FILES = {
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/71-roebel-tracer-baseline.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/72-provision-roebel-vault.sh",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/73-staging-participant-gateway.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/74-staging-participant-topic-tracer.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-networkpolicy.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-service.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-networkpolicy.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-service.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/serviceaccount.json",
+    "scripts/materialize-tracer-data-plane-secrets.py",
+    "scripts/run-tracer-data-plane-live.py",
+    "scripts/test_materialize_tracer_data_plane_secrets.py",
+    "scripts/test_run_tracer_data_plane_live.py",
+    "scripts/test_tracer_data_plane_policy.py",
+    "scripts/tracer_data_plane_policy.py",
+}
+TRACER_PHASE_A_TRANSITION_FILES = {
+    ".github/workflows/reviewed-render-admission.yml",
+    "policy/repository-contract.json",
+    PARTICIPANT_POLICY.POLICY_PATH,
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/networkpolicy.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/71-roebel-tracer-baseline.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/72-provision-roebel-vault.sh",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/73-staging-participant-gateway.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/74-staging-participant-topic-tracer.sql",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-networkpolicy.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-service.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-networkpolicy.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgrest-service.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/serviceaccount.json",
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/materialize-tracer-data-plane-secrets.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/run-tracer-data-plane-live.py",
+    "scripts/staging_participant_gateway_policy.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_materialize_tracer_data_plane_secrets.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_run_tracer_data_plane_live.py",
+    "scripts/test_staging_participant_gateway_policy.py",
+    "scripts/test_tracer_data_plane_policy.py",
+    "scripts/test_verify_reviewed_render.py",
+    "scripts/tracer_data_plane_policy.py",
+    "scripts/verify-reviewed-render.py",
+}
+TRACER_PHASE_A_PRESERVED_ACTIVE_FILES = {
+    f"{RENDER_ROOT}/head.json",
+    f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/public-mecky/kustomization.yaml",
+    f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
+    f"{RENDER_ROOT}/public-mecky/service.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/ingress.json",
+    f"{RENDER_ROOT}/web/kustomization.yaml",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
+}
+TRACER_PHASE_B_TRANSITION_FILES = {
+    f"{RENDER_ROOT}/head.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
+}
+TRACER_PHASE_A_HEAD = {
+    "schemaVersion": HEAD_SCHEMA,
+    "promotionRevision": "68b578eebc03761fe64a70f1f5e70145d1002a09",
+    "releaseSetDigest": "sha256:32096568f4abe5d858d3ca0b0ddc7c0c4e192da1518a60bb9e91cd3597c9d92e",
+    "components": [
+        {
+            "component": "public-mecky",
+            "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
+            "manifestDigest": "sha256:aa66c9b8bb75989e1c47b628845523fa345a944b0a1a82bd17863f96c1f128e4",
+        },
+        {
+            "component": "roebel-web-staging",
+            "sourceRevision": "68b578eebc03761fe64a70f1f5e70145d1002a09",
+            "manifestDigest": "sha256:d33111a5c76f14f3a23506168062d82d8afa3a60b38881c12847f781919e656f",
+        },
+    ],
+}
+TRACER_PHASE_B_WEB_SOURCE_REVISION = "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
+TRACER_PHASE_B_WEB_MANIFEST_DIGEST = (
+    "sha256:ff0f3b3ca70de5e4ab0bad02723498444bf98e01d4794eef312ccadeb9954bc2"
+)
+TRACER_PHASE_B_RELEASE_SET_DIGEST = (
+    "sha256:810e56e6f2e9d70db2b9aa110e5bbad49ff96d7c83a3a3fb8eb8ce89e53ddce8"
+)
+TRACER_FEED_URL_ENV = {
+    "name": "ROEBEL_FEED_SUPABASE_URL",
+    "value": TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
+}
+TRACER_FEED_ANON_ENV = {
+    "name": "ROEBEL_FEED_SUPABASE_ANON_KEY",
+    "valueFrom": {
+        "secretKeyRef": {
+            "key": TRACER_DATA_PLANE.WEB_FEED_SECRET_KEYS[0],
+            "name": TRACER_DATA_PLANE.WEB_FEED_SECRET,
+            "optional": False,
+        },
+    },
 }
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
@@ -511,6 +657,39 @@ def repository_files(root: Path) -> set[str]:
     return files
 
 
+def changed_repository_files(candidate_root: Path, base_root: Path) -> set[str]:
+    """Return the exact added, removed, or byte-changed repository paths."""
+    candidate_files = repository_files(candidate_root)
+    base_files = repository_files(base_root)
+    changed = candidate_files ^ base_files
+    for relative in candidate_files & base_files:
+        if (candidate_root / relative).read_bytes() != (base_root / relative).read_bytes():
+            changed.add(relative)
+    return changed
+
+
+def verify_tracer_phase_a_file_boundary(candidate_root: Path, base_root: Path) -> None:
+    """Admit the inert tracer capability without touching active release input."""
+    for relative in sorted(TRACER_PHASE_A_PRESERVED_ACTIVE_FILES):
+        require(
+            (candidate_root / relative).read_bytes()
+            == (base_root / relative).read_bytes(),
+            f"Phase A changed active release file: {relative}",
+        )
+    changed = changed_repository_files(candidate_root, base_root)
+    require(
+        changed == TRACER_PHASE_A_TRANSITION_FILES,
+        "Phase A changed file set drift "
+        f"(missing={sorted(TRACER_PHASE_A_TRANSITION_FILES - changed)!r}, "
+        f"unexpected={sorted(changed - TRACER_PHASE_A_TRANSITION_FILES)!r})",
+    )
+    require(
+        TRACER_PHASE_A_ADDED_FILES
+        == repository_files(candidate_root) - repository_files(base_root),
+        "Phase A added file set drift",
+    )
+
+
 def verify_repository_file_set(root: Path) -> str:
     """Admit exactly one whole render shape and report which shape it is."""
     actual = repository_files(root)
@@ -608,6 +787,14 @@ def verify_workbench_baseline(root: Path) -> dict[str, Any]:
         raise VerificationError(f"workbench baseline render verification failed: {error}") from error
 
 
+def verify_tracer_data_plane(root: Path) -> dict[str, Any]:
+    """Validate the inert data-plane render with the protected sibling policy."""
+    try:
+        return TRACER_DATA_PLANE.verify_render(root)
+    except TRACER_DATA_PLANE.PolicyError as error:
+        raise VerificationError(f"tracer data-plane render verification failed: {error}") from error
+
+
 def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -624,7 +811,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
+            "allowedKinds": ["ConfigMap", "Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -649,6 +836,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
             "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
         },
+        "ephemeralTracerDataPlaneBoundary": TRACER_DATA_PLANE.contract_boundary(),
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
             "activationReady": participant_policy["activationReady"],
@@ -1283,6 +1471,7 @@ def verify_deployment(
     head: dict[str, Any],
     reviewed_knowledge: bool = False,
     civic_projection_route: bool = False,
+    tracer_feed_route: bool = False,
 ) -> dict[str, Any]:
     policy = COMPONENTS[component]
     path = root / RENDER_ROOT / policy["directory"] / "deployment.json"
@@ -1391,6 +1580,21 @@ def verify_deployment(
                 "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL" not in by_name,
                 "Web civic projection route is not admitted",
             )
+        if tracer_feed_route:
+            require(
+                by_name.get(TRACER_FEED_URL_ENV["name"]) == TRACER_FEED_URL_ENV,
+                "Web tracer feed URL invalid",
+            )
+            require(
+                by_name.get(TRACER_FEED_ANON_ENV["name"]) == TRACER_FEED_ANON_ENV,
+                "Web tracer feed Secret reference invalid",
+            )
+        else:
+            require(
+                TRACER_FEED_URL_ENV["name"] not in by_name
+                and TRACER_FEED_ANON_ENV["name"] not in by_name,
+                "Web tracer feed route is not admitted",
+            )
     return deployment
 
 
@@ -1404,6 +1608,22 @@ def web_civic_projection_route_enabled(root: Path) -> bool:
         isinstance(item, dict)
         and item.get("name") == "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL"
         for item in environment
+    )
+
+
+def web_tracer_feed_route_enabled(root: Path) -> bool:
+    deployment = load_json(root / RENDER_ROOT / "web/deployment.json")
+    try:
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    names = {
+        item.get("name")
+        for item in environment
+        if isinstance(item, dict)
+    }
+    return bool(
+        names & {TRACER_FEED_URL_ENV["name"], TRACER_FEED_ANON_ENV["name"]}
     )
 
 
@@ -2987,7 +3207,26 @@ def verify_public_mecky_network_policy(
     return policy, reviewed_egress or signed_egress
 
 
-def expected_web_network_policy(civic_projection_route: bool = False) -> dict[str, Any]:
+def tracer_postgrest_web_egress() -> dict[str, Any]:
+    return {
+        "to": [{
+            "namespaceSelector": {
+                "matchLabels": {
+                    "kubernetes.io/metadata.name": TRACER_DATA_PLANE.NAMESPACE,
+                },
+            },
+            "podSelector": {
+                "matchLabels": TRACER_DATA_PLANE.POSTGREST_LABELS,
+            },
+        }],
+        "ports": [{"port": TRACER_DATA_PLANE.POSTGREST_PORT, "protocol": "TCP"}],
+    }
+
+
+def expected_web_network_policy(
+    civic_projection_route: bool = False,
+    tracer_feed_route: bool = False,
+) -> dict[str, Any]:
     policy = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -3065,6 +3304,8 @@ def expected_web_network_policy(civic_projection_route: bool = False) -> dict[st
             "policyTypes": ["Ingress", "Egress"],
         },
     }
+    if tracer_feed_route:
+        policy["spec"]["egress"].insert(0, tracer_postgrest_web_egress())
     if civic_projection_route:
         policy["spec"]["egress"].append({
             "to": [{
@@ -3085,10 +3326,11 @@ def expected_web_network_policy(civic_projection_route: bool = False) -> dict[st
 def verify_web_network_policy(
     root: Path,
     civic_projection_route: bool = False,
+    tracer_feed_route: bool = False,
 ) -> dict[str, Any]:
     policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
     require(
-        policy == expected_web_network_policy(civic_projection_route),
+        policy == expected_web_network_policy(civic_projection_route, tracer_feed_route),
         "Web NetworkPolicy drift",
     )
     return policy
@@ -4153,6 +4395,7 @@ def verify_network_boundary_migration(
     participant_gateway: bool = False,
     participant_gateway_objects: dict[str, Any] | None = None,
     civic_projection_route: bool = False,
+    tracer_feed_route: bool = False,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
     if participant_gateway:
@@ -4196,7 +4439,27 @@ def verify_network_boundary_migration(
                     "serviceAccountToken": False,
                     "writerAuthority": "fixed-staging-rpcs-only",
                     "civicAuthority": "none",
-                    "egress": "dns-plus-policy-pinned-gnosis-supabase-and-exact-workbench-only",
+                    "egress": "dns-plus-policy-pinned-gnosis-internal-postgrest-and-exact-workbench-only",
+                    "internalPostgrest": {
+                        "destinationNamespace": PARTICIPANT_POLICY.WORKBENCH_NAMESPACE,
+                        "destinationPodLabels": PARTICIPANT_POLICY.TRACER_POSTGREST_LABELS,
+                        "externalIngress": False,
+                        "origin": PARTICIPANT_POLICY.TRACER_POSTGREST_ORIGIN,
+                        "port": PARTICIPANT_POLICY.TRACER_POSTGREST_PORT,
+                        "projectionSecret": {
+                            "keys": list(TRACER_DATA_PLANE.PARTICIPANT_POSTGREST_SECRET_KEYS),
+                            "name": TRACER_DATA_PLANE.PARTICIPANT_POSTGREST_SECRET,
+                            "namespace": TRACER_DATA_PLANE.PREVIEW_NAMESPACE,
+                            "valuesCommitted": False,
+                        },
+                    },
+                },
+                "tracerActivation": {
+                    "applicationObjectCount": len(TRACER_DATA_PLANE.application_object_order()),
+                    "createBeforeUnsuspend": True,
+                    "runner": TRACER_DATA_PLANE.LIVE_RUNNER,
+                    "secretMaterializerRunner": TRACER_DATA_PLANE.SECRET_MATERIALIZER_RUNNER,
+                    "sharedSourceMutation": "forbidden",
                 },
                 "workbenchIngress": {
                     "name": PARTICIPANT_POLICY.WORKBENCH_INGRESS_POLICY_NAME,
@@ -4258,6 +4521,25 @@ def verify_network_boundary_migration(
                 "protocol": "TCP",
                 "source": web_source,
                 "upstreamUrl": CIVIC_PROJECTION_UPSTREAM_URL,
+            }
+        if tracer_feed_route:
+            expected["boundary"]["webTracerFeed"] = {
+                "authority": "none",
+                "credentialSecret": {
+                    "key": TRACER_DATA_PLANE.WEB_FEED_SECRET_KEYS[0],
+                    "name": TRACER_DATA_PLANE.WEB_FEED_SECRET,
+                    "namespace": TRACER_DATA_PLANE.PREVIEW_NAMESPACE,
+                    "valuesCommitted": False,
+                },
+                "destinationNamespace": TRACER_DATA_PLANE.NAMESPACE,
+                "destinationPodLabels": TRACER_DATA_PLANE.POSTGREST_LABELS,
+                "port": TRACER_DATA_PLANE.POSTGREST_PORT,
+                "protocol": "TCP",
+                "source": {
+                    "namespace": PARTICIPANT_GATEWAY_NAMESPACE,
+                    "podSelector": WEB_PRESENTATION_LABELS,
+                },
+                "upstreamUrl": TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
             }
         require(migration == expected, "participant gateway network-boundary receipt drift")
         return migration
@@ -4512,6 +4794,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
     workbench_baseline = verify_workbench_baseline(root)
+    tracer_data_plane = verify_tracer_data_plane(root)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
@@ -4530,6 +4813,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
     civic_projection_route = web_civic_projection_route_enabled(root)
+    tracer_feed_route = web_tracer_feed_route_enabled(root)
     deployments = {
         component: verify_deployment(
             root,
@@ -4537,6 +4821,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
             head,
             reviewed_knowledge,
             civic_projection_route=civic_projection_route and component == "roebel-web-staging",
+            tracer_feed_route=tracer_feed_route and component == "roebel-web-staging",
         )
         for component in COMPONENT_ORDER
     }
@@ -4546,7 +4831,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
         reviewed_knowledge,
         signed_nostr,
     )
-    web_network_policy = verify_web_network_policy(root, civic_projection_route)
+    web_network_policy = verify_web_network_policy(
+        root,
+        civic_projection_route,
+        tracer_feed_route,
+    )
     participant_gateway_objects = (
         verify_participant_gateway(root, participant_policy)
         if participant_gateway
@@ -4570,6 +4859,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
         participant_gateway, participant_gateway_objects, civic_projection_route,
+        tracer_feed_route,
     )
     objects = [
         deployments["public-mecky"],
@@ -4614,7 +4904,133 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "stagingParticipantGatewayPolicy": participant_policy,
         "workbenchBaseline": workbench_baseline,
         "workbenchBaselineEnabled": True,
+        "tracerDataPlane": tracer_data_plane,
+        "webTracerFeed": tracer_feed_route,
     }
+
+
+def expected_tracer_phase_b_head(base_head: dict[str, Any]) -> dict[str, Any]:
+    require(base_head == TRACER_PHASE_A_HEAD, "Phase B predecessor Release Set drift")
+    value = copy.deepcopy(base_head)
+    value["promotionRevision"] = TRACER_PHASE_B_WEB_SOURCE_REVISION
+    value["releaseSetDigest"] = TRACER_PHASE_B_RELEASE_SET_DIGEST
+    value["components"][1]["sourceRevision"] = TRACER_PHASE_B_WEB_SOURCE_REVISION
+    value["components"][1]["manifestDigest"] = TRACER_PHASE_B_WEB_MANIFEST_DIGEST
+    return value
+
+
+def expected_tracer_phase_b_public_mecky_deployment(
+    base_deployment: dict[str, Any],
+    successor_head: dict[str, Any],
+) -> dict[str, Any]:
+    value = copy.deepcopy(base_deployment)
+    value["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+        successor_head["releaseSetDigest"]
+    )
+    return value
+
+
+def expected_tracer_phase_b_web_deployment(
+    base_deployment: dict[str, Any],
+    successor_head: dict[str, Any],
+) -> dict[str, Any]:
+    value = copy.deepcopy(base_deployment)
+    annotations = value["metadata"]["annotations"]
+    annotations["stadtstack.io/release-set-sha256"] = successor_head["releaseSetDigest"]
+    annotations["stadtstack.io/source-revision"] = TRACER_PHASE_B_WEB_SOURCE_REVISION
+    template = value["spec"]["template"]
+    template["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+        TRACER_PHASE_B_WEB_SOURCE_REVISION
+    )
+    container = template["spec"]["containers"][0]
+    container["image"] = (
+        f"{COMPONENTS['roebel-web-staging']['repository']}@"
+        f"{TRACER_PHASE_B_WEB_MANIFEST_DIGEST}"
+    )
+    environment = container["env"]
+    names = [item["name"] for item in environment]
+    require(
+        TRACER_FEED_URL_ENV["name"] not in names
+        and TRACER_FEED_ANON_ENV["name"] not in names,
+        "Phase B predecessor already contains tracer feed environment",
+    )
+    insertion = names.index("ROEBEL_PUBLIC_THIRDWEB_CLIENT_ID")
+    environment[insertion:insertion] = [
+        copy.deepcopy(TRACER_FEED_URL_ENV),
+        copy.deepcopy(TRACER_FEED_ANON_ENV),
+    ]
+    return value
+
+
+def expected_tracer_phase_b_live_preconditions(
+    base_root: Path,
+    base: dict[str, Any],
+    successor_head: dict[str, Any],
+) -> dict[str, Any]:
+    value = copy.deepcopy(load_json(base_root / RENDER_ROOT / "live-preconditions.json"))
+    value["previousEnvironmentHead"] = copy.deepcopy(base["head"])
+    for index, component in enumerate(COMPONENT_ORDER):
+        policy = COMPONENTS[component]
+        container = next(
+            item
+            for item in base["deployments"][component]["spec"]["template"]["spec"]["containers"]
+            if item.get("name") == policy["container"]
+        )
+        value["requiredLivePreconditions"][index]["currentImage"] = container["image"]
+        for operation in value["patches"][index]["operations"]:
+            operation["value"] = expected_patch_value(
+                component,
+                operation["path"],
+                successor_head,
+            )
+    return value
+
+
+def verify_tracer_phase_b_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(base["webTracerFeed"] is False, "Phase B predecessor feed route already active")
+    require(candidate["webTracerFeed"] is True, "Phase B successor feed route missing")
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"],
+        "Phase B render shape drift",
+    )
+    require(
+        changed_repository_files(candidate_root, base_root)
+        == TRACER_PHASE_B_TRANSITION_FILES,
+        "Phase B changed file set drift",
+    )
+    successor_head = expected_tracer_phase_b_head(base["head"])
+    require(candidate["head"] == successor_head, "Phase B Release Set drift")
+    require(
+        candidate["deployments"]["public-mecky"]
+        == expected_tracer_phase_b_public_mecky_deployment(
+            base["deployments"]["public-mecky"],
+            successor_head,
+        ),
+        "Phase B Public Mecky release-only transformation drift",
+    )
+    require(
+        candidate["deployments"]["roebel-web-staging"]
+        == expected_tracer_phase_b_web_deployment(
+            base["deployments"]["roebel-web-staging"],
+            successor_head,
+        ),
+        "Phase B Web feed transformation drift",
+    )
+    require(
+        candidate["objects"][4]
+        == expected_web_network_policy(True, True),
+        "Phase B Web tracer PostgREST NetworkPolicy drift",
+    )
+    require(
+        load_json(candidate_root / RENDER_ROOT / "live-preconditions.json")
+        == expected_tracer_phase_b_live_preconditions(base_root, base, successor_head),
+        "Phase B live preconditions drift",
+    )
 
 
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
@@ -4634,6 +5050,14 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         candidate["stagingParticipantGateway"]
         and candidate["stagingParticipantGateway"]["civicProjectionRoute"]
     )
+
+    require(
+        not (base["webTracerFeed"] and not candidate["webTracerFeed"]),
+        "Web tracer feed route cannot regress",
+    )
+    if candidate["webTracerFeed"] and not base["webTracerFeed"]:
+        verify_tracer_phase_b_transition(candidate, base)
+        return
 
     require(
         not (base_civic_projection_route and not candidate_civic_projection_route),

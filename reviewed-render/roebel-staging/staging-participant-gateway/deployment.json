@@ -115,14 +115,14 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL",
-                "value": "https://vdlksxpihmoumebjpeix.supabase.co"
+                "value": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY",
                 "valueFrom": {
                   "secretKeyRef": {
                     "key": "supabase-anon-key",
-                    "name": "roebel-staging-participant-gateway-runtime",
+                    "name": "roebel-staging-participant-gateway-postgrest",
                     "optional": false
                   }
                 }
@@ -132,7 +132,7 @@
                 "valueFrom": {
                   "secretKeyRef": {
                     "key": "supabase-rpc-secret",
-                    "name": "roebel-staging-participant-gateway-runtime",
+                    "name": "roebel-staging-participant-gateway-postgrest",
                     "optional": false
                   }
                 }
@@ -157,11 +157,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "9a478809a3d64b9efea279b6ee088a1346b045b4"
+                "value": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004"
+                "value": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -192,7 +192,7 @@
                 "value": "staging-participant-topic-v1"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
             "imagePullPolicy": "IfNotPresent",
             "name": "staging-participant-gateway",
             "ports": [

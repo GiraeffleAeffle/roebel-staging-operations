@@ -22,6 +22,9 @@ SELF_PATH = "scripts/run-staging-participant-gateway-live.py"
 BOOTSTRAP_RUNNER = "scripts/bootstrap-staging-participant-flux.py"
 ACTIVATION_RUNNER = "scripts/activate-staging-participant-gateway.py"
 SECRET_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
+TRACER_SECRET_RUNNER = "scripts/materialize-tracer-data-plane-secrets.py"
+TRACER_DATA_PLANE_RUNNER = "scripts/run-tracer-data-plane-live.py"
+TRACER_POLICY = "scripts/tracer_data_plane_policy.py"
 HANDOVER_RUNNER = "scripts/handover-staging-participant-dormant-receipt.py"
 HANDOVER_IMPLEMENTATION = "scripts/staging_participant_dormant_receipt_handover.py"
 WORKBENCH_PROMOTER = "scripts/promote-staging-workbench-image.py"
@@ -29,11 +32,30 @@ WORKBENCH_RUNNER = "scripts/handover-staging-workbench-baseline.py"
 WORKBENCH_IMPLEMENTATION = "scripts/workbench_baseline_handover.py"
 WORKBENCH_RECOVERY_IMPLEMENTATION = "scripts/workbench_baseline_recovery.py"
 RELAY_FIXTURE_RESET_RUNNER = "scripts/reset-staging-relay-fixtures.py"
+TRACER_RENDER_PATHS = (
+    "reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/serviceaccount.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgres-deployment.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgres-service.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgres-networkpolicy.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgrest-deployment.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgrest-service.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/postgrest-networkpolicy.json",
+    "reviewed-render/roebel-staging/tracer-data-plane/kustomization.yaml",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/zz-roebel-tracer.sh",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/71-roebel-tracer-baseline.sql",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/72-provision-roebel-vault.sh",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/73-staging-participant-gateway.sql",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/74-staging-participant-topic-tracer.sql",
+)
 PROTECTED_PATHS = (
     SELF_PATH,
     BOOTSTRAP_RUNNER,
     ACTIVATION_RUNNER,
     SECRET_RUNNER,
+    TRACER_SECRET_RUNNER,
+    TRACER_DATA_PLANE_RUNNER,
+    TRACER_POLICY,
     HANDOVER_RUNNER,
     HANDOVER_IMPLEMENTATION,
     "scripts/staging_participant_flux_bootstrap.py",
@@ -43,6 +65,7 @@ PROTECTED_PATHS = (
     ".github/workflows/staging-participant-gateway-activation.yml",
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
+    *TRACER_RENDER_PATHS,
 )
 # The dormant-receipt handover child is forbidden from performing Git reads in
 # a partial clone.  Keep this closure in the outer wrapper so every current
@@ -86,10 +109,17 @@ HANDOVER_CURRENT_PROTECTED_PATHS = tuple(dict.fromkeys((
     HANDOVER_IMPLEMENTATION,
     HANDOVER_RUNNER,
 )))
-HANDOVER_PREBOUND_CURRENT_PATHS = tuple(dict.fromkeys((
+HANDOVER_NESTED_PREBOUND_CURRENT_PATHS = tuple(dict.fromkeys((
     *HANDOVER_CURRENT_PROTECTED_PATHS,
     *HANDOVER_COMPATIBILITY_PATHS,
     *HANDOVER_CURRENT_PRESERVATION_PATHS,
+)))
+HANDOVER_PREBOUND_CURRENT_PATHS = tuple(dict.fromkeys((
+    *HANDOVER_NESTED_PREBOUND_CURRENT_PATHS,
+    TRACER_SECRET_RUNNER,
+    TRACER_DATA_PLANE_RUNNER,
+    TRACER_POLICY,
+    *TRACER_RENDER_PATHS,
 )))
 HANDOVER_PREBOUND_ARCHIVE_PATHS = tuple(dict.fromkeys((
     *HANDOVER_ARCHIVED_PROTECTED_PATHS,
@@ -151,6 +181,9 @@ scope={'__name__':'__main__','__file__':path,'__package__':None,'__cached__':Non
 exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
+TRACER_SECRET_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_materialization_receipt_v1"
+TRACER_SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_teardown_receipt_v1"
+TRACER_ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
@@ -299,6 +332,23 @@ def private_file(path: Path, label: str, max_bytes: int = 16 * 1024 * 1024) -> P
         and stat.S_IMODE(info.st_mode) & 0o077 == 0
         and 0 < info.st_size <= max_bytes,
         f"{label} must be a bounded private owned nlink-one regular file",
+    )
+    return resolved
+
+
+def private_reserved_receipt(path: Path, label: str) -> Path:
+    """Validate a recovery receipt reservation, which may still be empty."""
+    source = Path(os.path.abspath(path)); source_info = os.lstat(source)
+    require(not stat.S_ISLNK(source_info.st_mode), f"{label} must not be a symlink")
+    resolved = Path(os.path.realpath(source)); info = os.lstat(resolved)
+    require(
+        resolved == source
+        and stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and stat.S_IMODE(info.st_mode) == 0o600
+        and info.st_size <= MAX_RECEIPT_BYTES,
+        f"{label} must be a bounded owned 0600 nlink-one regular file",
     )
     return resolved
 
@@ -1663,6 +1713,17 @@ def receipt_record(projection: dict[str, Any] | None, receipt: BoundBlob | None)
     }
 
 
+def tracer_receipt_record(projection: dict[str, Any] | None, receipt: BoundBlob | None) -> dict[str, Any]:
+    return {
+        "schemaVersion": projection.get("schemaVersion") if projection is not None else None,
+        "status": projection.get("status") if projection is not None else None,
+        "protectedRevision": projection.get("protectedRevision") if projection is not None else None,
+        "fileSha256": receipt.sha256 if receipt is not None else None,
+        "valueFree": projection is not None,
+        "civicAuthorityEffects": False,
+    }
+
+
 def private_workbench_output(path: Path, label: str) -> Path:
     """Accept one explicit, private durable workbench output target.
 
@@ -2855,6 +2916,152 @@ def verify_workbench_recovery_evidence(
         result.update({"clusterMutationCount": 0, "terminalRecoveryRevision": WORKBENCH_RECOVERY_TERMINAL_REVISION})
     return result
 
+@dataclass(frozen=True)
+class TracerAttemptPaths:
+    secret_receipt: Path
+    secret_journal: Path
+    activation_receipt: Path
+    activation_journal: Path
+    teardown_receipt: Path
+
+
+def tracer_attempt_paths(receipt_directory: Path) -> TracerAttemptPaths:
+    """Return the fixed value-free tracer evidence names for one attempt."""
+    return TracerAttemptPaths(
+        secret_receipt=receipt_directory / "tracer-secret-materialization.json",
+        secret_journal=receipt_directory / "tracer-secret-materialization.journal.json",
+        activation_receipt=receipt_directory / "tracer-data-plane-activation.json",
+        activation_journal=receipt_directory / "tracer-data-plane-activation.journal.json",
+        teardown_receipt=receipt_directory / "tracer-secret-teardown.json",
+    )
+
+
+def tracer_secret_materialization_child_arguments(
+    revision: str,
+    kubeconfig: Path,
+    receipt: Path,
+    journal: Path,
+) -> list[str]:
+    return [
+        "--expected-revision", revision,
+        "--live",
+        "--kubeconfig", str(kubeconfig),
+        "--receipt", str(receipt),
+        "--journal", str(journal),
+    ]
+
+
+def tracer_data_plane_activation_child_arguments(
+    revision: str,
+    kubeconfig: Path,
+    secret_receipt: Path,
+    receipt: Path,
+    journal: Path,
+) -> list[str]:
+    return [
+        "--expected-revision", revision,
+        "--live",
+        "--kubeconfig", str(kubeconfig),
+        "--secret-receipt", str(secret_receipt),
+        "--receipt", str(receipt),
+        "--journal", str(journal),
+    ]
+
+
+def tracer_recovery_child_arguments(
+    revision: str,
+    kubeconfig: Path,
+    journal: Path,
+    reserved_receipt: Path,
+) -> list[str]:
+    """Closed recovery argv; it cannot select live creation or teardown."""
+    return [
+        "--expected-revision", revision,
+        "--recover-journal", str(journal),
+        "--kubeconfig", str(kubeconfig),
+        "--receipt", str(reserved_receipt),
+    ]
+
+
+def tracer_secret_teardown_child_arguments(
+    revision: str,
+    kubeconfig: Path,
+    source_receipt: Path,
+    receipt: Path,
+) -> list[str]:
+    return [
+        "--expected-revision", revision,
+        "--teardown",
+        "--kubeconfig", str(kubeconfig),
+        "--source-materialization-receipt", str(source_receipt),
+        "--receipt", str(receipt),
+    ]
+
+
+def tracer_receipt_projection(
+    receipt: BoundBlob,
+    *,
+    schema: str,
+    statuses: set[str],
+    revision: str,
+    value_flag: str,
+) -> dict[str, Any]:
+    """Read only a descriptor-bound, value-free projection from a child receipt."""
+    raw = os.pread(receipt.fd, receipt.size + 1, 0)
+    require(len(raw) == receipt.size and bytes_sha256(raw) == receipt.sha256, f"{receipt.label} descriptor binding drift")
+    try:
+        value = json_object(raw.decode("utf-8"), receipt.label)
+    except UnicodeDecodeError as exc:
+        raise LiveTransportError(f"{receipt.label} is not UTF-8 JSON") from exc
+    require(
+        value.get("schemaVersion") == schema
+        and value.get("status") in statuses
+        and value.get("protectedRevision") == revision
+        and value.get(value_flag) is False
+        and value.get("civicAuthorityEffects") is False,
+        f"{receipt.label} value-free receipt boundary drift",
+    )
+    return {
+        "schemaVersion": schema,
+        "status": value["status"],
+        "protectedRevision": revision,
+        "fileSha256": receipt.sha256,
+        value_flag: False,
+        "civicAuthorityEffects": False,
+    }
+
+
+def snapshot_tracer_child_receipt(
+    source: Path,
+    destination: Path,
+    label: str,
+    *,
+    schema: str,
+    statuses: set[str],
+    revision: str,
+    value_flag: str,
+) -> tuple[BoundBlob, dict[str, Any]] | None:
+    try:
+        info = os.lstat(source)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+        return None
+    bound = snapshot_owned_receipt(source, destination, label)
+    try:
+        projection = tracer_receipt_projection(
+            bound,
+            schema=schema,
+            statuses=statuses,
+            revision=revision,
+            value_flag=value_flag,
+        )
+        return bound, projection
+    except BaseException:
+        bound.close()
+        raise
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
@@ -2863,6 +3070,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # self-documenting mode selection.
     mode.add_argument("--participant-gateway", action="store_true")
     mode.add_argument("--participant-gateway-recovery", action="store_true")
+    mode.add_argument("--tracer-data-plane-activate", action="store_true")
+    mode.add_argument("--tracer-data-plane-recover-materialization", action="store_true")
+    mode.add_argument("--tracer-data-plane-recover-activation", action="store_true")
+    mode.add_argument("--tracer-data-plane-teardown-secrets", action="store_true")
     mode.add_argument("--workbench-baseline-handover", action="store_true")
     mode.add_argument("--workbench-baseline-recovery", action="store_true")
     mode.add_argument("--workbench-baseline-recovery-finalize", action="store_true")
@@ -2887,6 +3098,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="participant_secret_materialization_receipt",
         type=Path,
     )
+    parser.add_argument("--tracer-secret-materialization-receipt", type=Path)
+    parser.add_argument("--tracer-secret-materialization-journal", type=Path)
+    parser.add_argument("--tracer-data-plane-activation-receipt", type=Path)
+    parser.add_argument("--tracer-data-plane-activation-journal", type=Path)
     parser.add_argument("--workbench-handover-receipt", type=Path)
     parser.add_argument("--workbench-handover-journal", type=Path)
     parser.add_argument("--workbench-recovery-receipt", type=Path)
@@ -2912,6 +3127,84 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.relay_reset_receipt,
         args.relay_reset_journal,
     )
+    tracer_modes = (
+        args.tracer_data_plane_activate,
+        args.tracer_data_plane_recover_materialization,
+        args.tracer_data_plane_recover_activation,
+        args.tracer_data_plane_teardown_secrets,
+    )
+    participant_paths = (
+        args.teardown_dormant_receipt,
+        args.participant_secret_bundle,
+        args.teardown_participant_secret_receipt,
+        args.handover_dormant_receipt,
+        args.failed_participant_activation_receipt,
+        args.participant_secret_materialization_receipt,
+    )
+    workbench_paths = (
+        args.workbench_handover_receipt,
+        args.workbench_handover_journal,
+        args.workbench_recovery_receipt,
+        args.workbench_recovery_journal,
+        args.workbench_origin_journal,
+        args.workbench_attempt_receipt,
+        args.workbench_inspection,
+        *promotion_paths,
+        *relay_reset_paths,
+    )
+    if any(tracer_modes):
+        require(args.live is True, "tracer data-plane modes require --live")
+        require(
+            all(value is None for value in (*participant_paths, *workbench_paths)),
+            "tracer data-plane modes accept no participant, workbench, promotion, or relay inputs",
+        )
+        if args.tracer_data_plane_activate:
+            require(
+                args.tracer_secret_materialization_journal is None
+                and args.tracer_data_plane_activation_receipt is None
+                and args.tracer_data_plane_activation_journal is None,
+                "tracer activation accepts only an optional completed Secret materialization receipt",
+            )
+        elif args.tracer_data_plane_recover_materialization:
+            require(
+                args.tracer_secret_materialization_receipt is not None
+                and args.tracer_secret_materialization_journal is not None
+                and args.tracer_data_plane_activation_receipt is None
+                and args.tracer_data_plane_activation_journal is None,
+                "tracer Secret recovery requires its exact reserved receipt and journal only",
+            )
+        elif args.tracer_data_plane_recover_activation:
+            require(
+                args.tracer_data_plane_activation_receipt is not None
+                and args.tracer_data_plane_activation_journal is not None
+                and args.tracer_secret_materialization_receipt is None
+                and args.tracer_secret_materialization_journal is None,
+                "tracer activation recovery requires its exact reserved receipt and journal only",
+            )
+        else:
+            require(
+                args.tracer_secret_materialization_receipt is not None
+                and args.tracer_secret_materialization_journal is None
+                and args.tracer_data_plane_activation_receipt is None
+                and args.tracer_data_plane_activation_journal is None,
+                "tracer Secret teardown requires only its completed materialization receipt",
+            )
+        return args
+    if any(value is not None for value in (
+        args.tracer_secret_materialization_receipt,
+        args.tracer_secret_materialization_journal,
+        args.tracer_data_plane_activation_journal,
+    )):
+        raise LiveTransportError("tracer materialization or recovery inputs require an explicit tracer data-plane mode")
+    if args.tracer_data_plane_activation_receipt is not None and any((
+        args.participant_gateway_recovery,
+        args.workbench_baseline_handover,
+        args.workbench_baseline_recovery,
+        args.workbench_baseline_recovery_finalize,
+        args.workbench_image_promotion,
+        args.relay_fixture_reset,
+    )):
+        raise LiveTransportError("tracer activation receipt is accepted only by ordinary participant activation")
     if args.failed_participant_activation_receipt is not None and not args.participant_gateway_recovery:
         raise LiveTransportError("failed activation receipt inputs require --participant-gateway-recovery")
     if args.participant_gateway_recovery:
@@ -3025,17 +3318,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 and args.participant_secret_materialization_receipt is not None
                 and args.teardown_dormant_receipt is None
                 and args.teardown_participant_secret_receipt is None
-                and args.participant_secret_bundle is None,
-                "participant continuation requires archived dormant and Secret materialization receipts only",
+                and args.participant_secret_bundle is None
+                and args.tracer_data_plane_activation_receipt is not None,
+                "participant continuation requires archived dormant, historical participant Secret, and tracer activation receipts only",
             )
         elif args.teardown_participant_secret_receipt is not None:
             require(args.teardown_dormant_receipt is None, "participant Secret teardown may not combine with dormant Flux teardown")
-            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "participant Secret teardown accepts no Secret input or continuation receipts")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "participant Secret teardown accepts no Secret input or continuation receipts")
         elif args.teardown_dormant_receipt is not None:
-            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "dormant Flux teardown accepts no Secret input or continuation receipts")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "dormant Flux teardown accepts no Secret input or continuation receipts")
         else:
             require(args.participant_secret_bundle is not None, "participant activation requires an explicit private Secret bundle")
-            require(args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None, "participant activation accepts no continuation receipts")
+            require(
+                args.handover_dormant_receipt is None
+                and args.participant_secret_materialization_receipt is None
+                and args.tracer_data_plane_activation_receipt is not None,
+                "participant activation requires the completed tracer data-plane receipt and accepts no other continuation receipts",
+            )
     return args
 
 def run_dormant_teardown(
@@ -3106,6 +3405,14 @@ def classify_final_status(
         return ("participant-secrets-torn-down", 0) if cleanup_complete else ("participant-secret-teardown-cleanup-incomplete", 3)
     if operation_succeeded and base_status == "recovered":
         return ("recovered", 0) if cleanup_complete else ("recovered-cleanup-incomplete", 3)
+    if operation_succeeded and base_status in {
+        "tracer-data-plane-activated",
+        "tracer-data-plane-already-activated",
+        "tracer-secrets-already-materialized",
+        "tracer-recovery-completed",
+        "tracer-secrets-torn-down",
+    }:
+        return (base_status, 0) if cleanup_complete else (f"{base_status}-cleanup-incomplete", 3)
     if not cleanup_complete:
         return (f"{base_status}-cleanup-incomplete", 3)
     return base_status, 2
@@ -3856,6 +4163,9 @@ def main(argv: list[str] | None = None) -> int:
     secret_config_input: BoundBlob | None = None; secret_runtime_input: BoundBlob | None = None
     source_secret_receipt: BoundBlob | None = None; secret_materialization_bound: BoundBlob | None = None
     secret_teardown_bound: BoundBlob | None = None
+    source_tracer_activation_receipt: BoundBlob | None = None
+    tracer_secret_bound: BoundBlob | None = None; tracer_activation_bound: BoundBlob | None = None
+    tracer_teardown_bound: BoundBlob | None = None
     bootstrap_receipt: Path | None = None; handover_receipt: Path | None = None; recovery_receipt: Path | None = None
     teardown_receipt: Path | None = None; activation_receipt: Path | None = None
     source_dormant_projection: dict[str, Any] | None = None
@@ -3866,15 +4176,30 @@ def main(argv: list[str] | None = None) -> int:
     source_secret_projection: dict[str, Any] | None = None
     secret_materialization_projection: dict[str, Any] | None = None
     secret_teardown_projection: dict[str, Any] | None = None
+    source_tracer_activation_projection: dict[str, Any] | None = None
+    tracer_secret_projection: dict[str, Any] | None = None
+    tracer_activation_projection: dict[str, Any] | None = None
+    tracer_teardown_projection: dict[str, Any] | None = None
     recovery_attempted = False; recovery_returncode: int | None = None
     child_cleanup_errors: list[str] = []
     base_status = "blocked"; error: str | None = None
     activation_committed = False; operation_succeeded = False
     participant_recovery_mode = False
+    tracer_mode: str | None = None
+    tracer_recovery_required: dict[str, Any] | None = None
+    tracer_secret_source_path: Path | None = None
+    tracer_recovery_receipt_path: Path | None = None
+    tracer_recovery_journal_path: Path | None = None
     listener_verified = False
     try:
         args = parse_args(argv)
         participant_recovery_mode = args.participant_gateway_recovery
+        tracer_mode = next((name for enabled, name in (
+            (args.tracer_data_plane_activate, "activate"),
+            (args.tracer_data_plane_recover_materialization, "recover-materialization"),
+            (args.tracer_data_plane_recover_activation, "recover-activation"),
+            (args.tracer_data_plane_teardown_secrets, "teardown-secrets"),
+        ) if enabled), None)
         if args.workbench_baseline_handover or args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
             return run_workbench_baseline_handover_transport(args)
         if args.relay_fixture_reset:
@@ -3910,7 +4235,14 @@ def main(argv: list[str] | None = None) -> int:
 
         temp = Path(tempfile.mkdtemp(prefix="roebel-participant-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
         binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
-        for runner_path in (BOOTSTRAP_RUNNER, ACTIVATION_RUNNER, SECRET_RUNNER, HANDOVER_RUNNER):
+        for runner_path in (
+            BOOTSTRAP_RUNNER,
+            ACTIVATION_RUNNER,
+            SECRET_RUNNER,
+            HANDOVER_RUNNER,
+            TRACER_SECRET_RUNNER,
+            TRACER_DATA_PLANE_RUNNER,
+        ):
             runner_blob = bind_bytes_to_fd(
                 protected_blobs[runner_path],
                 binding_dir / (Path(runner_path).name + ".bound"),
@@ -3923,7 +4255,72 @@ def main(argv: list[str] | None = None) -> int:
         cancellation.checkpoint()
 
         verifier_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
-        if args.handover_dormant_receipt is not None:
+        if args.tracer_data_plane_activation_receipt is not None and tracer_mode is None:
+            source_tracer_activation_receipt = snapshot_owned_receipt(
+                args.tracer_data_plane_activation_receipt,
+                binding_dir / "source-tracer-data-plane-activation-receipt.bound",
+                "source tracer data-plane activation receipt",
+            )
+            bound_receipts.append(source_tracer_activation_receipt)
+            source_tracer_activation_projection = tracer_receipt_projection(
+                source_tracer_activation_receipt,
+                schema=TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                statuses={"activated"},
+                revision=revision,
+                value_flag="secretValuesRead",
+            )
+        if tracer_mode is not None:
+            if (
+                args.tracer_secret_materialization_receipt is not None
+                and tracer_mode in {"activate", "teardown-secrets"}
+            ):
+                tracer_secret_source_path = snapshot_owned_file_path(
+                    args.tracer_secret_materialization_receipt,
+                    binding_dir / "source-tracer-secret-materialization-receipt.json",
+                    "source tracer Secret materialization receipt",
+                )
+                tracer_secret_bound = snapshot_owned_receipt(
+                    tracer_secret_source_path,
+                    binding_dir / "source-tracer-secret-materialization-receipt.bound",
+                    "source tracer Secret materialization receipt",
+                )
+                bound_receipts.append(tracer_secret_bound)
+                tracer_secret_projection = tracer_receipt_projection(
+                    tracer_secret_bound,
+                    schema=TRACER_SECRET_RECEIPT_SCHEMA,
+                    statuses={"materialized"},
+                    revision=revision,
+                    value_flag="receiptContainsValues",
+                )
+            if tracer_mode == "recover-materialization":
+                tracer_recovery_receipt_path = private_reserved_receipt(
+                    args.tracer_secret_materialization_receipt,
+                    "tracer Secret recovery receipt reservation",
+                )
+                tracer_recovery_journal_path = snapshot_owned_file_path(
+                    args.tracer_secret_materialization_journal,
+                    binding_dir / "tracer-secret-materialization-recovery-journal.json",
+                    "tracer Secret materialization recovery journal",
+                )
+                require(
+                    os.path.abspath(tracer_recovery_receipt_path) != os.path.abspath(args.tracer_secret_materialization_journal),
+                    "tracer Secret recovery receipt and journal must be distinct",
+                )
+            elif tracer_mode == "recover-activation":
+                tracer_recovery_receipt_path = private_reserved_receipt(
+                    args.tracer_data_plane_activation_receipt,
+                    "tracer activation recovery receipt reservation",
+                )
+                tracer_recovery_journal_path = snapshot_owned_file_path(
+                    args.tracer_data_plane_activation_journal,
+                    binding_dir / "tracer-data-plane-activation-recovery-journal.json",
+                    "tracer data-plane activation recovery journal",
+                )
+                require(
+                    os.path.abspath(tracer_recovery_receipt_path) != os.path.abspath(args.tracer_data_plane_activation_journal),
+                    "tracer activation recovery receipt and journal must be distinct",
+                )
+        elif args.handover_dormant_receipt is not None:
             handover_archive_receipt = snapshot_owned_receipt(
                 args.handover_dormant_receipt,
                 binding_dir / "archived-dormant-receipt.bound",
@@ -4110,6 +4507,8 @@ def main(argv: list[str] | None = None) -> int:
         activation_runner = bound_runners[ACTIVATION_RUNNER]
         secret_runner = bound_runners[SECRET_RUNNER]
         handover_runner = bound_runners[HANDOVER_RUNNER]
+        tracer_secret_runner = bound_runners[TRACER_SECRET_RUNNER]
+        tracer_data_plane_runner = bound_runners[TRACER_DATA_PLANE_RUNNER]
         kubectl_fd = executable_bindings["kubectl"].fd
         participant_blob_args: list[str] = []
         participant_blob_fds: list[int] = []
@@ -4123,7 +4522,7 @@ def main(argv: list[str] | None = None) -> int:
             ))
             participant_blob_fds.append(blob.fd)
             if (
-                (blob_revision == revision and blob_path in HANDOVER_PREBOUND_CURRENT_PATHS)
+                (blob_revision == revision and blob_path in HANDOVER_NESTED_PREBOUND_CURRENT_PATHS)
                 or (blob_revision == HANDOVER_ARCHIVE_REVISION and blob_path in HANDOVER_PREBOUND_ARCHIVE_PATHS)
             ):
                 handover_blob_args.extend(("--prebound-blob", descriptor))
@@ -4131,12 +4530,239 @@ def main(argv: list[str] | None = None) -> int:
         if handover_archive_receipt is not None:
             require(
                 handover_blob_args
-                and len(handover_blob_fds) + 2 == len(handover_prebound)
+                and len(handover_blob_fds)
+                == len(HANDOVER_NESTED_PREBOUND_CURRENT_PATHS) + len(HANDOVER_PREBOUND_ARCHIVE_PATHS)
                 and len(participant_blob_fds) == len(handover_prebound),
                 "participant continuation protected Git closure was not prebound",
             )
+        if tracer_mode is not None:
+            attempt_paths = tracer_attempt_paths(receipt_dir)
+            if tracer_mode in {"recover-materialization", "recover-activation"}:
+                require(
+                    tracer_recovery_receipt_path is not None
+                    and tracer_recovery_journal_path is not None,
+                    "tracer recovery evidence bindings unavailable",
+                )
+                recovery_runner = (
+                    tracer_secret_runner
+                    if tracer_mode == "recover-materialization"
+                    else tracer_data_plane_runner
+                )
+                tracer_recovery_required = {
+                    "mode": "--tracer-data-plane-recover-materialization" if tracer_mode == "recover-materialization" else "--tracer-data-plane-recover-activation",
+                    "receipt": str(tracer_recovery_receipt_path),
+                    "journal": str(args.tracer_secret_materialization_journal if tracer_mode == "recover-materialization" else args.tracer_data_plane_activation_journal),
+                    "automaticReplay": False,
+                }
+                recovery = session.run_child(
+                    recovery_runner.command(tracer_recovery_child_arguments(
+                        revision,
+                        kubeconfig,
+                        tracer_recovery_journal_path,
+                        tracer_recovery_receipt_path,
+                    )),
+                    child_environment,
+                    forward_signals=False,
+                    pass_fds=(recovery_runner.blob.fd, kubectl_fd),
+                )
+                try:
+                    if tracer_mode == "recover-materialization":
+                        recovered = snapshot_tracer_child_receipt(
+                            tracer_recovery_receipt_path,
+                            binding_dir / "tracer-secret-recovery-receipt.bound",
+                            "tracer Secret recovery receipt",
+                            schema=TRACER_SECRET_RECEIPT_SCHEMA,
+                            statuses={"materialized", "rolled-back", "recovered-rolled-back"},
+                            revision=revision,
+                            value_flag="receiptContainsValues",
+                        )
+                        if recovered is not None:
+                            tracer_secret_bound, tracer_secret_projection = recovered
+                            bound_receipts.append(tracer_secret_bound)
+                    else:
+                        recovered = snapshot_tracer_child_receipt(
+                            tracer_recovery_receipt_path,
+                            binding_dir / "tracer-activation-recovery-receipt.bound",
+                            "tracer data-plane activation recovery receipt",
+                            schema=TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                            statuses={"activated", "rolled-back", "recovered-rolled-back"},
+                            revision=revision,
+                            value_flag="secretValuesRead",
+                        )
+                        if recovered is not None:
+                            tracer_activation_bound, tracer_activation_projection = recovered
+                            bound_receipts.append(tracer_activation_bound)
+                finally:
+                    session.receipt_reconciled()
+                logging_error = best_effort_print_child(recovery)
+                if logging_error is not None:
+                    child_cleanup_errors.append(logging_error)
+                projection = tracer_secret_projection if tracer_mode == "recover-materialization" else tracer_activation_projection
+                if projection is None or recovery.returncode != 0:
+                    raise LiveTransportError("explicit tracer recovery did not produce a durable terminal receipt")
+                tracer_recovery_required = None
+                operation_succeeded = True
+                base_status = (
+                    "tracer-secrets-already-materialized"
+                    if projection["status"] == "materialized"
+                    else "tracer-data-plane-already-activated"
+                    if projection["status"] == "activated"
+                    else "tracer-recovery-completed"
+                )
+            elif tracer_mode == "teardown-secrets":
+                require(tracer_secret_source_path is not None, "tracer Secret teardown source binding unavailable")
+                tracer_recovery_required = {
+                    "mode": "--tracer-data-plane-teardown-secrets",
+                    "sourceMaterializationReceipt": str(args.tracer_secret_materialization_receipt),
+                    "automaticReplay": False,
+                }
+                teardown = session.run_child(
+                    tracer_secret_runner.command(tracer_secret_teardown_child_arguments(
+                        revision,
+                        kubeconfig,
+                        tracer_secret_source_path,
+                        attempt_paths.teardown_receipt,
+                    )),
+                    child_environment,
+                    forward_signals=False,
+                    pass_fds=(tracer_secret_runner.blob.fd, kubectl_fd),
+                )
+                try:
+                    torn_down = snapshot_tracer_child_receipt(
+                        attempt_paths.teardown_receipt,
+                        binding_dir / "tracer-secret-teardown-receipt.bound",
+                        "tracer Secret teardown receipt",
+                        schema=TRACER_SECRET_TEARDOWN_RECEIPT_SCHEMA,
+                        statuses={"torn-down"},
+                        revision=revision,
+                        value_flag="receiptContainsValues",
+                    )
+                    if torn_down is not None:
+                        tracer_teardown_bound, tracer_teardown_projection = torn_down
+                        bound_receipts.append(tracer_teardown_bound)
+                finally:
+                    session.receipt_reconciled()
+                logging_error = best_effort_print_child(teardown)
+                if logging_error is not None:
+                    child_cleanup_errors.append(logging_error)
+                require(
+                    teardown.returncode == 0 and tracer_teardown_projection is not None,
+                    "tracer Secret teardown did not produce a durable terminal receipt",
+                )
+                tracer_recovery_required = None
+                operation_succeeded = True
+                base_status = "tracer-secrets-torn-down"
+            else:
+                if tracer_secret_source_path is None:
+                    tracer_recovery_required = {
+                        "mode": "--tracer-data-plane-recover-materialization",
+                        "receipt": str(attempt_paths.secret_receipt),
+                        "journal": str(attempt_paths.secret_journal),
+                        "automaticReplay": False,
+                    }
+                    materialization = session.run_child(
+                        tracer_secret_runner.command(tracer_secret_materialization_child_arguments(
+                            revision,
+                            kubeconfig,
+                            attempt_paths.secret_receipt,
+                            attempt_paths.secret_journal,
+                        )),
+                        child_environment,
+                        forward_signals=False,
+                        pass_fds=(tracer_secret_runner.blob.fd, kubectl_fd),
+                    )
+                    try:
+                        materialized = snapshot_tracer_child_receipt(
+                            attempt_paths.secret_receipt,
+                            binding_dir / "tracer-secret-materialization-receipt.bound",
+                            "tracer Secret materialization receipt",
+                            schema=TRACER_SECRET_RECEIPT_SCHEMA,
+                            statuses={"materialized", "rolled-back"},
+                            revision=revision,
+                            value_flag="receiptContainsValues",
+                        )
+                        if materialized is not None:
+                            tracer_secret_bound, tracer_secret_projection = materialized
+                            bound_receipts.append(tracer_secret_bound)
+                    finally:
+                        session.receipt_reconciled()
+                    logging_error = best_effort_print_child(materialization)
+                    if logging_error is not None:
+                        child_cleanup_errors.append(logging_error)
+                    if tracer_secret_projection is None:
+                        base_status = "tracer-secret-recovery-required"
+                        raise LiveTransportError("tracer Secret materialization state requires explicit journal recovery")
+                    tracer_recovery_required = None
+                    require(
+                        materialization.returncode == 0 and tracer_secret_projection["status"] == "materialized",
+                        "tracer Secret materialization rolled back or exited nonzero",
+                    )
+                    tracer_secret_source_path = attempt_paths.secret_receipt
+                    if cancellation.signals or not materialization.transport_alive_after:
+                        tracer_recovery_required = {
+                            "mode": "--tracer-data-plane-activate",
+                            "secretMaterializationReceipt": str(attempt_paths.secret_receipt),
+                            "automaticReplay": False,
+                        }
+                        base_status = "tracer-secret-materialized-continuation-required"
+                        raise LiveTransportError("transport ended after Secret commit; explicit data-plane continuation required")
+                require(
+                    tracer_secret_source_path is not None
+                    and tracer_secret_projection is not None
+                    and tracer_secret_projection["status"] == "materialized",
+                    "tracer data-plane activation requires a bound materialization receipt",
+                )
+                tracer_recovery_required = {
+                    "mode": "--tracer-data-plane-recover-activation",
+                    "receipt": str(attempt_paths.activation_receipt),
+                    "journal": str(attempt_paths.activation_journal),
+                    "automaticReplay": False,
+                }
+                activation = session.run_child(
+                    tracer_data_plane_runner.command(tracer_data_plane_activation_child_arguments(
+                        revision,
+                        kubeconfig,
+                        tracer_secret_source_path,
+                        attempt_paths.activation_receipt,
+                        attempt_paths.activation_journal,
+                    )),
+                    child_environment,
+                    forward_signals=False,
+                    pass_fds=(tracer_data_plane_runner.blob.fd, kubectl_fd),
+                )
+                try:
+                    activated = snapshot_tracer_child_receipt(
+                        attempt_paths.activation_receipt,
+                        binding_dir / "tracer-data-plane-activation-receipt.bound",
+                        "tracer data-plane activation receipt",
+                        schema=TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                        statuses={"activated", "rolled-back"},
+                        revision=revision,
+                        value_flag="secretValuesRead",
+                    )
+                    if activated is not None:
+                        tracer_activation_bound, tracer_activation_projection = activated
+                        bound_receipts.append(tracer_activation_bound)
+                finally:
+                    session.receipt_reconciled()
+                logging_error = best_effort_print_child(activation)
+                if logging_error is not None:
+                    child_cleanup_errors.append(logging_error)
+                if tracer_activation_projection is None:
+                    base_status = "tracer-activation-recovery-required"
+                    raise LiveTransportError("tracer data-plane state requires explicit journal recovery")
+                tracer_recovery_required = None
+                require(
+                    tracer_activation_projection["status"] == "activated",
+                    "tracer data-plane activation rolled back",
+                )
+                operation_succeeded = True
+                base_status = "tracer-data-plane-activated"
+                if activation.returncode != 0:
+                    child_cleanup_errors.append(f"protected tracer activation exited {activation.returncode} after durable commit")
+                    raise LiveTransportError("tracer activation committed with incomplete child cleanup")
 
-        if handover_archive_receipt is not None:
+        elif handover_archive_receipt is not None:
             # Revalidate the current cluster against the archived dormant
             # receipt with a strictly GET-only protected child.  This creates
             # the value-free handover receipt consumed by activation below.
@@ -4261,7 +4887,13 @@ def main(argv: list[str] | None = None) -> int:
                 # already proved dormant Flux and the Secret receipt was bound
                 # before transport. Do not bootstrap or materialize again.
                 activation_receipt = receipt_dir / "participant-gateway-activation.json"
-                require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
+                require(
+                    handover_bound is not None
+                    and source_secret_receipt is not None
+                    and source_tracer_activation_receipt is not None
+                    and source_tracer_activation_projection is not None,
+                    "handover activation bindings unavailable",
+                )
                 activation_arguments = [
                     "--archived-flux-bootstrap-receipt-fd",
                     str(handover_archive_receipt.fd),
@@ -4269,12 +4901,15 @@ def main(argv: list[str] | None = None) -> int:
                     str(handover_bound.fd),
                     "--secret-materialization-receipt-fd",
                     str(source_secret_receipt.fd),
+                    "--tracer-data-plane-activation-receipt-fd",
+                    str(source_tracer_activation_receipt.fd),
                 ]
                 activation_fds = (
                     activation_runner.blob.fd,
                     handover_archive_receipt.fd,
                     handover_bound.fd,
                     source_secret_receipt.fd,
+                    source_tracer_activation_receipt.fd,
                     kubectl_fd,
                     *participant_blob_fds,
                 )
@@ -4546,7 +5181,13 @@ def main(argv: list[str] | None = None) -> int:
 
             activation_receipt = receipt_dir / "participant-gateway-activation.json"
             if handover_archive_receipt is not None:
-                require(handover_bound is not None and source_secret_receipt is not None, "handover activation bindings unavailable")
+                require(
+                    handover_bound is not None
+                    and source_secret_receipt is not None
+                    and source_tracer_activation_receipt is not None
+                    and source_tracer_activation_projection is not None,
+                    "handover activation bindings unavailable",
+                )
                 activation_arguments = [
                     "--archived-flux-bootstrap-receipt-fd",
                     str(handover_archive_receipt.fd),
@@ -4554,12 +5195,22 @@ def main(argv: list[str] | None = None) -> int:
                     str(handover_bound.fd),
                     "--secret-materialization-receipt-fd",
                     str(source_secret_receipt.fd),
+                    "--tracer-data-plane-activation-receipt-fd",
+                    str(source_tracer_activation_receipt.fd),
                 ]
-                activation_fds = (activation_runner.blob.fd, handover_archive_receipt.fd, handover_bound.fd, source_secret_receipt.fd, kubectl_fd)
+                activation_fds = (activation_runner.blob.fd, handover_archive_receipt.fd, handover_bound.fd, source_secret_receipt.fd, source_tracer_activation_receipt.fd, kubectl_fd)
             else:
-                require(bootstrap_bound is not None, "dormant bootstrap activation binding unavailable")
-                activation_arguments = ["--flux-bootstrap-receipt-fd", str(bootstrap_bound.fd)]
-                activation_fds = (activation_runner.blob.fd, bootstrap_bound.fd, kubectl_fd)
+                require(
+                    bootstrap_bound is not None
+                    and source_tracer_activation_receipt is not None
+                    and source_tracer_activation_projection is not None,
+                    "dormant bootstrap or tracer activation binding unavailable",
+                )
+                activation_arguments = [
+                    "--flux-bootstrap-receipt-fd", str(bootstrap_bound.fd),
+                    "--tracer-data-plane-activation-receipt-fd", str(source_tracer_activation_receipt.fd),
+                ]
+                activation_fds = (activation_runner.blob.fd, bootstrap_bound.fd, source_tracer_activation_receipt.fd, kubectl_fd)
             activation = session.run_child(
                 activation_runner.command([
                     "--live",
@@ -4681,6 +5332,10 @@ def main(argv: list[str] | None = None) -> int:
     source_failed_record = receipt_record(source_failed_projection, source_failed_receipt)
     incident_recovery_record = receipt_record(incident_recovery_projection, incident_recovery_bound)
     recovery_record = receipt_record(None, recovery_bound)
+    source_tracer_activation_record = tracer_receipt_record(source_tracer_activation_projection, source_tracer_activation_receipt)
+    tracer_secret_record = tracer_receipt_record(tracer_secret_projection, tracer_secret_bound)
+    tracer_activation_record = tracer_receipt_record(tracer_activation_projection, tracer_activation_bound)
+    tracer_teardown_record = tracer_receipt_record(tracer_teardown_projection, tracer_teardown_bound)
     status, exit_code = classify_final_status(
         base_status,
         activation_committed=activation_committed,
@@ -4741,6 +5396,29 @@ def main(argv: list[str] | None = None) -> int:
                 if incident_recovery_projection is not None else None
             ),
             "automaticActivationRetry": False,
+        },
+        "tracerDataPlane": {
+            "mode": tracer_mode,
+            "sourceActivation": source_tracer_activation_record,
+            "secretMaterialization": tracer_secret_record,
+            "activation": tracer_activation_record,
+            "secretTeardown": tracer_teardown_record,
+            "recoveryRequired": tracer_recovery_required,
+            "deterministicAttemptFiles": (
+                {
+                    "secretReceipt": "tracer-secret-materialization.json",
+                    "secretJournal": "tracer-secret-materialization.journal.json",
+                    "activationReceipt": "tracer-data-plane-activation.json",
+                    "activationJournal": "tracer-data-plane-activation.journal.json",
+                    "teardownReceipt": "tracer-secret-teardown.json",
+                }
+                if tracer_mode is not None
+                else None
+            ),
+            "externalSupabaseUsed": False,
+            "automaticReplay": False,
+            "secretValuesPrinted": False,
+            "civicAuthorityEffects": False,
         },
         "teardown": teardown_record,
         "activation": activation_record,

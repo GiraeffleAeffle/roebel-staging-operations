@@ -92,29 +92,27 @@
       {
         "to": [
           {
-            "ipBlock": {
-              "cidr": "104.18.38.10/32"
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "tracer-postgrest",
+                "app.kubernetes.io/name": "roebel-tracer-postgrest",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none",
+                "stadtstack.io/civic-authority": "none",
+                "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+                "stadtstack.io/environment": "staging"
+              }
             }
           }
         ],
         "ports": [
           {
-            "port": 443,
-            "protocol": "TCP"
-          }
-        ]
-      },
-      {
-        "to": [
-          {
-            "ipBlock": {
-              "cidr": "172.64.149.246/32"
-            }
-          }
-        ],
-        "ports": [
-          {
-            "port": 443,
+            "port": 3000,
             "protocol": "TCP"
           }
         ]

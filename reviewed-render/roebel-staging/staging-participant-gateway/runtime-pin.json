@@ -1,13 +1,13 @@
 {
   "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
   "component": "staging-participant-gateway",
-  "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
-  "sourceTreeSha256": "sha256:7c537a038c84afe08740dabc1222c7b547a109a4a607b8bbab17bc6664a7bd47",
+  "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
+  "sourceTreeSha256": "sha256:c5a80f3485991f4f4aa284efd088e4cb59b61a96a147c7ac49033bf19fe29dd3",
   "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
   "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-  "manifestDigest": "sha256:514640c61c1c14744dfd027f305b6d5c679d5a1863ac861dec8ab2e9ad8b6004",
+  "manifestDigest": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
   "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
-  "workflowSha256": "sha256:0446a7fbf64ea28d4098d79a86e75ae004e3f175eca09186b8c2f18f2ce36d09",
+  "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
   "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
   "migrationSha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
   "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
@@ -17,5 +17,5 @@
   "sourceConversationTopic": "roebel-app-conversation",
   "topicPolicyVersion": "staging-participant-topic-v1",
   "deactivationSha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
-  "activationPolicySha256": "sha256:3319969ef3bec5eb3705ac7b551197a89aada430a9bc7b231ad543e10a8ccd51"
+  "activationPolicySha256": "sha256:1528a20cc39ea1a850be2d27b775c882bddeb13c51653717caf61b14c6069f42"
 }

@@ -1087,6 +1087,92 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ) + "\n")
         self.refresh_reviewed_integrity(candidate)
 
+    def make_tracer_phase_b_successor(self, candidate: Path) -> None:
+        """Materialize the exact seven-file active successor without using its stash."""
+        render = candidate / "reviewed-render/roebel-staging"
+        base = VERIFIER.verify_tree(ROOT)
+        successor_head = VERIFIER.expected_tracer_phase_b_head(base["head"])
+        (render / "head.json").write_text(json.dumps(successor_head, indent=2) + "\n")
+
+        public_path = render / "public-mecky/deployment.json"
+        public = VERIFIER.expected_tracer_phase_b_public_mecky_deployment(
+            base["deployments"]["public-mecky"],
+            successor_head,
+        )
+        public_path.write_text(json.dumps(public, indent=2) + "\n")
+
+        web_path = render / "web/deployment.json"
+        web = VERIFIER.expected_tracer_phase_b_web_deployment(
+            base["deployments"]["roebel-web-staging"],
+            successor_head,
+        )
+        web_path.write_text(json.dumps(web, indent=2) + "\n")
+
+        web_policy = VERIFIER.expected_web_network_policy(True, True)
+        (render / "web/networkpolicy.json").write_text(
+            json.dumps(web_policy, indent=2) + "\n",
+        )
+        live = VERIFIER.expected_tracer_phase_b_live_preconditions(
+            ROOT,
+            base,
+            successor_head,
+        )
+        (render / "live-preconditions.json").write_text(
+            json.dumps(live, indent=2) + "\n",
+        )
+
+        boundary_path = render / "network-boundary-migration.json"
+        boundary = json.loads(boundary_path.read_text())
+        boundary["boundary"]["webTracerFeed"] = {
+            "authority": "none",
+            "credentialSecret": {
+                "key": VERIFIER.TRACER_DATA_PLANE.WEB_FEED_SECRET_KEYS[0],
+                "name": VERIFIER.TRACER_DATA_PLANE.WEB_FEED_SECRET,
+                "namespace": VERIFIER.TRACER_DATA_PLANE.PREVIEW_NAMESPACE,
+                "valuesCommitted": False,
+            },
+            "destinationNamespace": VERIFIER.TRACER_DATA_PLANE.NAMESPACE,
+            "destinationPodLabels": VERIFIER.TRACER_DATA_PLANE.POSTGREST_LABELS,
+            "port": VERIFIER.TRACER_DATA_PLANE.POSTGREST_PORT,
+            "protocol": "TCP",
+            "source": {
+                "namespace": VERIFIER.PARTICIPANT_GATEWAY_NAMESPACE,
+                "podSelector": VERIFIER.WEB_PRESENTATION_LABELS,
+            },
+            "upstreamUrl": VERIFIER.TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
+        }
+        boundary["objects"][0]["sha256"] = VERIFIER.digest(web_policy)
+        boundary_path.write_text(json.dumps(boundary, indent=2) + "\n")
+
+        participant_policy = VERIFIER.verify_participant_gateway_static_policy(
+            candidate,
+            base["renderFileSet"],
+        )
+        participant = VERIFIER.verify_participant_gateway(candidate, participant_policy)
+        checksum_payload = {
+            "nextEnvironmentHead": successor_head,
+            "objects": [
+                public,
+                json.loads((render / "public-mecky/service.json").read_text()),
+                json.loads((render / "public-mecky/networkpolicy.json").read_text()),
+                web,
+                web_policy,
+                json.loads((render / "web/ingress.json").read_text()),
+            ],
+            "reviewedPublicKnowledge": VERIFIER.verify_reviewed_public_knowledge(candidate),
+            "stagingParticipantGateway": {
+                key: value
+                for key, value in participant.items()
+                if key != "civicProjectionRoute"
+            },
+        }
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["releaseSetDigest"] = successor_head["releaseSetDigest"]
+        integrity["desiredRenderSha256"] = VERIFIER.digest(checksum_payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(boundary)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
     def test_seed_is_valid(self) -> None:
         result = VERIFIER.verify(ROOT)
         self.assertEqual(result["status"], "passed")
@@ -1112,6 +1198,213 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             VERIFIER.SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES,
         ):
             self.assertTrue(live_wrapper_files <= expected_files)
+
+    def test_tracer_live_runners_and_tests_are_pinned_in_every_repository_shape(self) -> None:
+        tracer_live_files = {
+            "scripts/materialize-tracer-data-plane-secrets.py",
+            "scripts/run-tracer-data-plane-live.py",
+            "scripts/test_materialize_tracer_data_plane_secrets.py",
+            "scripts/test_run_tracer_data_plane_live.py",
+        }
+        for expected_files in (
+            VERIFIER.EXPECTED_FILES,
+            VERIFIER.FUTURE_EXPECTED_FILES,
+            VERIFIER.PARTICIPANT_GATEWAY_EXPECTED_FILES,
+            VERIFIER.SIGNED_NOSTR_EXPECTED_FILES,
+            VERIFIER.SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES,
+        ):
+            self.assertTrue(tracer_live_files <= expected_files)
+
+        workflow = (ROOT / ".github/workflows/reviewed-render-admission.yml").read_text()
+        for relative in (
+            "scripts/test_materialize_tracer_data_plane_secrets.py",
+            "scripts/test_run_tracer_data_plane_live.py",
+        ):
+            self.assertEqual(workflow.count(relative), 2)
+
+    def test_phase_a_admission_is_closed_and_preserves_every_active_release_file(self) -> None:
+        expected_added = VERIFIER.TRACER_DATA_PLANE.expected_files() | {
+            "scripts/materialize-tracer-data-plane-secrets.py",
+            "scripts/run-tracer-data-plane-live.py",
+            "scripts/test_materialize_tracer_data_plane_secrets.py",
+            "scripts/test_run_tracer_data_plane_live.py",
+            "scripts/test_tracer_data_plane_policy.py",
+            "scripts/tracer_data_plane_policy.py",
+        }
+        self.assertEqual(VERIFIER.TRACER_PHASE_A_ADDED_FILES, expected_added)
+        self.assertTrue(
+            expected_added <= VERIFIER.TRACER_PHASE_A_TRANSITION_FILES,
+        )
+        expected_active = {
+            "reviewed-render/roebel-staging/head.json",
+            "reviewed-render/roebel-staging/live-preconditions.json",
+            "reviewed-render/roebel-staging/public-mecky/deployment.json",
+            "reviewed-render/roebel-staging/public-mecky/kustomization.yaml",
+            "reviewed-render/roebel-staging/public-mecky/networkpolicy.json",
+            "reviewed-render/roebel-staging/public-mecky/service.json",
+            "reviewed-render/roebel-staging/web/deployment.json",
+            "reviewed-render/roebel-staging/web/ingress.json",
+            "reviewed-render/roebel-staging/web/kustomization.yaml",
+            "reviewed-render/roebel-staging/web/networkpolicy.json",
+        }
+        self.assertEqual(VERIFIER.TRACER_PHASE_A_PRESERVED_ACTIVE_FILES, expected_active)
+        self.assertTrue(
+            expected_active.isdisjoint(VERIFIER.TRACER_PHASE_A_TRANSITION_FILES),
+        )
+        phase_a = VERIFIER.verify_tree(ROOT)
+        self.assertEqual(phase_a["head"], VERIFIER.TRACER_PHASE_A_HEAD)
+        self.assertFalse(phase_a["webTracerFeed"])
+        self.assertTrue(phase_a["tracerDataPlane"]["activationReady"])
+        boundary = phase_a["migration"]["boundary"]
+        self.assertEqual(
+            boundary["participantGateway"]["internalPostgrest"]["origin"],
+            VERIFIER.TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
+        )
+        self.assertFalse(
+            boundary["participantGateway"]["internalPostgrest"]["externalIngress"],
+        )
+        self.assertEqual(
+            boundary["tracerActivation"],
+            {
+                "applicationObjectCount": 8,
+                "createBeforeUnsuspend": True,
+                "runner": "scripts/run-tracer-data-plane-live.py",
+                "secretMaterializerRunner": "scripts/materialize-tracer-data-plane-secrets.py",
+                "sharedSourceMutation": "forbidden",
+            },
+        )
+
+        base_temp = tempfile.TemporaryDirectory()
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(candidate_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+
+        for relative in VERIFIER.TRACER_PHASE_A_TRANSITION_FILES:
+            path = base / relative
+            if relative in VERIFIER.TRACER_PHASE_A_ADDED_FILES:
+                path.unlink()
+            else:
+                path.write_bytes(path.read_bytes() + b"\nprotected predecessor bytes\n")
+        VERIFIER.verify_tracer_phase_a_file_boundary(candidate, base)
+
+        active = candidate / "reviewed-render/roebel-staging/web/deployment.json"
+        active.write_bytes(active.read_bytes() + b"\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Phase A changed active release file"):
+            VERIFIER.verify_tracer_phase_a_file_boundary(candidate, base)
+
+        active.write_bytes((base / active.relative_to(candidate)).read_bytes())
+        readme = candidate / "README.md"
+        readme.write_bytes(readme.read_bytes() + b"\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Phase A changed file set drift"):
+            VERIFIER.verify_tracer_phase_a_file_boundary(candidate, base)
+
+    def test_phase_b_admits_only_the_exact_feed_secret_network_and_release_successor(self) -> None:
+        self.assertEqual(
+            VERIFIER.TRACER_PHASE_B_TRANSITION_FILES,
+            {
+                "reviewed-render/roebel-staging/head.json",
+                "reviewed-render/roebel-staging/integrity.json",
+                "reviewed-render/roebel-staging/live-preconditions.json",
+                "reviewed-render/roebel-staging/network-boundary-migration.json",
+                "reviewed-render/roebel-staging/public-mecky/deployment.json",
+                "reviewed-render/roebel-staging/web/deployment.json",
+                "reviewed-render/roebel-staging/web/networkpolicy.json",
+            },
+        )
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        candidate = Path(temp.name) / "candidate"
+        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.make_tracer_phase_b_successor(candidate)
+
+        result = VERIFIER.verify(candidate, ROOT)
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(result["releaseSetDigest"], VERIFIER.TRACER_PHASE_B_RELEASE_SET_DIGEST)
+        web = json.loads(
+            (candidate / "reviewed-render/roebel-staging/web/deployment.json").read_text(),
+        )
+        environment = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertEqual(
+            [
+                item
+                for item in environment
+                if item["name"] in {
+                    VERIFIER.TRACER_FEED_URL_ENV["name"],
+                    VERIFIER.TRACER_FEED_ANON_ENV["name"],
+                }
+            ],
+            [VERIFIER.TRACER_FEED_URL_ENV, VERIFIER.TRACER_FEED_ANON_ENV],
+        )
+        policy = json.loads(
+            (candidate / "reviewed-render/roebel-staging/web/networkpolicy.json").read_text(),
+        )
+        self.assertEqual(policy["spec"]["egress"][0], VERIFIER.tracer_postgrest_web_egress())
+
+    def test_phase_b_rejects_feed_secret_network_release_or_eighth_file_drift(self) -> None:
+        for label in ("feed-url", "secret-name"):
+            with self.subTest(label=label):
+                temp = tempfile.TemporaryDirectory()
+                self.addCleanup(temp.cleanup)
+                candidate = Path(temp.name) / "candidate"
+                shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                self.make_tracer_phase_b_successor(candidate)
+                path = candidate / "reviewed-render/roebel-staging/web/deployment.json"
+                value = json.loads(path.read_text())
+                env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+                target = next(
+                    item for item in env
+                    if item["name"] == (
+                        VERIFIER.TRACER_FEED_URL_ENV["name"]
+                        if label == "feed-url"
+                        else VERIFIER.TRACER_FEED_ANON_ENV["name"]
+                    )
+                )
+                if label == "feed-url":
+                    target["value"] = "https://example.invalid"
+                else:
+                    target["valueFrom"]["secretKeyRef"]["name"] = "other-secret"
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(candidate, ROOT)
+
+        for label, relative, mutate in (
+            (
+                "network",
+                "reviewed-render/roebel-staging/web/networkpolicy.json",
+                lambda value: value["spec"]["egress"][0]["to"][0]["podSelector"]["matchLabels"].clear(),
+            ),
+            (
+                "release",
+                "reviewed-render/roebel-staging/head.json",
+                lambda value: value.__setitem__("releaseSetDigest", "sha256:" + "0" * 64),
+            ),
+        ):
+            with self.subTest(label=label):
+                temp = tempfile.TemporaryDirectory()
+                self.addCleanup(temp.cleanup)
+                candidate = Path(temp.name) / "candidate"
+                shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                self.make_tracer_phase_b_successor(candidate)
+                path = candidate / relative
+                value = json.loads(path.read_text())
+                mutate(value)
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(candidate, ROOT)
+
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        candidate = Path(temp.name) / "candidate"
+        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.make_tracer_phase_b_successor(candidate)
+        ingress = candidate / "reviewed-render/roebel-staging/web/ingress.json"
+        ingress.write_bytes(ingress.read_bytes() + b"\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "Phase B changed file set drift"):
+            VERIFIER.verify(candidate, ROOT)
 
     def test_signed_nostr_policy_reserves_exactly_sixteen_files(self) -> None:
         self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 16)
@@ -1276,7 +1569,25 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             for item in container["env"]
         }
         self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_GNOSIS_RPC_URL", "value": "https://rpc.gnosischain.com"})
-        self.assertEqual(env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"], {"name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL", "value": "https://vdlksxpihmoumebjpeix.supabase.co"})
+        self.assertEqual(
+            env["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL"],
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_URL",
+                "value": VERIFIER.PARTICIPANT_POLICY.TRACER_POSTGREST_ORIGIN,
+            },
+        )
+        for name, key in (
+            ("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_ANON_KEY", "supabase-anon-key"),
+            ("ROEBEL_STAGING_PARTICIPANT_GATEWAY_SUPABASE_RPC_SECRET", "supabase-rpc-secret"),
+        ):
+            self.assertEqual(
+                env[name]["valueFrom"]["secretKeyRef"],
+                {
+                    "key": key,
+                    "name": VERIFIER.PARTICIPANT_POLICY.PARTICIPANT_POSTGREST_SECRET,
+                    "optional": False,
+                },
+            )
         secret_keys = {
             item["valueFrom"]["secretKeyRef"]["key"]
             for item in env.values()
@@ -1428,9 +1739,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "ca": lambda value: value["clusterIdentity"].__setitem__("caCertificateSha256", "sha256:" + "a" * 64),
             "spki": lambda value: value["clusterIdentity"].__setitem__("apiServerSpkiSha256", "sha256:" + "b" * 64),
             "cluster-uid": lambda value: value["clusterIdentity"].__setitem__("kubeSystemNamespaceUid", "00000000-0000-4000-8000-000000000001"),
-            "partial-cidrs": lambda value: value["endpoints"]["supabase"].__setitem__("ipv4Cidrs", ["104.18.38.10/32"]),
-            "reordered-cidrs": lambda value: value["endpoints"]["supabase"]["ipv4Cidrs"].reverse(),
-            "widened-cidrs": lambda value: value["endpoints"]["supabase"]["ipv4Cidrs"].append("192.0.2.1/32"),
+            "external-postgrest": lambda value: value["endpoints"]["supabase"].__setitem__("internalOrigin", "https://example.invalid"),
+            "postgrest-service": lambda value: value["endpoints"]["supabase"]["service"].__setitem__("name", "other-postgrest"),
+            "postgrest-ingress": lambda value: value["endpoints"]["supabase"].__setitem__("externalIngress", True),
             "readiness": lambda value: value.__setitem__("activationReady", False),
             "extra": lambda value: value.__setitem__("liveEvidence", {"trusted": True}),
         }
