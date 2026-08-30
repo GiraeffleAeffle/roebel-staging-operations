@@ -89,6 +89,25 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
             source.index('rm -rf -- incoming'),
         )
 
+    def test_protected_unit_suites_run_before_render_and_candidate_verification_after(self) -> None:
+        source = WORKFLOW.read_text()
+        protected_base_unit_suites = (
+            '(\n'
+            '            cd "$RUNNER_TEMP/protected-base"\n'
+            "            python3 -m unittest -v scripts/test_verify_reviewed_render.py "
+            "scripts/test_render_release_set_promotion.py\n"
+            '          )'
+        )
+        self.assertIn(protected_base_unit_suites, source)
+        unit_suites = source.index(protected_base_unit_suites)
+        render = source.index("python3 scripts/render-release-set-promotion.py")
+        candidate_verifier = source.index(
+            'python3 scripts/verify-reviewed-render.py --root . --base-root "$RUNNER_TEMP/protected-base"',
+        )
+
+        self.assertLess(unit_suites, render)
+        self.assertLess(render, candidate_verifier)
+
 
 if __name__ == "__main__":
     unittest.main()
