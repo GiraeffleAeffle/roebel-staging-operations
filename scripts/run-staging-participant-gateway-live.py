@@ -201,6 +201,7 @@ TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION = "4bea54c7823a7da
 TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION = "136f0ac1ca31c9beda8f7208ed01a12201460bd7"
 TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION = "96795cc20a28e93a9ed00208bb2311efcdb8a1ae"
 TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION = "4de9d00696a7c43694bf66edbf79d1fb1fd080de"
+TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION = "c126f1f680bd65079a941af61fb108ced777c0dc"
 TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
     "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 )
@@ -299,6 +300,12 @@ TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES = frozenset({
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/staging_participant_gateway_policy.py",
     "scripts/test_staging_participant_gateway_policy.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
 })
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
@@ -594,7 +601,7 @@ def require_tracer_activation_compatibility_transition(
     receipt_revision: Any,
     receipt_file_sha256: str,
 ) -> str:
-    """Admit only run19 across its seventeen exact, tracer-plane-compatible successors."""
+    """Admit only run19 across its eighteen exact, tracer-plane-compatible successors."""
     require(
         receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
@@ -793,16 +800,28 @@ def require_tracer_activation_compatibility_transition(
         "tracer activation compatibility sixteenth-hop file set drift",
     )
     require_protected_revision_parent(
-        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
         TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
     )
     require(
         protected_revision_changed_files(
             TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
-            current_revision,
+            TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
         )
         == TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
         "tracer activation compatibility seventeenth-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES,
+        "tracer activation compatibility eighteenth-hop file set drift",
     )
     return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
@@ -3753,16 +3772,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "workbench recovery may not receive handover paths")
     else:
         require(all(value is None for value in (args.workbench_handover_receipt, args.workbench_handover_journal, args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "participant mode may not receive workbench paths")
-        continuation = args.handover_dormant_receipt is not None or args.participant_secret_materialization_receipt is not None
-        if continuation:
+        if args.handover_dormant_receipt is not None:
             require(
-                args.handover_dormant_receipt is not None
-                and args.participant_secret_materialization_receipt is not None
+                args.participant_secret_materialization_receipt is not None
                 and args.teardown_dormant_receipt is None
                 and args.teardown_participant_secret_receipt is None
                 and args.participant_secret_bundle is None
                 and args.tracer_data_plane_activation_receipt is not None,
                 "participant continuation requires archived dormant, historical participant Secret, and tracer activation receipts only",
+            )
+        elif args.participant_secret_materialization_receipt is not None:
+            require(
+                args.teardown_dormant_receipt is None
+                and args.teardown_participant_secret_receipt is None
+                and args.participant_secret_bundle is None
+                and args.tracer_data_plane_activation_receipt is not None,
+                "fresh participant activation Secret reuse requires only the historical Secret and tracer activation receipts",
             )
         elif args.teardown_participant_secret_receipt is not None:
             require(args.teardown_dormant_receipt is None, "participant Secret teardown may not combine with dormant Flux teardown")
@@ -4969,6 +4994,28 @@ def main(argv: list[str] | None = None) -> int:
                     allow_cancelled=False,
                     expected_projection_revision=HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION,
                 )
+        elif args.participant_secret_materialization_receipt is not None:
+            source_secret_receipt = snapshot_owned_receipt(
+                args.participant_secret_materialization_receipt,
+                binding_dir / "source-secret-materialization-receipt.bound",
+                "source Secret materialization receipt",
+            )
+            bound_receipts.append(source_secret_receipt)
+            # The fresh Flux path may reuse only the exact value-free historical
+            # receipt. The protected activation runner binds its closed receipt
+            # fields before transport and later compares the live UID,
+            # resourceVersion and keyset without reading Secret values.
+            source_secret_projection = verify_receipt_with_protected_cli(
+                cancellation,
+                bound_runners[ACTIVATION_RUNNER],
+                "--verify-secret-materialization-receipt-fd",
+                source_secret_receipt,
+                revision,
+                verifier_environment,
+                "materialized",
+                allow_cancelled=False,
+                expected_projection_revision=HANDOVER_SECRET_RECEIPT_ORIGIN_REVISION,
+            )
         elif args.teardown_dormant_receipt is not None:
             source_dormant_receipt = snapshot_owned_receipt(
                 args.teardown_dormant_receipt,
@@ -5585,7 +5632,7 @@ def main(argv: list[str] | None = None) -> int:
                 if activation.returncode != 0:
                     child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
                     raise LiveTransportError("protected activation cleanup incomplete after durable commit")
-        elif source_secret_receipt is not None:
+        elif source_secret_receipt is not None and args.teardown_participant_secret_receipt is not None:
             secret_teardown_receipt = receipt_dir / "participant-secret-teardown.json"
             secret_teardown = session.run_child(
                 secret_runner.command([
@@ -5653,49 +5700,50 @@ def main(argv: list[str] | None = None) -> int:
             if teardown_returncode != 0:
                 child_cleanup_errors.append(f"protected dormant teardown exited {teardown_returncode} after durable commit")
         else:
-            secret_materialization_receipt = receipt_dir / "participant-secret-materialization.json"
-            secret_materialization = session.run_child(
-                secret_runner.command([
-                    "--materialize",
-                    "--expected-protected-revision",
-                    revision,
-                    "--kubeconfig",
-                    str(kubeconfig),
-                    "--config-input-fd",
-                    str(secret_config_input.fd),
-                    "--runtime-input-fd",
-                    str(secret_runtime_input.fd),
-                    "--receipt",
-                    str(secret_materialization_receipt),
-                ]),
-                child_environment,
-                forward_signals=False,
-                pass_fds=(secret_runner.blob.fd, secret_config_input.fd, secret_runtime_input.fd, kubectl_fd),
-            )
-            try:
-                require(secret_materialization_receipt.exists(), "Secret materializer produced no durable receipt")
-                secret_materialization_bound = snapshot_owned_receipt(
-                    secret_materialization_receipt,
-                    binding_dir / "secret-materialization-receipt.bound",
-                    "participant Secret materialization receipt",
-                )
-                bound_receipts.append(secret_materialization_bound)
-                secret_materialization_projection = verify_receipt_with_protected_cli(
-                    cancellation,
-                    secret_runner,
-                    "--verify-materialization-receipt-fd",
-                    secret_materialization_bound,
-                    revision,
+            if source_secret_receipt is None:
+                secret_materialization_receipt = receipt_dir / "participant-secret-materialization.json"
+                secret_materialization = session.run_child(
+                    secret_runner.command([
+                        "--materialize",
+                        "--expected-protected-revision",
+                        revision,
+                        "--kubeconfig",
+                        str(kubeconfig),
+                        "--config-input-fd",
+                        str(secret_config_input.fd),
+                        "--runtime-input-fd",
+                        str(secret_runtime_input.fd),
+                        "--receipt",
+                        str(secret_materialization_receipt),
+                    ]),
                     child_environment,
-                    "materialized",
-                    allow_cancelled=True,
+                    forward_signals=False,
+                    pass_fds=(secret_runner.blob.fd, secret_config_input.fd, secret_runtime_input.fd, kubectl_fd),
                 )
-            finally:
-                session.receipt_reconciled()
-            materialization_logging_error = best_effort_print_child(secret_materialization)
-            if materialization_logging_error is not None:
-                child_cleanup_errors.append(materialization_logging_error)
-            require(secret_materialization.returncode == 0, "protected Secret materialization did not complete cleanly")
+                try:
+                    require(secret_materialization_receipt.exists(), "Secret materializer produced no durable receipt")
+                    secret_materialization_bound = snapshot_owned_receipt(
+                        secret_materialization_receipt,
+                        binding_dir / "secret-materialization-receipt.bound",
+                        "participant Secret materialization receipt",
+                    )
+                    bound_receipts.append(secret_materialization_bound)
+                    secret_materialization_projection = verify_receipt_with_protected_cli(
+                        cancellation,
+                        secret_runner,
+                        "--verify-materialization-receipt-fd",
+                        secret_materialization_bound,
+                        revision,
+                        child_environment,
+                        "materialized",
+                        allow_cancelled=True,
+                    )
+                finally:
+                    session.receipt_reconciled()
+                materialization_logging_error = best_effort_print_child(secret_materialization)
+                if materialization_logging_error is not None:
+                    child_cleanup_errors.append(materialization_logging_error)
+                require(secret_materialization.returncode == 0, "protected Secret materialization did not complete cleanly")
 
             bootstrap_receipt = receipt_dir / "participant-flux-bootstrap.json"
             bootstrap = session.run_child(
@@ -5838,7 +5886,18 @@ def main(argv: list[str] | None = None) -> int:
                     "--flux-bootstrap-receipt-fd", str(bootstrap_bound.fd),
                     "--tracer-data-plane-activation-receipt-fd", str(source_tracer_activation_receipt.fd),
                 ]
-                activation_fds = (activation_runner.blob.fd, bootstrap_bound.fd, source_tracer_activation_receipt.fd, kubectl_fd)
+                activation_fds = (
+                    activation_runner.blob.fd,
+                    bootstrap_bound.fd,
+                    source_tracer_activation_receipt.fd,
+                    kubectl_fd,
+                )
+                if source_secret_receipt is not None:
+                    activation_arguments.extend([
+                        "--secret-materialization-receipt-fd",
+                        str(source_secret_receipt.fd),
+                    ])
+                    activation_fds += (source_secret_receipt.fd,)
             activation = session.run_child(
                 activation_runner.command([
                     "--live",
