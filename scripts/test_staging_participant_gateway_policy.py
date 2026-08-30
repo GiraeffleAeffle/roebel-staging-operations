@@ -221,6 +221,21 @@ class StaticPolicyTests(unittest.TestCase):
             reciprocal["kustomization"]["spec"]["path"],
             "./" + POLICY.WORKBENCH_INGRESS_ROOT,
         )
+        # Flux applies and proves its revision; application readiness remains
+        # the protected runner's job so the narrow Role needs no discovery
+        # permission for ReplicaSets.
+        active_gateway = POLICY.gateway_flux_objects(suspended=False)
+        active_reciprocal = POLICY.workbench_ingress_flux_objects(suspended=False)
+        for flux in (gateway, reciprocal, active_gateway, active_reciprocal):
+            self.assertFalse(flux["kustomization"]["spec"]["wait"])
+            self.assertNotIn("healthChecks", flux["kustomization"]["spec"])
+        self.assertFalse(active_gateway["kustomization"]["spec"]["suspend"])
+        self.assertFalse(active_reciprocal["kustomization"]["spec"]["suspend"])
+        self.assertFalse(any(
+            "replicasets" in rule.get("resources", [])
+            for owner in (gateway, reciprocal)
+            for rule in owner["role"]["rules"]
+        ))
         self.assertFalse(POLICY.expected_shared_flux_source_projection()["spec"]["suspend"])
 
     def test_dormant_flux_bootstrap_contract_is_exact_create_only_and_receipt_bound(self):
