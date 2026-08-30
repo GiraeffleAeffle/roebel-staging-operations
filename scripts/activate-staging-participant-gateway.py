@@ -34,6 +34,11 @@ HAPROXY_METHOD_DENIED_BODY = (
     "A request was made of a resource using a request method not supported by that resource.\n"
     "</body></html>\n"
 )
+HAPROXY_NOT_FOUND_BODY = (
+    "<html><body><h1>404 Not Found</h1>\n"
+    "The resource could not be found.\n"
+    "</body></html>\n"
+)
 ROOT = Path(__file__).resolve().parent.parent
 GIT_BIN = Path("/usr/bin/git")
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
@@ -58,6 +63,7 @@ TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION = "7aa2db7f174742555ec0374725d2c80ee0350
 TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e2679e14d5dc8eea96ba0"
 TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9da0db"
 TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
+TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION = "01e115b6fd03dce7900946ac71e2d8f943a6fb74"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -107,7 +113,13 @@ TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES = frozenset({
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/test_staging_participant_gateway_policy.py",
 })
-TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
@@ -1478,7 +1490,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 nine-hop lineage."""
+    """Admit current receipts or the exact successful run19 ten-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1576,10 +1588,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
+            "tracer receipt eighth-to-ninth-successor",
+        ) == set(TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
+        "tracer receipt eighth-to-ninth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt eighth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_EIGHTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt eighth-successor-to-acceptor file set drift",
+            "tracer receipt ninth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt ninth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1600,7 +1620,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-nine-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-ten-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1613,6 +1633,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -3704,6 +3725,26 @@ def _require_haproxy_method_denied_v4(observed: dict[str, Any], method: str, pat
         f"method boundary drift: {label}",
     )
 
+def _require_haproxy_not_found_v4(observed: dict[str, Any], method: str, path: str) -> None:
+    """Bind the exact HAProxy route miss, distinct from gateway JSON 404."""
+    headers = observed["headers"]
+    label = f"{method} {path}"
+    require(
+        not ({"access-control-allow-origin", "access-control-allow-credentials", "vary"} & set(headers)),
+        f"not-found boundary exposed CORS authority: {label}",
+    )
+    require(
+        observed["status"] == 404
+        and observed["body"] == HAPROXY_NOT_FOUND_BODY
+        and headers == {
+            "cache-control": "no-cache",
+            "connection": "close",
+            "content-length": str(len(HAPROXY_NOT_FOUND_BODY.encode("utf-8"))),
+            "content-type": "text/html",
+        },
+        f"not-found boundary drift: {label}",
+    )
+
 def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     del r  # The fixed urllib transport deliberately cannot inherit shell proxy state.
     boundary = p["httpBoundary"]; timeout = boundary["timeoutsSeconds"]["routeRequest"]
@@ -3778,7 +3819,7 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
             _require_json_response_v4(observed, 404, {"error": "not_found"}, "query route")
             require("access-control-allow-origin" not in observed["headers"], "query rejection exposed CORS authority")
         else:
-            require(observed["status"] == 404 and observed["body"] == "" and "content-type" not in observed["headers"], f"{label} route boundary drift")
+            _require_haproxy_not_found_v4(observed, method, path)
         result.append({"case": label, "method": method, "path": path, "status": 404})
     wrong_origin = "https://attacker.invalid"
     observed = call("POST", posts[0], request_origin=wrong_origin, body=b"{}")
