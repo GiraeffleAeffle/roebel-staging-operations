@@ -5321,8 +5321,9 @@ def main(argv: list[str] | None = None) -> int:
                     str(source_secret_receipt.fd),
                     "--tracer-data-plane-activation-receipt-fd",
                     str(source_tracer_activation_receipt.fd),
+                    *handover_blob_args,
                 ]
-                activation_fds = (activation_runner.blob.fd, handover_archive_receipt.fd, handover_bound.fd, source_secret_receipt.fd, source_tracer_activation_receipt.fd, kubectl_fd)
+                activation_fds = (activation_runner.blob.fd, handover_archive_receipt.fd, handover_bound.fd, source_secret_receipt.fd, source_tracer_activation_receipt.fd, kubectl_fd, *handover_blob_fds)
             else:
                 require(
                     bootstrap_bound is not None
