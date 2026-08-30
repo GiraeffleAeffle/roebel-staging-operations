@@ -217,6 +217,12 @@ def activation_journal(reservation: dict, records: dict[str, dict]) -> dict:
 
 
 class TracerRunnerTests(unittest.TestCase):
+    def test_flux_source_kind_has_an_exact_kubectl_resource(self) -> None:
+        self.assertEqual(
+            MODULE.kind_cli("GitRepository"),
+            "gitrepository.source.toolkit.fluxcd.io",
+        )
+
     def test_dynamic_loader_registers_dataclass_module_during_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "dataclass_probe.py"
