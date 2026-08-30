@@ -926,7 +926,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_six_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_seven_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -954,7 +954,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -972,7 +973,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-six-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-seven-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -982,6 +983,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -999,7 +1001,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_SECOND_TO_THIRD_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1007,7 +1010,8 @@ class ExecutorTests(unittest.TestCase):
             "second-to-third-successor file set drift",
             "third-to-fourth-successor file set drift",
             "fourth-to-fifth-successor file set drift",
-            "fifth-successor-to-acceptor file set drift",
+            "fifth-to-sixth-successor file set drift",
+            "sixth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1037,6 +1041,10 @@ class ExecutorTests(unittest.TestCase):
             MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
             "7aa2db7f174742555ec0374725d2c80ee0350e8a",
         )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
+            "720e058a61c185c8c64e2679e14d5dc8eea96ba0",
+        )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1054,7 +1062,11 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES), wrapper_pair)
         self.assertEqual(set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES), wrapper_pair)
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
             participant_pair | wrapper_pair,
         )
         widened = copy.deepcopy(receipt)
@@ -2128,6 +2140,65 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "_route_request_v4", return_value={"status": 200, "headers": cors | {"content-type": "application/json"}, "body": json.dumps(status_body)}), patch.object(MODULE.time, "monotonic", side_effect=[0, 0, 121]):
             with self.assertRaisesRegex(MODULE.ActivationError, "after request"):
                 MODULE.route_matrix_v4(Fake(), value)
+
+    def test_v4_route_matrix_waits_for_temporary_status_404_then_verifies_every_route(self):
+        value = policy(); origin = value["endpoints"]["browserOrigin"]; prefix = value["httpBoundary"]["prefix"]
+        cors = {"access-control-allow-origin": origin, "access-control-allow-credentials": "true", "vary": "Origin"}
+        status_body = MODULE.expected_participant_http_status_v4()
+        status_attempts = 0
+
+        def response(request_origin, method, path, headers, body, timeout):
+            nonlocal status_attempts
+            self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
+            if method == "GET" and path == prefix + "/status":
+                status_attempts += 1
+                if status_attempts == 1:
+                    return {"status": 404, "headers": {"content-type": "text/html"}, "body": "not found"}
+                return {"status": 200, "headers": cors | {"content-type": "application/json"}, "body": json.dumps(status_body)}
+            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES:
+                preflight = cors | {"access-control-allow-methods": "GET" if path.endswith("/status") else "POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
+                return {"status": 204, "headers": preflight, "body": ""}
+            if method == "POST" and path in MODULE.POLICY.POST_ROUTES:
+                if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
+                status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
+                return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]: return {"status": 405, "headers": {}, "body": ""}
+            if path == prefix + "/status?unexpected=1": return {"status": 404, "headers": {"content-type": "application/json"}, "body": '{"error":"not_found"}'}
+            return {"status": 404, "headers": {}, "body": ""}
+
+        with patch.object(MODULE, "_route_request_v4", side_effect=response) as request, patch.object(MODULE.time, "sleep") as sleep:
+            receipt = MODULE.route_matrix_v4(Fake(), value)
+        self.assertEqual(receipt, value["httpBoundary"]["expectations"])
+        self.assertEqual(status_attempts, 2)
+        self.assertEqual(request.call_count, len(MODULE.POLICY.ROUTE_EXPECTATIONS) + 1)
+        sleep.assert_called_once_with(MODULE.PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS)
+
+    def test_v4_route_matrix_temporary_status_404_is_bounded_and_reports_only_safe_evidence(self):
+        value = policy()
+        not_routed = {"status": 404, "headers": {"content-type": "text/html"}, "body": "sensitive upstream body"}
+        with patch.object(MODULE, "_route_request_v4", return_value=not_routed) as request, patch.object(
+            MODULE.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 121.0],
+        ), patch.object(MODULE.time, "sleep") as sleep, self.assertRaisesRegex(
+            MODULE.ActivationError, r"GET status route propagation timeout: attempts=1 lastStatus=404$",
+        ) as raised:
+            MODULE.route_matrix_v4(Fake(), value)
+        self.assertNotIn("sensitive upstream body", str(raised.exception))
+        self.assertEqual(request.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_v4_route_matrix_does_not_retry_an_invalid_200_contract_or_other_status(self):
+        value = policy(); origin = value["endpoints"]["browserOrigin"]
+        invalid_cases = (
+            {"status": 200, "headers": {"content-type": "application/json"}, "body": "{}"},
+            {"status": 503, "headers": {"content-type": "text/plain"}, "body": "unavailable"},
+        )
+        for observed in invalid_cases:
+            with self.subTest(status=observed["status"]), patch.object(
+                MODULE, "_route_request_v4", return_value=observed,
+            ) as request, patch.object(MODULE.time, "sleep") as sleep, self.assertRaises(MODULE.ActivationError):
+                MODULE.route_matrix_v4(Fake(), value)
+            self.assertEqual(request.call_count, 1)
+            sleep.assert_not_called()
 
     def test_v4_route_transport_disables_ambient_proxies(self):
         class Headers(dict):

@@ -28,6 +28,7 @@ NAME, SOURCE = "roebel-staging-participant-gateway", "roebel-staging-operations"
 WORKBENCH_NAMESPACE, WORKBENCH_POLICY_NAME = "stadtstack-roebel-staging-lab", "roebel-staging-participant-workbench-ingress"
 RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 RECOVERY_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_recovery_receipt_v1"
+PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS = 0.25
 ROOT = Path(__file__).resolve().parent.parent
 GIT_BIN = Path("/usr/bin/git")
 POLICY_MODULE_PATH = "scripts/staging_participant_gateway_policy.py"
@@ -49,6 +50,7 @@ TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION = "f41bb1ac2ec27c6332a3b5614e65516349f2
 TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION = "89cc247c412374205d83433dcc5f774f8c705b1b"
 TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION = "93d9e5bb87acb18887250316fb0b7a1bdf4c7cfa"
 TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION = "7aa2db7f174742555ec0374725d2c80ee0350e8a"
+TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e2679e14d5dc8eea96ba0"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -73,7 +75,13 @@ TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
-TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
@@ -1444,7 +1452,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 six-hop lineage."""
+    """Admit current receipts or the exact successful run19 seven-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1518,10 +1526,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
+            "tracer receipt fifth-to-sixth-successor",
+        ) == set(TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
+        "tracer receipt fifth-to-sixth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt fifth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_FIFTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt fifth-successor-to-acceptor file set drift",
+            "tracer receipt sixth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt sixth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1538,7 +1554,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-six-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-seven-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1548,6 +1564,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_THIRD_SUCCESSOR_REVISION,
             TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -3629,19 +3646,40 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     require([entry["path"] for entry in boundary["routes"]] == list(POLICY.ROUTES), "fixed eight-route inventory drift")
     result: list[dict[str, Any]] = []
 
-    def call(method: str, path: str, *, request_origin: str | None = origin, body: bytes | None = None, requested_method: str | None = None) -> dict[str, Any]:
-        require(time.monotonic() < total_deadline, "route matrix total timeout")
+    def propagation_timeout(attempts: int, status: int) -> None:
+        raise ActivationError(f"GET status route propagation timeout: attempts={attempts} lastStatus={status}")
+
+    def call(method: str, path: str, *, request_origin: str | None = origin, body: bytes | None = None, requested_method: str | None = None, propagation_attempt: int | None = None) -> dict[str, Any]:
+        before_request = time.monotonic()
+        if before_request >= total_deadline:
+            if propagation_attempt is not None and propagation_attempt > 1:
+                propagation_timeout(propagation_attempt - 1, 404)
+            raise ActivationError("route matrix total timeout")
         headers: dict[str, str] = {"Accept": "application/json"}
         if request_origin is not None: headers["Origin"] = request_origin
         if body is not None: headers["Content-Type"] = "application/json"
         if requested_method is not None:
             headers["Access-Control-Request-Method"] = requested_method; headers["Access-Control-Request-Headers"] = "content-type"
         observed = _route_request_v4(origin, method, path, headers, body, timeout)
-        require(time.monotonic() < total_deadline, "route matrix total timeout after request")
+        if time.monotonic() >= total_deadline:
+            if propagation_attempt is not None and observed["status"] == 404:
+                propagation_timeout(propagation_attempt, 404)
+            raise ActivationError("route matrix total timeout after request")
         return observed
 
     status_body = expected_participant_http_status_v4()
-    observed = call("GET", status_path); _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
+    status_attempts = 0
+    while True:
+        if status_attempts and time.monotonic() >= total_deadline:
+            propagation_timeout(status_attempts, 404)
+        observed = call("GET", status_path, propagation_attempt=status_attempts + 1)
+        status_attempts += 1
+        if observed["status"] != 404:
+            break
+        if time.monotonic() >= total_deadline:
+            propagation_timeout(status_attempts, 404)
+        time.sleep(PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS)
+    _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
     for path, allowed in [(status_path, "GET"), *[(path, "POST") for path in posts]]:
         observed = call("OPTIONS", path, requested_method=allowed)
         require(observed["status"] == 204 and observed["body"] == "" and "content-type" not in observed["headers"], f"OPTIONS {path} response drift")
