@@ -684,7 +684,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
     ]
     container = {
         "env": [
-            {"name": "PGDATA", "value": "/var/lib/postgresql/data/pgdata"},
+            {"name": "PGDATA", "value": "/var/lib/postgresql/data"},
             {"name": "POSTGRES_DB", "value": "postgres"},
             {"name": "POSTGRES_USER", "value": "supabase_admin"},
             secret_env("POSTGRES_PASSWORD", "postgres-password"),

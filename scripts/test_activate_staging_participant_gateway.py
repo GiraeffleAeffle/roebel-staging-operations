@@ -21,6 +21,21 @@ assert TRACER_SPEC and TRACER_SPEC.loader
 TRACER_POLICY = importlib.util.module_from_spec(TRACER_SPEC)
 TRACER_SPEC.loader.exec_module(TRACER_POLICY)
 def sha(x="a"): return "sha256:" + x * 64
+def historical_secret_receipt():
+    unsigned = {
+        "schemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
+        "status": "materialized",
+        "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
+        "activationPolicySha256": MODULE.SECRET_RECEIPT_ORIGIN_ACTIVATION_POLICY_SHA256,
+        "protectedRunnerFileSha256": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
+        "createOrder": ["config", "runtime"],
+        "secrets": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_SECRET_RECORDS),
+        "inputTransport": "owned-private-inherited-descriptors-only",
+        "valuesInReceipt": False,
+        "civicAuthorityEffects": False,
+    }
+    receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+    return receipt, (MODULE.canonical(receipt) + "\n").encode("utf-8")
 def object_(kind, name=MODULE.NAME, namespace=MODULE.NAMESPACE, uid="uid", rv="10", **extra):
     value = {"apiVersion": "v1", "kind": kind, "metadata": {"name": name, "namespace": namespace, "uid": uid, "resourceVersion": rv}}; value.update(extra); return value
 def policy():
@@ -560,58 +575,33 @@ class ExecutorTests(unittest.TestCase):
 
     def test_exact_historical_b790_secret_receipt_is_the_only_accepted_legacy_origin(self):
         value = ready_policy()
-        receipt = {
-            "schemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
-            "status": "materialized",
-            "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
-            "canonicalSha256": MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
-            "protectedRunnerFileSha256": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
-        }
-        expected_records = {
-            label: {
-                "target": {
-                    "apiVersion": "v1",
-                    "kind": "Secret",
-                    "namespace": reference["namespace"],
-                    "name": reference["name"],
-                },
-                "uid": f"{label}-uid",
-                "resourceVersion": MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS[label],
-                "keySet": sorted(reference["keys"]),
-                "valuesRead": False,
-            }
-            for label, reference in value["runtime"]["secretReferences"].items()
-            if label in MODULE.SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS
-        }
-
-        def bind(candidate, candidate_policy, revision, hashes):
-            self.assertEqual(candidate, receipt)
-            self.assertEqual(candidate_policy, value)
-            self.assertEqual(revision, MODULE.SECRET_RECEIPT_ORIGIN_REVISION)
-            self.assertEqual(hashes, MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256)
-            return {
-                "status": "materialized",
-                "secretRecords": copy.deepcopy(expected_records),
-                "civicAuthorityEffects": False,
-            }
-
-        materializer = Mock(
-            PROTECTED_PATHS=tuple(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
-            bind_materialization_receipt=Mock(side_effect=bind),
-        )
+        receipt, raw = historical_secret_receipt()
+        self.assertEqual(receipt["canonicalSha256"], MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256)
+        self.assertEqual(MODULE.bytes_digest(raw), MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256)
+        actual = Path.home() / ".config/stadtstack/participant-live-receipts/participant-activation-20260828T191614Z-b790fa7-run1/participant-secret-materialization.json"
+        if actual.is_file():
+            # The local live evidence is value-free.  Equality proves this
+            # fixture is the byte-exact artifact used by the continuation.
+            self.assertEqual(actual.read_bytes(), raw)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "receipt.json"
-            path.write_text(json.dumps(receipt), encoding="utf-8")
+            path.write_bytes(raw)
             os.chmod(path, 0o600)
             fd = os.open(path, os.O_RDONLY)
             try:
-                with (
-                    patch.object(MODULE, "SECRET_MATERIALIZER", materializer),
-                    patch.object(MODULE, "bytes_digest", return_value=MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256),
-                ):
-                    ownership = MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
+                ownership = MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
             finally:
                 os.close(fd)
+        self.assertEqual(ownership["secretRecords"], {
+            label: {
+                "target": copy.deepcopy(record["target"]),
+                "uid": record["uid"],
+                "resourceVersion": record["resourceVersion"],
+                "keySet": copy.deepcopy(record["keySet"]),
+                "valuesRead": False,
+            }
+            for label, record in MODULE.SECRET_RECEIPT_ORIGIN_SECRET_RECORDS.items()
+        })
         self.assertEqual(
             ownership["receiptProvenance"],
             {
@@ -622,40 +612,67 @@ class ExecutorTests(unittest.TestCase):
             },
         )
 
-    def test_historical_secret_receipt_rejects_raw_canonical_and_runner_drift(self):
+    def test_historical_secret_receipt_rejects_raw_and_all_closed_semantic_drift(self):
         value = ready_policy()
-        base = {
-            "schemaVersion": "roebel_staging_participant_secret_materialization_receipt_v1",
-            "status": "materialized",
-            "protectedRevision": MODULE.SECRET_RECEIPT_ORIGIN_REVISION,
-            "canonicalSha256": MODULE.SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
-            "protectedRunnerFileSha256": copy.deepcopy(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256),
-        }
-        materializer = Mock(PROTECTED_PATHS=tuple(MODULE.SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256))
-        cases = (
-            (copy.deepcopy(base), sha("9"), "raw checksum"),
-            (base | {"canonicalSha256": sha("8")}, MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256, "canonical checksum"),
-            (
-                base | {"protectedRunnerFileSha256": dict(base["protectedRunnerFileSha256"]) | {"scripts/run-staging-participant-gateway-live.py": sha("7")}},
-                MODULE.SECRET_RECEIPT_ORIGIN_RAW_SHA256,
-                "protected runner binding",
-            ),
-        )
-        for candidate, raw_digest, expected_error in cases:
-            with self.subTest(expected_error=expected_error), tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "receipt.json"
-                path.write_text(json.dumps(candidate), encoding="utf-8")
-                os.chmod(path, 0o600)
-                fd = os.open(path, os.O_RDONLY)
-                try:
-                    with (
-                        patch.object(MODULE, "SECRET_MATERIALIZER", materializer),
-                        patch.object(MODULE, "bytes_digest", return_value=raw_digest),
-                        self.assertRaisesRegex(MODULE.ActivationError, expected_error),
-                    ):
-                        MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
-                finally:
-                    os.close(fd)
+        base, raw = historical_secret_receipt()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipt.json"
+            path.write_bytes(raw[:-1])
+            os.chmod(path, 0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                with self.assertRaisesRegex(MODULE.ActivationError, "raw checksum"):
+                    MODULE.bind_secret_materialization_receipt_v4(value, REV, fd)
+            finally:
+                os.close(fd)
+
+        semantic_cases = []
+        changed = copy.deepcopy(base); changed["unexpected"] = False
+        semantic_cases.append((changed, "field closure"))
+        changed = copy.deepcopy(base); changed["canonicalSha256"] = sha("8")
+        semantic_cases.append((changed, "canonical checksum"))
+        for field, replacement in (
+            ("schemaVersion", "wrong"),
+            ("status", "wrong"),
+            ("protectedRevision", "0" * 40),
+            ("activationPolicySha256", sha("7")),
+            ("protectedRunnerFileSha256", {}),
+            ("createOrder", ["runtime", "config"]),
+            ("inputTransport", "wrong"),
+            ("valuesInReceipt", True),
+            ("civicAuthorityEffects", True),
+        ):
+            changed = copy.deepcopy(base); changed[field] = replacement
+            semantic_cases.append((changed, "origin field"))
+        for label, field, replacement in (
+            ("config", "uid", "00000000-0000-0000-0000-000000000000"),
+            ("config", "resourceVersion", "15906164"),
+            ("config", "keySet", ["wrong"]),
+            ("runtime", "ownershipNonce", "0" * 64),
+            ("runtime", "valuesRead", True),
+            ("runtime", "target", {}),
+        ):
+            changed = copy.deepcopy(base); changed["secrets"][label][field] = replacement
+            semantic_cases.append((changed, "origin record"))
+        changed = copy.deepcopy(base); changed["secrets"]["extra"] = copy.deepcopy(changed["secrets"]["config"])
+        semantic_cases.append((changed, "origin record"))
+        for candidate, expected_error in semantic_cases:
+            with self.subTest(expected_error=expected_error):
+                with self.assertRaisesRegex(MODULE.ActivationError, expected_error):
+                    MODULE.bind_historical_secret_materialization_fields_v4(value, candidate)
+
+    def test_historical_secret_receipt_requires_current_target_and_keyset_compatibility(self):
+        receipt, raw = historical_secret_receipt()
+        for label, field, replacement in (
+            ("config", "name", "different-config"),
+            ("config", "namespace", "different-namespace"),
+            ("runtime", "keys", ["different-key"]),
+        ):
+            changed = ready_policy()
+            changed["runtime"]["secretReferences"][label][field] = replacement
+            with self.subTest(label=label, field=field):
+                with self.assertRaisesRegex(MODULE.ActivationError, "current target/keyset compatibility"):
+                    MODULE.bind_historical_secret_materialization_receipt_v4(changed, receipt, raw)
 
     def test_historical_secret_continuation_requires_exact_resource_versions(self):
         value = ready_policy()
