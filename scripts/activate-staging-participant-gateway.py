@@ -65,6 +65,12 @@ TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9
 TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
 TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION = "01e115b6fd03dce7900946ac71e2d8f943a6fb74"
 TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION = "38cdfbd9748c3481689599c53f4443af11a7df63"
+TRACER_RECEIPT_ELEVENTH_SUCCESSOR_REVISION = "890e001c76a94755d8f25ebfcf83593da24a082e"
+TRACER_RECEIPT_TWELFTH_SUCCESSOR_REVISION = "92dbe194d1ff3ba45844409d6f478b9012c5182c"
+TRACER_RECEIPT_THIRTEENTH_SUCCESSOR_REVISION = "4bea54c7823a7da3c60d5c57eb3ad8b1c8b01929"
+TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION = "136f0ac1ca31c9beda8f7208ed01a12201460bd7"
+TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION = "96795cc20a28e93a9ed00208bb2311efcdb8a1ae"
+TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION = "4de9d00696a7c43694bf66edbf79d1fb1fd080de"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -126,11 +132,42 @@ TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
-TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_TENTH_TO_ELEVENTH_SUCCESSOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_ELEVENTH_TO_TWELFTH_SUCCESSOR_FILES = frozenset({
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
+})
+TRACER_RECEIPT_TWELFTH_TO_THIRTEENTH_SUCCESSOR_FILES = frozenset({
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
+})
+TRACER_RECEIPT_THIRTEENTH_TO_FOURTEENTH_SUCCESSOR_FILES = frozenset({
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_FOURTEENTH_TO_FIFTEENTH_SUCCESSOR_FILES = frozenset({
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES = frozenset({
+    "scripts/bootstrap-staging-participant-flux.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
+})
+TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/staging_participant_gateway_policy.py",
+    "scripts/test_staging_participant_gateway_policy.py",
 })
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
@@ -1603,7 +1640,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 eleven-hop lineage."""
+    """Admit current receipts or the exact successful run19 seventeen-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1717,10 +1754,58 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_ELEVENTH_SUCCESSOR_REVISION,
+            "tracer receipt tenth-to-eleventh-successor",
+        ) == set(TRACER_RECEIPT_TENTH_TO_ELEVENTH_SUCCESSOR_FILES),
+        "tracer receipt tenth-to-eleventh-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_ELEVENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_TWELFTH_SUCCESSOR_REVISION,
+            "tracer receipt eleventh-to-twelfth-successor",
+        ) == set(TRACER_RECEIPT_ELEVENTH_TO_TWELFTH_SUCCESSOR_FILES),
+        "tracer receipt eleventh-to-twelfth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_TWELFTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_THIRTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt twelfth-to-thirteenth-successor",
+        ) == set(TRACER_RECEIPT_TWELFTH_TO_THIRTEENTH_SUCCESSOR_FILES),
+        "tracer receipt twelfth-to-thirteenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_THIRTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt thirteenth-to-fourteenth-successor",
+        ) == set(TRACER_RECEIPT_THIRTEENTH_TO_FOURTEENTH_SUCCESSOR_FILES),
+        "tracer receipt thirteenth-to-fourteenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt fourteenth-to-fifteenth-successor",
+        ) == set(TRACER_RECEIPT_FOURTEENTH_TO_FIFTEENTH_SUCCESSOR_FILES),
+        "tracer receipt fourteenth-to-fifteenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt fifteenth-to-sixteenth-successor",
+        ) == set(TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES),
+        "tracer receipt fifteenth-to-sixteenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt tenth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt tenth-successor-to-acceptor file set drift",
+            "tracer receipt sixteenth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt sixteenth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1741,7 +1826,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-eleven-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-seventeen-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1756,6 +1841,12 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_ELEVENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_TWELFTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_THIRTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -2878,26 +2969,61 @@ def shared_source_revision_v4(r: Runner, kubeconfig: str, rev: str) -> dict[str,
 def cas_flux_v4(r: Runner, kubeconfig: str, p: dict[str, Any], owner: str, before: dict[str, Any], suspend: bool) -> dict[str, Any]:
     metadata = before.get("metadata", {}); require(metadata.get("uid") and str(metadata.get("resourceVersion", "")).isdigit(), f"{owner} CAS preconditions absent")
     target = p["gitOps"]["reconcilers"][owner]["kustomization"]
-    patch_body = canonical({"metadata": {"resourceVersion": metadata["resourceVersion"]}, "spec": {"suspend": suspend}})
+    builder = POLICY.gateway_flux_objects if owner == "gateway" else POLICY.workbench_ingress_flux_objects
+    desired = _policy_call(builder, suspended=suspend)["kustomization"]
+    # Change the reconcile/readiness behavior in the same resourceVersion CAS
+    # as suspend. Active Flux proves apply/revision only; the protected runner
+    # proves application health without broadening reconciler RBAC. A JSON
+    # merge-patch null removes any historical healthChecks field.
+    patch_body = canonical({
+        "metadata": {"resourceVersion": metadata["resourceVersion"]},
+        "spec": {
+            "healthChecks": None,
+            "suspend": suspend,
+            "wait": desired["spec"]["wait"],
+        },
+    })
     raw = checked(r, kb(kubeconfig) + ["-n", target["namespace"], "patch", "kustomization", target["name"], "--type=merge", "-p", patch_body, "-o", "json"], f"{owner} CAS {'suspend' if suspend else 'unsuspend'}")
     after = obj(raw, f"{owner} CAS response")
     require(after.get("metadata", {}).get("uid") == metadata["uid"], f"{owner} Kustomization UID changed")
     require(after.get("spec", {}).get("suspend") is suspend, f"{owner} CAS ambiguous")
     require(int(after.get("metadata", {}).get("resourceVersion", "0")) > int(metadata["resourceVersion"]), f"{owner} CAS resourceVersion did not advance")
-    builder = POLICY.gateway_flux_objects if owner == "gateway" else POLICY.workbench_ingress_flux_objects
-    _policy_call(POLICY.require_semantically_equal, after, _policy_call(builder, suspended=suspend)["kustomization"], f"{owner} Kustomization CAS")
+    _policy_call(POLICY.require_semantically_equal, after, desired, f"{owner} Kustomization CAS")
     return after
 
 def flux_ready_v4(value: dict[str, Any], owner: str, uid: str, rev: str) -> dict[str, Any]:
     metadata, status = value.get("metadata", {}), value.get("status", {})
     require(metadata.get("uid") == uid and value.get("spec", {}).get("suspend") is False, f"{owner} active identity drift")
-    require(status.get("observedGeneration") == metadata.get("generation"), f"{owner} observedGeneration drift")
+    builder = POLICY.gateway_flux_objects if owner == "gateway" else POLICY.workbench_ingress_flux_objects
+    desired = _policy_call(builder, suspended=False)["kustomization"]
+    _policy_call(
+        POLICY.require_semantically_equal,
+        value,
+        desired,
+        f"{owner} active Kustomization semantics",
+    )
+    generation = metadata.get("generation")
+    resource_version = metadata.get("resourceVersion")
+    require(
+        type(generation) is int and generation > 0
+        and recovery_ascii_decimal_v4(resource_version)
+        and status.get("observedGeneration") == generation,
+        f"{owner} observedGeneration drift",
+    )
     ready = next((condition for condition in status.get("conditions", []) if condition.get("type") == "Ready"), None)
     require(isinstance(ready, dict) and ready.get("status") == "True", f"{owner} not Ready")
     if "observedGeneration" in ready: require(ready["observedGeneration"] == metadata.get("generation"), f"{owner} Ready generation drift")
     expected = f"main@sha1:{rev}"; require(status.get("lastAppliedRevision") == expected, f"{owner} applied revision drift")
     if status.get("lastAttemptedRevision") is not None: require(status["lastAttemptedRevision"] == expected, f"{owner} attempted revision drift")
-    return {"uid": uid, "resourceVersion": metadata.get("resourceVersion"), "observedGeneration": status["observedGeneration"], "lastAppliedRevision": expected, "ready": True}
+    return {
+        "uid": uid,
+        "resourceVersion": resource_version,
+        "generation": generation,
+        "observedGeneration": status["observedGeneration"],
+        "activeSpecSha256": POLICY.canonical_sha256(desired["spec"]),
+        "lastAppliedRevision": expected,
+        "ready": True,
+    }
 
 def unsuspend_both_v4(r: Runner, kubeconfig: str, p: dict[str, Any], bootstrap: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
@@ -2913,6 +3039,46 @@ def wait_both_ready_v4(r: Runner, kubeconfig: str, p: dict[str, Any], bootstrap:
         live = _target_live(r, kubeconfig, target)
         result[owner] = flux_ready_v4(live, owner, bootstrap["owners"][owner]["kustomization"]["metadata"]["uid"], rev)
     return result
+
+def source_success_projection_v4(value: dict[str, Any], rev: str) -> dict[str, str]:
+    metadata = value.get("metadata", {})
+    uid, resource_version = metadata.get("uid"), metadata.get("resourceVersion")
+    require(
+        isinstance(uid, str) and uid
+        and recovery_ascii_decimal_v4(resource_version),
+        "shared Flux source success identity invalid",
+    )
+    return {
+        "uid": uid,
+        "resourceVersion": resource_version,
+        "artifactRevision": f"main@sha1:{rev}",
+    }
+
+def final_flux_success_proof_v4(
+    r: Runner,
+    kubeconfig: str,
+    p: dict[str, Any],
+    bootstrap: dict[str, Any],
+    rev: str,
+) -> dict[str, Any]:
+    """Re-bind both active reconcilers and their shared source last."""
+    ready: dict[str, Any] = {}
+    for owner in ("gateway", "workbenchIngress"):
+        target = p["gitOps"]["reconcilers"][owner]["kustomization"]
+        live = _target_live(r, kubeconfig, target)
+        ready[owner] = flux_ready_v4(
+            live,
+            owner,
+            bootstrap["owners"][owner]["kustomization"]["metadata"]["uid"],
+            rev,
+        )
+    source = shared_source_revision_v4(r, kubeconfig, rev)
+    source_projection = source_success_projection_v4(source, rev)
+    require(
+        source_projection["uid"] == bootstrap["source"].get("metadata", {}).get("uid"),
+        "shared Flux source UID changed before success",
+    )
+    return {"ready": ready, "source": source_projection}
 
 def preservation_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> dict[str, PreservedV4]:
     result = {}
@@ -3282,7 +3448,13 @@ def _cilium_api_group_present_v4(r: Runner, kubeconfig: str) -> bool:
     require(len(names) == len(set(names)), "Kubernetes API-group discovery contains duplicates")
     return "cilium.io" in names
 
-def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], CreatedV4] | None = None) -> dict[str, Any]:
+def policy_union_v4(
+    r: Runner,
+    kubeconfig: str,
+    owned: dict[tuple[str, str], CreatedV4] | None = None,
+    *,
+    flux_tracking_state: str = "absent",
+) -> dict[str, Any]:
     """Conservatively reject additive K8s/Cilium participant allows."""
     owned = owned or {}; count = 0; label_sets = _target_policy_label_sets_v4(r, kubeconfig); owned_validated = []; compatible_workbench_egress = []; compatible_workbench = []
     cilium_present: bool | None = None
@@ -3298,8 +3470,20 @@ def policy_union_v4(r: Runner, kubeconfig: str, owned: dict[tuple[str, str], Cre
             if family == "kubernetes" and (namespace, name) in owned:
                 binding = owned[(namespace, name)]
                 require(item.get("metadata", {}).get("uid") == binding.observed.get("metadata", {}).get("uid"), f"owned NetworkPolicy UID drift: {namespace}/{name}")
-                _policy_call(POLICY.require_semantically_equal, item, binding.desired, f"owned NetworkPolicy semantics {namespace}/{name}")
-                owned_validated.append({"namespace": namespace, "name": name, "uid": item["metadata"]["uid"], "semanticSha256": POLICY.semantic_sha256(item)})
+                normalized, tracking_state = require_flux_tracking_semantics_v4(
+                    item, binding.desired, binding.logical_name, flux_tracking_state,
+                )
+                owned_validated.append({
+                    "namespace": namespace,
+                    "name": name,
+                    "uid": item["metadata"]["uid"],
+                    "semanticSha256": POLICY.canonical_sha256(normalized),
+                    "fluxTrackingState": tracking_state,
+                    "fluxTrackingLabels": (
+                        expected_flux_tracking_labels_v4(binding.logical_name)
+                        if tracking_state == "complete" else {}
+                    ),
+                })
                 continue
             if family == "kubernetes":
                 selector = item.get("spec", {}).get("podSelector", {})
@@ -3967,7 +4151,25 @@ def health_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> tuple[dict[str, 
         and hs.get("observedGeneration") == hm.get("generation"),
         "HAProxy readiness projection drift",
     )
-    return deployment, {"uid": hm.get("uid"), "resourceVersion": hm.get("resourceVersion"), "observedGeneration": hs["observedGeneration"], "desiredNumberScheduled": desired, "updatedNumberScheduled": desired, "numberAvailable": desired, "numberReady": desired, "rateLimit": p["httpBoundary"]["haproxyRateLimit"]}
+    return deployment, {"uid": hm.get("uid"), "resourceVersion": hm.get("resourceVersion"), "generation": hm.get("generation"), "observedGeneration": hs["observedGeneration"], "desiredNumberScheduled": desired, "updatedNumberScheduled": desired, "numberAvailable": desired, "numberReady": desired, "rateLimit": p["httpBoundary"]["haproxyRateLimit"]}
+
+def deployment_health_fact_v4(deployment: dict[str, Any], p: dict[str, Any]) -> dict[str, Any]:
+    metadata, status = deployment.get("metadata", {}), deployment.get("status", {})
+    require(
+        isinstance(metadata.get("uid"), str) and metadata["uid"]
+        and isinstance(metadata.get("resourceVersion"), str) and metadata["resourceVersion"].isdigit()
+        and isinstance(metadata.get("generation"), int) and metadata["generation"] > 0
+        and status.get("observedGeneration") == metadata["generation"]
+        and status.get("availableReplicas") == p["runtime"]["replicas"],
+        "Deployment health receipt projection drift",
+    )
+    return {
+        "uid": metadata["uid"],
+        "resourceVersion": metadata["resourceVersion"],
+        "generation": metadata["generation"],
+        "observedGeneration": status["observedGeneration"],
+        "availableReplicas": status["availableReplicas"],
+    }
 
 def semantic_postconditions_v4(r: Runner, kubeconfig: str, created: list[CreatedV4]) -> dict[str, Any]:
     result = {}
@@ -3975,8 +4177,16 @@ def semantic_postconditions_v4(r: Runner, kubeconfig: str, created: list[Created
         metadata = item.desired["metadata"]
         live = live_obj(r, kubeconfig, item.desired["kind"].lower(), metadata["name"], metadata["namespace"])
         require(live.get("metadata", {}).get("uid") == item.observed.get("metadata", {}).get("uid"), f"{item.logical_name} UID changed after Flux")
-        normalized = _policy_call(POLICY.require_semantically_equal, live, item.desired, f"{item.logical_name} final")
-        result[item.logical_name] = {"uid": live["metadata"]["uid"], "resourceVersion": live["metadata"]["resourceVersion"], "semanticSha256": POLICY.canonical_sha256(normalized)}
+        normalized, tracking_state = require_flux_tracking_semantics_v4(
+            live, item.desired, item.logical_name, "complete",
+        )
+        result[item.logical_name] = {
+            "uid": live["metadata"]["uid"],
+            "resourceVersion": live["metadata"]["resourceVersion"],
+            "semanticSha256": POLICY.canonical_sha256(normalized),
+            "fluxTrackingState": tracking_state,
+            "fluxTrackingLabels": expected_flux_tracking_labels_v4(item.logical_name),
+        }
     return result
 
 def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4, timeout: int = 120, snapshot: KubeconfigSnapshot | None = None) -> dict[str, Any]:
@@ -3990,7 +4200,9 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
         if created.receipt.get("recoveryIncidentRawSha256") == RUN29_FAILED_ACTIVATION_RAW_SHA256:
             require_run29_flux_tracking_semantics_v4(current, desired, created.logical_name)
         else:
-            _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback ownership {created.logical_name}")
+            require_flux_tracking_semantics_v4(
+                current, desired, created.logical_name, "absent-or-complete",
+            )
     else:
         nonce_desired = _policy_call(POLICY.with_operation_nonce, desired, nonce)
         try: _policy_call(POLICY.require_semantically_equal, current, nonce_desired, f"rollback nonce ownership {created.logical_name}")
@@ -4239,37 +4451,81 @@ def _recovery_receipt_stub_v4(desired: dict[str, Any], record: dict[str, Any]) -
     observed["metadata"]["resourceVersion"] = record["postNonceRemovalResourceVersion"]
     return observed
 
+def expected_flux_tracking_labels_v4(logical_name: str) -> dict[str, str]:
+    """Return the only controller-owned label pair admitted for one target."""
+    require(
+        logical_name in {
+            "gateway.networkPolicy", "workbenchIngress.networkPolicy",
+            "gateway.serviceAccount", "gateway.service",
+            "gateway.deployment", "gateway.ingress",
+        },
+        "participant Flux tracking target is not pinned",
+    )
+    owner = "workbenchIngress" if logical_name == "workbenchIngress.networkPolicy" else "gateway"
+    return copy.deepcopy(RUN29_FLUX_TRACKING_LABELS[owner])
+
+def require_flux_tracking_semantics_v4(
+    current: dict[str, Any],
+    desired: dict[str, Any],
+    logical_name: str,
+    allowed_state: str,
+) -> tuple[dict[str, Any], str]:
+    """Strip only a complete exact Flux pair, then compare all semantics.
+
+    `allowed_state` is deliberately closed.  In particular a partial pair,
+    wrong owner/namespace, or any extra label is never normalized away.
+    """
+    require(
+        allowed_state in {"absent", "complete", "absent-or-complete"},
+        "participant Flux tracking admission mode drift",
+    )
+    tracking = expected_flux_tracking_labels_v4(logical_name)
+    desired_labels = desired.get("metadata", {}).get("labels", {})
+    live_labels = current.get("metadata", {}).get("labels", {})
+    require(
+        isinstance(desired_labels, dict)
+        and isinstance(live_labels, dict)
+        and set(tracking).isdisjoint(desired_labels),
+        f"{logical_name} Flux tracking label boundary invalid",
+    )
+    if live_labels == desired_labels:
+        state = "absent"
+    elif live_labels == desired_labels | tracking:
+        state = "complete"
+    else:
+        raise ActivationError(f"{logical_name} Flux tracking labels are partial, wrong, or widened")
+    require(
+        state == allowed_state or allowed_state == "absent-or-complete",
+        f"{logical_name} Flux tracking labels must be {allowed_state}",
+    )
+    normalized_live = copy.deepcopy(current)
+    if state == "complete":
+        labels = normalized_live["metadata"]["labels"]
+        for label, expected in tracking.items():
+            require(labels.pop(label, None) == expected, f"{logical_name} Flux tracking value drift")
+    normalized = _policy_call(
+        POLICY.require_semantically_equal,
+        normalized_live,
+        desired,
+        f"{logical_name} semantics after exact Flux tracking normalization",
+    )
+    return normalized, state
+
 def require_run29_flux_tracking_semantics_v4(
     current: dict[str, Any],
     desired: dict[str, Any],
     logical_name: str,
 ) -> dict[str, Any]:
     require(logical_name in RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256, "run29 recovery target is not pinned")
-    owner = "workbenchIngress" if logical_name == "workbenchIngress.networkPolicy" else "gateway"
-    tracking = RUN29_FLUX_TRACKING_LABELS[owner]
-    desired_labels = desired.get("metadata", {}).get("labels", {})
-    live_labels = current.get("metadata", {}).get("labels", {})
-    require(
-        isinstance(desired_labels, dict)
-        and isinstance(live_labels, dict)
-        and set(tracking).isdisjoint(desired_labels)
-        and live_labels == desired_labels | tracking,
-        f"{logical_name} run29 recovery Flux tracking label drift",
+    normalized, state = require_flux_tracking_semantics_v4(
+        current, desired, logical_name, "complete",
     )
+    require(state == "complete", f"{logical_name} run29 recovery Flux tracking label drift")
     require(
         POLICY.semantic_sha256(current) == RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256[logical_name],
         f"{logical_name} run29 inspected live semantic hash drift",
     )
-    without_tracking = copy.deepcopy(current)
-    labels = without_tracking["metadata"]["labels"]
-    for label, expected in tracking.items():
-        require(labels.pop(label, None) == expected, f"{logical_name} run29 Flux tracking value drift")
-    return _policy_call(
-        POLICY.require_semantically_equal,
-        without_tracking,
-        desired,
-        f"{logical_name} run29 recovery semantics after exact Flux tracking removal",
-    )
+    return normalized
 
 def bind_recovery_targets_v4(
     r: Runner,
@@ -5522,6 +5778,218 @@ def bind_recovery_receipt_v4(
         "civicAuthorityEffects": False,
     }
 
+def validate_success_flux_transaction_v4(
+    flux: Any,
+    p: dict[str, Any],
+    rev: str,
+) -> None:
+    owners = ("gateway", "workbenchIngress")
+    require(
+        isinstance(flux, dict)
+        and set(flux) == {
+            "bootstrapReceiptSha256", "bootstrapObjectIdentities",
+            "sourceBeforeCas", "casUnsuspended", "ready",
+            "sourceAfterReady", "finalReady", "sourceBeforeSuccess",
+        }
+        and isinstance(flux.get("bootstrapReceiptSha256"), str)
+        and POLICY.SHA256.fullmatch(flux["bootstrapReceiptSha256"]) is not None,
+        "trusted dual Flux/bootstrap receipt incomplete",
+    )
+    bootstrap = flux["bootstrapObjectIdentities"]
+    gateway = _policy_call(POLICY.gateway_flux_objects, suspended=True)
+    workbench = _policy_call(POLICY.workbench_ingress_flux_objects, suspended=True)
+    desired_bootstrap = {
+        "gateway.serviceAccount": gateway["serviceAccount"],
+        "workbenchIngress.serviceAccount": workbench["serviceAccount"],
+        "gateway.role": gateway["role"],
+        "workbenchIngress.role": workbench["role"],
+        "gateway.roleBinding": gateway["roleBinding"],
+        "workbenchIngress.roleBinding": workbench["roleBinding"],
+        "gateway.kustomization": gateway["kustomization"],
+        "workbenchIngress.kustomization": workbench["kustomization"],
+    }
+    require(
+        isinstance(bootstrap, list)
+        and [item.get("logicalName") for item in bootstrap]
+        == list(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER),
+        "trusted dual Flux/bootstrap identity order drift",
+    )
+    bootstrap_by_logical: dict[str, dict[str, Any]] = {}
+    seen_uids: set[str] = set()
+    for record in bootstrap:
+        logical_name = record.get("logicalName") if isinstance(record, dict) else None
+        desired = desired_bootstrap.get(logical_name)
+        target = (
+            {
+                "apiVersion": desired["apiVersion"], "kind": desired["kind"],
+                "namespace": desired["metadata"]["namespace"],
+                "name": desired["metadata"]["name"],
+            }
+            if desired is not None else None
+        )
+        uid = record.get("uid") if isinstance(record, dict) else None
+        resource_version = record.get("resourceVersion") if isinstance(record, dict) else None
+        require(
+            isinstance(record, dict)
+            and set(record) == {
+                "logicalName", "target", "uid", "resourceVersion", "desiredSemanticSha256",
+            }
+            and desired is not None
+            and record.get("target") == target
+            and isinstance(uid, str) and uid and uid not in seen_uids
+            and recovery_ascii_decimal_v4(resource_version)
+            and record.get("desiredSemanticSha256") == POLICY.semantic_sha256(desired),
+            f"trusted dual Flux/bootstrap identity drift: {logical_name}",
+        )
+        seen_uids.add(uid)
+        bootstrap_by_logical[logical_name] = record
+
+    cas = flux["casUnsuspended"]
+    require(
+        isinstance(cas, dict)
+        and set(cas) == set(owners)
+        and all(recovery_ascii_decimal_v4(cas[owner]) for owner in owners),
+        "trusted Flux CAS receipt drift",
+    )
+    for owner in owners:
+        require(
+            int(cas[owner]) > int(bootstrap_by_logical[f"{owner}.kustomization"]["resourceVersion"]),
+            f"trusted Flux CAS receipt did not advance: {owner}",
+        )
+
+    expected_revision = f"main@sha1:{rev}"
+    active_specs = {
+        "gateway": _policy_call(POLICY.gateway_flux_objects, suspended=False)["kustomization"]["spec"],
+        "workbenchIngress": _policy_call(POLICY.workbench_ingress_flux_objects, suspended=False)["kustomization"]["spec"],
+    }
+    for stage in ("ready", "finalReady"):
+        stage_value = flux[stage]
+        message = "trusted final Ready proof drift" if stage == "finalReady" else "trusted Flux Ready proof drift"
+        require(isinstance(stage_value, dict) and set(stage_value) == set(owners), message)
+        for owner in owners:
+            proof = stage_value[owner]
+            expected_uid = bootstrap_by_logical[f"{owner}.kustomization"]["uid"]
+            require(
+                isinstance(proof, dict)
+                and set(proof) == {
+                    "uid", "resourceVersion", "generation", "observedGeneration",
+                    "activeSpecSha256", "lastAppliedRevision", "ready",
+                }
+                and proof.get("uid") == expected_uid
+                and recovery_ascii_decimal_v4(proof.get("resourceVersion"))
+                and int(proof["resourceVersion"]) >= int(cas[owner])
+                and type(proof.get("generation")) is int and proof["generation"] > 0
+                and proof.get("observedGeneration") == proof["generation"]
+                and proof.get("activeSpecSha256") == POLICY.canonical_sha256(active_specs[owner])
+                and proof.get("lastAppliedRevision") == expected_revision
+                and proof.get("ready") is True,
+                f"{message}: {owner}",
+            )
+            if stage == "finalReady":
+                earlier = flux["ready"][owner]
+                require(
+                    proof["generation"] == earlier.get("generation")
+                    and int(proof["resourceVersion"]) >= int(earlier.get("resourceVersion", "-1")),
+                    f"{message}: {owner}",
+                )
+
+    source_fields = {"uid", "resourceVersion", "artifactRevision"}
+    sources = [flux[name] for name in ("sourceBeforeCas", "sourceAfterReady", "sourceBeforeSuccess")]
+    require(
+        all(
+            isinstance(source, dict)
+            and set(source) == source_fields
+            and isinstance(source.get("uid"), str) and source["uid"]
+            and recovery_ascii_decimal_v4(source.get("resourceVersion"))
+            and source.get("artifactRevision") == expected_revision
+            for source in sources
+        )
+        and len({source["uid"] for source in sources}) == 1
+        and [int(source["resourceVersion"]) for source in sources]
+        == sorted(int(source["resourceVersion"]) for source in sources),
+        "trusted Flux source proof drift",
+    )
+
+def validate_haproxy_success_fact_v4(value: Any, p: dict[str, Any], label: str) -> dict[str, Any]:
+    required = {
+        "uid", "resourceVersion", "generation", "observedGeneration",
+        "desiredNumberScheduled", "updatedNumberScheduled",
+        "numberAvailable", "numberReady", "rateLimit",
+    }
+    require(
+        isinstance(value, dict)
+        and set(value) == required
+        and isinstance(value.get("uid"), str) and value["uid"]
+        and recovery_ascii_decimal_v4(value.get("resourceVersion"))
+        and type(value.get("generation")) is int and value["generation"] > 0
+        and type(value.get("observedGeneration")) is int
+        and value["observedGeneration"] == value["generation"]
+        and type(value.get("desiredNumberScheduled")) is int
+        and value["desiredNumberScheduled"] > 0
+        and all(
+            type(value.get(key)) is int
+            and value[key] == value["desiredNumberScheduled"]
+            for key in ("updatedNumberScheduled", "numberAvailable", "numberReady")
+        )
+        and value.get("rateLimit") == p["httpBoundary"]["haproxyRateLimit"],
+        f"trusted {label} HAProxy readiness drift",
+    )
+    return value
+
+def validate_secret_materialization_success_fact_v4(
+    value: Any,
+    p: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    references = p["runtime"]["secretReferences"]
+    require(
+        isinstance(value, dict)
+        and set(value) == {"status", "secrets"}
+        and value.get("status") == "exact-keysets-present-without-reading-values"
+        and isinstance(value.get("secrets"), dict)
+        and set(value["secrets"]) == set(references),
+        f"trusted Secret receipt drift: {label}",
+    )
+    seen_uids: set[str] = set()
+    for secret_label, reference in references.items():
+        record = value["secrets"][secret_label]
+        uid = record.get("uid") if isinstance(record, dict) else None
+        resource_version = record.get("resourceVersion") if isinstance(record, dict) else None
+        require(
+            isinstance(record, dict)
+            and set(record) == {
+                "name", "namespace", "uid", "resourceVersion", "keys", "valuesRead",
+            }
+            and record.get("name") == reference["name"]
+            and record.get("namespace") == reference["namespace"]
+            and record.get("keys") == sorted(reference["keys"])
+            and isinstance(uid, str) and uid and uid not in seen_uids
+            and recovery_ascii_decimal_v4(resource_version)
+            and record.get("valuesRead") is False,
+            f"trusted Secret receipt drift: {label}/{secret_label}",
+        )
+        seen_uids.add(uid)
+    return value
+
+def validate_preservation_success_fact_v4(value: Any, p: dict[str, Any]) -> None:
+    require(isinstance(value, dict) and set(value) == set(p["preservation"]), "trusted preservation receipt incomplete")
+    for label, descriptor in p["preservation"].items():
+        proof = value[label]
+        before = proof.get("beforeCanonicalSha256") if isinstance(proof, dict) else None
+        after = proof.get("afterCanonicalSha256") if isinstance(proof, dict) else None
+        require(
+            isinstance(proof, dict)
+            and set(proof) == {
+                "target", "beforeCanonicalSha256", "afterCanonicalSha256",
+                "byteIdenticalCanonicalJson",
+            }
+            and proof.get("target") == descriptor["target"]
+            and isinstance(before, str) and POLICY.SHA256.fullmatch(before) is not None
+            and before == after
+            and proof.get("byteIdenticalCanonicalJson") is True,
+            f"trusted preservation receipt drift: {label}",
+        )
+
 def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str) -> None:
     _policy_call(POLICY.validate_trusted_live_facts, facts)
     require(facts["protectedRevision"] == rev and facts["policySha256"] == POLICY.activation_policy_sha256(p), "trusted facts Git/policy binding drift")
@@ -5536,30 +6004,101 @@ def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str
     require(len(facts["objectCreateResults"]) == 6 and len(facts["semanticObjects"]) == 6, "trusted object receipt set incomplete")
     require(facts["operationReservation"]["absencePreflight"]["status"] == "all-six-exact-target-names-absent" and len(facts["operationReservation"]["absencePreflight"]["targets"]) == 6, "trusted operation absence reservation incomplete")
     require(all(item["operationNonce"] == facts["operationReservation"]["operationNonce"] and item["temporaryNonceRemoved"] is True for item in facts["objectCreateResults"]), "trusted operation nonce lifecycle incomplete")
-    flux = facts["fluxTransaction"]
-    require(
-        set(flux)
-        == {
-            "bootstrapReceiptSha256",
-            "bootstrapObjectIdentities",
-            "sourceBeforeCas",
-            "casUnsuspended",
-            "ready",
-            "sourceAfterReady",
+    validate_success_flux_transaction_v4(facts["fluxTransaction"], p, rev)
+    resources = _policy_call(POLICY.expected_gateway_resources, p)
+    desired_by_logical = {
+        "gateway.networkPolicy": resources["networkPolicy"],
+        "workbenchIngress.networkPolicy": _policy_call(
+            POLICY.expected_workbench_ingress_network_policy,
+            include_web_presentation=True,
+        ),
+        "gateway.serviceAccount": resources["serviceAccount"],
+        "gateway.service": resources["service"],
+        "gateway.deployment": resources["deployment"],
+        "gateway.ingress": resources["ingress"],
+    }
+    require(set(facts["semanticObjects"]) == set(desired_by_logical), "trusted semantic object inventory drift")
+    create_by_target: dict[str, dict[str, Any]] = {}
+    for item in facts["objectCreateResults"]:
+        target = item.get("target")
+        require(isinstance(target, dict), "trusted object create target absent")
+        key = canonical(target)
+        require(key not in create_by_target, "trusted object create target duplicated")
+        create_by_target[key] = item
+    for logical_name, desired in desired_by_logical.items():
+        target = {
+            "apiVersion": desired["apiVersion"],
+            "kind": desired["kind"],
+            "name": desired["metadata"]["name"],
+            "namespace": desired["metadata"]["namespace"],
         }
-        and isinstance(flux["bootstrapReceiptSha256"], str)
-        and bool(POLICY.SHA256.fullmatch(flux["bootstrapReceiptSha256"]))
-        and isinstance(flux["bootstrapObjectIdentities"], list)
-        and [item.get("logicalName") for item in flux["bootstrapObjectIdentities"]]
-        == list(POLICY.DORMANT_BOOTSTRAP_OBJECT_ORDER)
-        and set(flux["ready"]) == {"gateway", "workbenchIngress"},
-        "trusted dual Flux/bootstrap receipt incomplete",
+        created = create_by_target.get(canonical(target))
+        semantic = facts["semanticObjects"][logical_name]
+        require(
+            isinstance(created, dict)
+            and set(semantic) == {
+                "uid", "resourceVersion", "semanticSha256",
+                "fluxTrackingState", "fluxTrackingLabels",
+            }
+            and semantic.get("uid") == created.get("uid")
+            and isinstance(semantic.get("resourceVersion"), str)
+            and semantic["resourceVersion"].isdigit()
+            and semantic.get("semanticSha256") == POLICY.semantic_sha256(desired)
+            and semantic.get("fluxTrackingState") == "complete"
+            and semantic.get("fluxTrackingLabels") == expected_flux_tracking_labels_v4(logical_name),
+            f"trusted final Flux ownership/semantics drift: {logical_name}",
+        )
+    post_flux = facts["postFluxApplication"]
+    require(
+        isinstance(post_flux, dict)
+        and set(post_flux) == {
+            "preFluxDeploymentUid", "sameDeploymentUid", "deployment",
+            "haproxy", "routeMatrix",
+        },
+        "trusted post-Flux application receipt field drift",
     )
-    source_before, source_after = facts["fluxTransaction"]["sourceBeforeCas"], facts["fluxTransaction"]["sourceAfterReady"]
-    require(source_before["uid"] == source_after["uid"] and source_before["artifactRevision"] == source_after["artifactRevision"] == f"main@sha1:{rev}", "trusted Flux source revision/UID receipt drift")
-    require(set(facts["preservation"]) == {"webIngress", "existingWorkbenchNetworkPolicy"} and all(value["byteIdenticalCanonicalJson"] for value in facts["preservation"].values()), "trusted preservation receipt incomplete")
+    deployment_fact = post_flux["deployment"]
+    deployment_target = {
+        "apiVersion": "apps/v1", "kind": "Deployment",
+        "name": NAME, "namespace": NAMESPACE,
+    }
+    deployment_create = create_by_target.get(canonical(deployment_target))
+    require(
+        isinstance(deployment_fact, dict)
+        and set(deployment_fact) == {
+            "uid", "resourceVersion", "generation", "observedGeneration", "availableReplicas",
+        }
+        and isinstance(deployment_create, dict)
+        and deployment_fact.get("uid") == post_flux.get("preFluxDeploymentUid") == deployment_create.get("uid")
+        and post_flux.get("sameDeploymentUid") is True
+        and isinstance(deployment_fact.get("resourceVersion"), str)
+        and deployment_fact["resourceVersion"].isdigit()
+        and isinstance(deployment_fact.get("generation"), int)
+        and deployment_fact["generation"] > 0
+        and deployment_fact.get("observedGeneration") == deployment_fact["generation"]
+        and deployment_fact.get("availableReplicas") == p["runtime"]["replicas"],
+        "trusted post-Flux Deployment continuity/readiness drift",
+    )
+    haproxy_before = validate_haproxy_success_fact_v4(facts["haproxy"], p, "pre-Flux")
+    haproxy_after = validate_haproxy_success_fact_v4(post_flux["haproxy"], p, "post-Flux")
+    require(
+        haproxy_before["uid"] == haproxy_after["uid"]
+        and haproxy_before["generation"] == haproxy_after["generation"]
+        and int(haproxy_after["resourceVersion"]) >= int(haproxy_before["resourceVersion"]),
+        "trusted pre/post HAProxy readiness continuity drift",
+    )
+    require(
+        facts["routeMatrix"] == post_flux["routeMatrix"] == p["httpBoundary"]["expectations"],
+        "trusted post-Flux route matrix drift",
+    )
+    validate_preservation_success_fact_v4(facts["preservation"], p)
     secrets_receipt = facts["secretMaterialization"]
-    require(set(secrets_receipt) == {"beforeCreate", "beforeIngress", "afterFlux"} and secrets_receipt["beforeCreate"] == secrets_receipt["beforeIngress"] == secrets_receipt["afterFlux"], "trusted Secret recheck receipt incomplete")
+    require(isinstance(secrets_receipt, dict) and set(secrets_receipt) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted Secret recheck receipt incomplete")
+    secret_proofs = [
+        validate_secret_materialization_success_fact_v4(secrets_receipt[name], p, name)
+        for name in ("beforeCreate", "beforeIngress", "afterFlux")
+    ]
+    require(secret_proofs[0] == secret_proofs[1] == secret_proofs[2], "trusted Secret recheck receipt incomplete")
     require(set(facts["networkPolicyConflictScan"]) == {"beforeCreate", "beforeIngress", "afterFlux"}, "trusted policy-union recheck receipt incomplete")
     cluster_bindings = facts["clusterBinding"]
     expected_cluster = p["clusterIdentity"]
@@ -5711,13 +6250,31 @@ def activate(
         cluster_before_flux = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_flux, "before Flux unsuspend")
         changed = unsuspend_both_v4(r, snapshot_path, p, bootstrap); ready = wait_both_ready_v4(r, snapshot_path, p, bootstrap, rev)
         source_after_ready = shared_source_revision_v4(r, snapshot_path, rev)
+        post_flux_deployment, post_flux_haproxy = health_v4(r, snapshot_path, p)
+        pre_flux_deployment = deployment_health_fact_v4(deployment, p)
+        post_flux_deployment_fact = deployment_health_fact_v4(post_flux_deployment, p)
+        require(
+            post_flux_deployment_fact["uid"] == pre_flux_deployment["uid"],
+            "Deployment UID changed across Flux reconciliation",
+        )
+        post_flux_route_matrix = route_matrix_v4(r, p)
+        post_flux_application = {
+            "preFluxDeploymentUid": pre_flux_deployment["uid"],
+            "sameDeploymentUid": True,
+            "deployment": post_flux_deployment_fact,
+            "haproxy": post_flux_haproxy,
+            "routeMatrix": post_flux_route_matrix,
+        }
         secret_after_flux = secret_materialization_v4(r, snapshot_path, p); require_same_secret_materialization_v4(secret_before, secret_after_flux, "after Flux")
-        policy_after_flux = policy_union_v4(r, snapshot_path, owned)
+        policy_after_flux = policy_union_v4(
+            r, snapshot_path, owned, flux_tracking_state="complete",
+        )
         final_semantics = semantic_postconditions_v4(r, snapshot_path, created)
         preservation = verify_preservation_v4(r, snapshot_path, preserved)
         final_cluster = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], final_cluster, "before success")
+        final_flux = final_flux_success_proof_v4(r, snapshot_path, p, bootstrap, rev)
         valid_until = started + dt.timedelta(seconds=300)
-        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeIngress": cluster_before_ingress, "beforeFluxUnsuspend": cluster_before_flux, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": {"uid": source_before_cas["metadata"]["uid"], "resourceVersion": source_before_cas["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}, "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": {"uid": source_after_ready["metadata"]["uid"], "resourceVersion": source_after_ready["metadata"]["resourceVersion"], "artifactRevision": f"main@sha1:{rev}"}}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
+        facts = {"schemaVersion": POLICY.TRUSTED_LIVE_FACTS_SCHEMA, "policySha256": POLICY.activation_policy_sha256(p), "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"), "maxAgeSeconds": 300, "clusterBinding": {"initial": partial["clusterBinding"], "beforeMutation": cluster_before_mutation, "beforeIngress": cluster_before_ingress, "beforeFluxUnsuspend": cluster_before_flux, "beforeSuccess": final_cluster}, "operationReservation": {"operationNonce": operation_nonce, "annotation": POLICY.OPERATION_NONCE_ANNOTATION, "absencePreflight": absence, "temporaryAnnotationsRemovedBeforeFlux": True}, "protectedRevision": rev, "publication": partial["publication"], "database": partial["database"], "endpoints": partial["endpoints"], "secretMaterialization": {"beforeCreate": secret_before, "beforeIngress": secret_before_ingress, "afterFlux": secret_after_flux}, "networkPolicyConflictScan": {"beforeCreate": policy_before, "beforeIngress": policy_before_ingress, "afterFlux": policy_after_flux}, "objectCreateResults": [item.receipt for item in created], "semanticObjects": final_semantics, "haproxy": haproxy, "routeMatrix": partial["routeMatrix"], "postFluxApplication": post_flux_application, "fluxTransaction": {"bootstrapReceiptSha256": dormant_ownership["receiptSha256"], "bootstrapObjectIdentities": copy.deepcopy(dormant_ownership["objects"]), "sourceBeforeCas": source_success_projection_v4(source_before_cas, rev), "casUnsuspended": {owner: value["metadata"]["resourceVersion"] for owner, value in changed.items()}, "ready": ready, "sourceAfterReady": source_success_projection_v4(source_after_ready, rev), "finalReady": final_flux["ready"], "sourceBeforeSuccess": final_flux["source"]}, "preservation": preservation, "rollback": {"status": "not-required", "finalizersRemovedByRunner": False}}
         validate_success_facts_v4(facts, p, rev)
         require(dt.datetime.now(dt.timezone.utc) <= valid_until, "trusted live facts expired")
         success = {"schemaVersion": RECEIPT_SCHEMA, "status": "activated", "protectedRevision": rev, "activationPolicySha256": POLICY.activation_policy_sha256(p), "protectedRunnerFileSha256": runner_hashes, "trustedLiveFacts": facts, "civicAuthorityEffects": False}

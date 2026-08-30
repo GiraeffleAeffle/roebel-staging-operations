@@ -1524,7 +1524,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_twelve_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_seventeen_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1560,6 +1560,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1618,8 +1623,28 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1669,6 +1694,26 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1712,6 +1757,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1759,6 +1809,11 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("tenth parent drift")],
             [None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("eleventh parent drift")],
             [None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("twelfth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("thirteenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("fourteenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("fifteenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("sixteenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("seventeenth parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1771,6 +1826,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         ordinals = (
             "first", "second", "third", "fourth", "fifth", "sixth",
             "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth",
+            "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth",
         )
         hops = [
             getattr(MODULE, f"TRACER_ACTIVATION_COMPATIBILITY_{ordinal.upper()}_HOP_FILES")
@@ -1872,6 +1928,26 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_SUCCESSOR_REVISION,
             "890e001c76a94755d8f25ebfcf83593da24a082e",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TWELFTH_SUCCESSOR_REVISION,
+            "92dbe194d1ff3ba45844409d6f478b9012c5182c",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_SUCCESSOR_REVISION,
+            "4bea54c7823a7da3c60d5c57eb3ad8b1c8b01929",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION,
+            "136f0ac1ca31c9beda8f7208ed01a12201460bd7",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION,
+            "96795cc20a28e93a9ed00208bb2311efcdb8a1ae",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION,
+            "4de9d00696a7c43694bf66edbf79d1fb1fd080de",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1932,6 +2008,37 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 "scripts/staging_participant_flux_bootstrap.py",
                 "scripts/test_run_staging_participant_gateway_live.py",
                 "scripts/test_staging_participant_flux_bootstrap.py",
+            }),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRTEENTH_HOP_FILES,
+            frozenset({
+                "scripts/bootstrap-staging-participant-flux.py",
+                "scripts/run-staging-participant-gateway-live.py",
+                "scripts/test_run_staging_participant_gateway_live.py",
+                "scripts/test_staging_participant_flux_bootstrap.py",
+            }),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_HOP_FILES,
+            frozenset({"scripts/test_run_staging_participant_gateway_live.py"}),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_HOP_FILES,
+            frozenset({"scripts/test_run_staging_participant_gateway_live.py"}),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_HOP_FILES,
+            frozenset({
+                "scripts/bootstrap-staging-participant-flux.py",
+                "scripts/test_staging_participant_flux_bootstrap.py",
+            }),
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_HOP_FILES,
+            participant_pair | wrapper_pair | frozenset({
+                "scripts/staging_participant_gateway_policy.py",
+                "scripts/test_staging_participant_gateway_policy.py",
             }),
         )
 

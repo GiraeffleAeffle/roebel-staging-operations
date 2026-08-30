@@ -1054,12 +1054,10 @@ def _flux_objects(owner: str, *, suspended: bool) -> dict[str, dict[str, Any]]:
             {"apiGroups": ["apps"], "resourceNames": [GATEWAY_NAME], "resources": ["deployments"], "verbs": ["get", "patch", "update"]},
             {"apiGroups": ["networking.k8s.io"], "resourceNames": [GATEWAY_NAME], "resources": ["networkpolicies", "ingresses"], "verbs": ["get", "patch", "update"]},
         ]
-        health_checks = [{"apiVersion": "apps/v1", "kind": "Deployment", "name": GATEWAY_NAME, "namespace": GATEWAY_NAMESPACE}]
     else:
         rules = [
             {"apiGroups": ["networking.k8s.io"], "resourceNames": [WORKBENCH_INGRESS_POLICY_NAME], "resources": ["networkpolicies"], "verbs": ["get", "patch", "update"]},
         ]
-        health_checks = []
     service_account = {
         "apiVersion": "v1",
         "kind": "ServiceAccount",
@@ -1087,7 +1085,6 @@ def _flux_objects(owner: str, *, suspended: bool) -> dict[str, dict[str, Any]]:
             "deletionPolicy": "Orphan",
             "dependsOn": [],
             "force": False,
-            "healthChecks": health_checks,
             "interval": "5m",
             "path": item["path"],
             "prune": False,
@@ -1097,7 +1094,7 @@ def _flux_objects(owner: str, *, suspended: bool) -> dict[str, dict[str, Any]]:
             "suspend": suspended,
             "targetNamespace": target_namespace,
             "timeout": "2m",
-            "wait": True,
+            "wait": False,
         },
     }
     return {
@@ -1496,6 +1493,7 @@ def trusted_live_facts_contract(
             "semanticObjects",
             "haproxy",
             "routeMatrix",
+            "postFluxApplication",
             "fluxTransaction",
             "preservation",
             "rollback",
