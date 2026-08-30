@@ -1206,7 +1206,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_six_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_seven_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1236,6 +1236,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1270,8 +1271,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1297,6 +1302,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1334,6 +1343,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1375,6 +1385,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, None, None, MODULE.LiveTransportError("fourth parent drift")],
             [None, None, None, None, MODULE.LiveTransportError("fifth parent drift")],
             [None, None, None, None, None, MODULE.LiveTransportError("sixth parent drift")],
+            [None, None, None, None, None, None, MODULE.LiveTransportError("seventh parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1390,19 +1401,22 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         fourth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES
         fifth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES
         sixth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES
+        seventh = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_HOP_FILES
         cases = (
-            ("first-widened", [first | {"unrelated"}, second, third, fourth, fifth, sixth], "first-hop"),
-            ("first-omitted", [first - {next(iter(first))}, second, third, fourth, fifth, sixth], "first-hop"),
-            ("second-widened", [first, second | {"unrelated"}, third, fourth, fifth, sixth], "second-hop"),
-            ("second-omitted", [first, second - {next(iter(second))}, third, fourth, fifth, sixth], "second-hop"),
-            ("third-widened", [first, second, third | {"unrelated"}, fourth, fifth, sixth], "third-hop"),
-            ("third-omitted", [first, second, third - {next(iter(third))}, fourth, fifth, sixth], "third-hop"),
-            ("fourth-widened", [first, second, third, fourth | {"unrelated"}, fifth, sixth], "fourth-hop"),
-            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}, fifth, sixth], "fourth-hop"),
-            ("fifth-widened", [first, second, third, fourth, fifth | {"unrelated"}, sixth], "fifth-hop"),
-            ("fifth-omitted", [first, second, third, fourth, fifth - {next(iter(fifth))}, sixth], "fifth-hop"),
-            ("sixth-widened", [first, second, third, fourth, fifth, sixth | {"unrelated"}], "sixth-hop"),
-            ("sixth-omitted", [first, second, third, fourth, fifth, sixth - {next(iter(sixth))}], "sixth-hop"),
+            ("first-widened", [first | {"unrelated"}, second, third, fourth, fifth, sixth, seventh], "first-hop"),
+            ("first-omitted", [first - {next(iter(first))}, second, third, fourth, fifth, sixth, seventh], "first-hop"),
+            ("second-widened", [first, second | {"unrelated"}, third, fourth, fifth, sixth, seventh], "second-hop"),
+            ("second-omitted", [first, second - {next(iter(second))}, third, fourth, fifth, sixth, seventh], "second-hop"),
+            ("third-widened", [first, second, third | {"unrelated"}, fourth, fifth, sixth, seventh], "third-hop"),
+            ("third-omitted", [first, second, third - {next(iter(third))}, fourth, fifth, sixth, seventh], "third-hop"),
+            ("fourth-widened", [first, second, third, fourth | {"unrelated"}, fifth, sixth, seventh], "fourth-hop"),
+            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}, fifth, sixth, seventh], "fourth-hop"),
+            ("fifth-widened", [first, second, third, fourth, fifth | {"unrelated"}, sixth, seventh], "fifth-hop"),
+            ("fifth-omitted", [first, second, third, fourth, fifth - {next(iter(fifth))}, sixth, seventh], "fifth-hop"),
+            ("sixth-widened", [first, second, third, fourth, fifth, sixth | {"unrelated"}, seventh], "sixth-hop"),
+            ("sixth-omitted", [first, second, third, fourth, fifth, sixth - {next(iter(sixth))}, seventh], "sixth-hop"),
+            ("seventh-widened", [first, second, third, fourth, fifth, sixth, seventh | {"unrelated"}], "seventh-hop"),
+            ("seventh-omitted", [first, second, third, fourth, fifth, sixth, seventh - {next(iter(seventh))}], "seventh-hop"),
         )
         for label, changed_effect, message in cases:
             with self.subTest(label=label), patch.object(
@@ -1470,6 +1484,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_SUCCESSOR_REVISION,
             "7aa2db7f174742555ec0374725d2c80ee0350e8a",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION,
+            "720e058a61c185c8c64e2679e14d5dc8eea96ba0",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1488,6 +1506,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES, wrapper_pair)
         self.assertEqual(
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES,
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_HOP_FILES,
             participant_pair | wrapper_pair,
         )
 
