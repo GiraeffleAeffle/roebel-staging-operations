@@ -1537,6 +1537,16 @@ def normalize_kubernetes_object(value: Any) -> dict[str, Any]:
         for port in spec.get("ports", []):
             if isinstance(port, dict):
                 port.pop("nodePort", None)
+    if isinstance(spec, dict) and kind == "NetworkPolicy":
+        # The API server omits an empty rule slice when serializing it back.
+        # With the corresponding policyType still present, omission and an
+        # explicit empty list both mean deny all for that direction.
+        policy_types = spec.get("policyTypes")
+        if isinstance(policy_types, list):
+            if "Ingress" in policy_types and "ingress" not in spec:
+                spec["ingress"] = []
+            if "Egress" in policy_types and "egress" not in spec:
+                spec["egress"] = []
     if isinstance(spec, dict) and kind == "Deployment":
         if spec.get("paused") is False:
             spec.pop("paused")

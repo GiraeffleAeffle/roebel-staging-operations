@@ -48,6 +48,13 @@ NONCE_ANNOTATION = "stadtstack.io/tracer-data-plane-activation-nonce"
 RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
 JOURNAL_SCHEMA = "roebel_tracer_data_plane_activation_journal_v1"
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+RECOVERY_COMPATIBLE_ORIGIN_REVISION = "f831f3c6721c1b919c30d443cca8397c2f8363b7"
+RECOVERY_COMPATIBLE_SUCCESSOR_FILES = {
+    "scripts/run-tracer-data-plane-live.py",
+    "scripts/staging_participant_gateway_policy.py",
+    "scripts/test_run_tracer_data_plane_live.py",
+    "scripts/test_staging_participant_gateway_policy.py",
+}
 
 
 class ActivationError(RuntimeError):
@@ -232,6 +239,116 @@ def bind_checkout(expected_revision: str, tracer: Any) -> dict[str, str]:
         require(blob.returncode == 0 and local.read_bytes() == blob.stdout, f"protected file drift: {relative}")
         result[relative] = tracer.bytes_sha256(blob.stdout)
     return dict(sorted(result.items()))
+
+
+def protected_hashes_at_revision(revision: str, tracer: Any) -> dict[str, str]:
+    """Bind the protected runner closure at one exact historical revision."""
+    require(REVISION.fullmatch(revision) is not None, "historical protected revision invalid")
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "HOME": "/dev/null",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    result: dict[str, str] = {}
+    for relative in protected_paths(tracer):
+        blob = subprocess.run(
+            ["/usr/bin/git", "--no-replace-objects", "-C", str(ROOT), "show", f"{revision}:{relative}"],
+            capture_output=True,
+            check=False,
+            env=environment,
+            timeout=10,
+        )
+        require(blob.returncode == 0, f"historical protected file unavailable: {relative}")
+        result[relative] = tracer.bytes_sha256(blob.stdout)
+    return dict(sorted(result.items()))
+
+
+def direct_successor_changed_files(origin: str, successor: str) -> set[str]:
+    """Return the exact file delta only when successor directly follows origin."""
+    environment = {
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "HOME": "/dev/null",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+    }
+    parent = subprocess.run(
+        ["/usr/bin/git", "--no-replace-objects", "-C", str(ROOT), "rev-parse", f"{successor}^"],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=environment,
+        timeout=10,
+    )
+    require(parent.returncode == 0 and parent.stdout.strip() == origin, "recovery successor parent drift")
+    changed = subprocess.run(
+        [
+            "/usr/bin/git", "--no-replace-objects", "-C", str(ROOT), "diff",
+            "--no-ext-diff", "--no-renames", "--name-only", "-z", origin, successor, "--",
+        ],
+        capture_output=True,
+        check=False,
+        env=environment,
+        timeout=10,
+    )
+    require(changed.returncode == 0, "recovery successor file-set unavailable")
+    paths = [item.decode("utf-8") for item in changed.stdout.split(b"\0") if item]
+    require(len(paths) == len(set(paths)), "recovery successor file-set duplicated")
+    return set(paths)
+
+
+def bind_recovery_revision(
+    journal: dict[str, Any],
+    expected_revision: str,
+    current_hashes: dict[str, str],
+    tracer: Any,
+) -> dict[str, Any]:
+    """Admit same-revision recovery or the one exact live-found default fix."""
+    origin = journal.get("protectedRevision")
+    origin_hashes = journal.get("protectedFileSha256")
+    if origin == expected_revision:
+        require(origin_hashes == current_hashes, "tracer recovery protected file binding drift")
+        return {
+            "mode": "same-protected-revision",
+            "originProtectedRevision": origin,
+            "recoveryProtectedRevision": expected_revision,
+        }
+    require(
+        origin == RECOVERY_COMPATIBLE_ORIGIN_REVISION,
+        "tracer recovery origin revision is not the exact approved predecessor",
+    )
+    historical_hashes = protected_hashes_at_revision(origin, tracer)
+    require(origin_hashes == historical_hashes, "tracer recovery origin protected file binding drift")
+    changed_files = direct_successor_changed_files(origin, expected_revision)
+    require(
+        changed_files == RECOVERY_COMPATIBLE_SUCCESSOR_FILES,
+        "tracer recovery compatible successor file set drift",
+    )
+    require(set(historical_hashes) == set(current_hashes), "tracer recovery protected path closure drift")
+    protected_changes = {
+        relative
+        for relative in current_hashes
+        if current_hashes[relative] != historical_hashes[relative]
+    }
+    require(
+        protected_changes == {SELF_PATH, PARTICIPANT_POLICY_PATH},
+        "tracer recovery compatible protected path change drift",
+    )
+    return {
+        "mode": "exact-direct-default-normalizer-successor",
+        "originProtectedRevision": origin,
+        "recoveryProtectedRevision": expected_revision,
+        "changedFiles": sorted(changed_files),
+        "changedProtectedPaths": sorted(protected_changes),
+    }
 
 
 def read_private_json(path: Path, label: str) -> dict[str, Any]:
@@ -750,12 +867,11 @@ def recover_from_journal(
     require(
         journal.get("schemaVersion") == JOURNAL_SCHEMA
         and journal.get("status") in {"in-progress", "committed", "rolled-back"}
-        and journal.get("protectedRevision") == expected_revision
-        and journal.get("protectedFileSha256") == hashes
         and journal.get("secretValuesIncluded") is False
         and journal.get("civicAuthorityEffects") is False,
         "tracer activation recovery journal boundary drift",
     )
+    recovery_binding = bind_recovery_revision(journal, expected_revision, hashes, tracer)
     nonce = journal.get("operationNonce")
     require(isinstance(nonce, str) and re.fullmatch(r"[0-9a-f]{64}", nonce) is not None, "recovery journal nonce invalid")
     application = tracer.expected_application_objects(ROOT)
@@ -795,6 +911,7 @@ def recover_from_journal(
         cluster = core.cluster_binding_v4(runner, snapshot, descriptor)
         recovery_preflight(core, runner, str(snapshot.path), desired, nonce, records)
         guard.defer()
+        journal["recoveryBinding"] = recovery_binding
         journal["objectRecords"] = copy.deepcopy(records)
         journal["phase"] = "explicit-recovery-entry"
         write_journal(journal_path, journal)
@@ -822,6 +939,7 @@ def recover_from_journal(
             "createOrder": create_order,
             "objectRecords": records,
             "rollbackDeleted": deleted,
+            "recoveryBinding": recovery_binding,
             "secretMaterializationRetainedForRetry": True,
             "secretValuesRead": False,
             "civicAuthorityEffects": False,
