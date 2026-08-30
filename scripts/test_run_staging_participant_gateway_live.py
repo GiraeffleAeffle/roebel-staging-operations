@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy, importlib.util, inspect, json, os, socket, stat, sys, tempfile, threading, time, unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -1050,6 +1051,161 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         without_mode = [value for value in common if value != "--run29-dormant-handover-teardown"]
         with self.assertRaisesRegex(MODULE.LiveTransportError, "require its explicit mode"):
             MODULE.parse_args(without_mode)
+
+    def test_run29_handover_teardown_main_skips_secret_bundle_and_reaches_teardown(self):
+        revision = "a" * 40
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as raw_root:
+            root = Path(raw_root)
+            os.chmod(root, 0o700)
+            identity = root / "age-identity.txt"
+            identity.write_text("identity", encoding="utf-8")
+            os.chmod(identity, 0o600)
+            bundle = root / "bootstrap-bundle"
+            bundle.mkdir(mode=0o700)
+            for name in ("wireguard-daily.conf.age", "talosconfig.yaml.age"):
+                source = bundle / name
+                source.write_bytes(b"encrypted")
+                os.chmod(source, 0o600)
+
+            receipt_paths = []
+            for name in ("archived.json", "handover.json", "recovery.json"):
+                source = root / name
+                source.write_text("{}\n", encoding="utf-8")
+                os.chmod(source, 0o600)
+                receipt_paths.append(source)
+            receipt_directory = root / "attempt"
+            argv = [
+                "--run29-dormant-handover-teardown", "--live",
+                "--expected-protected-revision", revision,
+                "--age-bin", "/bin/true", "--age-identity", str(identity),
+                "--bootstrap-bundle", str(bundle), "--wireproxy-bin", "/bin/true",
+                "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+                "--receipt-directory", str(receipt_directory),
+                "--run29-archived-dormant-receipt", str(receipt_paths[0]),
+                "--run29-dormant-handover-receipt", str(receipt_paths[1]),
+                "--run29-participant-recovery-receipt", str(receipt_paths[2]),
+            ]
+
+            descriptor = 20
+
+            def blob(label: str = "bound"):
+                nonlocal descriptor
+                descriptor += 1
+                return Mock(
+                    fd=descriptor,
+                    size=1,
+                    sha256="sha256:" + f"{descriptor:064x}"[-64:],
+                    label=label,
+                    close=Mock(),
+                )
+
+            def bind_bytes(_value, _destination, label):
+                return blob(label)
+
+            def snapshot_receipt(_source, _destination, label):
+                return blob(label)
+
+            def executable_snapshot(_source, label, _destination):
+                binding = Mock(
+                    path=Path("/bin/true"), fd=descriptor + 100,
+                    environment=Mock(return_value={}), close=Mock(),
+                )
+                return Mock(
+                    sha256=MODULE.EXPECTED_BINARIES[label],
+                    to_binding=Mock(return_value=binding),
+                    close=Mock(),
+                )
+
+            cancellation = Mock(signals=[])
+            cancellation.run.return_value = MODULE.subprocess.CompletedProcess(
+                [], 0, stdout="", stderr="",
+            )
+            cancellation.cleanup_processes.return_value = {
+                "ownedProcessGroupsStopped": True,
+                "ownedProcessGroupCount": 0,
+            }
+            session = Mock(listener_verified=True)
+            session.start_proxy.return_value = (12001, 12002)
+            session.close.return_value = {
+                "apiGuard": {}, "talosGuard": {},
+                "wireproxyProcessGroupStopped": True,
+                "allGuardWorkersStopped": True,
+            }
+            source_projection = {
+                "schemaVersion": "roebel_staging_participant_flux_run29_handover_teardown_binding_v1",
+                "status": "run29-handover-teardown-ready",
+                "protectedRevision": revision,
+                "receiptSha256": "sha256:" + "1" * 64,
+                "sources": {}, "objects": [], "participantTargetCount": 6,
+                "secretAccess": "none", "civicAuthorityEffects": False,
+            }
+            teardown_projection = {
+                "status": "dormant-handover-torn-down",
+                "receiptSha256": "sha256:" + "2" * 64,
+                "civicAuthorityEffects": False,
+            }
+            teardown_bound = blob("run29 teardown receipt")
+            run29_teardown = Mock(return_value=(teardown_projection, 0, teardown_bound, None))
+
+            protected_blobs = {
+                path: b"protected" for path in {
+                    MODULE.ACTIVATION_RUNNER,
+                    MODULE.BOOTSTRAP_RUNNER,
+                    MODULE.SECRET_RUNNER,
+                    MODULE.HANDOVER_RUNNER,
+                    MODULE.TRACER_SECRET_RUNNER,
+                    MODULE.TRACER_DATA_PLANE_RUNNER,
+                }
+            }
+            protected_hashes = {
+                path: "sha256:" + "3" * 64 for path in protected_blobs
+            }
+
+            def decrypt(_cancellation, _age, _identity, _source, destination):
+                destination.write_bytes(b"decrypted")
+                os.chmod(destination, 0o600)
+
+            def create_kubeconfig(_session, _talosctl, _kubectl, _talosconfig, destination, *_rest):
+                destination.write_text("{}\n", encoding="utf-8")
+                os.chmod(destination, 0o600)
+
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(MODULE.sys, "flags", Mock(isolated=1, safe_path=True)))
+                stack.enter_context(patch.object(MODULE, "CancellationState", return_value=cancellation))
+                stack.enter_context(patch.object(MODULE, "bind_protected_checkout", return_value=(protected_hashes, protected_blobs)))
+                stack.enter_context(patch.object(MODULE, "compile_verified_spawn_module", return_value=Mock()))
+                stack.enter_context(patch.object(MODULE, "bind_bytes_to_fd", side_effect=bind_bytes))
+                snap_receipt = stack.enter_context(patch.object(MODULE, "snapshot_owned_receipt", side_effect=snapshot_receipt))
+                stack.enter_context(patch.object(MODULE, "verify_run29_handover_teardown_sources_with_protected_cli", return_value=source_projection))
+                stack.enter_context(patch.object(MODULE, "snapshot_binary", side_effect=executable_snapshot))
+                stack.enter_context(patch.object(MODULE, "decrypt", side_effect=decrypt))
+                stack.enter_context(patch.object(MODULE, "wireproxy_config", return_value=b"fixed target"))
+                stack.enter_context(patch.object(MODULE, "LiveSession", return_value=session))
+                stack.enter_context(patch.object(MODULE, "create_admin_kubeconfig", side_effect=create_kubeconfig))
+                stack.enter_context(patch.object(MODULE, "run_run29_handover_teardown", run29_teardown))
+                stack.enter_context(patch.object(MODULE.secrets, "token_hex", side_effect=("a" * 64, "b" * 64)))
+
+                self.assertEqual(MODULE.main(argv), 0)
+
+            run29_teardown.assert_called_once()
+            self.assertEqual(snap_receipt.call_count, 3)
+            self.assertEqual(
+                [call.args[2] for call in snap_receipt.call_args_list],
+                [
+                    "run29 archivedDormant receipt",
+                    "run29 dormantHandover receipt",
+                    "run29 participantRecovery receipt",
+                ],
+            )
+            wrapper = json.loads((receipt_directory / "transport-transaction.json").read_text(encoding="utf-8"))
+            self.assertEqual(wrapper["status"], "dormant-handover-torn-down")
+            self.assertIsNone(wrapper["failure"])
+            self.assertTrue(wrapper["run29HandoverTeardown"]["selected"])
+            self.assertEqual(wrapper["run29HandoverTeardown"]["secretAccess"], "none")
+            self.assertEqual(
+                wrapper["run29HandoverTeardown"]["teardown"]["status"],
+                "dormant-handover-torn-down",
+            )
 
     def test_run29_handover_teardown_source_verifier_is_closed_and_pretransport(self):
         sources = {

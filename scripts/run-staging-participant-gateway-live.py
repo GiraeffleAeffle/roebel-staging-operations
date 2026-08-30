@@ -4774,7 +4774,12 @@ def main(argv: list[str] | None = None) -> int:
                 revision=revision,
                 value_flag="secretValuesRead",
             )
-        if tracer_mode is not None:
+        if run29_handover_teardown_mode:
+            # The incident-only run29 capability binds its exact three
+            # receipts above and intentionally has no participant Secret
+            # bundle.  Keep it out of the ordinary source-selection chain.
+            pass
+        elif tracer_mode is not None:
             if (
                 args.tracer_secret_materialization_receipt is not None
                 and tracer_mode in {"activate", "teardown-secrets"}
