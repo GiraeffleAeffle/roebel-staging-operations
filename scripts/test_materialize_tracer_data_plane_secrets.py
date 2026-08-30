@@ -232,9 +232,11 @@ class MaterializerTests(unittest.TestCase):
 
             replacement = root / "replacement"
             replacement_reservation = MODULE.reserve_receipt(replacement)
+            foreign = root / "foreign"
+            foreign.write_bytes(b"")
+            foreign.chmod(0o600)
             replacement.unlink()
-            replacement.write_bytes(b"")
-            replacement.chmod(0o600)
+            os.replace(foreign, replacement)
             with self.assertRaisesRegex(MODULE.MaterializationError, "inode drift"):
                 MODULE.read_reserved_receipt(replacement, replacement_reservation)
 
