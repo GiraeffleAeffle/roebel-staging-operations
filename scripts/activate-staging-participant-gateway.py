@@ -17,7 +17,7 @@ if __name__ == "__main__" and not (_bootstrap_sys.flags.isolated and _bootstrap_
     print("activation blocked: invoke with python3 -I", file=_bootstrap_sys.stderr)
     raise SystemExit(2)
 
-import argparse, base64, copy, ctypes, datetime as dt, hashlib, http.client, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, threading, time, types, urllib.error, urllib.parse, urllib.request
+import argparse, base64, copy, ctypes, datetime as dt, errno, hashlib, http.client, json, os, re, secrets, selectors, signal, socket, ssl, stat, subprocess, sys, tempfile, threading, time, types, urllib.error, urllib.parse, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -3073,7 +3073,65 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _pod_port_forward_get_v4(
+_PORT_FORWARD_OUTPUT_TAIL_BYTES_V4 = 16384
+_PORT_FORWARD_ERROR_OUTPUT_CHARS_V4 = 2048
+
+
+def _sanitized_port_forward_output_tail_v4(output: bytes) -> str:
+    """Return only allowlisted kubectl diagnostics from a bounded byte tail."""
+    decoded = output[-_PORT_FORWARD_OUTPUT_TAIL_BYTES_V4:].decode("utf-8", "replace")
+    printable = "".join(character if character in "\n\t" or character.isprintable() else "?" for character in decoded)
+    sanitized = []
+    for line in printable.splitlines():
+        if re.fullmatch(r"Forwarding from 127\.0\.0\.1:\d+ -> \d+", line):
+            sanitized.append(line)
+        elif re.fullmatch(r"Handling connection for \d+", line):
+            sanitized.append(line)
+        elif line:
+            sanitized.append("<redacted kubectl output line>")
+    return "\n".join(sanitized)[-_PORT_FORWARD_ERROR_OUTPUT_CHARS_V4:]
+
+
+def _port_forward_transport_error_v4(
+    *,
+    phase: str,
+    path: str,
+    request_budget: int | float,
+    attempts: int,
+    process: subprocess.Popen[Any],
+    output: bytes,
+    error_type: str,
+) -> ActivationError:
+    exit_code = process.poll()
+    evidence = {
+        "phase": phase,
+        "path": path,
+        "requestBudgetSeconds": request_budget,
+        "attempts": attempts,
+        "errorType": error_type,
+        "processState": {"alive": exit_code is None, "exitCode": exit_code},
+        "kubectlOutputTail": _sanitized_port_forward_output_tail_v4(output),
+    }
+    return ActivationError("internal participant readiness transport failure: " + canonical(evidence))
+
+
+def _is_transport_timeout_v4(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        return isinstance(exc.reason, TimeoutError) or (
+            isinstance(exc.reason, OSError) and exc.reason.errno == errno.ETIMEDOUT
+        )
+    return isinstance(exc, OSError) and exc.errno == errno.ETIMEDOUT
+
+
+class _RetryablePortForwardTimeoutV4(Exception):
+    def __init__(self, error: ActivationError):
+        super().__init__()
+        self.error = error
+
+
+def _pod_port_forward_get_once_v4(
     kubeconfig: str,
     pod_name: str,
     remote_port: int,
@@ -3081,15 +3139,8 @@ def _pod_port_forward_get_v4(
     *,
     startup_timeout: int | float,
     request_timeout: int | float,
+    attempt: int,
 ) -> tuple[str, dict[str, Any]]:
-    """GET an internal Pod endpoint through an authenticated API stream.
-
-    Kubernetes Pod port-forward is deliberately used instead of Service proxy
-    traffic: the latter has CNI-dependent source identity and can be denied by
-    the participant NetworkPolicy.  The stream is bound only to loopback, does
-    not traverse public Ingress, does not follow redirects, and is always
-    terminated by this function.
-    """
     command = kb(kubeconfig) + [
         "-n", NAMESPACE, "port-forward", "--address=127.0.0.1",
         f"pod/{pod_name}", f":{remote_port}",
@@ -3103,35 +3154,86 @@ def _pod_port_forward_get_v4(
         stderr=subprocess.STDOUT,
         env=kubernetes_subprocess_environment_v4(),
     )
-    selector = selectors.DefaultSelector()
+    output_lock = threading.Lock()
+    output_tail = bytearray()
+    ready = threading.Event()
+    reader_done = threading.Event()
+    reader_stop = threading.Event()
+    forwarded: list[tuple[int, int]] = []
+    reader_error: list[str] = []
+
+    def output_snapshot() -> bytes:
+        with output_lock:
+            return bytes(output_tail)
+
+    def drain_output() -> None:
+        stream_selector = selectors.DefaultSelector()
+        try:
+            require(process.stdout is not None, "kubectl port-forward output pipe unavailable")
+            stream_selector.register(process.stdout, selectors.EVENT_READ)
+            while not reader_stop.is_set():
+                events = stream_selector.select(timeout=0.1)
+                if not events:
+                    if process.poll() is not None:
+                        break
+                    continue
+                chunk = os.read(process.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                with output_lock:
+                    output_tail.extend(chunk)
+                    del output_tail[:-_PORT_FORWARD_OUTPUT_TAIL_BYTES_V4]
+                    match = re.search(rb"Forwarding from 127\.0\.0\.1:(\d+) -> (\d+)", output_tail)
+                    if match and not forwarded:
+                        forwarded.append((int(match.group(1)), int(match.group(2))))
+                        ready.set()
+        except (OSError, ValueError) as exc:
+            reader_error.append(type(exc).__name__)
+        finally:
+            stream_selector.close()
+            reader_done.set()
+
+    reader = threading.Thread(target=drain_output, name="participant-port-forward-output", daemon=False)
+    reader.start()
     try:
-        require(process.stdout is not None, "kubectl port-forward output pipe unavailable")
-        selector.register(process.stdout, selectors.EVENT_READ)
-        deadline = time.monotonic() + startup_timeout; local_port: int | None = None; output = b""
-        while time.monotonic() < deadline:
-            if process.poll() is not None: raise ActivationError("kubectl port-forward terminated before readiness probe")
-            events = selector.select(timeout=min(0.25, max(0.0, deadline - time.monotonic())))
-            if not events: continue
-            chunk = os.read(process.stdout.fileno(), 4096)
-            if not chunk: continue
-            output = (output + chunk)[-16384:]
-            match = re.search(rb"Forwarding from 127\.0\.0\.1:(\d+) -> (\d+)", output)
-            if match:
-                local_port, forwarded_port = int(match.group(1)), int(match.group(2))
-                require(forwarded_port == remote_port, "kubectl port-forward remote port drift")
-                break
-        require(local_port is not None, "kubectl port-forward did not become ready")
+        deadline = time.monotonic() + startup_timeout
+        while not ready.wait(timeout=min(0.05, max(0.0, deadline - time.monotonic()))):
+            if process.poll() is not None or reader_done.is_set():
+                reader_done.wait(timeout=0.1)
+                raise _port_forward_transport_error_v4(
+                    phase="startup", path=path, request_budget=startup_timeout, attempts=attempt,
+                    process=process, output=output_snapshot(),
+                    error_type=reader_error[0] if reader_error else "ForwardProcessExited",
+                )
+            if time.monotonic() >= deadline:
+                raise _port_forward_transport_error_v4(
+                    phase="startup", path=path, request_budget=startup_timeout, attempts=attempt,
+                    process=process, output=output_snapshot(), error_type="TimeoutError",
+                )
+        local_port, forwarded_port = forwarded[0]
+        require(forwarded_port == remote_port, "kubectl port-forward remote port drift")
         url = f"http://127.0.0.1:{local_port}{path}"
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        phase = "open"
         request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
         try:
             with opener.open(request, timeout=request_timeout) as response:
                 require(response.status == 200 and response.geturl() == url, "internal participant readiness HTTP boundary drift")
                 content_type = response.headers.get_content_type()
                 require(content_type == "application/json", "internal participant readiness content type drift")
+                phase = "response-read"
                 raw = response.read(8193)
         except urllib.error.HTTPError as exc:
+            exc.close()
             raise ActivationError(f"internal participant readiness rejected: HTTP {exc.code}") from exc
+        except (TimeoutError, urllib.error.URLError, OSError) as exc:
+            error = _port_forward_transport_error_v4(
+                phase=phase, path=path, request_budget=request_timeout, attempts=attempt,
+                process=process, output=output_snapshot(), error_type=type(exc).__name__,
+            )
+            if _is_transport_timeout_v4(exc):
+                raise _RetryablePortForwardTimeoutV4(error) from exc
+            raise error from exc
         require(len(raw) <= 8192, "internal participant readiness response too large")
         try: body = raw.decode("utf-8")
         except UnicodeDecodeError as exc: raise ActivationError("internal participant readiness is not UTF-8") from exc
@@ -3146,9 +3248,128 @@ def _pod_port_forward_get_v4(
             "remotePort": remote_port,
         }
     finally:
-        selector.close()
-        _terminate_process_group(process)
-        if process.stdout is not None: process.stdout.close()
+        try:
+            _terminate_process_group(process)
+        finally:
+            reader_stop.set()
+            reader.join(timeout=1)
+            if process.stdout is not None:
+                process.stdout.close()
+        require(not reader.is_alive(), "kubectl port-forward output drain cleanup failed")
+
+
+def _pod_port_forward_get_v4(
+    kubeconfig: str,
+    pod_name: str,
+    remote_port: int,
+    path: str,
+    *,
+    startup_timeout: int | float,
+    request_timeout: int | float,
+    retry_timeout: bool = True,
+) -> tuple[str, dict[str, Any]]:
+    """GET an internal Pod endpoint through a fresh authenticated API stream.
+
+    Kubernetes Pod port-forward is deliberately used instead of Service proxy
+    traffic: the latter has CNI-dependent source identity and can be denied by
+    the participant NetworkPolicy.  A single retry is allowed only after a
+    classified request timeout and creates a new kubectl stream.  HTTP errors
+    and contract drift never retry.
+    """
+    attempts = (1, 2) if retry_timeout else (1,)
+    for attempt in attempts:
+        try:
+            return _pod_port_forward_get_once_v4(
+                kubeconfig, pod_name, remote_port, path,
+                startup_timeout=startup_timeout, request_timeout=request_timeout,
+                attempt=attempt,
+            )
+        except _RetryablePortForwardTimeoutV4 as exc:
+            if attempt == attempts[-1]:
+                raise exc.error from exc
+    raise ActivationError("internal participant readiness transport retry state invalid")
+
+
+def expected_participant_http_status_v4() -> dict[str, Any]:
+    return {
+        "available": True,
+        "active": False,
+        "walletAddress": None,
+        "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht",
+        "scope": None,
+        "authority": "none",
+    }
+
+
+def participant_http_status_preflight_v4(
+    kubeconfig: str,
+    pod_name: str,
+    timeout: int | float,
+    *,
+    retry_timeout: bool = True,
+) -> dict[str, Any]:
+    """Prove the gateway's DB-free HTTP route before probing DB readiness."""
+    path = POLICY.ROUTES[0]
+    require(path == POLICY.HTTP_PREFIX + "/status", "participant status route policy drift")
+    body, probe = _pod_port_forward_get_v4(
+        kubeconfig, pod_name, POLICY.GATEWAY_PORT, path,
+        startup_timeout=timeout, request_timeout=timeout, retry_timeout=retry_timeout,
+    )
+    require(
+        obj(body, "internal DB-free participant status") == expected_participant_http_status_v4(),
+        "internal DB-free participant status contract drift",
+    )
+    require(
+        probe == {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": pod_name,
+            "loopbackOnly": True,
+            "publicIngressUsed": False,
+            "serviceProxyUsed": False,
+            "redirectsAllowed": False,
+            "path": path,
+            "remotePort": POLICY.GATEWAY_PORT,
+        },
+        "internal DB-free participant status probe drift",
+    )
+    return probe
+
+
+def _readiness_failure_projection_v4(exc: ActivationError) -> dict[str, Any]:
+    message = str(exc)
+    http_match = re.fullmatch(r"internal participant readiness rejected: HTTP (\d{3})", message)
+    if http_match:
+        return {"kind": "http-rejected", "status": int(http_match.group(1))}
+    prefix = "internal participant readiness transport failure: "
+    if message.startswith(prefix):
+        try:
+            evidence = json.loads(message[len(prefix):])
+        except (json.JSONDecodeError, TypeError):
+            evidence = None
+        if isinstance(evidence, dict):
+            phase = evidence.get("phase")
+            attempts = evidence.get("attempts")
+            budget = evidence.get("requestBudgetSeconds")
+            process_state = evidence.get("processState")
+            if (
+                phase in {"startup", "open", "response-read"}
+                and type(attempts) is int and 0 <= attempts <= 2
+                and type(budget) in {int, float} and 0 < budget <= 600
+                and isinstance(process_state, dict)
+                and type(process_state.get("alive")) is bool
+                and (process_state.get("exitCode") is None or type(process_state.get("exitCode")) is int)
+            ):
+                return {
+                    "kind": "transport-failure",
+                    "phase": phase,
+                    "attempts": attempts,
+                    "requestBudgetSeconds": budget,
+                    "processState": {
+                        "alive": process_state["alive"],
+                        "exitCode": process_state["exitCode"],
+                    },
+                }
+    return {"kind": "contract-failure", "errorType": type(exc).__name__}
 
 
 def topic_tracer_readiness_projection_v4(p: dict[str, Any]) -> dict[str, str]:
@@ -3258,14 +3479,35 @@ def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: d
         checked(r, kb(kubeconfig) + ["auth", "can-i", "--quiet", verb, "pods", "-n", NAMESPACE], f"internal status RBAC {verb} pods")
     checked(r, kb(kubeconfig) + ["auth", "can-i", "--quiet", "create", "pods/portforward", "-n", NAMESPACE], "internal status RBAC create pods/portforward")
     selected = runtime["pods"][0]; timeout = p["httpBoundary"]["timeoutsSeconds"]["routeRequest"]
-    body, probe = _pod_port_forward_get_v4(
-        kubeconfig,
-        selected["name"],
-        POLICY.GATEWAY_PORT,
-        "/status",
-        startup_timeout=timeout,
-        request_timeout=timeout,
-    )
+    participant_http_status_preflight_v4(kubeconfig, selected["name"], timeout)
+    try:
+        body, probe = _pod_port_forward_get_v4(
+            kubeconfig,
+            selected["name"],
+            POLICY.GATEWAY_PORT,
+            "/status",
+            startup_timeout=timeout,
+            request_timeout=timeout,
+        )
+    except ActivationError as database_failure:
+        database_projection = _readiness_failure_projection_v4(database_failure)
+        try:
+            participant_http_status_preflight_v4(kubeconfig, selected["name"], timeout, retry_timeout=False)
+        except ActivationError as db_free_failure:
+            evidence = {
+                "classification": "db-backed-failed",
+                "dbFreeBefore": {"kind": "healthy"},
+                "dbBacked": database_projection,
+                "dbFreeAfter": _readiness_failure_projection_v4(db_free_failure),
+            }
+            raise ActivationError("internal participant readiness discriminator: " + canonical(evidence)) from database_failure
+        evidence = {
+            "classification": "db-backed-failed",
+            "dbFreeBefore": {"kind": "healthy"},
+            "dbBacked": database_projection,
+            "dbFreeAfter": {"kind": "healthy"},
+        }
+        raise ActivationError("internal participant readiness discriminator: " + canonical(evidence)) from database_failure
     current = live_obj(r, kubeconfig, "pod", selected["name"], NAMESPACE)
     pins = p["productPins"]
     current_metadata, current_spec, current_status = current.get("metadata", {}), current.get("spec", {}), current.get("status", {})
@@ -3340,7 +3582,7 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         require(time.monotonic() < total_deadline, "route matrix total timeout after request")
         return observed
 
-    status_body = {"available": True, "active": False, "walletAddress": None, "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht", "scope": None, "authority": "none"}
+    status_body = expected_participant_http_status_v4()
     observed = call("GET", status_path); _require_json_response_v4(observed, 200, status_body, "GET status"); _require_cors_v4(observed, origin); result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
     for path, allowed in [(status_path, "GET"), *[(path, "POST") for path in posts]]:
         observed = call("OPTIONS", path, requested_method=allowed)
