@@ -943,6 +943,35 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("secret_materialization = session.run_child(", continuation)
         self.assertNotIn("bootstrap = session.run_child(", continuation)
 
+    def test_handover_activation_forwards_only_the_exact_nested_prebound_closure(self):
+        source = inspect.getsource(MODULE.main)
+        activation_start = source.rindex(
+            'activation_receipt = receipt_dir / "participant-gateway-activation.json"'
+        )
+        activation_call = source.index("activation = session.run_child(", activation_start)
+        bindings = source[activation_start:activation_call]
+        handover_start = bindings.index("if handover_archive_receipt is not None:")
+        ordinary_start = bindings.index("            else:", handover_start)
+        handover_bindings = bindings[handover_start:ordinary_start]
+        ordinary_bindings = bindings[ordinary_start:]
+
+        self.assertEqual(handover_bindings.count("*handover_blob_args"), 1)
+        self.assertEqual(handover_bindings.count("*handover_blob_fds"), 1)
+        self.assertNotIn("participant_blob_args", handover_bindings)
+        self.assertNotIn("participant_blob_fds", handover_bindings)
+        self.assertNotIn("handover_blob_args", ordinary_bindings)
+        self.assertNotIn("handover_blob_fds", ordinary_bindings)
+
+        closure_start = source.index("for (blob_revision, blob_path), blob in sorted(handover_prebound.items()):")
+        closure_end = source.index("        if tracer_mode is not None:", closure_start)
+        closure = source[closure_start:closure_end]
+        self.assertIn("blob_path in HANDOVER_NESTED_PREBOUND_CURRENT_PATHS", closure)
+        self.assertIn("blob_path in HANDOVER_PREBOUND_ARCHIVE_PATHS", closure)
+        self.assertIn(
+            "len(HANDOVER_NESTED_PREBOUND_CURRENT_PATHS) + len(HANDOVER_PREBOUND_ARCHIVE_PATHS)",
+            closure,
+        )
+
     def test_participant_incident_recovery_mode_requires_only_pinned_failed_and_dormant_receipts(self):
         common = [
             "--participant-gateway-recovery", "--live", "--expected-protected-revision", "a" * 40,
