@@ -1694,27 +1694,86 @@ def rediscover_uncertain_create_v4(r: Runner, kubeconfig: str, logical_name: str
     return None
 
 def remove_operation_nonce_v4(r: Runner, kubeconfig: str, created: CreatedV4, operation_nonce: str) -> dict[str, Any]:
-    metadata = created.observed.get("metadata", {}); uid, rv = metadata.get("uid"), metadata.get("resourceVersion")
-    require(isinstance(uid, str) and uid and isinstance(rv, str) and rv.isdigit(), f"{created.logical_name} nonce-removal preconditions absent")
-    annotation_path = "/metadata/annotations/" + POLICY.OPERATION_NONCE_ANNOTATION.replace("~", "~0").replace("/", "~1")
-    patch = [
-        {"op": "test", "path": "/metadata/uid", "value": uid},
-        {"op": "test", "path": "/metadata/resourceVersion", "value": rv},
-        {"op": "test", "path": annotation_path, "value": operation_nonce},
-        {"op": "remove", "path": annotation_path},
-    ]
-    desired_metadata = created.desired["metadata"]
-    raw = checked(
-        r,
-        kb(kubeconfig) + ["-n", desired_metadata["namespace"], "patch", created.desired["kind"].lower(), desired_metadata["name"], "--type=json", "-p", canonical(patch), "-o", "json"],
-        f"{created.logical_name} remove operation nonce",
+    metadata = created.observed.get("metadata", {}); uid, created_rv = metadata.get("uid"), metadata.get("resourceVersion")
+    require(
+        isinstance(uid, str) and uid and isinstance(created_rv, str) and created_rv.isdigit(),
+        f"{created.logical_name} nonce-removal preconditions absent",
     )
-    after = obj(raw, f"{created.logical_name} nonce-removal response")
-    require(after.get("metadata", {}).get("uid") == uid, f"{created.logical_name} UID changed during nonce removal")
-    _policy_call(POLICY.require_semantically_equal, after, created.desired, f"{created.logical_name} post-nonce semantics")
-    created.observed = after; created.receipt["temporaryNonceRemoved"] = True
-    created.receipt["postNonceRemovalResourceVersion"] = after.get("metadata", {}).get("resourceVersion")
-    return after
+    annotation_path = "/metadata/annotations/" + POLICY.OPERATION_NONCE_ANNOTATION.replace("~", "~0").replace("/", "~1")
+    desired_metadata = created.desired["metadata"]
+    nonce_desired = _policy_call(POLICY.with_operation_nonce, created.desired, operation_nonce)
+    last_error = "nonce removal retry exhausted"
+    patch_attempted = False
+    for attempt in range(4):
+        current = live_obj(
+            r,
+            kubeconfig,
+            created.desired["kind"].lower(),
+            desired_metadata["name"],
+            desired_metadata["namespace"],
+        )
+        current_metadata = current.get("metadata", {})
+        require(current_metadata.get("uid") == uid, f"{created.logical_name} UID changed during nonce removal")
+        current_rv = current_metadata.get("resourceVersion")
+        require(isinstance(current_rv, str) and current_rv.isdigit(), f"{created.logical_name} nonce-removal resourceVersion absent")
+        annotations = current_metadata.get("annotations", {})
+        current_nonce = annotations.get(POLICY.OPERATION_NONCE_ANNOTATION) if isinstance(annotations, dict) else None
+        if current_nonce is None:
+            require(patch_attempted, f"{created.logical_name} operation nonce disappeared before nonce-removal CAS")
+            _policy_call(POLICY.require_semantically_equal, current, created.desired, f"{created.logical_name} completed nonce removal")
+            created.observed = current; created.receipt["temporaryNonceRemoved"] = True
+            created.receipt["postNonceRemovalResourceVersion"] = current_rv
+            return current
+        require(current_nonce == operation_nonce, f"{created.logical_name} operation nonce ownership mismatch")
+        _policy_call(POLICY.require_semantically_equal, current, nonce_desired, f"{created.logical_name} owned nonce removal")
+        patch = [
+            {"op": "test", "path": "/metadata/uid", "value": uid},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": current_rv},
+            {"op": "test", "path": annotation_path, "value": operation_nonce},
+            {"op": "remove", "path": annotation_path},
+        ]
+        patch_attempted = True
+        response = r.run(
+            kb(kubeconfig) + ["-n", desired_metadata["namespace"], "patch", created.desired["kind"].lower(), desired_metadata["name"], "--type=json", "-p", canonical(patch), "-o", "json"],
+        )
+        if response.code == 0:
+            try:
+                after = obj(response.out, f"{created.logical_name} nonce-removal response")
+            except ActivationError as exc:
+                last_error = str(exc)
+            else:
+                after_metadata = after.get("metadata", {})
+                require(after_metadata.get("uid") == uid, f"{created.logical_name} UID changed during nonce removal")
+                after_rv = after_metadata.get("resourceVersion")
+                require(isinstance(after_rv, str) and after_rv.isdigit(), f"{created.logical_name} post-nonce resourceVersion absent")
+                _policy_call(POLICY.require_semantically_equal, after, created.desired, f"{created.logical_name} post-nonce semantics")
+                created.observed = after; created.receipt["temporaryNonceRemoved"] = True
+                created.receipt["postNonceRemovalResourceVersion"] = after_rv
+                return after
+        else:
+            last_error = str(_checked_error(response, f"{created.logical_name} remove operation nonce"))
+        if attempt < 3: time.sleep(0.05 * (attempt + 1))
+    final = live_obj(
+        r,
+        kubeconfig,
+        created.desired["kind"].lower(),
+        desired_metadata["name"],
+        desired_metadata["namespace"],
+    )
+    final_metadata = final.get("metadata", {})
+    require(final_metadata.get("uid") == uid, f"{created.logical_name} UID changed during nonce removal")
+    final_rv = final_metadata.get("resourceVersion")
+    require(isinstance(final_rv, str) and final_rv.isdigit(), f"{created.logical_name} nonce-removal resourceVersion absent")
+    final_annotations = final_metadata.get("annotations", {})
+    final_nonce = final_annotations.get(POLICY.OPERATION_NONCE_ANNOTATION) if isinstance(final_annotations, dict) else None
+    if final_nonce is None:
+        _policy_call(POLICY.require_semantically_equal, final, created.desired, f"{created.logical_name} completed nonce removal")
+        created.observed = final; created.receipt["temporaryNonceRemoved"] = True
+        created.receipt["postNonceRemovalResourceVersion"] = final_rv
+        return final
+    require(final_nonce == operation_nonce, f"{created.logical_name} operation nonce ownership mismatch")
+    _policy_call(POLICY.require_semantically_equal, final, nonce_desired, f"{created.logical_name} owned nonce removal")
+    raise ActivationError(f"{created.logical_name} remove operation nonce: {last_error}")
 
 def _target_live(r: Runner, kubeconfig: str, target: dict[str, str]) -> dict[str, Any]:
     return live_obj(r, kubeconfig, target["kind"].lower(), target["name"], target["namespace"])
@@ -3905,7 +3964,8 @@ def activate(
             except CreateConflictError: uncertain = None; raise
             except TransportUncertainError: raise
             except Exception: uncertain = None; raise
-            created.append(item); remove_operation_nonce_v4(r, snapshot_path, item, operation_nonce); uncertain = None
+            created.append(item); uncertain = None
+            remove_operation_nonce_v4(r, snapshot_path, item, operation_nonce)
             if logical == "gateway.deployment": deployment, haproxy = health_v4(r, snapshot_path, p)
         require(deployment is not None and haproxy is not None, "internal health facts absent")
         owned = {(item.desired["metadata"]["namespace"], item.desired["metadata"]["name"]): item for item in created if item.desired["kind"] == "NetworkPolicy"}
@@ -3919,7 +3979,8 @@ def activate(
         except CreateConflictError: uncertain = None; raise
         except TransportUncertainError: raise
         except Exception: uncertain = None; raise
-        created.append(ingress); remove_operation_nonce_v4(r, snapshot_path, ingress, operation_nonce); uncertain = None
+        created.append(ingress); uncertain = None
+        remove_operation_nonce_v4(r, snapshot_path, ingress, operation_nonce)
         partial["routeMatrix"] = route_matrix_v4(r, p)
         source_before_cas = shared_source_revision_v4(r, snapshot_path, rev)
         cluster_before_flux = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_flux, "before Flux unsuspend")

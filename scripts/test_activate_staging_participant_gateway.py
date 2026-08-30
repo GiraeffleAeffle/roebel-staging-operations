@@ -1191,12 +1191,214 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(created.receipt["outcome"], "http-201-created")
         self.assertEqual(created.observed["spec"]["template"]["spec"]["serviceAccount"], MODULE.NAME)
 
-        after = admitted(desired, "deployment-uid", "32")
+        current = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "deployment-uid", "32")
+        current["spec"]["template"]["spec"]["serviceAccount"] = MODULE.NAME
+        after = admitted(desired, "deployment-uid", "33")
         after["spec"]["template"]["spec"]["serviceAccount"] = MODULE.NAME
-        with patch.object(MODULE, "checked", return_value=json.dumps(after)):
-            MODULE.remove_operation_nonce_v4(Fake(), "/snapshot", created, nonce)
+        class NonceRemovalApi(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10): return MODULE.Result(out=json.dumps(after))
+        with patch.object(MODULE, "live_obj", return_value=current):
+            MODULE.remove_operation_nonce_v4(NonceRemovalApi(), "/snapshot", created, nonce)
         self.assertTrue(created.receipt["temporaryNonceRemoved"])
-        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "32")
+        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "33")
+
+    def test_v4_deployment_nonce_removal_rebinds_controller_advanced_resource_version(self):
+        value = ready_policy(); nonce = "f" * 64
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            desired = MODULE.POLICY.expected_gateway_resources(value)["deployment"]
+        nonce_desired = MODULE.POLICY.with_operation_nonce(desired, nonce)
+        created_observed = admitted(nonce_desired, "deployment-uid", "40")
+        created = MODULE.CreatedV4(
+            "gateway.deployment",
+            desired,
+            created_observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+
+        class ControllerRaceApi(MODULE.Runner):
+            def __init__(self):
+                self.state = admitted(nonce_desired, "deployment-uid", "41")
+                self.state["metadata"].setdefault("annotations", {})["deployment.kubernetes.io/revision"] = "1"
+                self.state["spec"]["template"]["spec"]["serviceAccount"] = MODULE.NAME
+                self.state["status"] = {"observedGeneration": 1}
+                self.commands = []
+            def run(self, args, *, input_text=None, timeout=10):
+                self.assert_target(args)
+                if "get" in args:
+                    self.commands.append("GET")
+                    return MODULE.Result(out=json.dumps(self.state))
+                self.commands.append("PATCH")
+                patch_body = json.loads(args[args.index("-p") + 1])
+                self.assert_patch_shape(patch_body)
+                if self.commands.count("PATCH") == 1:
+                    self.state["metadata"]["resourceVersion"] = "42"
+                metadata = self.state["metadata"]
+                actual = (
+                    metadata["uid"],
+                    metadata["resourceVersion"],
+                    metadata["annotations"][MODULE.POLICY.OPERATION_NONCE_ANNOTATION],
+                )
+                expected = tuple(item["value"] for item in patch_body[:3])
+                if actual != expected:
+                    return MODULE.Result(1, "", "The request is invalid: the server rejected our request due to an error in our request")
+                metadata["annotations"].pop(MODULE.POLICY.OPERATION_NONCE_ANNOTATION)
+                metadata["resourceVersion"] = "43"
+                return MODULE.Result(out=json.dumps(self.state))
+            def assert_target(self, args):
+                self_test.assertEqual(args[0], "kubectl")
+                self_test.assertEqual(args[args.index("-n") + 1], MODULE.NAMESPACE)
+                verb = "get" if "get" in args else "patch"
+                self_test.assertEqual(args[args.index(verb) + 1:args.index(verb) + 3], ["deployment", MODULE.NAME])
+            def assert_patch_shape(self, patch_body):
+                self_test.assertEqual([item["op"] for item in patch_body], ["test", "test", "test", "remove"])
+                self_test.assertEqual(
+                    [item["path"] for item in patch_body],
+                    [
+                        "/metadata/uid",
+                        "/metadata/resourceVersion",
+                        "/metadata/annotations/stadtstack.io~1participant-activation-nonce",
+                        "/metadata/annotations/stadtstack.io~1participant-activation-nonce",
+                    ],
+                )
+
+        self_test = self
+        api = ControllerRaceApi()
+        with patch.object(MODULE.time, "sleep"):
+            MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        self.assertEqual(api.commands, ["GET", "PATCH", "GET", "PATCH"])
+        self.assertTrue(created.receipt["temporaryNonceRemoved"])
+        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "43")
+        self.assertNotIn(MODULE.POLICY.OPERATION_NONCE_ANNOTATION, api.state["metadata"]["annotations"])
+
+    def test_v4_nonce_removal_discovers_lost_success_response_without_repatching(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "9" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "50")
+        still_owned = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "51")
+        after = admitted(desired, "owned", "52")
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+
+        class LostResponseApi(MODULE.Runner):
+            def __init__(self): self.patch_calls = 0
+            def run(self, args, *, input_text=None, timeout=10):
+                self.patch_calls += 1
+                return MODULE.Result(124, "", "timeout after 10s")
+
+        api = LostResponseApi()
+        with patch.object(MODULE, "live_obj", side_effect=[still_owned, after]) as discover:
+            MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        self.assertEqual(discover.call_count, 2)
+        self.assertEqual(api.patch_calls, 1)
+        self.assertTrue(created.receipt["temporaryNonceRemoved"])
+        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "52")
+
+    def test_v4_nonce_removal_final_read_discovers_fourth_attempt_lost_success(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "7" * 64
+        nonce_desired = MODULE.POLICY.with_operation_nonce(desired, nonce)
+        observed = admitted(nonce_desired, "owned", "90")
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+
+        class FourthAttemptLostResponseApi(MODULE.Runner):
+            def __init__(self):
+                self.patch_calls = 0
+                self.state = copy.deepcopy(observed)
+            def run(self, args, *, input_text=None, timeout=10):
+                self.patch_calls += 1
+                if self.patch_calls < 4:
+                    self.state["metadata"]["resourceVersion"] = str(90 + self.patch_calls)
+                    return MODULE.Result(1, "", "The request is invalid")
+                self.state["metadata"]["annotations"].pop(MODULE.POLICY.OPERATION_NONCE_ANNOTATION)
+                self.state["metadata"]["resourceVersion"] = "94"
+                return MODULE.Result(124, "", "timeout after 10s")
+
+        api = FourthAttemptLostResponseApi()
+        with patch.object(MODULE, "live_obj", side_effect=lambda *_args: copy.deepcopy(api.state)) as discover, patch.object(MODULE.time, "sleep"):
+            MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        self.assertEqual(discover.call_count, 5)
+        self.assertEqual(api.patch_calls, 4)
+        self.assertTrue(created.receipt["temporaryNonceRemoved"])
+        self.assertEqual(created.receipt["postNonceRemovalResourceVersion"], "94")
+
+    def test_v4_nonce_removal_refuses_first_read_nonce_absence_and_missing_create_rv(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "3" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "55")
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+        api = Mock(spec=MODULE.Runner)
+        with patch.object(MODULE, "live_obj", return_value=admitted(desired, "owned", "56")):
+            with self.assertRaisesRegex(MODULE.ActivationError, "disappeared before nonce-removal CAS"):
+                MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        api.run.assert_not_called()
+        missing_rv = copy.deepcopy(created); missing_rv.observed["metadata"].pop("resourceVersion")
+        with self.assertRaisesRegex(MODULE.ActivationError, "preconditions absent"):
+            MODULE.remove_operation_nonce_v4(api, "/snapshot", missing_rv, nonce)
+
+    def test_v4_nonce_removal_rejects_rebound_semantic_drift_without_patch(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "8" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "60")
+        drifted = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "61")
+        drifted["spec"]["policyTypes"] = ["Ingress", "Egress"]
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+        api = Mock(spec=MODULE.Runner)
+        with patch.object(MODULE, "live_obj", return_value=drifted):
+            with self.assertRaisesRegex(MODULE.ActivationError, "semantic drift"):
+                MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        api.run.assert_not_called()
+
+    def test_v4_nonce_removal_rejects_rebound_uid_and_nonce_drift_without_patch(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "6" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "70")
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+        wrong_uid = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "foreign", "71")
+        wrong_nonce = admitted(MODULE.POLICY.with_operation_nonce(desired, "5" * 64), "owned", "71")
+        for rebound, message in ((wrong_uid, "UID changed"), (wrong_nonce, "ownership mismatch")):
+            with self.subTest(message=message):
+                api = Mock(spec=MODULE.Runner)
+                with patch.object(MODULE, "live_obj", return_value=rebound):
+                    with self.assertRaisesRegex(MODULE.ActivationError, message):
+                        MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+                api.run.assert_not_called()
+
+    def test_v4_nonce_removal_controller_churn_is_bounded_to_four_cas_attempts(self):
+        desired = MODULE.POLICY.expected_workbench_ingress_network_policy(); nonce = "4" * 64
+        observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "80")
+        created = MODULE.CreatedV4(
+            "workbenchIngress.networkPolicy",
+            desired,
+            observed,
+            {"operationNonce": nonce, "temporaryNonceRemoved": False},
+        )
+        current = [admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", str(rv)) for rv in range(81, 86)]
+        api = Mock(spec=MODULE.Runner)
+        api.run.return_value = MODULE.Result(1, "", "The request is invalid")
+        with patch.object(MODULE, "live_obj", side_effect=current) as discover, patch.object(MODULE.time, "sleep"):
+            with self.assertRaisesRegex(MODULE.ActivationError, "The request is invalid"):
+                MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        self.assertEqual(discover.call_count, 5)
+        self.assertEqual(api.run.call_count, 4)
 
     def test_v4_transport_uncertainty_without_discovery_stays_unresolved(self):
         desired = MODULE.POLICY.expected_workbench_ingress_network_policy()
@@ -1242,9 +1444,14 @@ class ExecutorTests(unittest.TestCase):
         observed = admitted(MODULE.POLICY.with_operation_nonce(desired, nonce), "owned", "10")
         created = MODULE.CreatedV4("workbenchIngress.networkPolicy", desired, observed, {"operationNonce": nonce, "temporaryNonceRemoved": False})
         after = admitted(desired, "owned", "11")
-        with patch.object(MODULE, "checked", return_value=json.dumps(after)) as command:
-            MODULE.remove_operation_nonce_v4(Fake(), "/snapshot", created, nonce)
-        args = command.call_args.args[1]; patch_body = json.loads(args[args.index("-p") + 1])
+        class CasApi(MODULE.Runner):
+            def run(self, args, *, input_text=None, timeout=10):
+                self.args = args
+                return MODULE.Result(out=json.dumps(after))
+        api = CasApi()
+        with patch.object(MODULE, "live_obj", return_value=observed):
+            MODULE.remove_operation_nonce_v4(api, "/snapshot", created, nonce)
+        patch_body = json.loads(api.args[api.args.index("-p") + 1])
         self.assertEqual([op["op"] for op in patch_body], ["test", "test", "test", "remove"])
         self.assertEqual(patch_body[0]["value"], "owned"); self.assertEqual(patch_body[1]["value"], "10"); self.assertEqual(patch_body[2]["value"], nonce)
         self.assertTrue(created.receipt["temporaryNonceRemoved"])
@@ -2410,6 +2617,67 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("return 0", recovery_branch)
         self.assertNotIn("secret_materialization_ownership", recovery_branch)
         self.assertNotIn("activate(", recovery_branch)
+
+    def test_v4_nonce_removal_failure_rolls_back_bound_create_without_rediscovery(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        rendered = {
+            "gateway.networkPolicy": {"desired": resources["networkPolicy"], "path": "np", "blobSha256": sha()},
+            "workbenchIngress.networkPolicy": {"desired": MODULE.POLICY.expected_workbench_ingress_network_policy(), "path": "wnp", "blobSha256": sha()},
+            "gateway.serviceAccount": {"desired": resources["serviceAccount"], "path": "sa", "blobSha256": sha()},
+            "gateway.service": {"desired": resources["service"], "path": "svc", "blobSha256": sha()},
+            "gateway.deployment": {"desired": resources["deployment"], "path": "dep", "blobSha256": sha()},
+            "gateway.ingress": {"desired": resources["ingress"], "path": "ing", "blobSha256": sha()},
+        }
+        snapshot = Mock(path=Path("/snapshot")); snapshot.close = Mock()
+        cluster = {
+            "apiOrigin": value["clusterIdentity"]["apiOrigin"],
+            "caCertificateSha256": value["clusterIdentity"]["caCertificateSha256"],
+            "apiServerSpkiSha256": value["clusterIdentity"]["apiServerSpkiSha256"],
+            "kubeSystemNamespaceUid": value["clusterIdentity"]["kubeSystemNamespaceUid"],
+        }
+        desired = rendered["gateway.networkPolicy"]["desired"]
+        created = MODULE.CreatedV4(
+            "gateway.networkPolicy",
+            desired,
+            admitted(MODULE.POLICY.with_operation_nonce(desired, "7" * 64), "network-policy-uid", "70"),
+            {"operationNonce": "7" * 64, "temporaryNonceRemoved": False},
+        )
+        sink = Mock()
+        rollback_result = {"status": "complete", "finalizersRemovedByRunner": False}
+        rediscover = patch.object(MODULE, "rediscover_uncertain_create_v4", return_value=None)
+        rollback = patch.object(MODULE, "rollback_v4", return_value=rollback_result)
+        patches = (
+            patch.object(MODULE.POLICY, "assert_activation_ready", return_value=value),
+            patch.object(MODULE, "render_v4", return_value=rendered),
+            patch.object(MODULE, "snapshot_kubeconfig_v4", return_value=snapshot),
+            patch.object(MODULE, "cluster_binding_v4", return_value=cluster),
+            patch.object(MODULE, "anonymous_publication_v4", return_value={}),
+            patch.object(MODULE, "endpoint_facts_v4", return_value={}),
+            patch.object(MODULE, "preservation_v4", return_value={}),
+            patch.object(MODULE, "flux_preflight_v4", return_value={}),
+            patch.object(MODULE, "exact_absence_preflight_v4", return_value={"status": "all-six-exact-target-names-absent", "targets": [{}] * 6}),
+            patch.object(MODULE, "secret_materialization_v4", return_value={}),
+            patch.object(MODULE, "policy_union_v4", return_value={}),
+            patch.object(MODULE, "create_v4", return_value=created),
+            patch.object(MODULE, "remove_operation_nonce_v4", side_effect=MODULE.ActivationError("nonce removal failed")),
+            rediscover,
+            rollback,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kube"; kube.write_text("fixture")
+            with contextlib.ExitStack() as stack:
+                entered = [stack.enter_context(item) for item in patches]
+                with self.assertRaisesRegex(MODULE.ActivationError, "rolled-back"):
+                    MODULE.activate(value, REV, str(kube), Fake(), True, sink, {"runner": sha()}, dormant_ownership())
+        entered[-2].assert_not_called()
+        rollback_call = entered[-1].call_args
+        self.assertEqual(rollback_call.args[3], [created])
+        self.assertIsNone(rollback_call.args[6])
+        failure = sink.commit.call_args.args[0]
+        self.assertEqual(len(failure["objectCreateResults"]), 1)
+        snapshot.close.assert_called_once()
 
     def test_v4_operator_termination_after_mutation_enters_bounded_rollback_and_receipt(self):
         value = ready_policy()
