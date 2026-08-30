@@ -217,6 +217,50 @@ def activation_journal(reservation: dict, records: dict[str, dict]) -> dict:
 
 
 class TracerRunnerTests(unittest.TestCase):
+    def test_recovery_revision_binding_allows_only_the_exact_direct_default_fix(self) -> None:
+        same = MODULE.bind_recovery_revision(
+            {"protectedRevision": REVISION, "protectedFileSha256": HASHES},
+            REVISION,
+            HASHES,
+            TRACER,
+        )
+        self.assertEqual(same["mode"], "same-protected-revision")
+
+        historical = {path: f"old:{path}" for path in HASHES}
+        current = copy.deepcopy(historical)
+        current[MODULE.SELF_PATH] = "new:runner"
+        current[MODULE.PARTICIPANT_POLICY_PATH] = "new:normalizer"
+        journal = {
+            "protectedRevision": MODULE.RECOVERY_COMPATIBLE_ORIGIN_REVISION,
+            "protectedFileSha256": historical,
+        }
+        with (
+            patch.object(MODULE, "protected_hashes_at_revision", return_value=historical),
+            patch.object(
+                MODULE,
+                "direct_successor_changed_files",
+                return_value=MODULE.RECOVERY_COMPATIBLE_SUCCESSOR_FILES,
+            ),
+        ):
+            binding = MODULE.bind_recovery_revision(
+                journal,
+                "c" * 40,
+                current,
+                TRACER,
+            )
+        self.assertEqual(binding["mode"], "exact-direct-default-normalizer-successor")
+        self.assertEqual(
+            binding["changedProtectedPaths"],
+            sorted({MODULE.SELF_PATH, MODULE.PARTICIPANT_POLICY_PATH}),
+        )
+
+        with (
+            patch.object(MODULE, "protected_hashes_at_revision", return_value=historical),
+            patch.object(MODULE, "direct_successor_changed_files", return_value={"README.md"}),
+        ):
+            with self.assertRaisesRegex(MODULE.ActivationError, "successor file set drift"):
+                MODULE.bind_recovery_revision(journal, "c" * 40, current, TRACER)
+
     def test_flux_source_kind_has_an_exact_kubectl_resource(self) -> None:
         self.assertEqual(
             MODULE.kind_cli("GitRepository"),

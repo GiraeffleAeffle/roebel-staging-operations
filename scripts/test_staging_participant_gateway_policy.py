@@ -344,6 +344,20 @@ class StaticPolicyTests(unittest.TestCase):
         widened["spec"]["ingress"][0]["from"].append({"namespaceSelector": {}})
         self.assertFalse(POLICY.semantically_equal(widened, desired))
 
+    def test_networkpolicy_normalizer_accepts_only_empty_rule_slice_omission(self):
+        desired = POLICY.expected_workbench_ingress_network_policy()
+        desired["spec"]["policyTypes"] = ["Ingress", "Egress"]
+        desired["spec"]["egress"] = []
+        live = copy.deepcopy(desired)
+        live["spec"].pop("egress")
+        self.assertTrue(POLICY.semantically_equal(live, desired))
+        widened = copy.deepcopy(live)
+        widened["spec"]["policyTypes"].remove("Egress")
+        self.assertFalse(POLICY.semantically_equal(widened, desired))
+        widened = copy.deepcopy(live)
+        widened["spec"]["egress"] = [{"to": [{"namespaceSelector": {}}]}]
+        self.assertFalse(POLICY.semantically_equal(widened, desired))
+
     def test_normalizer_accepts_only_the_known_flux_controller_finalizer(self):
         desired = POLICY.gateway_flux_objects(suspended=True)["kustomization"]
         live = copy.deepcopy(desired)
