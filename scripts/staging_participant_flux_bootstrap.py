@@ -25,6 +25,9 @@ from typing import Any
 
 PLAN_SCHEMA = "roebel_staging_participant_flux_bootstrap_plan_v1"
 RECEIPT_SCHEMA = "roebel_staging_participant_flux_bootstrap_receipt_v1"
+RUN29_HANDOVER_TEARDOWN_RECEIPT_SCHEMA = (
+    "roebel_staging_participant_flux_run29_handover_teardown_receipt_v1"
+)
 NONCE_ANNOTATION = "stadtstack.io/participant-flux-bootstrap-nonce"
 REVISION = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
@@ -878,6 +881,135 @@ def bind_teardown_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict
     }
 
 
+def _validate_participant_absence_proof(
+    value: Any,
+    expected_targets: list[dict[str, Any]],
+    *,
+    final: bool,
+    expected_quiet_seconds: int | float | None,
+) -> dict[str, Any]:
+    """Validate the exact six non-Secret participant application absences."""
+    _require(
+        isinstance(expected_targets, list)
+        and len(expected_targets) == 6
+        and all(
+            isinstance(item, dict)
+            and set(item) == {"logicalName", "target"}
+            and isinstance(item["logicalName"], str)
+            and isinstance(item["target"], dict)
+            and set(item["target"]) == {"apiVersion", "kind", "namespace", "name"}
+            and item["target"]["kind"] != "Secret"
+            for item in expected_targets
+        ),
+        "run29 participant absence target set invalid",
+    )
+    expected_objects = [
+        {
+            "logicalName": item["logicalName"],
+            "target": copy.deepcopy(item["target"]),
+            "absent": True,
+        }
+        for item in expected_targets
+    ]
+    if final:
+        _require(
+            type(expected_quiet_seconds) in {int, float}
+            and expected_quiet_seconds > 0
+            and isinstance(value, dict)
+            and set(value) == {"status", "quietSeconds", "checks", "objects"}
+            and value.get("status") == "all-six-names-absent-for-quiet-interval"
+            and type(value.get("quietSeconds")) is type(expected_quiet_seconds)
+            and value["quietSeconds"] == expected_quiet_seconds
+            and type(value.get("checks")) is int
+            and value["checks"] >= 2
+            and value.get("objects") == expected_objects,
+            "run29 participant final absence proof invalid",
+        )
+    else:
+        _require(
+            isinstance(value, dict)
+            and set(value) == {"status", "objects"}
+            and value.get("status") == "all-six-exact-target-names-absent"
+            and value.get("objects") == expected_objects,
+            "run29 participant preflight absence proof invalid",
+        )
+    return copy.deepcopy(value)
+
+
+def bind_run29_handover_teardown_receipt(
+    plan: dict[str, Any],
+    receipt: dict[str, Any],
+    binding: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind only the exact reviewed run29 three-receipt teardown lane."""
+    payload, checksum = _closed_receipt_payload(receipt)
+    _require(
+        isinstance(binding, dict)
+        and set(binding) == {
+            "bound", "provenance", "participantTargets",
+            "expectedPreservation", "expectedSharedSource",
+        },
+        "run29 handover teardown binding shape invalid",
+    )
+    _require(
+        payload.get("schemaVersion") == RUN29_HANDOVER_TEARDOWN_RECEIPT_SCHEMA
+        and payload.get("mode") == "run29-handover-teardown"
+        and payload.get("status") == "dormant-handover-torn-down",
+        "run29 handover teardown receipt terminal state invalid",
+    )
+    _require(
+        payload.get("run29HandoverTeardown") == binding["provenance"],
+        "run29 handover teardown provenance drift",
+    )
+    participant = payload.get("participantApplicationAbsence")
+    _require(
+        isinstance(participant, dict)
+        and set(participant) == {"preflight", "postconditions", "secretAccess", "civicAuthorityEffects"}
+        and participant.get("secretAccess") == "none"
+        and participant.get("civicAuthorityEffects") is False,
+        "run29 participant absence authority drift",
+    )
+    preflight = _validate_participant_absence_proof(
+        participant["preflight"], binding["participantTargets"], final=False,
+        expected_quiet_seconds=None,
+    )
+    postconditions = _validate_participant_absence_proof(
+        participant["postconditions"], binding["participantTargets"], final=True,
+        expected_quiet_seconds=binding["provenance"].get("participantAbsenceQuietSeconds"),
+    )
+
+    # Reuse the complete generic teardown receipt validator by projecting away
+    # only this lane's additional provenance and six-object absence evidence.
+    # The generic archived-v1 verifier itself remains unchanged and continues
+    # to reject this explicit schema.
+    generic = copy.deepcopy(payload)
+    generic.pop("run29HandoverTeardown")
+    generic.pop("participantApplicationAbsence")
+    generic["schemaVersion"] = RECEIPT_SCHEMA
+    generic["mode"] = "teardown"
+    generic["status"] = "dormant-torn-down"
+    generic["canonicalSha256"] = canonical_sha256(generic)
+    projection = bind_teardown_receipt(plan, generic)
+    _require(
+        projection["teardownOfReceiptSha256"] == binding["bound"]["receiptSha256"],
+        "run29 handover teardown source binding drift",
+    )
+    return {
+        "schemaVersion": RUN29_HANDOVER_TEARDOWN_RECEIPT_SCHEMA,
+        "status": "dormant-handover-torn-down",
+        "receiptSha256": checksum,
+        "teardownOfReceiptSha256": projection["teardownOfReceiptSha256"],
+        "protectedRevision": plan["protectedRevision"],
+        "activationPolicySha256": plan["activationPolicySha256"],
+        "allEightAbsentQuiet": True,
+        "bothKustomizationsAbsent": True,
+        "participantApplicationPreflight": preflight,
+        "participantApplicationPostconditions": postconditions,
+        "secretAccess": "none",
+        "civicAuthorityEffects": False,
+    }
+
+
 def run(
     plan: dict[str, Any],
     *,
@@ -886,10 +1018,22 @@ def run(
     sink: Any,
     policy_module: Any,
     prior_receipt: dict[str, Any] | None = None,
+    handover_teardown_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute or recover the fixed bootstrap transaction through one adapter."""
-    _require(mode in {"live", "recover", "teardown"}, "bootstrap mode invalid")
+    _require(mode in {"live", "recover", "teardown", "run29-handover-teardown"}, "bootstrap mode invalid")
     _require(plan.get("schemaVersion") == PLAN_SCHEMA and plan.get("activationReady") is True and not plan.get("blockers"), "dormant Flux bootstrap blocked: activation policy incomplete")
+    if mode == "run29-handover-teardown":
+        _require(prior_receipt is None, "run29 handover teardown accepts no generic recovery receipt")
+        _require(handover_teardown_binding is not None, "run29 handover teardown binding required")
+        return _teardown_bound(
+            plan,
+            kube=kube,
+            sink=sink,
+            policy_module=policy_module,
+            bound=handover_teardown_binding["bound"],
+            handover_teardown_binding=handover_teardown_binding,
+        )
     if mode in {"recover", "teardown"}:
         _require(prior_receipt is not None, "recovery or teardown receipt required")
         if mode == "teardown":
@@ -1126,12 +1270,40 @@ def _teardown(
 ) -> dict[str, Any]:
     """Delete only the exact dormant UIDs bound by one success receipt."""
     bound = bind_success_receipt(plan, receipt)
+    return _teardown_bound(
+        plan,
+        kube=kube,
+        sink=sink,
+        policy_module=policy_module,
+        bound=bound,
+    )
+
+
+def _teardown_bound(
+    plan: dict[str, Any],
+    *,
+    kube: Any,
+    sink: Any,
+    policy_module: Any,
+    bound: dict[str, Any],
+    handover_teardown_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Close all eight identities, then reuse the exact UID rollback primitive."""
+    dedicated = handover_teardown_binding is not None
     state = _receipt_state(plan, secrets.token_hex(32))
-    state["mode"] = "teardown"
+    state["schemaVersion"] = RUN29_HANDOVER_TEARDOWN_RECEIPT_SCHEMA if dedicated else RECEIPT_SCHEMA
+    state["mode"] = "run29-handover-teardown" if dedicated else "teardown"
     state["status"] = "tearing-down"
     state["teardownOfReceiptSha256"] = bound["receiptSha256"]
     state["objectCreateResults"] = copy.deepcopy(bound["objects"])
+    participant_preflight = None
+    if dedicated:
+        state["run29HandoverTeardown"] = copy.deepcopy(handover_teardown_binding["provenance"])
     before = kube.preflight(plan)
+    if dedicated:
+        participant_preflight = kube.participant_application_absence_preflight(
+            handover_teardown_binding["participantTargets"],
+        )
     desired_by_name = {item["logicalName"]: item for item in plan["objects"]}
     closed_preflight: list[dict[str, Any]] = []
     preflight_errors: list[str] = []
@@ -1209,7 +1381,29 @@ def _teardown(
         "bothKustomizationsAbsent": rollback["bothKustomizationsAbsent"],
         "foreignOrReplacementObjectsDeleted": rollback["foreignOrReplacementObjectsDeleted"],
     }
-    state["status"] = "dormant-torn-down" if rollback["status"] == "complete" else "teardown-incomplete"
+    if dedicated:
+        participant_postconditions = None
+        try:
+            participant_postconditions = kube.participant_application_absence_postconditions(
+                handover_teardown_binding["participantTargets"],
+            )
+        except Exception as participant_exc:
+            rollback["status"] = "incomplete"
+            rollback["errors"].append(f"participant application absence: {participant_exc}")
+        state["participantApplicationAbsence"] = {
+            "preflight": copy.deepcopy(participant_preflight),
+            "postconditions": copy.deepcopy(participant_postconditions),
+            "secretAccess": "none",
+            "civicAuthorityEffects": False,
+        }
+    if rollback["status"] == "complete":
+        if dedicated:
+            _journal(state, "dormant-torn-down")
+            state["status"] = "dormant-handover-torn-down"
+        else:
+            state["status"] = "dormant-torn-down"
+    else:
+        state["status"] = "handover-teardown-incomplete" if dedicated else "teardown-incomplete"
     _journal(state, state["status"])
     sink.commit(state)
     return state

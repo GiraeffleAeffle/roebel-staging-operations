@@ -5,7 +5,9 @@ import io
 import json
 import os
 import stat
+import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -792,6 +794,176 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "final preservation evidence drift"):
             BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(preservation_drift))
+
+        # The refactor that shares teardown mechanics with the exact run29
+        # bridge must leave historical generic receipt behavior unchanged.
+        self.assertEqual(
+            [entry["phase"] for entry in teardown["journal"]].count("dormant-torn-down"),
+            1,
+        )
+
+    def test_generic_teardown_receipt_is_byte_compatible_with_protected_890e(self) -> None:
+        historical_source = subprocess.run(
+            [
+                "/usr/bin/git", "-C", str(ROOT), "show",
+                "890e001c76a94755d8f25ebfcf83593da24a082e:scripts/staging_participant_flux_bootstrap.py",
+            ],
+            check=True,
+            capture_output=True,
+        ).stdout
+        historical = types.ModuleType("participant_flux_bootstrap_protected_890e")
+        historical.__file__ = "git:890e001c:scripts/staging_participant_flux_bootstrap.py"
+        exec(compile(historical_source, historical.__file__, "exec"), historical.__dict__)
+        plan = self.ready_plan()
+
+        def execute(module):
+            kube = FakeKube()
+            with mock.patch.object(module.secrets, "token_hex", return_value="4" * 64), mock.patch.object(
+                module.uuid, "uuid4", return_value="12345678-1234-4123-8123-123456789abc",
+            ):
+                success = module.run(
+                    plan, mode="live", kube=kube, sink=MemorySink(), policy_module=POLICY,
+                )
+                closed = json.loads(json.dumps(success))
+                closed["canonicalSha256"] = module.canonical_sha256(closed)
+                return module.run(
+                    plan,
+                    mode="teardown",
+                    kube=kube,
+                    sink=MemorySink(),
+                    policy_module=POLICY,
+                    prior_receipt=closed,
+                )
+
+        historical_teardown = execute(historical)
+        current_teardown = execute(BOOTSTRAP)
+        self.assertEqual(
+            BOOTSTRAP.canonical(current_teardown),
+            historical.canonical(historical_teardown),
+        )
+
+    def test_run29_handover_teardown_reuses_closed_exact_uid_deletion(self) -> None:
+        class Run29Kube(FakeKube):
+            def __init__(self):
+                super().__init__()
+                self.closed_before_delete = set()
+                self.expected_dormant_targets = set()
+
+            def get(self, target):
+                value = super().get(target)
+                if self.key(target) in self.expected_dormant_targets:
+                    self.closed_before_delete.add(self.key(target))
+                return value
+
+            def delete(self, target, uid, resource_version):
+                if self.expected_dormant_targets:
+                    assert self.closed_before_delete == self.expected_dormant_targets
+                super().delete(target, uid, resource_version)
+
+            def participant_application_absence_preflight(self, targets):
+                return {
+                    "status": "all-six-exact-target-names-absent",
+                    "objects": [
+                        {"logicalName": item["logicalName"], "target": item["target"], "absent": True}
+                        for item in targets
+                    ],
+                }
+
+            def participant_application_absence_postconditions(self, targets):
+                return {
+                    "status": "all-six-names-absent-for-quiet-interval",
+                    "quietSeconds": 2,
+                    "checks": 2,
+                    "objects": [
+                        {"logicalName": item["logicalName"], "target": item["target"], "absent": True}
+                        for item in targets
+                    ],
+                }
+
+        plan = self.ready_plan(); kube = Run29Kube()
+        success = BOOTSTRAP.run(
+            plan, mode="live", kube=kube, sink=MemorySink(), policy_module=POLICY,
+        )
+        bound = BOOTSTRAP.bind_success_receipt(plan, close_receipt(success))
+        participant_targets = [
+            {
+                "logicalName": f"participant.{index}",
+                "target": {
+                    "apiVersion": "v1", "kind": "Service",
+                    "namespace": "participant", "name": f"object-{index}",
+                },
+            }
+            for index in range(6)
+        ]
+        provenance = {
+            "baseRevision": "8" * 40,
+            "acceptedRevision": REVISION,
+            "changedPaths": ["scripts/bootstrap-staging-participant-flux.py"],
+            "receipts": {
+                label: {"rawSha256": "sha256:" + str(index) * 64, "canonicalSha256": "sha256:" + str(index + 1) * 64}
+                for index, label in enumerate(("archivedDormant", "dormantHandover", "participantRecovery"), start=1)
+            },
+            "sourceUid": "source-uid",
+            "objects": [
+                {"logicalName": item["logicalName"], "uid": record["uid"], "desiredSemanticSha256": item["desiredSemanticSha256"]}
+                for item, record in zip(plan["objects"], bound["objects"], strict=True)
+            ],
+            "bothKustomizationsSuspended": True,
+            "allSixParticipantObjectsRecoveredAbsent": True,
+            "participantAbsenceQuietSeconds": 2,
+            "secretAccess": "none",
+            "civicAuthorityEffects": False,
+        }
+        binding = {
+            "bound": bound,
+            "provenance": provenance,
+            "participantTargets": participant_targets,
+            "expectedPreservation": {},
+            "expectedSharedSource": {},
+        }
+        kube.closed_before_delete.clear()
+        kube.expected_dormant_targets = {kube.key(item["target"]) for item in plan["objects"]}
+        teardown = BOOTSTRAP.run(
+            plan,
+            mode="run29-handover-teardown",
+            kube=kube,
+            sink=MemorySink(),
+            policy_module=POLICY,
+            handover_teardown_binding=binding,
+        )
+        projection = BOOTSTRAP.bind_run29_handover_teardown_receipt(
+            plan, close_receipt(teardown), binding,
+        )
+
+        self.assertEqual(teardown["status"], "dormant-handover-torn-down")
+        self.assertEqual(projection["status"], "dormant-handover-torn-down")
+        self.assertEqual(len(kube.deleted), 8)
+        self.assertEqual(
+            [target["kind"] for target, _uid, _rv in kube.deleted[:2]],
+            ["Kustomization", "Kustomization"],
+        )
+        self.assertEqual(kube.objects, {})
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "schema drift"):
+            BOOTSTRAP.bind_teardown_receipt(plan, close_receipt(teardown))
+
+        widened = json.loads(json.dumps(teardown))
+        widened["run29HandoverTeardown"]["objects"][0]["uid"] = "replacement"
+        with self.assertRaisesRegex(BOOTSTRAP.BootstrapError, "provenance drift"):
+            BOOTSTRAP.bind_run29_handover_teardown_receipt(
+                plan, close_receipt(widened), binding,
+            )
+
+        for wrong_quiet_seconds in (0.000001, 3, 2.0):
+            forged_quiet_interval = json.loads(json.dumps(teardown))
+            forged_quiet_interval["participantApplicationAbsence"]["postconditions"][
+                "quietSeconds"
+            ] = wrong_quiet_seconds
+            with self.subTest(quietSeconds=wrong_quiet_seconds), self.assertRaisesRegex(
+                BOOTSTRAP.BootstrapError, "participant final absence proof invalid"
+            ):
+                BOOTSTRAP.bind_run29_handover_teardown_receipt(
+                    plan, close_receipt(forged_quiet_interval), binding,
+                )
 
     def test_dormant_teardown_never_adopts_or_deletes_a_replacement_uid(self) -> None:
         plan = self.ready_plan(); kube = FakeKube()
