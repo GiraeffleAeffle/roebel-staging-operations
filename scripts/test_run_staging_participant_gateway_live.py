@@ -1177,7 +1177,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_two_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_four_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1203,6 +1203,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                     side_effect=[
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1221,8 +1223,16 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 origin,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1232,6 +1242,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1265,6 +1283,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         side_effect=[
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1302,6 +1322,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         for parent_effect in (
             MODULE.LiveTransportError("first parent drift"),
             [None, MODULE.LiveTransportError("second parent drift")],
+            [None, None, MODULE.LiveTransportError("third parent drift")],
+            [None, None, None, MODULE.LiveTransportError("fourth parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1313,11 +1335,17 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         first = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES
         second = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES
+        third = MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES
+        fourth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES
         cases = (
-            ("first-widened", [first | {"unrelated"}, second], "first-hop"),
-            ("first-omitted", [first - {next(iter(first))}, second], "first-hop"),
-            ("second-widened", [first, second | {"unrelated"}], "second-hop"),
-            ("second-omitted", [first, second - {next(iter(second))}], "second-hop"),
+            ("first-widened", [first | {"unrelated"}, second, third, fourth], "first-hop"),
+            ("first-omitted", [first - {next(iter(first))}, second, third, fourth], "first-hop"),
+            ("second-widened", [first, second | {"unrelated"}, third, fourth], "second-hop"),
+            ("second-omitted", [first, second - {next(iter(second))}, third, fourth], "second-hop"),
+            ("third-widened", [first, second, third | {"unrelated"}, fourth], "third-hop"),
+            ("third-omitted", [first, second, third - {next(iter(third))}, fourth], "third-hop"),
+            ("fourth-widened", [first, second, third, fourth | {"unrelated"}], "fourth-hop"),
+            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}], "fourth-hop"),
         )
         for label, changed_effect, message in cases:
             with self.subTest(label=label), patch.object(
@@ -1367,6 +1395,31 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.bytes_sha256(actual.read_bytes()),
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
             )
+
+    def test_run19_compatibility_lineage_and_file_sets_are_exactly_pinned(self):
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+            "f41bb1ac2ec27c6332a3b5614e65516349f239b0",
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+            "89cc247c412374205d83433dcc5f774f8c705b1b",
+        )
+        participant_pair = frozenset({
+            "scripts/activate-staging-participant-gateway.py",
+            "scripts/test_activate_staging_participant_gateway.py",
+        })
+        wrapper_pair = frozenset({
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+        })
+        self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES, participant_pair)
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES, participant_pair)
+        self.assertEqual(MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES, wrapper_pair)
 
     def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):
         root = Path("/private/receipts")

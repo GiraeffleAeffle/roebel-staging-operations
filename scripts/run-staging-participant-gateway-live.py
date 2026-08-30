@@ -186,6 +186,8 @@ TRACER_SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_teardow
 TRACER_ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
 TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION = "068c1248dcbc7e1967b5822abad42a55dce7c0f8"
 TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION = "abd199dff25066e1d60911667b23c2655e826b75"
+TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION = "f41bb1ac2ec27c6332a3b5614e65516349f239b0"
+TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION = "89cc247c412374205d83433dcc5f774f8c705b1b"
 TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
     "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 )
@@ -196,6 +198,14 @@ TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES = frozenset({
 TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
@@ -469,7 +479,7 @@ def require_tracer_activation_compatibility_transition(
     receipt_revision: Any,
     receipt_file_sha256: str,
 ) -> str:
-    """Admit only run19 across its two exact, tracer-render-inert successors."""
+    """Admit only run19 across its four exact, tracer-render-inert successors."""
     require(
         receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
@@ -488,16 +498,40 @@ def require_tracer_activation_compatibility_transition(
         "tracer activation compatibility first-hop file set drift",
     )
     require_protected_revision_parent(
-        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
         TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
     )
     require(
         protected_revision_changed_files(
             TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
-            current_revision,
+            TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
         )
         == TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
         "tracer activation compatibility second-hop file set drift",
+    )
+    require_protected_revision_parent(
+        TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+        TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_SECOND_SUCCESSOR_REVISION,
+            TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES,
+        "tracer activation compatibility third-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_THIRD_SUCCESSOR_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES,
+        "tracer activation compatibility fourth-hop file set drift",
     )
     return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
