@@ -273,6 +273,7 @@ def kind_cli(kind: str) -> str:
     return {
         "ConfigMap": "configmap",
         "Deployment": "deployment.apps",
+        "GitRepository": "gitrepository.source.toolkit.fluxcd.io",
         "Kustomization": "kustomization.kustomize.toolkit.fluxcd.io",
         "NetworkPolicy": "networkpolicy.networking.k8s.io",
         "Role": "role.rbac.authorization.k8s.io",
