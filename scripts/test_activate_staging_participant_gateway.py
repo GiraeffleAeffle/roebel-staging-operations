@@ -926,6 +926,174 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
+    def test_exact_run19_receipt_binds_only_across_the_closed_two_hop_lineage(self):
+        value = ready_policy()
+        receipt = tracer_activation_receipt(value)
+        receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
+        receipt["sharedFluxSource"]["revision"] = f"main@sha1:{MODULE.TRACER_RECEIPT_ORIGIN_REVISION}"
+        receipt["flux"]["lastAppliedRevision"] = f"main@sha1:{MODULE.TRACER_RECEIPT_ORIGIN_REVISION}"
+        current_hashes = {
+            path: MODULE.bytes_digest(path.encode())
+            for path in MODULE.TRACER_RECEIPT_PROTECTED_PATHS
+        }
+        origin_runner_hash = sha("9")
+        receipt["protectedFileSha256"] = copy.deepcopy(current_hashes)
+        receipt["protectedFileSha256"]["scripts/activate-staging-participant-gateway.py"] = origin_runner_hash
+
+        def bind(candidate, *, raw_sha=None, transitions=None):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "tracer-receipt.json"
+                path.write_text(json.dumps(candidate), encoding="utf-8")
+                path.chmod(0o600)
+                raw = path.read_bytes()
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    transition_values = transitions or [
+                        set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
+                        set(MODULE.TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES),
+                    ]
+                    with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
+                        MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
+                    ), patch.object(
+                        MODULE, "TRACER_RECEIPT_ORIGIN_RAW_SHA256",
+                        raw_sha or MODULE.bytes_digest(raw),
+                    ), patch.object(
+                        MODULE, "TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256", origin_runner_hash,
+                    ):
+                        return MODULE.bind_tracer_activation_receipt_v4(value, REV, fd)
+                finally:
+                    os.close(fd)
+
+        ownership = bind(receipt)
+        self.assertEqual(
+            ownership["receiptProvenance"],
+            {
+                "mode": "exact-run19-two-hop-unchanged-tracer-plane",
+                "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
+                "acceptedByProtectedRevision": REV,
+                "allowedAppliedRevisions": [
+                    MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
+                    MODULE.TRACER_RECEIPT_INTERMEDIATE_REVISION,
+                    REV,
+                ],
+            },
+        )
+        self.assertEqual(
+            ownership["tracerFluxKustomization"]["uid"],
+            receipt["objectRecords"]["flux.kustomization"]["uid"],
+        )
+
+        with self.assertRaisesRegex(MODULE.ActivationError, "exact approved run19"):
+            bind(receipt, raw_sha=sha("0"))
+        with self.assertRaisesRegex(MODULE.ActivationError, "origin-to-intermediate file set drift"):
+            bind(receipt, transitions=[{"README.md"}])
+        with self.assertRaisesRegex(MODULE.ActivationError, "intermediate-to-acceptor file set drift"):
+            bind(receipt, transitions=[
+                set(MODULE.TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
+                {"README.md"},
+            ])
+        widened = copy.deepcopy(receipt)
+        widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
+        with self.assertRaisesRegex(MODULE.ActivationError, "protected path change drift"):
+            bind(widened)
+        source_drift = copy.deepcopy(receipt)
+        source_drift["sharedFluxSource"]["revision"] = f"main@sha1:{REV}"
+        with self.assertRaisesRegex(MODULE.ActivationError, "shared Flux source"):
+            bind(source_drift)
+        flux_drift = copy.deepcopy(receipt)
+        flux_drift["flux"]["lastAppliedRevision"] = f"main@sha1:{REV}"
+        with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
+            bind(flux_drift)
+
+    def test_live_tracer_binding_revalidates_kustomization_before_first_mutation(self):
+        expected = TRACER_POLICY.dormant_flux_objects(suspended=False)["kustomization"]
+        live = copy.deepcopy(expected)
+        live["metadata"] |= {
+            "uid": "tracer-kustomization-uid",
+            "resourceVersion": "400",
+            "generation": 7,
+        }
+        live["status"] = {
+            "observedGeneration": 7,
+            "lastAppliedRevision": f"main@sha1:{REV}",
+            "lastAttemptedRevision": f"main@sha1:{REV}",
+            "conditions": [{"type": "Ready", "status": "True", "observedGeneration": 7}],
+        }
+        secret = {
+            "target": {
+                "apiVersion": "v1", "kind": "Secret",
+                "name": "postgrest-secret", "namespace": "tracer-namespace",
+            },
+            "uid": "postgrest-secret-uid", "resourceVersion": "30",
+            "keySet": ["db-uri"], "valuesRead": False,
+        }
+        service = {
+            "serviceUid": "postgrest-service-uid",
+            "port": 3000,
+            "readyEndpointAddresses": ["10.244.1.11"],
+        }
+        ownership = {
+            "participantPostgrestSecret": secret,
+            "postgrestService": service,
+            "receiptProvenance": {
+                "mode": "current-protected-revision",
+                "originProtectedRevision": REV,
+                "acceptedByProtectedRevision": REV,
+                "allowedAppliedRevisions": [REV],
+            },
+            "tracerFluxKustomization": {
+                "target": {
+                    "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+                    "kind": "Kustomization", "namespace": MODULE.FLUX_NAMESPACE,
+                    "name": "roebel-tracer-data-plane",
+                },
+                "uid": "tracer-kustomization-uid", "resourceVersion": "100",
+                "ownershipNonce": "d" * 64, "temporaryNonceRemoved": True,
+            },
+        }
+        secrets = {"secrets": {"postgrest": {
+            "name": "postgrest-secret", "namespace": "tracer-namespace",
+            "uid": "postgrest-secret-uid", "resourceVersion": "30",
+            "keys": ["db-uri"], "valuesRead": False,
+        }}}
+        endpoints = {"postgrest": {
+            "serviceUid": "postgrest-service-uid",
+            "readyEndpointAddresses": ["10.244.1.11"],
+            "externalIngress": False,
+        }}
+
+        def require_live(candidate):
+            runner = Mock(spec=MODULE.Runner)
+            runner.run.return_value = MODULE.Result(out=json.dumps(candidate))
+            with patch.object(MODULE, "git_blob", return_value=b"tracer-policy"), patch.object(
+                MODULE, "compile_verified_tracer_policy_module_v4", return_value=TRACER_POLICY,
+            ):
+                MODULE.require_tracer_activation_binding_v4(
+                    endpoints, secrets, ownership, runner, "/fixture/kubeconfig", REV,
+                )
+            self.assertEqual(len(runner.run.call_args_list), 1)
+            self.assertIn("get", runner.run.call_args.args[0])
+
+        require_live(live)
+        drifts = {
+            "identity/generation": lambda candidate: candidate["metadata"].update(uid="other"),
+            "semantic drift": lambda candidate: candidate["spec"].update(suspend=True),
+            "not Ready": lambda candidate: candidate["status"]["conditions"][0].update(status="False"),
+            "revision drift": lambda candidate: candidate["status"].update(lastAppliedRevision=f"main@sha1:{'f' * 40}"),
+        }
+        for message, mutate in drifts.items():
+            with self.subTest(message=message):
+                changed = copy.deepcopy(live)
+                mutate(changed)
+                with self.assertRaisesRegex(MODULE.ActivationError, message):
+                    require_live(changed)
+
+        source = inspect.getsource(MODULE.activate)
+        self.assertLess(
+            source.index("require_tracer_activation_binding_v4("),
+            source.index("mutation_started = True"),
+        )
+
     def test_live_cli_requires_and_forwards_the_tracer_activation_receipt(self):
         parsed = MODULE.parse_args([
             "--expected-protected-revision", REV,

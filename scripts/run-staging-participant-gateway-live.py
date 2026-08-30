@@ -184,6 +184,21 @@ WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
 TRACER_SECRET_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_materialization_receipt_v1"
 TRACER_SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_teardown_receipt_v1"
 TRACER_ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
+TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION = "068c1248dcbc7e1967b5822abad42a55dce7c0f8"
+TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION = "abd199dff25066e1d60911667b23c2655e826b75"
+TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
+    "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
+)
+TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
@@ -423,6 +438,68 @@ def require_protected_revision_parent(revision: str, expected_parent: str) -> No
         result.returncode == 0 and result.stdout.strip().split() == [revision, expected_parent],
         "terminal finalizer is not the exact protected parent transition",
     )
+
+
+def protected_revision_changed_files(origin: str, successor: str) -> frozenset[str]:
+    """Return the exact non-renamed file delta for two protected revisions."""
+    require(
+        REVISION.fullmatch(origin) is not None and REVISION.fullmatch(successor) is not None,
+        "protected revision delta identity invalid",
+    )
+    result = trusted_git(
+        [
+            "-C", str(ROOT), "diff", "--no-ext-diff", "--no-renames",
+            "--name-only", "-z", origin, successor, "--",
+        ],
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    require(result.returncode == 0, "protected revision delta unavailable")
+    try:
+        paths = [item.decode("utf-8") for item in result.stdout.split(b"\0") if item]
+    except UnicodeDecodeError as exc:
+        raise LiveTransportError("protected revision delta path is not UTF-8") from exc
+    require(len(paths) == len(set(paths)), "protected revision delta contains duplicate paths")
+    return frozenset(paths)
+
+
+def require_tracer_activation_compatibility_transition(
+    current_revision: str,
+    receipt_revision: Any,
+    receipt_file_sha256: str,
+) -> str:
+    """Admit only run19 across its two exact, tracer-render-inert successors."""
+    require(
+        receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
+        and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+        "tracer activation compatibility receipt origin/checksum drift",
+    )
+    require_protected_revision_parent(
+        TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+        TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION,
+            TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES,
+        "tracer activation compatibility first-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+        "tracer activation compatibility second-hop file set drift",
+    )
+    return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
 def compile_verified_spawn_module(source: bytes, revision: str) -> Any:
     require(isinstance(source, bytes) and source, "verified spawn module source absent")
@@ -3013,10 +3090,23 @@ def tracer_receipt_projection(
         value = json_object(raw.decode("utf-8"), receipt.label)
     except UnicodeDecodeError as exc:
         raise LiveTransportError(f"{receipt.label} is not UTF-8 JSON") from exc
+    receipt_revision = value.get("protectedRevision")
+    if receipt_revision != revision:
+        require(
+            schema == TRACER_ACTIVATION_RECEIPT_SCHEMA
+            and statuses == {"activated"}
+            and value_flag == "secretValuesRead",
+            f"{receipt.label} compatibility is limited to the completed activation receipt",
+        )
+        receipt_revision = require_tracer_activation_compatibility_transition(
+            revision,
+            receipt_revision,
+            receipt.sha256,
+        )
     require(
         value.get("schemaVersion") == schema
         and value.get("status") in statuses
-        and value.get("protectedRevision") == revision
+        and value.get("protectedRevision") == receipt_revision
         and value.get(value_flag) is False
         and value.get("civicAuthorityEffects") is False,
         f"{receipt.label} value-free receipt boundary drift",
@@ -3024,7 +3114,7 @@ def tracer_receipt_projection(
     return {
         "schemaVersion": schema,
         "status": value["status"],
-        "protectedRevision": revision,
+        "protectedRevision": receipt_revision,
         "fileSha256": receipt.sha256,
         value_flag: False,
         "civicAuthorityEffects": False,
