@@ -29,6 +29,9 @@ BOOTSTRAP_CONFIG_MAP = "roebel-tracer-data-plane-bootstrap-v1"
 RUNTIME_SECRET = "roebel-tracer-data-plane-runtime"
 POSTGRES_PORT = 5432
 POSTGREST_PORT = 3000
+PARTICIPANT_MIGRATION_PGOPTIONS = (
+    "-c search_path=pg_catalog,public,staging_participant_private"
+)
 POSTGREST_CLUSTER_URL = (
     "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab."
     "svc.cluster.local:3000"
@@ -161,8 +164,10 @@ def bootstrap_verify_script() -> str:
         "--username=supabase_admin --dbname=postgres)\n"
         "psql \"${psql_args[@]}\" --file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql\n"
         "bash /roebel-tracer-bootstrap/72-provision-roebel-vault.sh\n"
-        "psql \"${psql_args[@]}\" --file=/roebel-tracer-bootstrap/73-staging-participant-gateway.sql\n"
-        "psql \"${psql_args[@]}\" --file=/roebel-tracer-bootstrap/74-staging-participant-topic-tracer.sql\n"
+        f"PGOPTIONS='{PARTICIPANT_MIGRATION_PGOPTIONS}' psql \"${{psql_args[@]}}\" "
+        "--file=/roebel-tracer-bootstrap/73-staging-participant-gateway.sql\n"
+        f"PGOPTIONS='{PARTICIPANT_MIGRATION_PGOPTIONS}' psql \"${{psql_args[@]}}\" "
+        "--file=/roebel-tracer-bootstrap/74-staging-participant-topic-tracer.sql\n"
     )
 
 

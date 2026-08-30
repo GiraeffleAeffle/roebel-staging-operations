@@ -124,7 +124,26 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertIn("sha256sum --check --strict", verify)
         self.assertIn("--username=supabase_admin", verify)
         self.assertNotIn("--username=postgres", verify)
-        self.assertIn("--file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql", verify)
+        lines = verify.splitlines()
+        baseline_line = next(
+            line for line in lines
+            if "--file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql" in line
+        )
+        self.assertTrue(baseline_line.startswith("psql "))
+        self.assertNotIn("PGOPTIONS=", baseline_line)
+        expected_migration_prefix = (
+            f"PGOPTIONS='{POLICY.PARTICIPANT_MIGRATION_PGOPTIONS}' psql "
+        )
+        for filename in (
+            "73-staging-participant-gateway.sql",
+            "74-staging-participant-topic-tracer.sql",
+        ):
+            migration_line = next(
+                line for line in lines
+                if f"--file=/roebel-tracer-bootstrap/{filename}" in line
+            )
+            self.assertTrue(migration_line.startswith(expected_migration_prefix))
+        self.assertEqual(verify.count(expected_migration_prefix), 2)
         self.assertLess(
             verify.rindex("71-roebel-tracer-baseline.sql"),
             verify.rindex("72-provision-roebel-vault.sh"),

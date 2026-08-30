@@ -11,5 +11,5 @@ printf '%s  %s\n' '739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef2
 psql_args=(--set=ON_ERROR_STOP=1 --no-password --no-psqlrc --username=supabase_admin --dbname=postgres)
 psql "${psql_args[@]}" --file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql
 bash /roebel-tracer-bootstrap/72-provision-roebel-vault.sh
-psql "${psql_args[@]}" --file=/roebel-tracer-bootstrap/73-staging-participant-gateway.sql
-psql "${psql_args[@]}" --file=/roebel-tracer-bootstrap/74-staging-participant-topic-tracer.sql
+PGOPTIONS='-c search_path=pg_catalog,public,staging_participant_private' psql "${psql_args[@]}" --file=/roebel-tracer-bootstrap/73-staging-participant-gateway.sql
+PGOPTIONS='-c search_path=pg_catalog,public,staging_participant_private' psql "${psql_args[@]}" --file=/roebel-tracer-bootstrap/74-staging-participant-topic-tracer.sql
