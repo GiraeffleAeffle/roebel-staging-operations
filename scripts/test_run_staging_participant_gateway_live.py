@@ -1054,7 +1054,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
 
     def test_run29_handover_teardown_main_skips_secret_bundle_and_reaches_teardown(self):
         revision = "a" * 40
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as raw_root:
+        with tempfile.TemporaryDirectory() as raw_root:
             root = Path(raw_root)
             os.chmod(root, 0o700)
             identity = root / "age-identity.txt"
