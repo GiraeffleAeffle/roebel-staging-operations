@@ -1005,6 +1005,41 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.LiveTransportError, "require --participant-gateway-recovery"):
             MODULE.parse_args(ordinary)
 
+    def test_participant_incident_recovery_selects_only_two_exact_receipt_checksum_profiles(self):
+        historical = MODULE.failed_activation_receipt_sha256_profile(
+            "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
+        )
+        run29 = MODULE.failed_activation_receipt_sha256_profile(
+            "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122"
+        )
+        self.assertEqual(historical, {
+            "fileSha256": "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545",
+            "canonicalSha256": "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda",
+        })
+        self.assertEqual(run29, {
+            "fileSha256": "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122",
+            "canonicalSha256": "sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f",
+        })
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "exact incident profile"):
+            MODULE.failed_activation_receipt_sha256_profile("sha256:" + "f" * 64)
+
+    def test_participant_incident_recovery_projection_must_preserve_the_selected_checksum_pair(self):
+        run29_raw = "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122"
+        run29_canonical = "sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f"
+        selected = MODULE.bind_failed_activation_projection_to_profile(
+            run29_raw,
+            {"fileSha256": run29_raw, "receiptSha256": run29_canonical},
+        )
+        self.assertEqual(selected, {"fileSha256": run29_raw, "canonicalSha256": run29_canonical})
+        for projection in (
+            {"fileSha256": run29_raw, "receiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256},
+            {"fileSha256": MODULE.FAILED_ACTIVATION_RAW_SHA256, "receiptSha256": run29_canonical},
+        ):
+            with self.subTest(projection=projection), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "source binding drift",
+            ):
+                MODULE.bind_failed_activation_projection_to_profile(run29_raw, projection)
+
     def test_participant_incident_recovery_child_arguments_never_activate_or_materialize(self):
         arguments = MODULE.incident_recovery_child_arguments(
             "a" * 40,
@@ -1030,7 +1065,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
     def test_participant_incident_recovery_is_source_bound_before_transport_and_never_falls_through(self):
         source = inspect.getsource(MODULE.main)
         self.assertLess(source.index("source_failed_receipt = snapshot_owned_receipt("), source.index("snapshot_binary("))
-        self.assertLess(source.index("FAILED_ACTIVATION_RAW_SHA256"), source.index("snapshot_binary("))
+        self.assertLess(source.index("failed_activation_receipt_sha256_profile("), source.index("snapshot_binary("))
+        self.assertLess(source.index("bind_failed_activation_projection_to_profile("), source.index("snapshot_binary("))
         self.assertLess(source.index("--verify-failed-activation-recovery-source-fd"), source.index("snapshot_binary("))
         recovery_start = source.index("if participant_recovery_mode:", source.index("if handover_archive_receipt is not None:"))
         recovery_end = source.index("else:", recovery_start)
@@ -1038,6 +1074,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertIn("incident_recovery_child_arguments(", recovery)
         self.assertIn("--verify-recovery-receipt-fd", recovery)
         self.assertIn("bind_incident_recovery_handover_projection(", recovery)
+        self.assertIn("source_failed_sha256_profile", recovery)
         self.assertIn('base_status = "recovered"', recovery)
         self.assertNotIn('"--live"', recovery)
         self.assertNotIn("secret_runner.command(", recovery)
@@ -1045,26 +1082,42 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("--verify-success-receipt-fd", recovery)
         for field in ("sourceFailedActivation", "participantIncidentRecovery", "dormantHandoverReceiptSha256", "automaticActivationRetry"):
             self.assertIn(f'"{field}"', source)
-        self.assertIn("FAILED_ACTIVATION_RAW_SHA256 if participant_recovery_mode", source)
-        self.assertIn("FAILED_ACTIVATION_CANONICAL_SHA256 if participant_recovery_mode", source)
+        self.assertIn('source_failed_sha256_profile["fileSha256"]', source)
+        self.assertIn('source_failed_sha256_profile["canonicalSha256"]', source)
 
     def test_incident_recovery_projection_must_bind_the_fresh_handover(self):
         checksum = "sha256:" + "a" * 64
+        profile = {
+            "fileSha256": MODULE.RUN29_FAILED_ACTIVATION_RAW_SHA256,
+            "canonicalSha256": MODULE.RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+        }
         self.assertEqual(
             MODULE.bind_incident_recovery_handover_projection(
-                {"dormantHandoverReceiptSha256": checksum}, {"receiptSha256": checksum},
+                {
+                    "dormantHandoverReceiptSha256": checksum,
+                    "sourceFailedReceiptSha256": profile["canonicalSha256"],
+                },
+                {"receiptSha256": checksum},
+                profile,
             ),
             checksum,
         )
         for recovery, handover in (
-            ({"dormantHandoverReceiptSha256": "sha256:" + "b" * 64}, {"receiptSha256": checksum}),
-            ({"dormantHandoverReceiptSha256": "not-a-digest"}, {"receiptSha256": "not-a-digest"}),
+            ({"dormantHandoverReceiptSha256": "sha256:" + "b" * 64, "sourceFailedReceiptSha256": profile["canonicalSha256"]}, {"receiptSha256": checksum}),
+            ({"dormantHandoverReceiptSha256": "not-a-digest", "sourceFailedReceiptSha256": profile["canonicalSha256"]}, {"receiptSha256": "not-a-digest"}),
             ({}, {"receiptSha256": checksum}),
         ):
             with self.subTest(recovery=recovery), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "fresh dormant handover",
             ):
-                MODULE.bind_incident_recovery_handover_projection(recovery, handover)
+                MODULE.bind_incident_recovery_handover_projection(recovery, handover, profile)
+
+        cross_profile = {
+            "dormantHandoverReceiptSha256": checksum,
+            "sourceFailedReceiptSha256": MODULE.FAILED_ACTIVATION_CANONICAL_SHA256,
+        }
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "selected failed activation receipt"):
+            MODULE.bind_incident_recovery_handover_projection(cross_profile, {"receiptSha256": checksum}, profile)
 
     def test_incomplete_participant_recovery_keeps_explicit_continuation_required(self):
         source = inspect.getsource(MODULE.main)
@@ -1206,7 +1259,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertEqual(projection["protectedRevision"], revision)
         self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
 
-    def test_exact_run19_projection_accepts_only_the_ten_hop_successor_and_preserves_origin(self):
+    def test_exact_run19_projection_accepts_only_the_eleven_hop_successor_and_preserves_origin(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         value = {
@@ -1240,6 +1293,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_HOP_FILES,
                         MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
                     ],
                 ) as changed:
                     projection = MODULE.tracer_receipt_projection(
@@ -1290,8 +1344,12 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_SUCCESSOR_REVISION,
             ),
             unittest.mock.call(
-                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
             ),
         ])
         self.assertEqual(changed.call_args_list, [
@@ -1333,6 +1391,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ),
             unittest.mock.call(
                 MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
                 current,
             ),
         ])
@@ -1374,6 +1436,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_HOP_FILES,
                             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
                         ],
                     ):
                         return MODULE.tracer_receipt_projection(
@@ -1419,6 +1482,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             [None, None, None, None, None, None, None, MODULE.LiveTransportError("eighth parent drift")],
             [None, None, None, None, None, None, None, None, MODULE.LiveTransportError("ninth parent drift")],
             [None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("tenth parent drift")],
+            [None, None, None, None, None, None, None, None, None, None, MODULE.LiveTransportError("eleventh parent drift")],
         ):
             with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
                 MODULE.LiveTransportError, "parent drift"
@@ -1428,49 +1492,31 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
     def test_run19_compatibility_rejects_each_hop_file_set_widening_or_omission(self):
         current = "c" * 40
         origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
-        first = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES
-        second = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES
-        third = MODULE.TRACER_ACTIVATION_COMPATIBILITY_THIRD_HOP_FILES
-        fourth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FOURTH_HOP_FILES
-        fifth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIFTH_HOP_FILES
-        sixth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SIXTH_HOP_FILES
-        seventh = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_HOP_FILES
-        eighth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_HOP_FILES
-        ninth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_HOP_FILES
-        tenth = MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES
-        cases = (
-            ("first-widened", [first | {"unrelated"}, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "first-hop"),
-            ("first-omitted", [first - {next(iter(first))}, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "first-hop"),
-            ("second-widened", [first, second | {"unrelated"}, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "second-hop"),
-            ("second-omitted", [first, second - {next(iter(second))}, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "second-hop"),
-            ("third-widened", [first, second, third | {"unrelated"}, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "third-hop"),
-            ("third-omitted", [first, second, third - {next(iter(third))}, fourth, fifth, sixth, seventh, eighth, ninth, tenth], "third-hop"),
-            ("fourth-widened", [first, second, third, fourth | {"unrelated"}, fifth, sixth, seventh, eighth, ninth, tenth], "fourth-hop"),
-            ("fourth-omitted", [first, second, third, fourth - {next(iter(fourth))}, fifth, sixth, seventh, eighth, ninth, tenth], "fourth-hop"),
-            ("fifth-widened", [first, second, third, fourth, fifth | {"unrelated"}, sixth, seventh, eighth, ninth, tenth], "fifth-hop"),
-            ("fifth-omitted", [first, second, third, fourth, fifth - {next(iter(fifth))}, sixth, seventh, eighth, ninth, tenth], "fifth-hop"),
-            ("sixth-widened", [first, second, third, fourth, fifth, sixth | {"unrelated"}, seventh, eighth, ninth, tenth], "sixth-hop"),
-            ("sixth-omitted", [first, second, third, fourth, fifth, sixth - {next(iter(sixth))}, seventh, eighth, ninth, tenth], "sixth-hop"),
-            ("seventh-widened", [first, second, third, fourth, fifth, sixth, seventh | {"unrelated"}, eighth, ninth, tenth], "seventh-hop"),
-            ("seventh-omitted", [first, second, third, fourth, fifth, sixth, seventh - {next(iter(seventh))}, eighth, ninth, tenth], "seventh-hop"),
-            ("eighth-widened", [first, second, third, fourth, fifth, sixth, seventh, eighth | {"unrelated"}, ninth, tenth], "eighth-hop"),
-            ("eighth-omitted", [first, second, third, fourth, fifth, sixth, seventh, eighth - {next(iter(eighth))}, ninth, tenth], "eighth-hop"),
-            ("ninth-widened", [first, second, third, fourth, fifth, sixth, seventh, eighth, ninth | {"unrelated"}, tenth], "ninth-hop"),
-            ("ninth-omitted", [first, second, third, fourth, fifth, sixth, seventh, eighth, ninth - {next(iter(ninth))}, tenth], "ninth-hop"),
-            ("tenth-widened", [first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth | {"unrelated"}], "tenth-hop"),
-            ("tenth-omitted", [first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth - {next(iter(tenth))}], "tenth-hop"),
+        ordinals = (
+            "first", "second", "third", "fourth", "fifth", "sixth",
+            "seventh", "eighth", "ninth", "tenth", "eleventh",
         )
-        for label, changed_effect, message in cases:
-            with self.subTest(label=label), patch.object(
-                MODULE, "require_protected_revision_parent"
-            ), patch.object(
-                MODULE, "protected_revision_changed_files", side_effect=changed_effect
-            ), self.assertRaisesRegex(MODULE.LiveTransportError, message):
-                MODULE.require_tracer_activation_compatibility_transition(
-                    current,
-                    origin,
-                    MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
-                )
+        hops = [
+            getattr(MODULE, f"TRACER_ACTIVATION_COMPATIBILITY_{ordinal.upper()}_HOP_FILES")
+            for ordinal in ordinals
+        ]
+        for index, (ordinal, hop) in enumerate(zip(ordinals, hops)):
+            for variant, replacement in (
+                ("widened", hop | {"unrelated"}),
+                ("omitted", hop - {next(iter(hop))}),
+            ):
+                changed_effect = copy.deepcopy(hops)
+                changed_effect[index] = replacement
+                with self.subTest(ordinal=ordinal, variant=variant), patch.object(
+                    MODULE, "require_protected_revision_parent"
+                ), patch.object(
+                    MODULE, "protected_revision_changed_files", side_effect=changed_effect
+                ), self.assertRaisesRegex(MODULE.LiveTransportError, f"{ordinal}-hop"):
+                    MODULE.require_tracer_activation_compatibility_transition(
+                        current,
+                        origin,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+                    )
 
     def test_protected_revision_delta_is_exact_nul_delimited_and_duplicate_free(self):
         origin = "a" * 40
@@ -1542,6 +1588,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
             "01e115b6fd03dce7900946ac71e2d8f943a6fb74",
         )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+            "38cdfbd9748c3481689599c53f4443af11a7df63",
+        )
         participant_pair = frozenset({
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1588,6 +1638,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         )
         self.assertEqual(
             MODULE.TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
             participant_pair | wrapper_pair,
         )
 
