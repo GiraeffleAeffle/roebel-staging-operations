@@ -2121,7 +2121,35 @@ class ExecutorTests(unittest.TestCase):
             },
         )
 
-    def test_v4_internal_status_contract_is_closed_and_not_public_route(self):
+    def test_v4_db_free_participant_status_preflight_uses_the_same_pod_tunnel_first(self):
+        expected = {
+            "available": True,
+            "active": False,
+            "walletAddress": None,
+            "label": "Staging-Testteilnahme – keine Bürgerverifikation, kein Stimmrecht",
+            "scope": None,
+            "authority": "none",
+        }
+        probe = {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": "gateway-pod-a",
+            "loopbackOnly": True,
+            "publicIngressUsed": False,
+            "serviceProxyUsed": False,
+            "redirectsAllowed": False,
+            "path": MODULE.POLICY.ROUTES[0],
+            "remotePort": MODULE.POLICY.GATEWAY_PORT,
+        }
+        with patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe)) as request:
+            result = MODULE.participant_http_status_preflight_v4("/tmp/kube", "gateway-pod-a", 10)
+        self.assertEqual(result, probe)
+        self.assertEqual(request.call_args.args[1:4], ("gateway-pod-a", MODULE.POLICY.GATEWAY_PORT, MODULE.POLICY.ROUTES[0]))
+        with patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected | {"authority": "municipal"}), probe)):
+            with self.assertRaisesRegex(MODULE.ActivationError, "DB-free participant status contract drift"):
+                MODULE.participant_http_status_preflight_v4("/tmp/kube", "gateway-pod-a", 10)
+
+    @patch.object(MODULE, "participant_http_status_preflight_v4", return_value={"status": "ready"})
+    def test_v4_internal_status_contract_is_closed_and_not_public_route(self, participant_preflight):
         value = ready_policy(); pins = value["productPins"]
         expected = MODULE.expected_database_status_v4(value)
         selected = {"name": "gateway-pod-a", "uid": "pod-uid", "resourceVersion": "10", "imageId": "docker-pullable://image@" + pins["imageManifestDigest"]}
@@ -2145,6 +2173,7 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "checked", return_value="") as authorization, patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe)) as request, patch.object(MODULE, "live_obj", return_value=current):
             result = MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
         self.assertEqual(result, valid_database_status(value, image_id=selected["imageId"]))
+        participant_preflight.assert_called_with("/tmp/kube", "gateway-pod-a", value["httpBoundary"]["timeoutsSeconds"]["routeRequest"])
         self.assertFalse(result["probe"]["publicIngressUsed"])
         self.assertEqual(result["probe"]["podUid"], "pod-uid")
         self.assertEqual(result["probe"]["podImage"], exact_image)
@@ -2182,6 +2211,48 @@ class ExecutorTests(unittest.TestCase):
         with patch.object(MODULE, "checked", return_value=""), patch.object(MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe)), patch.object(MODULE, "live_obj", return_value=changed):
             with self.assertRaisesRegex(MODULE.ActivationError, "runtime pin changed"):
                 MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+
+    def test_v4_database_status_failure_rechecks_db_free_route_and_classifies_gateway_healthy(self):
+        value = ready_policy()
+        selected = {"name": "gateway-pod-a", "uid": "pod-uid", "resourceVersion": "10", "imageId": "docker-pullable://image"}
+        runtime = {"readyPodCount": value["runtime"]["replicas"], "pods": [selected]}
+        with patch.object(MODULE, "checked", return_value=""), patch.object(
+            MODULE, "participant_http_status_preflight_v4", side_effect=[{"status": "ready"}, {"status": "ready"}],
+        ) as db_free, patch.object(
+            MODULE, "_pod_port_forward_get_v4", side_effect=MODULE.ActivationError("internal participant readiness rejected: HTTP 503"),
+        ) as db_backed:
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+        message = str(raised.exception)
+        self.assertIn('"classification":"db-backed-failed"', message)
+        self.assertIn('"dbFreeBefore":{"kind":"healthy"}', message)
+        self.assertIn('"dbFreeAfter":{"kind":"healthy"}', message)
+        self.assertIn('"kind":"http-rejected"', message)
+        self.assertIn('"status":503', message)
+        self.assertEqual(db_backed.call_count, 1)
+        self.assertEqual(db_free.call_count, 2)
+        self.assertEqual(db_free.call_args_list[1].kwargs, {"retry_timeout": False})
+
+    def test_v4_database_status_failure_classifies_when_db_free_route_also_fails(self):
+        value = ready_policy()
+        selected = {"name": "gateway-pod-a", "uid": "pod-uid", "resourceVersion": "10", "imageId": "docker-pullable://image"}
+        runtime = {"readyPodCount": value["runtime"]["replicas"], "pods": [selected]}
+        with patch.object(MODULE, "checked", return_value=""), patch.object(
+            MODULE, "participant_http_status_preflight_v4",
+            side_effect=[{"status": "ready"}, MODULE.ActivationError("Authorization: Bearer must-not-leak")],
+        ) as db_free, patch.object(
+            MODULE, "_pod_port_forward_get_v4", side_effect=MODULE.ActivationError("internal participant readiness rejected: HTTP 503"),
+        ):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE.database_status_v4(Fake(), "/tmp/kube", value, runtime)
+        message = str(raised.exception)
+        self.assertIn('"classification":"db-backed-failed"', message)
+        self.assertIn('"dbFreeBefore":{"kind":"healthy"}', message)
+        self.assertIn('"dbFreeAfter":{"errorType":"ActivationError","kind":"contract-failure"}', message)
+        self.assertNotIn("Authorization", message)
+        self.assertNotIn("must-not-leak", message)
+        self.assertEqual(db_free.call_count, 2)
+        self.assertEqual(db_free.call_args_list[1].kwargs, {"retry_timeout": False})
 
     def test_v4_runtime_pin_requires_exact_ready_pod_cardinality(self):
         value = ready_policy(); image = value["productPins"]["imageRepository"] + "@" + value["productPins"]["imageManifestDigest"]
@@ -2234,6 +2305,269 @@ class ExecutorTests(unittest.TestCase):
         self.assertIn("--address=127.0.0.1", command); self.assertIn("pod/pod-a", command); self.assertIn(":18085", command)
         self.assertFalse({"http_proxy", "https_proxy", "all_proxy", "no_proxy"} & {key.lower() for key in spawn.call_args.kwargs["env"]})
         self.assertEqual(opener.timeout, 2); cleanup.assert_called_once_with(process)
+
+    def test_v4_port_forward_open_timeout_is_classified_with_bounded_process_evidence(self):
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                raise TimeoutError("untrusted timeout detail")
+        processes, opener = [Process(), Process()], Opener()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", side_effect=processes,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        message = str(raised.exception)
+        self.assertIn('"phase":"open"', message)
+        self.assertIn('"requestBudgetSeconds":2', message)
+        self.assertIn('"attempts":2', message)
+        self.assertIn('"alive":true', message)
+        self.assertNotIn("untrusted timeout detail", message)
+        self.assertEqual(opener.calls, 2)
+        self.assertEqual(spawn.call_count, 2)
+
+    def test_v4_port_forward_timeout_retry_uses_fresh_stream_and_cleans_both_processes(self):
+        class Headers:
+            def get_content_type(self): return "application/json"
+        class Response:
+            status = 200; headers = Headers()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return "http://127.0.0.1:41778/status"
+            def read(self, size): return b'{"status":"ready"}'
+        class Process:
+            def __init__(self, pid, port):
+                self.pid = pid
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, f"Forwarding from 127.0.0.1:{port} -> 18085\n".encode())
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        class TimedOutOpener:
+            def open(self, request, timeout): raise TimeoutError("first stream stalled")
+        class SuccessfulOpener:
+            def open(self, request, timeout): return Response()
+        processes = [Process(4242, 41777), Process(4343, 41778)]
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", side_effect=processes,
+        ) as spawn, patch.object(
+            MODULE.urllib.request, "build_opener", side_effect=[TimedOutOpener(), SuccessfulOpener()],
+        ), patch.object(MODULE, "_terminate_process_group") as cleanup:
+            body, receipt = MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        self.assertEqual(body, '{"status":"ready"}')
+        self.assertEqual(receipt["path"], "/status")
+        self.assertEqual(spawn.call_count, 2)
+        self.assertEqual([call.args[0] for call in cleanup.call_args_list], processes)
+
+    def test_v4_port_forward_response_read_timeout_is_classified_and_retried_once(self):
+        class Headers:
+            def get_content_type(self): return "application/json"
+        class Response:
+            status = 200; headers = Headers()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return "http://127.0.0.1:41777/status"
+            def read(self, size): raise TimeoutError("untrusted read detail")
+        class Opener:
+            calls = 0
+            def open(self, request, timeout): self.calls += 1; return Response()
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        processes, opener = [Process(), Process()], Opener()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", side_effect=processes,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        message = str(raised.exception)
+        self.assertIn('"phase":"response-read"', message)
+        self.assertIn('"requestBudgetSeconds":2', message)
+        self.assertIn('"attempts":2', message)
+        self.assertNotIn("untrusted read detail", message)
+        self.assertEqual(opener.calls, 2)
+        self.assertEqual(spawn.call_count, 2)
+
+    def test_v4_port_forward_http_503_fails_closed_without_retry(self):
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                raise MODULE.urllib.error.HTTPError(request.full_url, 503, "untrusted", None, None)
+        process, opener = Process(), Opener()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", return_value=process,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaisesRegex(MODULE.ActivationError, "rejected: HTTP 503"):
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        self.assertEqual(opener.calls, 1)
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_v4_port_forward_url_error_is_classified_without_retry_or_detail_leak(self):
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        class Opener:
+            calls = 0
+            def open(self, request, timeout):
+                self.calls += 1
+                raise MODULE.urllib.error.URLError("credential-like untrusted URL detail")
+        process, opener = Process(), Opener()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", return_value=process,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        message = str(raised.exception)
+        self.assertIn('"phase":"open"', message)
+        self.assertIn('"attempts":1', message)
+        self.assertIn('"errorType":"URLError"', message)
+        self.assertNotIn("credential-like", message)
+        self.assertEqual(opener.calls, 1)
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_v4_port_forward_response_read_os_error_is_classified_without_retry(self):
+        class Headers:
+            def get_content_type(self): return "application/json"
+        class Response:
+            status = 200; headers = Headers()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return "http://127.0.0.1:41777/status"
+            def read(self, size): raise OSError(MODULE.errno.ECONNRESET, "untrusted read detail")
+        class Opener:
+            calls = 0
+            def open(self, request, timeout): self.calls += 1; return Response()
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"Forwarding from 127.0.0.1:41777 -> 18085\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return None
+        process, opener = Process(), Opener()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", return_value=process,
+        ) as spawn, patch.object(MODULE.urllib.request, "build_opener", return_value=opener), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        message = str(raised.exception)
+        self.assertIn('"phase":"response-read"', message)
+        self.assertIn('"attempts":1', message)
+        self.assertIn('"errorType":"ConnectionResetError"', message)
+        self.assertNotIn("untrusted read detail", message)
+        self.assertEqual(opener.calls, 1)
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_v4_port_forward_early_exit_includes_only_sanitized_bounded_output(self):
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                os.write(write_fd, b"fatal token=do-not-echo\n")
+                os.close(write_fd)
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+            def poll(self): return 7
+        process = Process()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", return_value=process,
+        ), patch.object(MODULE, "_terminate_process_group"):
+            with self.assertRaises(MODULE.ActivationError) as raised:
+                MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        message = str(raised.exception)
+        self.assertIn('"phase":"startup"', message)
+        self.assertIn('"alive":false', message)
+        self.assertIn('"exitCode":7', message)
+        self.assertIn("<redacted kubectl output line>", message)
+        self.assertNotIn("do-not-echo", message)
+
+    def test_v4_port_forward_output_evidence_is_allowlisted_and_bounded(self):
+        output = (
+            b"Handling connection for 41777\n" * 1024
+            + b"Authorization: Bearer credential-that-must-not-leak, suffix-must-not-leak; end\n"
+        )
+        sanitized = MODULE._sanitized_port_forward_output_tail_v4(output)
+        self.assertLessEqual(len(sanitized), 2048)
+        self.assertIn("<redacted kubectl output line>", sanitized)
+        self.assertNotIn("Authorization", sanitized)
+        self.assertNotIn("Bearer", sanitized)
+        self.assertNotIn("credential-that-must-not-leak", sanitized)
+        self.assertNotIn("suffix-must-not-leak", sanitized)
+
+    def test_v4_port_forward_continuously_drains_output_flood_after_readiness(self):
+        class Headers:
+            def get_content_type(self): return "application/json"
+        class Response:
+            status = 200; headers = Headers()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def geturl(self): return "http://127.0.0.1:41777/status"
+            def read(self, size): return b'{"status":"ready"}'
+        class Process:
+            pid = 4242
+            def __init__(self):
+                read_fd, write_fd = os.pipe()
+                self.stdout = os.fdopen(read_fd, "rb", buffering=0)
+                self.writer_done = MODULE.threading.Event()
+                self.writer_error = []
+                def write_flood():
+                    try:
+                        pending = memoryview(
+                            b"Forwarding from 127.0.0.1:41777 -> 18085\n" + b"kubectl-noise\n" * 65536
+                        )
+                        while pending:
+                            pending = pending[os.write(write_fd, pending):]
+                    except OSError as exc:
+                        self.writer_error.append(exc)
+                    finally:
+                        os.close(write_fd)
+                        self.writer_done.set()
+                self.writer = MODULE.threading.Thread(target=write_flood, daemon=True)
+                self.writer.start()
+            def poll(self): return None
+        class Opener:
+            def __init__(self, process): self.process = process
+            def open(self, request, timeout):
+                if not self.process.writer_done.wait(timeout=2):
+                    raise AssertionError("kubectl output pipe was not drained after readiness")
+                return Response()
+        process = Process()
+        with patch.object(MODULE, "kubectl_binding_v4", return_value=Mock(path=Path("/snapshot/kubectl"))), patch.object(
+            MODULE, "verified_popen", return_value=process,
+        ), patch.object(MODULE.urllib.request, "build_opener", return_value=Opener(process)), patch.object(MODULE, "_terminate_process_group"):
+            body, _ = MODULE._pod_port_forward_get_v4("/tmp/kube", "pod-a", 18085, "/status", startup_timeout=1, request_timeout=2)
+        process.writer.join(timeout=1)
+        self.assertEqual(body, '{"status":"ready"}')
+        self.assertTrue(process.writer_done.is_set())
+        self.assertEqual(process.writer_error, [])
 
     def test_v4_manual_policy_named_ports_and_ranges_are_conflicts(self):
         def policy_with(port, end_port=None):
