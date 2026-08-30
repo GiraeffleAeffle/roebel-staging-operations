@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: stadtstack-roebel-staging-lab
+resources:
+  - serviceaccount.json
+  - postgres-deployment.json
+  - postgres-service.json
+  - postgres-networkpolicy.json
+  - postgrest-deployment.json
+  - postgrest-service.json
+  - postgrest-networkpolicy.json
+configMapGenerator:
+  - name: roebel-tracer-data-plane-bootstrap-v1
+    files:
+      - zz-roebel-tracer.sh=bootstrap/zz-roebel-tracer.sh
+      - 71-roebel-tracer-baseline.sql=bootstrap/71-roebel-tracer-baseline.sql
+      - 72-provision-roebel-vault.sh=bootstrap/72-provision-roebel-vault.sh
+      - 73-staging-participant-gateway.sql=bootstrap/73-staging-participant-gateway.sql
+      - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
+generatorOptions:
+  labels:
+    app.kubernetes.io/component: tracer-bootstrap
+    app.kubernetes.io/part-of: stadtstack-roebel-staging-lab
+    stadtstack.io/authority: none
+    stadtstack.io/civic-authority: none
+    stadtstack.io/data-lifecycle: ephemeral-tracer
+    stadtstack.io/environment: staging

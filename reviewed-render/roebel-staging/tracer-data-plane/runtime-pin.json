@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
+  "activationReady": false,
+  "authority": {
+    "civicAuthority": "none",
+    "municipalPublication": false,
+    "treasuryMutation": false,
+    "voteMutation": false
+  },
+  "database": {
+    "durability": "emptyDir-recreated-baseline",
+    "durableCivicRecordsAllowed": false,
+    "persistentVolumeClaim": false,
+    "sizeLimit": "2Gi"
+  },
+  "images": {
+    "postgres": {
+      "humanTag": "15.8.1.085",
+      "image": "docker.io/supabase/postgres@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b",
+      "platformDigestKind": "oci-index"
+    },
+    "postgrest": {
+      "humanTag": "v14.16",
+      "image": "docker.io/postgrest/postgrest@sha256:bea1c76a856fa39d1e542d25911cf95d02fe2bf971992d033044ff209f1504b8",
+      "platformDigestKind": "oci-index"
+    }
+  },
+  "network": {
+    "externalIngress": false,
+    "postgrestClusterUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
+    "postgrestReaders": [
+      "roebel-web-presentation"
+    ],
+    "postgrestRpcCallers": [
+      "roebel-staging-participant-gateway"
+    ],
+    "postgresCallers": [
+      "roebel-tracer-postgrest"
+    ]
+  },
+  "productSource": {
+    "artifacts": [
+      {
+        "configMapFilename": "71-roebel-tracer-baseline.sql",
+        "path": "supabase/staging_incluster_tracer_baseline_v1.sql",
+        "sha256": "sha256:c9d94bc0baa66fa1e0c7b4fa9da1677afac7a59178b82c8b37b0bc781db299d5"
+      },
+      {
+        "configMapFilename": "73-staging-participant-gateway.sql",
+        "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
+        "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
+      },
+      {
+        "configMapFilename": "74-staging-participant-topic-tracer.sql",
+        "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
+        "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+      }
+    ],
+    "protectedRef": "refs/heads/main",
+    "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
+    "sourceRevision": null
+  },
+  "secretReference": {
+    "keys": [
+      "anon-jwt",
+      "authenticator-password",
+      "environment-arm",
+      "jwt-secret",
+      "pgsodium-root-key",
+      "postgres-password",
+      "postgrest-db-uri",
+      "rpc-secret"
+    ],
+    "name": "roebel-tracer-data-plane-runtime",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "valuesCommitted": false
+  }
+}

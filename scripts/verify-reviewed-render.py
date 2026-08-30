@@ -58,6 +58,20 @@ def load_workbench_baseline_module():
 
 WORKBENCH_BASELINE = load_workbench_baseline_module()
 
+
+def load_tracer_data_plane_module():
+    """Load the protected, value-free ephemeral tracer data-plane policy."""
+    path = Path(__file__).with_name("tracer_data_plane_policy.py")
+    spec = importlib.util.spec_from_file_location("protected_tracer_data_plane_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected tracer data-plane policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TRACER_DATA_PLANE = load_tracer_data_plane_module()
+
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
 RENDER_ROOT = "reviewed-render/roebel-staging"
@@ -177,6 +191,7 @@ EXPECTED_FILES = {
     "scripts/reset-staging-relay-fixtures.py",
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
+    "scripts/tracer_data_plane_policy.py",
     "scripts/test_automatic_promotion_workflow.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/test_run_staging_participant_gateway_live.py",
@@ -186,6 +201,7 @@ EXPECTED_FILES = {
     "scripts/test_reset_staging_relay_fixtures.py",
     "scripts/test_staging_participant_flux_bootstrap.py",
     "scripts/test_staging_participant_gateway_policy.py",
+    "scripts/test_tracer_data_plane_policy.py",
     "scripts/test_verify_case_staging_topology.py",
     "scripts/test_render_release_set_promotion.py",
     "scripts/test_verify_reviewed_render.py",
@@ -225,6 +241,7 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/web/networkpolicy.json",
     WORKBENCH_BASELINE.NETWORK_POLICY_PATH,
     WORKBENCH_BASELINE.KUSTOMIZATION_PATH,
+    *TRACER_DATA_PLANE.expected_files(),
 }
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
@@ -608,6 +625,14 @@ def verify_workbench_baseline(root: Path) -> dict[str, Any]:
         raise VerificationError(f"workbench baseline render verification failed: {error}") from error
 
 
+def verify_tracer_data_plane(root: Path) -> dict[str, Any]:
+    """Validate the inert data-plane render with the protected sibling policy."""
+    try:
+        return TRACER_DATA_PLANE.verify_render(root)
+    except TRACER_DATA_PLANE.PolicyError as error:
+        raise VerificationError(f"tracer data-plane render verification failed: {error}") from error
+
+
 def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
@@ -624,7 +649,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         ],
         "schemas": {"head": HEAD_SCHEMA, "reviewedRender": RENDER_SCHEMA},
         "publicMetadataBoundary": {
-            "allowedKinds": ["Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
+            "allowedKinds": ["ConfigMap", "Deployment", "Ingress", "Service", "NetworkPolicy", "ServiceAccount"],
             "secretObjectsAllowed": False,
             "secretValuesAllowed": False,
             "secretReferencesAllowed": True,
@@ -649,6 +674,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
             "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
         },
+        "ephemeralTracerDataPlaneBoundary": TRACER_DATA_PLANE.contract_boundary(),
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
             "activationReady": participant_policy["activationReady"],
@@ -4512,6 +4538,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
     workbench_baseline = verify_workbench_baseline(root)
+    tracer_data_plane = verify_tracer_data_plane(root)
     verify_case_staging_topology_with_protected_policy(root)
     verify_case_runtime_contract_with_protected_policy(root)
     verify_case_recovery_composition_contract_with_protected_policy(root)
@@ -4614,6 +4641,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "stagingParticipantGatewayPolicy": participant_policy,
         "workbenchBaseline": workbench_baseline,
         "workbenchBaselineEnabled": True,
+        "tracerDataPlane": tracer_data_plane,
     }
 
 

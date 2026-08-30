@@ -1,0 +1,129 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "tracer-postgrest",
+      "app.kubernetes.io/name": "roebel-tracer-postgrest",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-tracer-postgrest",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "egress": [
+      {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "kube-system"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "k8s-app": "kube-dns"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 53,
+            "protocol": "UDP"
+          },
+          {
+            "port": 53,
+            "protocol": "TCP"
+          }
+        ]
+      },
+      {
+        "to": [
+          {
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "tracer-database",
+                "app.kubernetes.io/name": "roebel-tracer-postgres",
+                "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                "stadtstack.io/authority": "none",
+                "stadtstack.io/civic-authority": "none",
+                "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+                "stadtstack.io/environment": "staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 5432,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ],
+    "ingress": [
+      {
+        "from": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "readonly-presentation",
+                "app.kubernetes.io/name": "roebel-web-presentation",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none"
+              }
+            }
+          },
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "staging-participant-gateway",
+                "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+                "app.kubernetes.io/part-of": "stadtstack",
+                "stadtstack.io/authority": "none",
+                "stadtstack.io/civic-authority": "none",
+                "stadtstack.io/environment": "staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 3000,
+            "protocol": "TCP"
+          }
+        ]
+      }
+    ],
+    "podSelector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "tracer-postgrest",
+        "app.kubernetes.io/name": "roebel-tracer-postgrest",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+        "stadtstack.io/environment": "staging"
+      }
+    },
+    "policyTypes": [
+      "Ingress",
+      "Egress"
+    ]
+  }
+}

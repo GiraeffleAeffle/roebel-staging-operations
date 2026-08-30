@@ -33,6 +33,7 @@
   },
   "publicMetadataBoundary": {
     "allowedKinds": [
+      "ConfigMap",
       "Deployment",
       "Ingress",
       "Service",
@@ -66,6 +67,63 @@
     "renderRoot": "reviewed-render/roebel-staging/signed-nostr",
     "runtimePin": "reviewed-render/roebel-staging/signed-nostr/runtime-pin.json",
     "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1"
+  },
+  "ephemeralTracerDataPlaneBoundary": {
+    "activationReady": false,
+    "authority": "none",
+    "bootstrap": {
+      "configMap": "roebel-tracer-data-plane-bootstrap-v1",
+      "hashVerificationBeforeSql": true,
+      "productArtifacts": [
+        {
+          "path": "supabase/staging_incluster_tracer_baseline_v1.sql",
+          "sha256": "sha256:c9d94bc0baa66fa1e0c7b4fa9da1677afac7a59178b82c8b37b0bc781db299d5"
+        },
+        {
+          "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
+          "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
+        },
+        {
+          "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
+          "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+        }
+      ],
+      "vaultBeforeParticipantMigrations": true
+    },
+    "images": {
+      "postgres": "docker.io/supabase/postgres@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b",
+      "postgrest": "docker.io/postgrest/postgrest@sha256:bea1c76a856fa39d1e542d25911cf95d02fe2bf971992d033044ff209f1504b8"
+    },
+    "network": {
+      "externalIngress": false,
+      "postgrestClusterUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
+      "postgresIngress": "postgrest-exact-pod-selector-only",
+      "postgrestIngress": "web-and-participant-exact-pod-selectors-only"
+    },
+    "normalReleaseSetPromotionMayChange": false,
+    "renderRoot": "reviewed-render/roebel-staging/tracer-data-plane",
+    "runtimePin": "reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json",
+    "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
+    "secretReference": {
+      "keys": [
+        "anon-jwt",
+        "authenticator-password",
+        "environment-arm",
+        "jwt-secret",
+        "pgsodium-root-key",
+        "postgres-password",
+        "postgrest-db-uri",
+        "rpc-secret"
+      ],
+      "name": "roebel-tracer-data-plane-runtime",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "valuesCommitted": false
+    },
+    "storage": {
+      "durability": "emptyDir-recreated-baseline",
+      "persistentVolumeClaim": false,
+      "sizeLimit": "2Gi"
+    }
   },
   "stagingParticipantGatewayBoundary": {
     "activationPolicy": "policy/staging-participant-gateway-activation-policy.json",

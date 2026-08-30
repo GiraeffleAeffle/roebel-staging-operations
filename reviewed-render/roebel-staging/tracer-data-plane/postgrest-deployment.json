@@ -1,0 +1,163 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/component": "tracer-postgrest",
+      "app.kubernetes.io/name": "roebel-tracer-postgrest",
+      "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/civic-authority": "none",
+      "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+      "stadtstack.io/environment": "staging"
+    },
+    "name": "roebel-tracer-postgrest",
+    "namespace": "stadtstack-roebel-staging-lab"
+  },
+  "spec": {
+    "progressDeadlineSeconds": 300,
+    "replicas": 1,
+    "revisionHistoryLimit": 1,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/component": "tracer-postgrest",
+        "app.kubernetes.io/name": "roebel-tracer-postgrest",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+        "stadtstack.io/environment": "staging"
+      }
+    },
+    "strategy": {
+      "type": "Recreate"
+    },
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "tracer-postgrest",
+          "app.kubernetes.io/name": "roebel-tracer-postgrest",
+          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+          "stadtstack.io/authority": "none",
+          "stadtstack.io/civic-authority": "none",
+          "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+          "stadtstack.io/environment": "staging"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "env": [
+              {
+                "name": "PGRST_DB_URI",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "postgrest-db-uri",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "PGRST_DB_SCHEMAS",
+                "value": "public"
+              },
+              {
+                "name": "PGRST_DB_ANON_ROLE",
+                "value": "anon"
+              },
+              {
+                "name": "PGRST_JWT_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "jwt-secret",
+                    "name": "roebel-tracer-data-plane-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "PGRST_SERVER_HOST",
+                "value": "*4"
+              },
+              {
+                "name": "PGRST_SERVER_PORT",
+                "value": "3000"
+              }
+            ],
+            "image": "docker.io/postgrest/postgrest@sha256:bea1c76a856fa39d1e542d25911cf95d02fe2bf971992d033044ff209f1504b8",
+            "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
+            "name": "postgrest",
+            "ports": [
+              {
+                "containerPort": 3000,
+                "name": "http",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
+            "resources": {
+              "limits": {
+                "cpu": "250m",
+                "ephemeral-storage": "64Mi",
+                "memory": "192Mi"
+              },
+              "requests": {
+                "cpu": "25m",
+                "ephemeral-storage": "16Mi",
+                "memory": "64Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true
+            },
+            "startupProbe": {
+              "failureThreshold": 60,
+              "periodSeconds": 2,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            }
+          }
+        ],
+        "restartPolicy": "Always",
+        "securityContext": {
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccountName": "roebel-tracer-data-plane",
+        "terminationGracePeriodSeconds": 20
+      }
+    }
+  }
+}
