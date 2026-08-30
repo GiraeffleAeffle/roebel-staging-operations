@@ -397,6 +397,39 @@ to anon, authenticated;
 grant all privileges on all tables in schema public to service_role;
 grant all privileges on all sequences in schema public to service_role;
 
+-- The checksum-pinned participant migration snapshots explicit column ACLs
+-- before closing browser writes. Fresh PostgreSQL columns have a NULL attacl;
+-- PostgreSQL 15 rejects the migration's empty-array aclexplode fallback because
+-- it is zero-dimensional. Materialize a redundant server-only SELECT ACL on
+-- every inspected column so the snapshot sees a valid one-dimensional ACL.
+-- service_role already has table-level SELECT, so this neither widens browser
+-- access nor changes the effective server privilege.
+do $$
+declare
+  v_table text;
+  v_columns text;
+begin
+  foreach v_table in array array[
+    'posts', 'post_comments', 'post_likes', 'app_settings'
+  ] loop
+    select string_agg(pg_catalog.format('%I', a.attname), ', ' order by a.attnum)
+      into v_columns
+      from pg_catalog.pg_attribute a
+     where a.attrelid = pg_catalog.to_regclass(
+       pg_catalog.format('public.%I', v_table)
+     )
+       and a.attnum > 0
+       and not a.attisdropped;
+
+    execute pg_catalog.format(
+      'grant select (%s) on table public.%I to service_role',
+      v_columns,
+      v_table
+    );
+  end loop;
+end;
+$$;
+
 insert into public.users (
   id,
   wallet_address,

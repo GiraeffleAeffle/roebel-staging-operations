@@ -50,7 +50,7 @@ PRODUCT_ARTIFACTS = (
     (
         "71-roebel-tracer-baseline.sql",
         "supabase/staging_incluster_tracer_baseline_v1.sql",
-        "sha256:c9d94bc0baa66fa1e0c7b4fa9da1677afac7a59178b82c8b37b0bc781db299d5",
+        "sha256:8fe7fffca7a5b62720254eb4fade61ab7e2767e327af2b117c3c4635f45a9e32",
     ),
     (
         "73-staging-participant-gateway.sql",
@@ -365,7 +365,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
         "image": POSTGRES_IMAGE,
         "imagePullPolicy": "IfNotPresent",
         "livenessProbe": exec_probe(
-            ["/usr/bin/pg_isready", "--username=postgres", "--dbname=postgres"],
+            ["/usr/bin/pg_isready", "--username=supabase_admin", "--dbname=postgres"],
             6,
             20,
             5,
@@ -373,7 +373,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
         "name": "postgres",
         "ports": [{"containerPort": POSTGRES_PORT, "name": "postgres", "protocol": "TCP"}],
         "readinessProbe": exec_probe(
-            ["/usr/bin/pg_isready", "--username=postgres", "--dbname=postgres"],
+            ["/usr/bin/pg_isready", "--username=supabase_admin", "--dbname=postgres"],
             3,
             10,
             5,
@@ -387,7 +387,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
             "readOnlyRootFilesystem": False,
         },
         "startupProbe": exec_probe(
-            ["/usr/bin/pg_isready", "--username=postgres", "--dbname=postgres"],
+            ["/usr/bin/pg_isready", "--username=supabase_admin", "--dbname=postgres"],
             60,
             2,
             5,

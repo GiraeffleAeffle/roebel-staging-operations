@@ -3,7 +3,7 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:217d9c260d66e60b23d5d7379575554fd283e6cc883b46eb50504cafa40d7621",
+      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:b2ade120ed794c9c5dc7f5edb73c7b61262fc70f74c0d4ccdd2719954a37f93f",
       "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
     },
     "labels": {
@@ -115,7 +115,7 @@
               "exec": {
                 "command": [
                   "/usr/bin/pg_isready",
-                  "--username=postgres",
+                  "--username=supabase_admin",
                   "--dbname=postgres"
                 ]
               },
@@ -136,7 +136,7 @@
               "exec": {
                 "command": [
                   "/usr/bin/pg_isready",
-                  "--username=postgres",
+                  "--username=supabase_admin",
                   "--dbname=postgres"
                 ]
               },
@@ -165,7 +165,7 @@
               "exec": {
                 "command": [
                   "/usr/bin/pg_isready",
-                  "--username=postgres",
+                  "--username=supabase_admin",
                   "--dbname=postgres"
                 ]
               },

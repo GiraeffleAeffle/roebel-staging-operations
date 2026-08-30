@@ -77,7 +77,7 @@
       "productArtifacts": [
         {
           "path": "supabase/staging_incluster_tracer_baseline_v1.sql",
-          "sha256": "sha256:c9d94bc0baa66fa1e0c7b4fa9da1677afac7a59178b82c8b37b0bc781db299d5"
+          "sha256": "sha256:8fe7fffca7a5b62720254eb4fade61ab7e2767e327af2b117c3c4635f45a9e32"
         },
         {
           "path": "supabase/migrations/20260825_staging_participant_gateway.sql",

@@ -93,6 +93,11 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         environment = {item["name"]: item for item in container["env"]}
         self.assertEqual(environment["POSTGRES_USER"]["value"], "supabase_admin")
+        for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
+            self.assertIn(
+                "--username=supabase_admin",
+                container[probe_name]["exec"]["command"],
+            )
         self.assertIn(
             {
                 "mountPath": "/docker-entrypoint-initdb.d/zz-roebel-tracer.sh",
@@ -118,6 +123,7 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         verify = POLICY.bootstrap_verify_script()
         self.assertIn("sha256sum --check --strict", verify)
         self.assertIn("--username=supabase_admin", verify)
+        self.assertNotIn("--username=postgres", verify)
         self.assertIn("--file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql", verify)
         self.assertLess(
             verify.rindex("71-roebel-tracer-baseline.sql"),
@@ -131,6 +137,8 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
             self.assertIn(digest.removeprefix("sha256:"), verify)
         vault = POLICY.vault_bootstrap_script()
         self.assertIn("\\getenv roebel_rpc_secret", vault)
+        self.assertIn("--username=supabase_admin", vault)
+        self.assertNotIn("--username=postgres", vault)
         self.assertNotIn("ROEBEL_TRACER_RPC_SECRET=", vault)
 
     def test_secret_references_are_exact_and_values_are_absent(self) -> None:
