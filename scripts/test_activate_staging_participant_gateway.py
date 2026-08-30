@@ -259,6 +259,24 @@ def recovery_incident_ownership():
         "civicAuthorityEffects": False,
     }
 
+def run29_recovery_incident_ownership():
+    return {
+        "originProtectedRevision": MODULE.RUN29_FAILED_ACTIVATION_ORIGIN_REVISION,
+        "originRawSha256": MODULE.RUN29_FAILED_ACTIVATION_RAW_SHA256,
+        "originReceiptSha256": MODULE.RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+        "operationNonce": MODULE.RUN29_FAILED_ACTIVATION_OPERATION_NONCE,
+        "objects": {
+            logical: copy.deepcopy(record)
+            for logical, record in zip(
+                MODULE.RUN29_FAILED_ACTIVATION_CREATED_ORDER,
+                MODULE.RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS,
+            )
+        },
+        "serviceExposureBreakProved": False,
+        "ingressNeverCreated": False,
+        "civicAuthorityEffects": False,
+    }
+
 def incident_semantic_hash_fixture(incident, desired_by_logical):
     """Keep recovery classification tests pinned to the historical incident render."""
     hashes = {
@@ -382,6 +400,51 @@ def valid_recovery_preflight(value, *, deployment_present=True):
         "preservation": recovery_preservation(value),
     }
 
+def valid_run29_recovery_preflight(value):
+    revision = f"main@sha1:{MODULE.RUN29_FAILED_ACTIVATION_ORIGIN_REVISION}"
+    gateway_flux = {
+        "uid": "gateway-flux-uid", "resourceVersion": "16837627",
+        "generation": 3, "observedGeneration": -1, "suspended": True,
+        "incidentState": "suspended-after-exact-rbac-healthcheck-failure",
+        "lastAttemptedRevision": revision, "lastAppliedRevision": None,
+        "quietSeconds": 2, "checks": 2, "objectStableForQuietInterval": True,
+    }
+    workbench_flux = {
+        "uid": "workbench-flux-uid", "resourceVersion": "16837661",
+        "generation": 3, "observedGeneration": 3, "suspended": True,
+        "incidentState": "suspended-after-successful-run29-reconcile",
+        "lastAttemptedRevision": revision, "lastAppliedRevision": revision,
+        "quietSeconds": 2, "checks": 2, "objectStableForQuietInterval": True,
+    }
+    targets = {
+        logical: {
+            "state": "present-exact-receipt-owned",
+            "uid": MODULE.RUN29_FAILED_ACTIVATION_OBJECT_UIDS[logical],
+            "resourceVersion": str(200 + index),
+            "sourceReceiptSha256": MODULE.RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+        }
+        for index, logical in enumerate(MODULE.RUN29_FAILED_ACTIVATION_CREATED_ORDER)
+    }
+    cluster = recovery_cluster(value)
+    return {
+        "clusterBinding": {"initial": cluster, "beforeRollback": copy.deepcopy(cluster)},
+        "dormantReceipt": {
+            "receiptSha256": sha("d"), "protectedRevision": REV,
+            "kustomizationUids": {
+                "gateway": gateway_flux["uid"],
+                "workbenchIngress": workbench_flux["uid"],
+            },
+        },
+        "flux": {"gateway": gateway_flux, "workbenchIngress": workbench_flux},
+        "source": {
+            "uid": "source-uid", "resourceVersion": "40",
+            "generation": 2, "observedGeneration": 2,
+            "artifactRevision": f"main@sha1:{REV}", "ready": True,
+        },
+        "targets": targets,
+        "preservation": recovery_preservation(value),
+    }
+
 def valid_recovery_rollback(value, preflight):
     deployment_present = preflight["targets"]["gateway.deployment"]["state"] == "present-exact-failed-nonce-owned"
     deleted = [
@@ -456,6 +519,66 @@ def valid_recovery_rollback(value, preflight):
         "uncertainTarget": None,
         "errors": [],
         "finalizersRemovedByRunner": False,
+    }
+
+def valid_run29_recovery_rollback(value, preflight):
+    order = [
+        "gateway.ingress", "gateway.service", "gateway.service",
+        "gateway.deployment", "gateway.serviceAccount",
+        "workbenchIngress.networkPolicy", "gateway.networkPolicy",
+    ]
+    seen = {logical: 0 for logical in set(order)}
+    deleted = []
+    for logical in order:
+        seen[logical] += 1
+        target = preflight["targets"][logical]
+        if logical == "gateway.service" and seen[logical] == 2:
+            deleted.append({"logicalName": logical, "absent": True, "alreadyAbsent": True})
+        elif target["state"] == "already-absent-receipt-owned":
+            deleted.append({"logicalName": logical, "absent": True, "alreadyAbsent": True})
+        else:
+            deleted.append({
+                "logicalName": logical,
+                "uid": target["uid"],
+                "deleteResourceVersion": str(int(target["resourceVersion"]) + 10),
+                "absent": True,
+                "foregroundPropagation": logical == "gateway.deployment",
+                "finalizersRemovedByRunner": False,
+            })
+    final = {
+        "clusterBindingBeforeRollback": copy.deepcopy(preflight["clusterBinding"]["initial"]),
+        "exposureBreak": {
+            "reason": "always-remove-owned-service-before-flux",
+            "initialIngressAbsenceProved": True,
+            "serviceUid": MODULE.RUN29_FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+            "serviceAbsent": True,
+            "unknownIngressUntouched": False,
+        },
+        "exposureBreakAfterFlux": {
+            "serviceUid": MODULE.RUN29_FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
+            "serviceAbsent": True,
+            "sameOwnedUidOnly": True,
+        },
+        "deploymentDependents": recovery_dependents_absent(),
+        "absence": {
+            "status": "all-six-names-absent-for-quiet-interval",
+            "quietSeconds": value["httpBoundary"]["timeoutsSeconds"]["rollbackAbsenceQuiet"],
+            "checks": 2,
+        },
+        "flux": copy.deepcopy(preflight["flux"]),
+        "sharedSource": {
+            "uid": preflight["source"]["uid"],
+            "resourceVersion": preflight["source"]["resourceVersion"],
+            "artifactRevision": preflight["source"]["artifactRevision"],
+            "unchanged": True,
+        },
+        "clusterBinding": copy.deepcopy(preflight["clusterBinding"]["initial"]),
+    }
+    return {
+        "status": "complete", "bothKustomizationsSuspended": True,
+        "flux": copy.deepcopy(preflight["flux"]), "deleted": deleted,
+        "finalChecks": final, "preservation": recovery_preservation(value),
+        "uncertainTarget": None, "errors": [], "finalizersRemovedByRunner": False,
     }
 def valid_database_status(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid", before="10", after="11", image_id=None):
     """A complete private readiness receipt, including provenance and RBAC."""
@@ -926,7 +1049,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_ten_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_eleven_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -960,7 +1083,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -978,7 +1102,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-ten-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-eleven-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -992,6 +1116,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1013,7 +1138,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SEVENTH_TO_EIGHTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1025,7 +1151,8 @@ class ExecutorTests(unittest.TestCase):
             "sixth-to-seventh-successor file set drift",
             "seventh-to-eighth-successor file set drift",
             "eighth-to-ninth-successor file set drift",
-            "ninth-successor-to-acceptor file set drift",
+            "ninth-to-tenth-successor file set drift",
+            "tenth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1070,6 +1197,10 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
             "01e115b6fd03dce7900946ac71e2d8f943a6fb74",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
+            "38cdfbd9748c3481689599c53f4443af11a7df63",
         )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
@@ -1116,7 +1247,11 @@ class ExecutorTests(unittest.TestCase):
             participant_pair | wrapper_pair,
         )
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES),
+            participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
             participant_pair | wrapper_pair,
         )
         widened = copy.deepcopy(receipt)
@@ -1144,8 +1279,8 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
 
-    def test_tenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
-        parent = MODULE.TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION
+    def test_eleventh_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION
         child = "c" * 40
         foreign = "d" * 40
         for label, lineage in (
@@ -1159,12 +1294,12 @@ class ExecutorTests(unittest.TestCase):
                 MODULE, "trusted_git_v4", return_value=result
             ) as trusted, self.assertRaisesRegex(
                 MODULE.ActivationError,
-                "ninth-successor-to-acceptor protected parent drift",
+                "tenth-successor-to-acceptor protected parent drift",
             ):
                 MODULE.exact_revision_transition_files_v4(
                     parent,
                     child,
-                    "tracer receipt ninth-successor-to-acceptor",
+                    "tracer receipt tenth-successor-to-acceptor",
                 )
             self.assertEqual(trusted.call_count, 1)
 
@@ -2134,6 +2269,97 @@ class ExecutorTests(unittest.TestCase):
                 current["status"]["observedGeneration"] = observed
                 with self.assertRaisesRegex(MODULE.ActivationError, "exact dormant incident state"):
                     MODULE.recovery_flux_preflight_v4(drifted)
+
+    def test_v4_run29_incident_flux_profile_binds_exact_suspended_generation_three_failure_state(self):
+        revision = MODULE.RUN29_FAILED_ACTIVATION_ORIGIN_REVISION
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "gateway-flux-uid", "16837627")
+        gateway["metadata"]["generation"] = 3
+        gateway["status"] = {
+            "observedGeneration": -1,
+            "lastAttemptedRevision": f"main@sha1:{revision}",
+            "conditions": [
+                {"type": "Reconciling", "status": "True", "observedGeneration": 3, "reason": "ProgressingWithRetry", "message": f"Running health checks for revision main@sha1:{revision} with a timeout of 2m0s"},
+                {"type": "Ready", "status": "False", "observedGeneration": 2, "reason": "HealthCheckFailed", "message": MODULE.RUN29_GATEWAY_RBAC_FAILURE},
+                {"type": "Healthy", "status": "False", "observedGeneration": 2, "reason": "HealthCheckFailed", "message": MODULE.RUN29_GATEWAY_RBAC_FAILURE},
+            ],
+        }
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "workbench-flux-uid", "16837661")
+        workbench["metadata"]["generation"] = 3
+        workbench["status"] = {
+            "observedGeneration": 3,
+            "lastAppliedRevision": f"main@sha1:{revision}",
+            "lastAttemptedRevision": f"main@sha1:{revision}",
+            "conditions": [
+                {"type": "Ready", "status": "True", "observedGeneration": 2, "reason": "ReconciliationSucceeded", "message": f"Applied revision: main@sha1:{revision}"},
+                {"type": "Healthy", "status": "True", "observedGeneration": 2, "reason": "Succeeded", "message": "Health check passed in 24ms"},
+            ],
+        }
+        gateway_projection = MODULE.run29_recovery_suspended_flux_state_v4(gateway, "gateway", "gateway-flux-uid")
+        workbench_projection = MODULE.run29_recovery_suspended_flux_state_v4(workbench, "workbenchIngress", "workbench-flux-uid")
+        self.assertEqual(gateway_projection["incidentState"], "suspended-after-exact-rbac-healthcheck-failure")
+        self.assertEqual(workbench_projection["incidentState"], "suspended-after-successful-run29-reconcile")
+        self.assertEqual(gateway_projection["generation"], workbench_projection["generation"])
+        drifted = copy.deepcopy(gateway)
+        drifted["status"]["conditions"][1]["message"] = "different failure"
+        with self.assertRaisesRegex(MODULE.ActivationError, "exact RBAC failure"):
+            MODULE.run29_recovery_suspended_flux_state_v4(drifted, "gateway", "gateway-flux-uid")
+
+    def test_v4_run29_incident_flux_preflight_requires_two_second_exact_object_and_resource_version_stability(self):
+        revision = MODULE.RUN29_FAILED_ACTIVATION_ORIGIN_REVISION
+        gateway = admitted(MODULE.POLICY.gateway_flux_objects(suspended=True)["kustomization"], "gateway-flux-uid", "16837627")
+        gateway["metadata"]["generation"] = 3
+        gateway["status"] = {
+            "observedGeneration": -1,
+            "lastAttemptedRevision": f"main@sha1:{revision}",
+            "conditions": [
+                {"type": "Reconciling", "status": "True", "observedGeneration": 3, "reason": "ProgressingWithRetry", "message": f"Running health checks for revision main@sha1:{revision} with a timeout of 2m0s"},
+                {"type": "Ready", "status": "False", "observedGeneration": 2, "reason": "HealthCheckFailed", "message": MODULE.RUN29_GATEWAY_RBAC_FAILURE},
+                {"type": "Healthy", "status": "False", "observedGeneration": 2, "reason": "HealthCheckFailed", "message": MODULE.RUN29_GATEWAY_RBAC_FAILURE},
+            ],
+        }
+        workbench = admitted(MODULE.POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"], "workbench-flux-uid", "16837661")
+        workbench["metadata"]["generation"] = 3
+        workbench["status"] = {
+            "observedGeneration": 3,
+            "lastAppliedRevision": f"main@sha1:{revision}",
+            "lastAttemptedRevision": f"main@sha1:{revision}",
+            "conditions": [
+                {"type": "Ready", "status": "True", "observedGeneration": 2, "reason": "ReconciliationSucceeded", "message": f"Applied revision: main@sha1:{revision}"},
+                {"type": "Healthy", "status": "True", "observedGeneration": 2, "reason": "Succeeded", "message": "Health check passed in 24ms"},
+            ],
+        }
+        bootstrap = {"owners": {
+            "gateway": {"kustomization": gateway},
+            "workbenchIngress": {"kustomization": workbench},
+        }}
+        value = ready_policy(); incident = run29_recovery_incident_ownership()
+        with (
+            patch.object(MODULE, "_target_live", side_effect=[copy.deepcopy(gateway), copy.deepcopy(workbench)]),
+            patch.object(MODULE.time, "sleep") as sleep,
+        ):
+            result = MODULE.recovery_flux_preflight_v4(
+                bootstrap,
+                r=Fake(),
+                kubeconfig="/snapshot",
+                p=value,
+                incident=incident,
+            )
+        sleep.assert_called_once_with(value["httpBoundary"]["timeoutsSeconds"]["rollbackAbsenceQuiet"])
+        self.assertTrue(result["gateway"]["objectStableForQuietInterval"])
+        self.assertEqual(result["workbenchIngress"]["quietSeconds"], 2)
+        drifted = copy.deepcopy(gateway); drifted["metadata"]["resourceVersion"] = "16837628"
+        with (
+            patch.object(MODULE, "_target_live", side_effect=[drifted, copy.deepcopy(workbench)]),
+            patch.object(MODULE.time, "sleep"),
+            self.assertRaisesRegex(MODULE.ActivationError, "object or resourceVersion changed"),
+        ):
+            MODULE.recovery_flux_preflight_v4(
+                bootstrap,
+                r=Fake(),
+                kubeconfig="/snapshot",
+                p=value,
+                incident=incident,
+            )
 
     def test_v4_wait_both_suspended_requires_full_protected_suspended_semantics(self):
         value = ready_policy()
@@ -3208,6 +3434,128 @@ class ExecutorTests(unittest.TestCase):
             finally:
                 os.close(fd)
 
+    def test_v4_run29_failed_activation_recovery_source_binds_exact_six_object_incident(self):
+        receipt = copy.deepcopy(MODULE.RUN29_FAILED_ACTIVATION_RECEIPT)
+        raw = (MODULE.canonical(receipt) + "\n").encode()
+        self.assertEqual(
+            MODULE.bytes_digest(raw),
+            "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122",
+        )
+        self.assertEqual(
+            receipt["canonicalSha256"],
+            "sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run29-failed.json"; path.write_bytes(raw); path.chmod(0o600)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                bound = MODULE.bind_failed_activation_recovery_source_v4(fd)
+            finally:
+                os.close(fd)
+        self.assertEqual(bound["originProtectedRevision"], "38cdfbd9748c3481689599c53f4443af11a7df63")
+        self.assertEqual(bound["operationNonce"], "1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b")
+        self.assertEqual(list(bound["objects"]), [
+            "gateway.networkPolicy",
+            "workbenchIngress.networkPolicy",
+            "gateway.serviceAccount",
+            "gateway.service",
+            "gateway.deployment",
+            "gateway.ingress",
+        ])
+        self.assertFalse(bound["serviceExposureBreakProved"])
+        self.assertFalse(bound["ingressNeverCreated"])
+        self.assertFalse(bound["civicAuthorityEffects"])
+        self.assertEqual(MODULE.validate_recovery_incident_binding_v4(bound), bound)
+
+    def test_v4_run29_recovery_target_preflight_binds_all_six_uids_with_only_exact_flux_tracking_labels(self):
+        value = ready_policy(); incident = run29_recovery_incident_ownership()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            resources = MODULE.POLICY.expected_gateway_resources(value)
+        desired_by_logical = {
+            "gateway.networkPolicy": resources["networkPolicy"],
+            "workbenchIngress.networkPolicy": MODULE.POLICY.expected_workbench_ingress_network_policy(include_web_presentation=True),
+            "gateway.serviceAccount": resources["serviceAccount"],
+            "gateway.service": resources["service"],
+            "gateway.deployment": resources["deployment"],
+            "gateway.ingress": resources["ingress"],
+        }
+        rendered = {
+            logical: {
+                "desired": desired,
+                "path": incident["objects"][logical]["protectedRenderPath"],
+                "blobSha256": incident["objects"][logical]["protectedRenderBlobSha256"],
+            }
+            for logical, desired in desired_by_logical.items()
+        }
+        live_by_target = {}
+        for logical, desired in desired_by_logical.items():
+            live = admitted(desired, incident["objects"][logical]["uid"], str(200 + len(live_by_target)))
+            live.setdefault("metadata", {}).setdefault("labels", {}).update({
+                "kustomize.toolkit.fluxcd.io/name": (
+                    value["gitOps"]["reconcilers"]["workbenchIngress"]["kustomization"]["name"]
+                    if logical == "workbenchIngress.networkPolicy"
+                    else value["gitOps"]["reconcilers"]["gateway"]["kustomization"]["name"]
+                ),
+                "kustomize.toolkit.fluxcd.io/namespace": MODULE.FLUX_NAMESPACE,
+            })
+            metadata = desired["metadata"]
+            live_by_target[(desired["kind"].lower(), metadata["namespace"], metadata["name"])] = live
+
+        def lookup(_runner, _kube, kind, name, namespace):
+            return copy.deepcopy(live_by_target.get((kind, namespace, name)))
+
+        self.assertEqual(MODULE.RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256, {
+            "gateway.networkPolicy": "sha256:c96474d0562ba53f1733ecc19ae92fc08f9cf133a3befcf79dfbc61cad54de1e",
+            "workbenchIngress.networkPolicy": "sha256:b8e77edf5a370acd9d5330047d64f94402d985d98d1296551101022276bcb5e7",
+            "gateway.serviceAccount": "sha256:0b9c5dcdbe3305748ee8074561f54adf8d643ebccb25b4cb414b530c2f75439c",
+            "gateway.service": "sha256:0c76fa6419381a857ab725ded5302441a1f53981a0f8922b61b794dfef11bbc0",
+            "gateway.deployment": "sha256:d9de8fbc26421aaba46fdec236725993a691d2dd4b2f745be6daa74ce2d5827f",
+            "gateway.ingress": "sha256:3eec8aabc99efe45611a99daf848741c4e4f6c67b7e7e52fb3d96dfaab47a7f0",
+        })
+        fixture_live_hashes = {
+            logical: MODULE.POLICY.semantic_sha256(live)
+            for logical, live in zip(desired_by_logical, live_by_target.values())
+        }
+        with (
+            patch.object(MODULE, "RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256", fixture_live_hashes),
+            patch.object(MODULE, "get_optional", side_effect=lookup),
+        ):
+            bound = MODULE.bind_recovery_targets_v4(Fake(), "/snapshot", rendered, incident)
+        self.assertEqual([item.logical_name for item in bound["created"]], list(MODULE.RUN29_FAILED_ACTIVATION_CREATED_ORDER))
+        self.assertEqual(
+            {logical: state["state"] for logical, state in bound["classifications"].items()},
+            {logical: "present-exact-receipt-owned" for logical in MODULE.RUN29_FAILED_ACTIVATION_CREATED_ORDER},
+        )
+
+    def test_v4_run29_recovery_delete_rechecks_exact_uid_and_exact_flux_tracking_semantics(self):
+        value = ready_policy()
+        with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            desired = MODULE.POLICY.expected_gateway_resources(value)["ingress"]
+        record = copy.deepcopy(run29_recovery_incident_ownership()["objects"]["gateway.ingress"])
+        live = admitted(desired, record["uid"], "300")
+        live.setdefault("metadata", {}).setdefault("labels", {}).update(
+            MODULE.RUN29_FLUX_TRACKING_LABELS["gateway"]
+        )
+        created = MODULE.CreatedV4(
+            "gateway.ingress",
+            desired,
+            copy.deepcopy(live),
+            record | {
+                "recoverySource": True,
+                "recoveryIncidentRawSha256": MODULE.RUN29_FAILED_ACTIVATION_RAW_SHA256,
+            },
+        )
+        with (
+            patch.object(MODULE, "get_optional", side_effect=[copy.deepcopy(live), None]),
+            patch.object(MODULE, "raw_delete") as delete,
+        ):
+            result = MODULE.delete_with_preconditions_v4(
+                Fake(), "/snapshot", created, snapshot=Mock(),
+            )
+        self.assertEqual(result["uid"], record["uid"])
+        self.assertTrue(result["absent"])
+        delete.assert_called_once()
+
     def test_v4_recovery_target_preflight_binds_only_exact_incident_objects(self):
         value = ready_policy(); incident = recovery_incident_ownership()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
@@ -3535,6 +3883,54 @@ class ExecutorTests(unittest.TestCase):
                 drifted = copy.deepcopy(receipt); mutate(drifted); resign(drifted)
                 with self.assertRaisesRegex(MODULE.ActivationError, message):
                     MODULE.bind_recovery_receipt_v4(drifted, value, REV, runner_hashes)
+
+    def test_v4_run29_recovery_preflight_verifier_binds_profile_specific_flux_and_six_present_targets(self):
+        value = ready_policy(); incident = run29_recovery_incident_ownership()
+        preflight = valid_run29_recovery_preflight(value)
+        self.assertEqual(
+            MODULE.validate_recovery_preflight_receipt_v4(preflight, value, REV, incident),
+            preflight,
+        )
+        drifted = copy.deepcopy(preflight)
+        drifted["targets"]["gateway.ingress"]["sourceReceiptSha256"] = MODULE.FAILED_ACTIVATION_CANONICAL_SHA256
+        with self.assertRaisesRegex(MODULE.ActivationError, "target ownership drift"):
+            MODULE.validate_recovery_preflight_receipt_v4(drifted, value, REV, incident)
+
+    def test_v4_run29_recovery_receipt_verifier_binds_ingress_service_and_all_six_owned_deletions(self):
+        value = ready_policy(); runner_hashes = {"runner": sha()}
+        incident = run29_recovery_incident_ownership()
+        preflight = valid_run29_recovery_preflight(value)
+        rollback = valid_run29_recovery_rollback(value, preflight)
+        unsigned = {
+            "schemaVersion": MODULE.RECOVERY_RECEIPT_SCHEMA,
+            "status": "recovered",
+            "protectedRevision": REV,
+            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+            "protectedRunnerFileSha256": runner_hashes,
+            "recoveredIncident": incident,
+            "preflight": preflight,
+            "rollback": rollback,
+            "automaticActivationRetry": False,
+            "civicAuthorityEffects": False,
+        }
+        receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
+        bound = MODULE.bind_recovery_receipt_v4(receipt, value, REV, runner_hashes)
+        self.assertEqual(bound["sourceFailedReceiptSha256"], MODULE.RUN29_FAILED_ACTIVATION_CANONICAL_SHA256)
+        self.assertEqual(
+            [item["logicalName"] for item in rollback["deleted"]],
+            [
+                "gateway.ingress", "gateway.service", "gateway.service",
+                "gateway.deployment", "gateway.serviceAccount",
+                "workbenchIngress.networkPolicy", "gateway.networkPolicy",
+            ],
+        )
+        drifted = copy.deepcopy(receipt)
+        drifted["rollback"]["deleted"][0]["uid"] = "foreign-ingress"
+        drifted["canonicalSha256"] = MODULE.digest({
+            key: item for key, item in drifted.items() if key != "canonicalSha256"
+        })
+        with self.assertRaisesRegex(MODULE.ActivationError, "deletion UID drift"):
+            MODULE.bind_recovery_receipt_v4(drifted, value, REV, runner_hashes)
 
     def test_v4_success_receipt_rejects_incomplete_object_set(self):
         value = ready_policy(); facts = valid_success_facts(value)

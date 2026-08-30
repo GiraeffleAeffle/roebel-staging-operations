@@ -194,6 +194,7 @@ TRACER_ACTIVATION_COMPATIBILITY_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e
 TRACER_ACTIVATION_COMPATIBILITY_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9da0db"
 TRACER_ACTIVATION_COMPATIBILITY_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
 TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION = "01e115b6fd03dce7900946ac71e2d8f943a6fb74"
+TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION = "38cdfbd9748c3481689599c53f4443af11a7df63"
 TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
     "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 )
@@ -256,8 +257,20 @@ TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
+TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
+RUN29_FAILED_ACTIVATION_RAW_SHA256 = "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122"
+RUN29_FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f"
+FAILED_ACTIVATION_RECEIPT_SHA256_PROFILES = {
+    FAILED_ACTIVATION_RAW_SHA256: FAILED_ACTIVATION_CANONICAL_SHA256,
+    RUN29_FAILED_ACTIVATION_RAW_SHA256: RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+}
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
 WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v1"
@@ -331,6 +344,24 @@ class LiveTransportInterrupted(LiveTransportError):
 
 def require(value: bool, message: str) -> None:
     if not value: raise LiveTransportError(message)
+
+def failed_activation_receipt_sha256_profile(file_sha256: str) -> dict[str, str]:
+    canonical_sha256 = FAILED_ACTIVATION_RECEIPT_SHA256_PROFILES.get(file_sha256)
+    require(canonical_sha256 is not None, "failed participant activation receipt has no exact incident profile")
+    return {"fileSha256": file_sha256, "canonicalSha256": canonical_sha256}
+
+def bind_failed_activation_projection_to_profile(
+    file_sha256: str,
+    projection: Any,
+) -> dict[str, str]:
+    profile = failed_activation_receipt_sha256_profile(file_sha256)
+    require(
+        isinstance(projection, dict)
+        and projection.get("fileSha256") == profile["fileSha256"]
+        and projection.get("receiptSha256") == profile["canonicalSha256"],
+        "failed participant activation receipt source binding drift",
+    )
+    return profile
 
 def canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -526,7 +557,7 @@ def require_tracer_activation_compatibility_transition(
     receipt_revision: Any,
     receipt_file_sha256: str,
 ) -> str:
-    """Admit only run19 across its ten exact, tracer-plane-compatible successors."""
+    """Admit only run19 across its eleven exact, tracer-plane-compatible successors."""
     require(
         receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
@@ -641,16 +672,28 @@ def require_tracer_activation_compatibility_transition(
         "tracer activation compatibility ninth-hop file set drift",
     )
     require_protected_revision_parent(
-        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
         TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
     )
     require(
         protected_revision_changed_files(
             TRACER_ACTIVATION_COMPATIBILITY_NINTH_SUCCESSOR_REVISION,
-            current_revision,
+            TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
         )
         == TRACER_ACTIVATION_COMPATIBILITY_TENTH_HOP_FILES,
         "tracer activation compatibility tenth-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_TENTH_SUCCESSOR_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_ELEVENTH_HOP_FILES,
+        "tracer activation compatibility eleventh-hop file set drift",
     )
     return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
@@ -1891,6 +1934,7 @@ def verify_receipt_with_protected_cli(
 def bind_incident_recovery_handover_projection(
     recovery_projection: Any,
     handover_projection: Any,
+    failed_receipt_profile: Any,
 ) -> str:
     require(
         isinstance(recovery_projection, dict)
@@ -1899,6 +1943,15 @@ def bind_incident_recovery_handover_projection(
         and SHA256.fullmatch(recovery_projection["dormantHandoverReceiptSha256"]) is not None
         and recovery_projection["dormantHandoverReceiptSha256"] == handover_projection.get("receiptSha256"),
         "participant incident recovery no longer binds the fresh dormant handover",
+    )
+    require(
+        isinstance(failed_receipt_profile, dict)
+        and set(failed_receipt_profile) == {"fileSha256", "canonicalSha256"}
+        and FAILED_ACTIVATION_RECEIPT_SHA256_PROFILES.get(failed_receipt_profile.get("fileSha256"))
+        == failed_receipt_profile.get("canonicalSha256")
+        and recovery_projection.get("sourceFailedReceiptSha256")
+        == failed_receipt_profile["canonicalSha256"],
+        "participant incident recovery no longer binds the selected failed activation receipt",
     )
     return recovery_projection["dormantHandoverReceiptSha256"]
 
@@ -4416,6 +4469,7 @@ def main(argv: list[str] | None = None) -> int:
     teardown_projection: dict[str, Any] | None = None
     activation_projection: dict[str, Any] | None = None
     source_failed_projection: dict[str, Any] | None = None; incident_recovery_projection: dict[str, Any] | None = None
+    source_failed_sha256_profile: dict[str, str] | None = None
     source_secret_projection: dict[str, Any] | None = None
     secret_materialization_projection: dict[str, Any] | None = None
     secret_teardown_projection: dict[str, Any] | None = None
@@ -4577,7 +4631,7 @@ def main(argv: list[str] | None = None) -> int:
                     "failed participant activation receipt",
                 )
                 bound_receipts.append(source_failed_receipt)
-                require(source_failed_receipt.sha256 == FAILED_ACTIVATION_RAW_SHA256, "failed participant activation receipt raw checksum drift")
+                source_failed_sha256_profile = failed_activation_receipt_sha256_profile(source_failed_receipt.sha256)
                 source_failed_projection = verify_receipt_with_protected_cli(
                     cancellation,
                     bound_runners[ACTIVATION_RUNNER],
@@ -4588,10 +4642,9 @@ def main(argv: list[str] | None = None) -> int:
                     "rollback-incomplete-recovery-source-bound",
                     allow_cancelled=False,
                 )
-                require(
-                    source_failed_projection.get("receiptSha256") == FAILED_ACTIVATION_CANONICAL_SHA256
-                    and source_failed_projection.get("fileSha256") == FAILED_ACTIVATION_RAW_SHA256,
-                    "failed participant activation receipt source binding drift",
+                source_failed_sha256_profile = bind_failed_activation_projection_to_profile(
+                    source_failed_receipt.sha256,
+                    source_failed_projection,
                 )
             else:
                 source_secret_receipt = snapshot_owned_receipt(
@@ -5114,7 +5167,9 @@ def main(argv: list[str] | None = None) -> int:
                         allow_cancelled=True,
                     )
                     bind_incident_recovery_handover_projection(
-                        incident_recovery_projection, handover_projection,
+                        incident_recovery_projection,
+                        handover_projection,
+                        source_failed_sha256_profile,
                     )
                 finally:
                     session.receipt_reconciled()
@@ -5625,8 +5680,14 @@ def main(argv: list[str] | None = None) -> int:
         },
         "sourceSecretMaterialization": source_secret_record,
         "sourceFailedActivation": source_failed_record | {
-            "expectedFileSha256": FAILED_ACTIVATION_RAW_SHA256 if participant_recovery_mode else None,
-            "expectedCanonicalSha256": FAILED_ACTIVATION_CANONICAL_SHA256 if participant_recovery_mode else None,
+            "expectedFileSha256": (
+                source_failed_sha256_profile["fileSha256"]
+                if source_failed_sha256_profile is not None else None
+            ),
+            "expectedCanonicalSha256": (
+                source_failed_sha256_profile["canonicalSha256"]
+                if source_failed_sha256_profile is not None else None
+            ),
         },
         "secretMaterialization": secret_materialization_record,
         "secretTeardown": secret_teardown_record,

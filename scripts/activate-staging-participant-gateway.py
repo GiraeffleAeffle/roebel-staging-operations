@@ -64,6 +64,7 @@ TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION = "720e058a61c185c8c64e2679e14d5dc8eea96
 TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION = "2002f4da021de7188e86ae4cd7a724bf0e9da0db"
 TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION = "1995dba981f9413ff5460328a02c79ab563129a5"
 TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION = "01e115b6fd03dce7900946ac71e2d8f943a6fb74"
+TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION = "38cdfbd9748c3481689599c53f4443af11a7df63"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -119,7 +120,13 @@ TRACER_RECEIPT_EIGHTH_TO_NINTH_SUCCESSOR_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
 })
-TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/activate-staging-participant-gateway.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
@@ -286,6 +293,57 @@ FAILED_ACTIVATION_OBJECT_CREATE_RESULTS = (
         "temporaryNonceRemoved": True,
         "uid": FAILED_ACTIVATION_OBJECT_UIDS["gateway.service"],
     },
+)
+
+# Second one-shot authority for the exact rollback-incomplete run29 incident.
+# The canonical source below is value-free and copied byte-for-byte from the
+# durable run29 receipt.  Its fixed raw checksum plus the independent deep
+# field checks in the binder prevent this profile from becoming a generic
+# recovery escape hatch.
+RUN29_FAILED_ACTIVATION_RAW_SHA256 = "sha256:3a257f8b8ce37138d73e61dc58e42e7a6ebfc7aba2f10648e689eb6e033d4122"
+RUN29_FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f"
+RUN29_FAILED_ACTIVATION_ORIGIN_REVISION = "38cdfbd9748c3481689599c53f4443af11a7df63"
+RUN29_FAILED_ACTIVATION_OPERATION_NONCE = "1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b"
+RUN29_FAILED_ACTIVATION_FAILURE = "gateway Flux readiness: error: timed out waiting for the condition on kustomizations/roebel-staging-participant-gateway"
+RUN29_FAILED_ACTIVATION_RECEIPT = json.loads(r'''{"canonicalSha256":"sha256:0c25965b6f3424806fb82035363e58365d12fc4da414879824b367d3e2a8f81f","civicAuthorityEffects":false,"failure":"gateway Flux readiness: error: timed out waiting for the condition on kustomizations/roebel-staging-participant-gateway","objectCreateResults":[{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836480","protectedRenderBlobSha256":"sha256:5c6503c9f72b8db02cf111427441dfa6931f3b8f63d58d8a6e1a8d10e8a99a6e","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json","resourceVersion":"16836459","rollbackOwned":true,"semanticSha256":"sha256:b32cc7413b384f1c8129194af00319c10a478381e1e8c7334566b2f756b2a607","target":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","name":"roebel-staging-participant-gateway","namespace":"stadtstack-roebel-web-preview"},"temporaryNonceRemoved":true,"uid":"6944f2a7-1c5e-4dde-83b5-9d1e7f68ff09"},{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836504","protectedRenderBlobSha256":"sha256:c7e161a50d67f0fcb4b46e08e52ed6cba12e49fc81cf392ea9cadb3aa367e1ed","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json","resourceVersion":"16836493","rollbackOwned":true,"semanticSha256":"sha256:c6a33c135460bc1328e309d1e703524b5d2d672a3b8d09368a0835da384a827c","target":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","name":"roebel-staging-participant-workbench-ingress","namespace":"stadtstack-roebel-staging-lab"},"temporaryNonceRemoved":true,"uid":"3d53c788-1af9-4d16-b2e1-67d7895f211a"},{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836536","protectedRenderBlobSha256":"sha256:488e31034f296d29c638df0a4b1f4a2b745c2559a9f49abb43b52bceccdcc0f0","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json","resourceVersion":"16836515","rollbackOwned":true,"semanticSha256":"sha256:c15d0b01ec03c69fbc046822355c44021854c9140a2ea6aba4c25e1d8eda40e5","target":{"apiVersion":"v1","kind":"ServiceAccount","name":"roebel-staging-participant-gateway","namespace":"stadtstack-roebel-web-preview"},"temporaryNonceRemoved":true,"uid":"5d5a7fc0-13db-47bb-8d9b-97cf17c67b61"},{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836568","protectedRenderBlobSha256":"sha256:9327fa75f3516a231e69573bb52ea63907e8c89a0a439ba1738b4390ca029f35","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/service.json","resourceVersion":"16836550","rollbackOwned":true,"semanticSha256":"sha256:e6d088d7651884a85b062184a2b7a995624dd56d73a1fd6a5e99f391288fde1c","target":{"apiVersion":"v1","kind":"Service","name":"roebel-staging-participant-gateway","namespace":"stadtstack-roebel-web-preview"},"temporaryNonceRemoved":true,"uid":"dd9772c2-cbf2-4af5-8226-8c74d94fedc0"},{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836614","protectedRenderBlobSha256":"sha256:7bd1817f1067a98fcf46761106225284f32a0f9a7d4f5a1ee3ff1b5476d9d656","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/deployment.json","resourceVersion":"16836577","rollbackOwned":true,"semanticSha256":"sha256:7f62ffe70e67062db9da76e6797fe0e2cb08312b7a26fa5d6d79e650aebdbdb2","target":{"apiVersion":"apps/v1","kind":"Deployment","name":"roebel-staging-participant-gateway","namespace":"stadtstack-roebel-web-preview"},"temporaryNonceRemoved":true,"uid":"bd557bdb-efaa-4090-93e2-efad11a3ff14"},{"discoveredAfterPostSendUncertainty":false,"operationNonce":"1aec660f1b635e1ae325fb35cb1fb7eb591eadb0a7f96cec36160eabe83a2e0b","outcome":"http-201-created","postNonceRemovalResourceVersion":"16836826","protectedRenderBlobSha256":"sha256:faab3027915054aec40169978211b6ca90f8afb307f9556166242dfcb54a7837","protectedRenderPath":"reviewed-render/roebel-staging/staging-participant-gateway/ingress.json","resourceVersion":"16836811","rollbackOwned":true,"semanticSha256":"sha256:f0ff9b2be703729744c4c7734dad6877742328886ed950d78b15fb68679ef59f","target":{"apiVersion":"networking.k8s.io/v1","kind":"Ingress","name":"roebel-staging-participant-gateway","namespace":"stadtstack-roebel-web-preview"},"temporaryNonceRemoved":true,"uid":"e2cc40d3-b808-44fa-845d-a236d3960d0b"}],"protectedRevision":"38cdfbd9748c3481689599c53f4443af11a7df63","protectedRunnerFileSha256":{".github/workflows/staging-participant-flux-bootstrap.yml":"sha256:bbb62179e5f727a08f700611800fc927e242b8b78713f17f2d99aca5c42574da",".github/workflows/staging-participant-gateway-activation.yml":"sha256:5b024042e8d2e60f86fa372b75c27ef435d3117b2fe69edaf7e33fa11b3ef9ad","policy/repository-contract.json":"sha256:5f46b4b3567ed5e413bc5d7c6da1988c05a2a56301ff26c183b93d0cc8fa1348","policy/staging-participant-gateway-activation-policy.json":"sha256:43d9d1460535cb503d9b7f5a39e7a1765e22f37bdbb67242fb9e4b1f3acdc9bd","scripts/activate-staging-participant-gateway.py":"sha256:33639c89041a223045b0fc3e15ab56f009b8635db09de58c69b2f479d57bc867","scripts/bootstrap-staging-participant-flux.py":"sha256:53eea57ac0569a60d7d786e31bc8415790ad022e479a107eb1d5020d3579e079","scripts/handover-staging-participant-dormant-receipt.py":"sha256:252ea84b99631442fe5e938b1c4e97de11e19191d6006878779804d41f878091","scripts/run-staging-participant-gateway-live.py":"sha256:4b6e0b41d16e7f06cb3beea78329c173d77e4e3cdeede4574038084dd149d648","scripts/staging_participant_dormant_receipt_handover.py":"sha256:e6cb83a3b6b97f8eeee1d92584f916ca8b325327c1d993d8ec74c055d08b2fd7","scripts/staging_participant_flux_bootstrap.py":"sha256:540b61de77c03a8e2bbee765a745cad271e4af4b2b26563886fbeb869eea99ba","scripts/staging_participant_gateway_policy.py":"sha256:0f47c959d99da3fdc8b549c131cedda89bff613114e4aa4527ed6c8b64fff331","scripts/verify-reviewed-render.py":"sha256:d3c5d42e5e159f8e82df8edc90075add5126660b18f25b27d47a4365de8365ad"},"rollback":{"bothKustomizationsSuspended":false,"deleted":[],"errors":["rollback ownership gateway.ingress semantic drift","rollback ownership gateway.service semantic drift","gateway rollback suspension timeout","rollback ownership gateway.service semantic drift"],"finalChecks":{"clusterBinding":{"apiOrigin":"https://10.255.240.11:6443","apiServerSpkiSha256":"sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a","caCertificateSha256":"sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28","credentialsIncluded":false,"kubeSystemNamespaceResourceVersion":"9","kubeSystemNamespaceUid":"7bc769bc-e860-4d54-a0d5-d426f3a52420","kubeconfigPathIncluded":false},"clusterBindingBeforeRollback":{"apiOrigin":"https://10.255.240.11:6443","apiServerSpkiSha256":"sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a","caCertificateSha256":"sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28","credentialsIncluded":false,"kubeSystemNamespaceResourceVersion":"9","kubeSystemNamespaceUid":"7bc769bc-e860-4d54-a0d5-d426f3a52420","kubeconfigPathIncluded":false}},"finalizersRemovedByRunner":false,"flux":{},"preservation":{"existingWorkbenchNetworkPolicy":{"afterCanonicalSha256":"sha256:a125687ad4f00e2fbb921d6f5550f65daa267dfa627a24a598af0cbc1d27eb79","beforeCanonicalSha256":"sha256:a125687ad4f00e2fbb921d6f5550f65daa267dfa627a24a598af0cbc1d27eb79","byteIdenticalCanonicalJson":true,"target":{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","name":"e2e-workbench","namespace":"stadtstack-roebel-staging-lab"}},"webIngress":{"afterCanonicalSha256":"sha256:79d2057a3d6755df99f3364b626d6ff7143053f1d7bde581967b4dcbd194a0ec","beforeCanonicalSha256":"sha256:79d2057a3d6755df99f3364b626d6ff7143053f1d7bde581967b4dcbd194a0ec","byteIdenticalCanonicalJson":true,"target":{"apiVersion":"networking.k8s.io/v1","kind":"Ingress","name":"roebel-web-presentation","namespace":"stadtstack-roebel-web-preview"}}},"status":"incomplete","uncertainTarget":null},"schemaVersion":"roebel_staging_participant_gateway_activation_receipt_v4","status":"rollback-incomplete","termination":{"interrupted":false,"signal":null,"signalsDeferredDuringRollback":true}}''')
+RUN29_FAILED_ACTIVATION_CREATED_ORDER = (
+    "gateway.networkPolicy",
+    "workbenchIngress.networkPolicy",
+    "gateway.serviceAccount",
+    "gateway.service",
+    "gateway.deployment",
+    "gateway.ingress",
+)
+RUN29_FAILED_ACTIVATION_RUNNER_FILE_SHA256 = copy.deepcopy(RUN29_FAILED_ACTIVATION_RECEIPT["protectedRunnerFileSha256"])
+RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS = tuple(copy.deepcopy(RUN29_FAILED_ACTIVATION_RECEIPT["objectCreateResults"]))
+RUN29_FAILED_ACTIVATION_OBJECT_UIDS = {
+    logical: record["uid"]
+    for logical, record in zip(RUN29_FAILED_ACTIVATION_CREATED_ORDER, RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS)
+}
+RUN29_FAILED_ACTIVATION_ROLLBACK = copy.deepcopy(RUN29_FAILED_ACTIVATION_RECEIPT["rollback"])
+RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256 = {
+    "gateway.networkPolicy": "sha256:c96474d0562ba53f1733ecc19ae92fc08f9cf133a3befcf79dfbc61cad54de1e",
+    "workbenchIngress.networkPolicy": "sha256:b8e77edf5a370acd9d5330047d64f94402d985d98d1296551101022276bcb5e7",
+    "gateway.serviceAccount": "sha256:0b9c5dcdbe3305748ee8074561f54adf8d643ebccb25b4cb414b530c2f75439c",
+    "gateway.service": "sha256:0c76fa6419381a857ab725ded5302441a1f53981a0f8922b61b794dfef11bbc0",
+    "gateway.deployment": "sha256:d9de8fbc26421aaba46fdec236725993a691d2dd4b2f745be6daa74ce2d5827f",
+    "gateway.ingress": "sha256:3eec8aabc99efe45611a99daf848741c4e4f6c67b7e7e52fb3d96dfaab47a7f0",
+}
+RUN29_FLUX_TRACKING_LABELS = {
+    "gateway": {
+        "kustomize.toolkit.fluxcd.io/name": "roebel-staging-participant-gateway",
+        "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+    },
+    "workbenchIngress": {
+        "kustomize.toolkit.fluxcd.io/name": "roebel-staging-participant-workbench-ingress",
+        "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
+    },
+}
+RUN29_GATEWAY_RBAC_FAILURE = (
+    'replicasets.apps is forbidden: User '
+    '"system:serviceaccount:flux-roebel-staging:roebel-staging-participant-gateway-reconciler" '
+    'cannot list resource "replicasets" in API group "apps" in the namespace '
+    '"stadtstack-roebel-web-preview"'
 )
 BOOTSTRAP_PROTECTED_PATHS = (
     BOOTSTRAP_RUNNER_PATH,
@@ -1260,9 +1318,64 @@ def bind_handover_receipt_pair_v4(
         raise ActivationError(f"dormant Flux handover receipt pair rejected: {exc}") from exc
 
 def bind_failed_activation_recovery_source_v4(receipt_fd: int) -> dict[str, Any]:
-    """Bind deletion authority to the one durable failed aaca3166 receipt."""
+    """Bind deletion authority to one of the two exact durable incidents."""
     raw = load_owned_receipt_fd_raw_v4(receipt_fd, "failed participant activation receipt")
-    require(bytes_digest(raw) == FAILED_ACTIVATION_RAW_SHA256, "failed activation receipt raw checksum drift")
+    raw_sha256 = bytes_digest(raw)
+    if raw_sha256 == RUN29_FAILED_ACTIVATION_RAW_SHA256:
+        try:
+            receipt = obj(raw.decode("utf-8"), "failed participant activation receipt")
+        except UnicodeDecodeError as exc:
+            raise ActivationError("failed participant activation receipt must be UTF-8 JSON") from exc
+        public_projection(receipt)
+        require(
+            set(receipt) == {
+                "schemaVersion", "status", "protectedRevision", "failure",
+                "protectedRunnerFileSha256", "objectCreateResults", "rollback",
+                "termination", "civicAuthorityEffects", "canonicalSha256",
+            },
+            "run29 failed activation receipt field set drift",
+        )
+        unsigned = {key: copy.deepcopy(value) for key, value in receipt.items() if key != "canonicalSha256"}
+        require(
+            receipt.get("canonicalSha256") == RUN29_FAILED_ACTIVATION_CANONICAL_SHA256
+            and digest(unsigned) == RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+            "run29 failed activation receipt canonical checksum drift",
+        )
+        require(receipt.get("schemaVersion") == RECEIPT_SCHEMA, "run29 failed activation receipt schema drift")
+        require(receipt.get("status") == "rollback-incomplete", "run29 failed activation receipt status drift")
+        require(receipt.get("protectedRevision") == RUN29_FAILED_ACTIVATION_ORIGIN_REVISION, "run29 failed activation receipt revision drift")
+        require(receipt.get("failure") == RUN29_FAILED_ACTIVATION_FAILURE, "run29 failed activation receipt failure drift")
+        require(receipt.get("protectedRunnerFileSha256") == RUN29_FAILED_ACTIVATION_RUNNER_FILE_SHA256, "run29 failed activation receipt protected runner drift")
+        require(receipt.get("objectCreateResults") == list(RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS), "run29 failed activation receipt six-object ownership drift")
+        require(receipt.get("rollback") == RUN29_FAILED_ACTIVATION_ROLLBACK, "run29 failed activation receipt rollback shape drift")
+        require(
+            receipt.get("rollback", {}).get("deleted") == []
+            and receipt.get("termination") == {
+                "interrupted": False,
+                "signal": None,
+                "signalsDeferredDuringRollback": True,
+            }
+            and receipt.get("civicAuthorityEffects") is False
+            and receipt == RUN29_FAILED_ACTIVATION_RECEIPT,
+            "run29 failed activation receipt termination, authority, or exact shape drift",
+        )
+        return {
+            "originProtectedRevision": RUN29_FAILED_ACTIVATION_ORIGIN_REVISION,
+            "originRawSha256": RUN29_FAILED_ACTIVATION_RAW_SHA256,
+            "originReceiptSha256": RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+            "operationNonce": RUN29_FAILED_ACTIVATION_OPERATION_NONCE,
+            "objects": {
+                logical: copy.deepcopy(record)
+                for logical, record in zip(
+                    RUN29_FAILED_ACTIVATION_CREATED_ORDER,
+                    RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS,
+                )
+            },
+            "serviceExposureBreakProved": False,
+            "ingressNeverCreated": False,
+            "civicAuthorityEffects": False,
+        }
+    require(raw_sha256 == FAILED_ACTIVATION_RAW_SHA256, "failed activation receipt raw checksum drift")
     try:
         receipt = obj(raw.decode("utf-8"), "failed participant activation receipt")
     except UnicodeDecodeError as exc:
@@ -1490,7 +1603,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 ten-hop lineage."""
+    """Admit current receipts or the exact successful run19 eleven-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1596,10 +1709,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
+            "tracer receipt ninth-to-tenth-successor",
+        ) == set(TRACER_RECEIPT_NINTH_TO_TENTH_SUCCESSOR_FILES),
+        "tracer receipt ninth-to-tenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
             rev,
-            "tracer receipt ninth-successor-to-acceptor",
-        ) == set(TRACER_RECEIPT_NINTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt ninth-successor-to-acceptor file set drift",
+            "tracer receipt tenth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_TENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt tenth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1620,7 +1741,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-ten-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-eleven-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1634,6 +1755,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_EIGHTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_NINTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_TENTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -3865,7 +3987,10 @@ def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4,
     nonce = created.receipt.get("operationNonce")
     require(isinstance(nonce, str) and bool(POLICY.NONCE.fullmatch(nonce)), f"rollback operation nonce receipt absent for {created.logical_name}")
     if created.receipt.get("temporaryNonceRemoved") is True:
-        _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback ownership {created.logical_name}")
+        if created.receipt.get("recoveryIncidentRawSha256") == RUN29_FAILED_ACTIVATION_RAW_SHA256:
+            require_run29_flux_tracking_semantics_v4(current, desired, created.logical_name)
+        else:
+            _policy_call(POLICY.require_semantically_equal, current, desired, f"rollback ownership {created.logical_name}")
     else:
         nonce_desired = _policy_call(POLICY.with_operation_nonce, desired, nonce)
         try: _policy_call(POLICY.require_semantically_equal, current, nonce_desired, f"rollback nonce ownership {created.logical_name}")
@@ -3928,7 +4053,105 @@ def _flux_suspended_and_quiescent_v4(value: dict[str, Any], owner: str, uid: str
             raise ActivationError(f"{owner} still Reconciling while suspended")
     return {"uid": uid, "resourceVersion": metadata.get("resourceVersion"), "generation": generation, "observedGeneration": observed, "suspended": True, "reconcilingCurrentGeneration": False}
 
-def wait_both_suspended_v4(r: Runner, kubeconfig: str, p: dict[str, Any], bootstrap: dict[str, Any], deadline: float) -> dict[str, Any]:
+def run29_recovery_suspended_flux_state_v4(
+    value: dict[str, Any],
+    owner: str,
+    uid: str,
+) -> dict[str, Any]:
+    require(owner in {"gateway", "workbenchIngress"}, "run29 recovery Flux owner drift")
+    metadata, status = value.get("metadata", {}), value.get("status", {})
+    revision = f"main@sha1:{RUN29_FAILED_ACTIVATION_ORIGIN_REVISION}"
+    require(
+        metadata.get("uid") == uid
+        and recovery_ascii_decimal_v4(metadata.get("resourceVersion"))
+        and metadata.get("generation") == 3
+        and value.get("spec", {}).get("suspend") is True,
+        f"{owner} run29 suspended Flux identity drift",
+    )
+    conditions = status.get("conditions")
+    require(
+        isinstance(conditions, list)
+        and all(isinstance(condition, dict) for condition in conditions),
+        f"{owner} run29 Flux conditions invalid",
+    )
+    by_type = {condition.get("type"): condition for condition in conditions}
+    require(len(by_type) == len(conditions), f"{owner} run29 Flux conditions duplicated")
+    if owner == "gateway":
+        require(
+            set(by_type) == {"Reconciling", "Ready", "Healthy"}
+            and status.get("observedGeneration") == -1
+            and status.get("lastAttemptedRevision") == revision
+            and status.get("lastAppliedRevision") is None,
+            "gateway run29 suspended failure state drift",
+        )
+        reconciling, ready, healthy = (by_type[name] for name in ("Reconciling", "Ready", "Healthy"))
+        require(
+            reconciling.get("status") == "True"
+            and reconciling.get("observedGeneration") == 3
+            and reconciling.get("reason") == "ProgressingWithRetry"
+            and reconciling.get("message") == f"Running health checks for revision {revision} with a timeout of 2m0s",
+            "gateway run29 exact Reconciling condition drift",
+        )
+        for condition in (ready, healthy):
+            require(
+                condition.get("status") == "False"
+                and condition.get("observedGeneration") == 2
+                and condition.get("reason") == "HealthCheckFailed"
+                and RUN29_GATEWAY_RBAC_FAILURE in str(condition.get("message", "")),
+                "gateway run29 exact RBAC failure drift",
+            )
+        incident_state = "suspended-after-exact-rbac-healthcheck-failure"
+    else:
+        require(
+            set(by_type) == {"Ready", "Healthy"}
+            and status.get("observedGeneration") == 3
+            and status.get("lastAppliedRevision") == revision
+            and status.get("lastAttemptedRevision") == revision,
+            "workbenchIngress run29 suspended success state drift",
+        )
+        ready, healthy = by_type["Ready"], by_type["Healthy"]
+        require(
+            ready.get("status") == "True"
+            and ready.get("observedGeneration") == 2
+            and ready.get("reason") == "ReconciliationSucceeded"
+            and ready.get("message") == f"Applied revision: {revision}"
+            and healthy.get("status") == "True"
+            and healthy.get("observedGeneration") == 2
+            and healthy.get("reason") == "Succeeded"
+            and str(healthy.get("message", "")).startswith("Health check passed in "),
+            "workbenchIngress run29 exact successful condition drift",
+        )
+        incident_state = "suspended-after-successful-run29-reconcile"
+    return {
+        "uid": uid,
+        "resourceVersion": metadata["resourceVersion"],
+        "generation": 3,
+        "observedGeneration": status["observedGeneration"],
+        "suspended": True,
+        "incidentState": incident_state,
+        "lastAttemptedRevision": status["lastAttemptedRevision"],
+        "lastAppliedRevision": status.get("lastAppliedRevision"),
+    }
+
+def wait_both_suspended_v4(
+    r: Runner,
+    kubeconfig: str,
+    p: dict[str, Any],
+    bootstrap: dict[str, Any],
+    deadline: float,
+    recovery_incident: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if recovery_incident is not None:
+        profile = recovery_incident_profile_v4(recovery_incident)
+        if profile["name"] == "run29-six-created-rbac-readiness-failure":
+            require(time.monotonic() < deadline, "run29 recovery Flux quiet proof deadline elapsed")
+            return recovery_flux_preflight_v4(
+                bootstrap,
+                r=r,
+                kubeconfig=kubeconfig,
+                p=p,
+                incident=recovery_incident,
+            )
     result: dict[str, Any] = {}; poll = p["httpBoundary"]["timeoutsSeconds"]["rollbackPoll"]
     for owner in ("gateway", "workbenchIngress"):
         target = p["gitOps"]["reconcilers"][owner]["kustomization"]
@@ -3949,7 +4172,7 @@ def wait_both_suspended_v4(r: Runner, kubeconfig: str, p: dict[str, Any], bootst
                 time.sleep(poll)
     return result
 
-def validate_recovery_incident_binding_v4(value: Any) -> dict[str, Any]:
+def recovery_incident_profile_v4(value: Any) -> dict[str, Any]:
     require(
         isinstance(value, dict)
         and set(value) == {
@@ -3957,20 +4180,57 @@ def validate_recovery_incident_binding_v4(value: Any) -> dict[str, Any]:
             "operationNonce", "objects", "serviceExposureBreakProved",
             "ingressNeverCreated", "civicAuthorityEffects",
         }
-        and value.get("originProtectedRevision") == FAILED_ACTIVATION_ORIGIN_REVISION
-        and value.get("originRawSha256") == FAILED_ACTIVATION_RAW_SHA256
-        and value.get("originReceiptSha256") == FAILED_ACTIVATION_CANONICAL_SHA256
-        and value.get("operationNonce") == FAILED_ACTIVATION_OPERATION_NONCE
-        and value.get("serviceExposureBreakProved") is True
-        and value.get("ingressNeverCreated") is True
         and value.get("civicAuthorityEffects") is False,
         "failed activation recovery incident binding drift",
     )
+    profiles = (
+        {
+            "name": "aaca3166-unresolved-deployment",
+            "originProtectedRevision": FAILED_ACTIVATION_ORIGIN_REVISION,
+            "originRawSha256": FAILED_ACTIVATION_RAW_SHA256,
+            "originReceiptSha256": FAILED_ACTIVATION_CANONICAL_SHA256,
+            "operationNonce": FAILED_ACTIVATION_OPERATION_NONCE,
+            "createdOrder": FAILED_ACTIVATION_CREATED_ORDER,
+            "objectCreateResults": FAILED_ACTIVATION_OBJECT_CREATE_RESULTS,
+            "objectUids": FAILED_ACTIVATION_OBJECT_UIDS,
+            "serviceExposureBreakProved": True,
+            "ingressNeverCreated": True,
+        },
+        {
+            "name": "run29-six-created-rbac-readiness-failure",
+            "originProtectedRevision": RUN29_FAILED_ACTIVATION_ORIGIN_REVISION,
+            "originRawSha256": RUN29_FAILED_ACTIVATION_RAW_SHA256,
+            "originReceiptSha256": RUN29_FAILED_ACTIVATION_CANONICAL_SHA256,
+            "operationNonce": RUN29_FAILED_ACTIVATION_OPERATION_NONCE,
+            "createdOrder": RUN29_FAILED_ACTIVATION_CREATED_ORDER,
+            "objectCreateResults": RUN29_FAILED_ACTIVATION_OBJECT_CREATE_RESULTS,
+            "objectUids": RUN29_FAILED_ACTIVATION_OBJECT_UIDS,
+            "serviceExposureBreakProved": False,
+            "ingressNeverCreated": False,
+        },
+    )
+    selected = next((
+        profile for profile in profiles
+        if value.get("originRawSha256") == profile["originRawSha256"]
+        and value.get("originReceiptSha256") == profile["originReceiptSha256"]
+    ), None)
+    require(selected is not None, "failed activation recovery incident profile drift")
     expected_objects = {
         logical: record
-        for logical, record in zip(FAILED_ACTIVATION_CREATED_ORDER, FAILED_ACTIVATION_OBJECT_CREATE_RESULTS)
+        for logical, record in zip(selected["createdOrder"], selected["objectCreateResults"])
     }
-    require(value.get("objects") == expected_objects, "failed activation recovery object binding drift")
+    require(
+        value.get("originProtectedRevision") == selected["originProtectedRevision"]
+        and value.get("operationNonce") == selected["operationNonce"]
+        and value.get("serviceExposureBreakProved") is selected["serviceExposureBreakProved"]
+        and value.get("ingressNeverCreated") is selected["ingressNeverCreated"]
+        and value.get("objects") == expected_objects,
+        "failed activation recovery incident profile fields drift",
+    )
+    return selected
+
+def validate_recovery_incident_binding_v4(value: Any) -> dict[str, Any]:
+    recovery_incident_profile_v4(value)
     return copy.deepcopy(value)
 
 def _recovery_receipt_stub_v4(desired: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
@@ -3978,6 +4238,38 @@ def _recovery_receipt_stub_v4(desired: dict[str, Any], record: dict[str, Any]) -
     observed.setdefault("metadata", {})["uid"] = record["uid"]
     observed["metadata"]["resourceVersion"] = record["postNonceRemovalResourceVersion"]
     return observed
+
+def require_run29_flux_tracking_semantics_v4(
+    current: dict[str, Any],
+    desired: dict[str, Any],
+    logical_name: str,
+) -> dict[str, Any]:
+    require(logical_name in RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256, "run29 recovery target is not pinned")
+    owner = "workbenchIngress" if logical_name == "workbenchIngress.networkPolicy" else "gateway"
+    tracking = RUN29_FLUX_TRACKING_LABELS[owner]
+    desired_labels = desired.get("metadata", {}).get("labels", {})
+    live_labels = current.get("metadata", {}).get("labels", {})
+    require(
+        isinstance(desired_labels, dict)
+        and isinstance(live_labels, dict)
+        and set(tracking).isdisjoint(desired_labels)
+        and live_labels == desired_labels | tracking,
+        f"{logical_name} run29 recovery Flux tracking label drift",
+    )
+    require(
+        POLICY.semantic_sha256(current) == RUN29_FAILED_ACTIVATION_LIVE_SEMANTIC_SHA256[logical_name],
+        f"{logical_name} run29 inspected live semantic hash drift",
+    )
+    without_tracking = copy.deepcopy(current)
+    labels = without_tracking["metadata"]["labels"]
+    for label, expected in tracking.items():
+        require(labels.pop(label, None) == expected, f"{logical_name} run29 Flux tracking value drift")
+    return _policy_call(
+        POLICY.require_semantically_equal,
+        without_tracking,
+        desired,
+        f"{logical_name} run29 recovery semantics after exact Flux tracking removal",
+    )
 
 def bind_recovery_targets_v4(
     r: Runner,
@@ -3987,6 +4279,7 @@ def bind_recovery_targets_v4(
 ) -> dict[str, Any]:
     """GET-only classification of all six names before recovery may delete."""
     incident = validate_recovery_incident_binding_v4(incident)
+    profile = recovery_incident_profile_v4(incident)
     require(
         set(rendered) == {
             "gateway.networkPolicy", "workbenchIngress.networkPolicy",
@@ -3998,7 +4291,7 @@ def bind_recovery_targets_v4(
     created: list[CreatedV4] = []
     classifications: dict[str, Any] = {}
     receipt_owned = incident["objects"]
-    for logical_name in FAILED_ACTIVATION_CREATED_ORDER:
+    for logical_name in profile["createdOrder"]:
         entry = rendered[logical_name]; desired = entry["desired"]; metadata = desired["metadata"]
         record = receipt_owned[logical_name]
         incident_desired = _policy_call(POLICY.with_operation_nonce, desired, incident["operationNonce"])
@@ -4013,7 +4306,7 @@ def bind_recovery_targets_v4(
             f"{logical_name} current protected render no longer matches incident",
         )
         current = get_optional(r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"])
-        if logical_name == "gateway.service":
+        if logical_name == "gateway.service" and profile["serviceExposureBreakProved"]:
             require(current is None, "gateway.service must remain absent before recovery")
             observed = _recovery_receipt_stub_v4(desired, record)
             classifications[logical_name] = {
@@ -4031,63 +4324,122 @@ def bind_recovery_targets_v4(
             }
         else:
             require(current.get("metadata", {}).get("uid") == record["uid"], f"{logical_name} incident UID drift")
-            _policy_call(POLICY.require_semantically_equal, current, desired, f"{logical_name} recovery semantics")
+            if profile["name"] == "run29-six-created-rbac-readiness-failure":
+                require_run29_flux_tracking_semantics_v4(current, desired, logical_name)
+            else:
+                _policy_call(POLICY.require_semantically_equal, current, desired, f"{logical_name} recovery semantics")
             observed = current
             classifications[logical_name] = {
                 "state": "present-exact-receipt-owned", "uid": record["uid"],
                 "resourceVersion": current.get("metadata", {}).get("resourceVersion"),
                 "sourceReceiptSha256": incident["originReceiptSha256"],
             }
-        created.append(CreatedV4(logical_name, desired, observed, copy.deepcopy(record) | {"recoverySource": True}))
+        created.append(CreatedV4(
+            logical_name,
+            desired,
+            observed,
+            copy.deepcopy(record) | {
+                "recoverySource": True,
+                "recoveryIncidentRawSha256": incident["originRawSha256"],
+            },
+        ))
 
-    deployment_entry = rendered["gateway.deployment"]
-    deployment_desired = deployment_entry["desired"]
-    deployment_metadata = deployment_desired["metadata"]
-    deployment = get_optional(
-        r, kubeconfig, "deployment", deployment_metadata["name"], deployment_metadata["namespace"]
-    )
-    if deployment is None:
-        classifications["gateway.deployment"] = {
-            "state": "absent-unresolved-create",
-            "dependents": deployment_dependents_absent_v4(r, kubeconfig),
-        }
-    else:
-        nonce_desired = _policy_call(POLICY.with_operation_nonce, deployment_desired, incident["operationNonce"])
-        deployment_receipt = _policy_call(
-            POLICY.bind_create_result,
-            outcome="post-send-uncertain-discovered",
-            observed=deployment,
-            desired=nonce_desired,
-            label="gateway.deployment recovery",
-            operation_nonce=incident["operationNonce"],
+    if "gateway.deployment" not in receipt_owned:
+        deployment_entry = rendered["gateway.deployment"]
+        deployment_desired = deployment_entry["desired"]
+        deployment_metadata = deployment_desired["metadata"]
+        deployment = get_optional(
+            r, kubeconfig, "deployment", deployment_metadata["name"], deployment_metadata["namespace"]
         )
-        deployment_receipt |= {
-            "protectedRenderPath": deployment_entry["path"],
-            "protectedRenderBlobSha256": deployment_entry["blobSha256"],
-            "temporaryNonceRemoved": False,
-            "recoveredFromFailedReceiptSha256": incident["originReceiptSha256"],
-        }
-        created.append(CreatedV4("gateway.deployment", deployment_desired, deployment, deployment_receipt))
-        classifications["gateway.deployment"] = {
-            "state": "present-exact-failed-nonce-owned",
-            "uid": deployment_receipt["uid"],
-            "resourceVersion": deployment_receipt["resourceVersion"],
-            "operationNonce": incident["operationNonce"],
-        }
+        if deployment is None:
+            classifications["gateway.deployment"] = {
+                "state": "absent-unresolved-create",
+                "dependents": deployment_dependents_absent_v4(r, kubeconfig),
+            }
+        else:
+            nonce_desired = _policy_call(POLICY.with_operation_nonce, deployment_desired, incident["operationNonce"])
+            deployment_receipt = _policy_call(
+                POLICY.bind_create_result,
+                outcome="post-send-uncertain-discovered",
+                observed=deployment,
+                desired=nonce_desired,
+                label="gateway.deployment recovery",
+                operation_nonce=incident["operationNonce"],
+            )
+            deployment_receipt |= {
+                "protectedRenderPath": deployment_entry["path"],
+                "protectedRenderBlobSha256": deployment_entry["blobSha256"],
+                "temporaryNonceRemoved": False,
+                "recoveredFromFailedReceiptSha256": incident["originReceiptSha256"],
+            }
+            created.append(CreatedV4("gateway.deployment", deployment_desired, deployment, deployment_receipt))
+            classifications["gateway.deployment"] = {
+                "state": "present-exact-failed-nonce-owned",
+                "uid": deployment_receipt["uid"],
+                "resourceVersion": deployment_receipt["resourceVersion"],
+                "operationNonce": incident["operationNonce"],
+            }
 
-    ingress_entry = rendered["gateway.ingress"]
-    ingress_desired = ingress_entry["desired"]
-    ingress_metadata = ingress_desired["metadata"]
-    ingress = get_optional(r, kubeconfig, "ingress", ingress_metadata["name"], ingress_metadata["namespace"])
-    require(ingress is None, "gateway.ingress must remain absent before recovery")
-    classifications["gateway.ingress"] = {
-        "state": "absent-never-created", "sourceReceiptSha256": incident["originReceiptSha256"],
-    }
+    if "gateway.ingress" not in receipt_owned:
+        ingress_entry = rendered["gateway.ingress"]
+        ingress_desired = ingress_entry["desired"]
+        ingress_metadata = ingress_desired["metadata"]
+        ingress = get_optional(r, kubeconfig, "ingress", ingress_metadata["name"], ingress_metadata["namespace"])
+        require(ingress is None, "gateway.ingress must remain absent before recovery")
+        classifications["gateway.ingress"] = {
+            "state": "absent-never-created", "sourceReceiptSha256": incident["originReceiptSha256"],
+        }
     require(len(classifications) == 6, "recovery target classification incomplete")
     return {"created": created, "classifications": classifications}
 
-def recovery_flux_preflight_v4(bootstrap: dict[str, Any]) -> dict[str, Any]:
+def recovery_flux_preflight_v4(
+    bootstrap: dict[str, Any],
+    *,
+    r: Runner | None = None,
+    kubeconfig: str | None = None,
+    p: dict[str, Any] | None = None,
+    incident: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     require(isinstance(bootstrap, dict) and set(bootstrap.get("owners", {})) == {"gateway", "workbenchIngress"}, "recovery dormant Flux ownership incomplete")
+    profile = recovery_incident_profile_v4(incident) if incident is not None else None
+    if profile is not None and profile["name"] == "run29-six-created-rbac-readiness-failure":
+        require(r is not None and kubeconfig is not None and p is not None, "run29 recovery Flux quiet preflight dependencies absent")
+        initial = {
+            owner: copy.deepcopy(bootstrap["owners"][owner]["kustomization"])
+            for owner in ("gateway", "workbenchIngress")
+        }
+        for owner in ("gateway", "workbenchIngress"):
+            uid = initial[owner].get("metadata", {}).get("uid")
+            run29_recovery_suspended_flux_state_v4(initial[owner], owner, uid)
+        quiet = p["httpBoundary"]["timeoutsSeconds"]["rollbackAbsenceQuiet"]
+        require(type(quiet) in {int, float} and quiet == 2, "run29 recovery Flux quiet interval drift")
+        time.sleep(quiet)
+        result = {}
+        for owner in ("gateway", "workbenchIngress"):
+            target = p["gitOps"]["reconcilers"][owner]["kustomization"]
+            current = _target_live(r, kubeconfig, target)
+            expected = (
+                POLICY.gateway_flux_objects(suspended=True)["kustomization"]
+                if owner == "gateway"
+                else POLICY.workbench_ingress_flux_objects(suspended=True)["kustomization"]
+            )
+            _policy_call(POLICY.require_semantically_equal, current, expected, f"{owner} run29 quiet suspended semantics")
+            require(
+                current.get("metadata", {}).get("resourceVersion")
+                == initial[owner].get("metadata", {}).get("resourceVersion")
+                and canonical(current) == canonical(initial[owner]),
+                f"{owner} run29 suspended object or resourceVersion changed during quiet interval",
+            )
+            result[owner] = run29_recovery_suspended_flux_state_v4(
+                current,
+                owner,
+                initial[owner]["metadata"]["uid"],
+            ) | {
+                "quietSeconds": quiet,
+                "checks": 2,
+                "objectStableForQuietInterval": True,
+            }
+        return result
     result = {}
     for owner in ("gateway", "workbenchIngress"):
         current = bootstrap["owners"][owner]["kustomization"]
@@ -4138,6 +4490,7 @@ def rollback_v4(
     rendered: dict[str, dict[str, Any]] | None = None,
     snapshot: KubeconfigSnapshot | None = None,
     initial_cluster: dict[str, Any] | None = None,
+    recovery_incident: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []; deleted: list[dict[str, Any]] = []; flux: dict[str, Any] = {}; final_checks: dict[str, Any] = {}
     ingress = next((item for item in created if item.logical_name == "gateway.ingress"), None)
@@ -4186,7 +4539,7 @@ def rollback_v4(
                 require(current.get("metadata", {}).get("uid") == uid, f"{owner} rollback Kustomization UID drift")
                 if current.get("spec", {}).get("suspend") is not True: cas_flux_v4(r, kubeconfig, p, owner, current, True)
             except Exception as exc: errors.append(str(exc))
-        try: flux = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline)
+        try: flux = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline, recovery_incident)
         except Exception as exc: errors.append(str(exc))
     # If deletion was acknowledged but the same transaction UID remains or
     # reappears, delete it again only after both reconcilers are quiescent.
@@ -4255,7 +4608,7 @@ def rollback_v4(
         except Exception as exc: errors.append(str(exc))
     if not errors and bootstrap:
         try:
-            final_checks["flux"] = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline)
+            final_checks["flux"] = wait_both_suspended_v4(r, kubeconfig, p, bootstrap, deadline, recovery_incident)
             source = shared_source_revision_v4(r, kubeconfig, bootstrap["source"]["status"]["artifact"]["revision"].removeprefix("main@sha1:"))
             require(source.get("metadata", {}).get("uid") == bootstrap["source"].get("metadata", {}).get("uid"), "shared Flux source UID changed during rollback")
             final_checks["sharedSource"] = {
@@ -4344,7 +4697,47 @@ def recovery_dormant_receipt_preflight_v4(bootstrap: dict[str, Any], rev: str) -
 def recovery_ascii_decimal_v4(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[1-9][0-9]*", value) is not None
 
-def validate_recovery_flux_projection_v4(value: Any, label: str) -> dict[str, Any]:
+def validate_recovery_flux_projection_v4(
+    value: Any,
+    label: str,
+    incident: dict[str, Any] | None = None,
+    owner: str | None = None,
+) -> dict[str, Any]:
+    profile = recovery_incident_profile_v4(incident) if incident is not None else None
+    if profile is not None and profile["name"] == "run29-six-created-rbac-readiness-failure":
+        require(owner in {"gateway", "workbenchIngress"}, f"{label} run29 owner absent")
+        revision = f"main@sha1:{RUN29_FAILED_ACTIVATION_ORIGIN_REVISION}"
+        expected_state = (
+            "suspended-after-exact-rbac-healthcheck-failure"
+            if owner == "gateway"
+            else "suspended-after-successful-run29-reconcile"
+        )
+        expected_observed = -1 if owner == "gateway" else 3
+        expected_applied = None if owner == "gateway" else revision
+        require(
+            isinstance(value, dict)
+            and set(value) == {
+                "uid", "resourceVersion", "generation", "observedGeneration",
+                "suspended", "incidentState", "lastAttemptedRevision",
+                "lastAppliedRevision", "quietSeconds", "checks",
+                "objectStableForQuietInterval",
+            }
+            and isinstance(value.get("uid"), str)
+            and bool(value["uid"])
+            and recovery_ascii_decimal_v4(value.get("resourceVersion"))
+            and value.get("generation") == 3
+            and value.get("observedGeneration") == expected_observed
+            and value.get("suspended") is True
+            and value.get("incidentState") == expected_state
+            and value.get("lastAttemptedRevision") == revision
+            and value.get("lastAppliedRevision") == expected_applied
+            and value.get("quietSeconds") == 2
+            and type(value.get("checks")) is int
+            and value["checks"] >= 2
+            and value.get("objectStableForQuietInterval") is True,
+            f"{label} is not the exact stable run29 suspended incident Flux state",
+        )
+        return copy.deepcopy(value)
     require(
         isinstance(value, dict)
         and set(value) == {
@@ -4423,7 +4816,9 @@ def validate_recovery_preflight_receipt_v4(
     preflight: Any,
     p: dict[str, Any],
     rev: str,
+    incident: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    profile = recovery_incident_profile_v4(incident) if incident is not None else None
     require(
         isinstance(preflight, dict)
         and set(preflight) == {
@@ -4460,7 +4855,9 @@ def validate_recovery_preflight_receipt_v4(
     flux = preflight.get("flux")
     require(isinstance(flux, dict) and set(flux) == {"gateway", "workbenchIngress"}, "recovery receipt Flux preflight incomplete")
     for owner in ("gateway", "workbenchIngress"):
-        proof = validate_recovery_flux_projection_v4(flux[owner], f"recovery receipt {owner} Flux preflight")
+        proof = validate_recovery_flux_projection_v4(
+            flux[owner], f"recovery receipt {owner} Flux preflight", incident, owner,
+        )
         require(proof["uid"] == dormant["kustomizationUids"].get(owner), f"recovery receipt {owner} Flux/handover UID drift")
     source = preflight.get("source")
     require(
@@ -4483,6 +4880,28 @@ def validate_recovery_preflight_receipt_v4(
         "gateway.service", "gateway.deployment", "gateway.ingress",
     }
     require(isinstance(targets, dict) and set(targets) == expected_targets and all(isinstance(value, dict) for value in targets.values()), "recovery receipt target preflight incomplete")
+    if profile is not None and profile["name"] == "run29-six-created-rbac-readiness-failure":
+        for logical_name in profile["createdOrder"]:
+            state = targets[logical_name]
+            if state.get("state") == "present-exact-receipt-owned":
+                require(
+                    set(state) == {"state", "uid", "resourceVersion", "sourceReceiptSha256"}
+                    and recovery_ascii_decimal_v4(state.get("resourceVersion")),
+                    f"recovery receipt present target field set drift: {logical_name}",
+                )
+            else:
+                require(
+                    set(state) == {"state", "uid", "sourceReceiptSha256"}
+                    and state.get("state") == "already-absent-receipt-owned",
+                    f"recovery receipt absent target field set drift: {logical_name}",
+                )
+            require(
+                state.get("uid") == profile["objectUids"][logical_name]
+                and state.get("sourceReceiptSha256") == profile["originReceiptSha256"],
+                f"recovery receipt target ownership drift: {logical_name}",
+            )
+        validate_recovery_preservation_proof_v4(preflight.get("preservation"), p, "recovery receipt preservation preflight")
+        return copy.deepcopy(preflight)
     for logical_name in ("gateway.networkPolicy", "workbenchIngress.networkPolicy", "gateway.serviceAccount"):
         state = targets[logical_name]
         if state.get("state") == "present-exact-receipt-owned":
@@ -4543,13 +4962,215 @@ def validate_recovery_preflight_receipt_v4(
     validate_recovery_preservation_proof_v4(preflight.get("preservation"), p, "recovery receipt preservation preflight")
     return copy.deepcopy(preflight)
 
+def validate_run29_recovery_deleted_record_v4(
+    record: Any,
+    target: dict[str, Any],
+    profile: dict[str, Any],
+    logical_name: str,
+    foreground: bool,
+) -> None:
+    require(target.get("uid") == profile["objectUids"][logical_name], f"recovery rollback deletion UID drift: {logical_name}")
+    if target.get("state") == "already-absent-receipt-owned":
+        require(
+            record == {"logicalName": logical_name, "absent": True, "alreadyAbsent": True},
+            f"recovery rollback already-absent proof drift: {logical_name}",
+        )
+        return
+    require(
+        target.get("state") == "present-exact-receipt-owned"
+        and isinstance(record, dict)
+        and set(record) == {
+            "logicalName", "uid", "deleteResourceVersion", "absent",
+            "foregroundPropagation", "finalizersRemovedByRunner",
+        }
+        and record.get("logicalName") == logical_name
+        and record.get("uid") == target["uid"]
+        and recovery_ascii_decimal_v4(record.get("deleteResourceVersion"))
+        and int(record["deleteResourceVersion"]) >= int(target["resourceVersion"])
+        and record.get("absent") is True
+        and record.get("foregroundPropagation") is foreground
+        and record.get("finalizersRemovedByRunner") is False,
+        f"recovery rollback deletion UID drift: {logical_name}",
+    )
+
+def validate_complete_run29_recovery_rollback_v4(
+    rollback: Any,
+    preflight: dict[str, Any],
+    p: dict[str, Any],
+    rev: str,
+    incident: dict[str, Any],
+) -> None:
+    profile = recovery_incident_profile_v4(incident)
+    require(profile["name"] == "run29-six-created-rbac-readiness-failure", "run29 recovery rollback profile drift")
+    preflight = validate_recovery_preflight_receipt_v4(preflight, p, rev, incident)
+    flux = rollback.get("flux") if isinstance(rollback, dict) else None
+    require(
+        isinstance(rollback, dict)
+        and set(rollback) == {
+            "status", "bothKustomizationsSuspended", "flux", "deleted",
+            "finalChecks", "preservation", "uncertainTarget", "errors",
+            "finalizersRemovedByRunner",
+        }
+        and rollback.get("status") == "complete"
+        and rollback.get("bothKustomizationsSuspended") is True
+        and isinstance(flux, dict)
+        and set(flux) == {"gateway", "workbenchIngress"}
+        and rollback.get("uncertainTarget") is None
+        and rollback.get("errors") == []
+        and rollback.get("finalizersRemovedByRunner") is False,
+        "recovery rollback incomplete",
+    )
+    for owner in ("gateway", "workbenchIngress"):
+        before = preflight["flux"][owner]
+        current = validate_recovery_flux_projection_v4(
+            flux[owner], f"recovery rollback {owner} Flux", incident, owner,
+        )
+        require(
+            current["uid"] == before["uid"]
+            and current["generation"] == before["generation"]
+            and current["observedGeneration"] == before["observedGeneration"]
+            and int(current["resourceVersion"]) >= int(before["resourceVersion"]),
+            f"recovery rollback {owner} Flux no longer binds preflight",
+        )
+
+    deleted = rollback.get("deleted")
+    expected_order = [
+        "gateway.ingress", "gateway.service", "gateway.service",
+        "gateway.deployment", "gateway.serviceAccount",
+        "workbenchIngress.networkPolicy", "gateway.networkPolicy",
+    ]
+    require(
+        isinstance(deleted, list)
+        and all(isinstance(item, dict) for item in deleted)
+        and [item.get("logicalName") for item in deleted] == expected_order
+        and all(item.get("absent") is True for item in deleted),
+        "recovery rollback deletion order or absence proof drift",
+    )
+    first_records = {
+        "gateway.ingress": deleted[0],
+        "gateway.service": deleted[1],
+        "gateway.deployment": deleted[3],
+        "gateway.serviceAccount": deleted[4],
+        "workbenchIngress.networkPolicy": deleted[5],
+        "gateway.networkPolicy": deleted[6],
+    }
+    for logical_name, record in first_records.items():
+        validate_run29_recovery_deleted_record_v4(
+            record,
+            preflight["targets"][logical_name],
+            profile,
+            logical_name,
+            logical_name == "gateway.deployment",
+        )
+    require(
+        deleted[2] == {"logicalName": "gateway.service", "absent": True, "alreadyAbsent": True},
+        "recovery rollback Service post-Flux absence no longer binds failed exposure break",
+    )
+
+    final = rollback.get("finalChecks")
+    final_flux = final.get("flux") if isinstance(final, dict) else None
+    require(
+        isinstance(final, dict)
+        and set(final) == {
+            "clusterBindingBeforeRollback", "exposureBreak", "exposureBreakAfterFlux",
+            "deploymentDependents", "absence", "flux", "sharedSource", "clusterBinding",
+        }
+        and isinstance(final_flux, dict)
+        and set(final_flux) == {"gateway", "workbenchIngress"},
+        "recovery rollback final proof incomplete",
+    )
+    validate_recovery_quiet_absence_v4(final.get("absence"), p)
+    initial_cluster = preflight["clusterBinding"]["initial"]
+    rollback_entry_cluster = validate_bound_cluster_identity_v4(
+        final.get("clusterBindingBeforeRollback"), p, "recovery rollback entry cluster",
+    )
+    final_cluster = validate_bound_cluster_identity_v4(
+        final.get("clusterBinding"), p, "recovery rollback final cluster",
+    )
+    require(
+        recovery_ascii_decimal_v4(rollback_entry_cluster["kubeSystemNamespaceResourceVersion"])
+        and recovery_ascii_decimal_v4(final_cluster["kubeSystemNamespaceResourceVersion"]),
+        "recovery rollback cluster resourceVersion is not ASCII decimal",
+    )
+    require_same_cluster_identity_v4(initial_cluster, rollback_entry_cluster, "at recovery rollback entry")
+    require_same_cluster_identity_v4(initial_cluster, final_cluster, "at recovery rollback completion")
+    initial_cluster_rv = int(initial_cluster["kubeSystemNamespaceResourceVersion"])
+    require(
+        int(rollback_entry_cluster["kubeSystemNamespaceResourceVersion"]) >= initial_cluster_rv
+        and int(final_cluster["kubeSystemNamespaceResourceVersion"])
+        >= int(rollback_entry_cluster["kubeSystemNamespaceResourceVersion"]),
+        "recovery rollback cluster resourceVersion moved backwards",
+    )
+    for owner in ("gateway", "workbenchIngress"):
+        after = validate_recovery_flux_projection_v4(
+            final_flux[owner], f"recovery final {owner} Flux", incident, owner,
+        )
+        require(
+            after["uid"] == flux[owner]["uid"]
+            and after["generation"] == flux[owner]["generation"]
+            and after["observedGeneration"] == flux[owner]["observedGeneration"]
+            and int(after["resourceVersion"]) >= int(flux[owner]["resourceVersion"]),
+            f"recovery final {owner} Flux no longer binds rollback",
+        )
+    source = final.get("sharedSource")
+    require(
+        isinstance(source, dict)
+        and set(source) == {"uid", "resourceVersion", "artifactRevision", "unchanged"}
+        and source.get("uid") == preflight["source"]["uid"]
+        and recovery_ascii_decimal_v4(source.get("resourceVersion"))
+        and int(source["resourceVersion"]) >= int(preflight["source"]["resourceVersion"])
+        and source.get("artifactRevision") == preflight["source"]["artifactRevision"] == f"main@sha1:{rev}"
+        and source.get("unchanged") is True,
+        "recovery rollback shared Source no longer binds preflight",
+    )
+    exposure = final.get("exposureBreak")
+    exposure_after = final.get("exposureBreakAfterFlux")
+    service_uid = profile["objectUids"]["gateway.service"]
+    require(
+        isinstance(exposure, dict)
+        and set(exposure) == {
+            "reason", "initialIngressAbsenceProved", "serviceUid",
+            "serviceAbsent", "unknownIngressUntouched",
+        }
+        and exposure.get("reason") == "always-remove-owned-service-before-flux"
+        and exposure.get("initialIngressAbsenceProved") is True
+        and exposure.get("serviceUid") == service_uid
+        and exposure.get("serviceAbsent") is True
+        and exposure.get("unknownIngressUntouched") is False
+        and isinstance(exposure_after, dict)
+        and set(exposure_after) == {"serviceUid", "serviceAbsent", "sameOwnedUidOnly"}
+        and exposure_after.get("serviceUid") == service_uid
+        and exposure_after.get("serviceAbsent") is True
+        and exposure_after.get("sameOwnedUidOnly") is True,
+        "recovery rollback exposure-break proof drift",
+    )
+    validate_recovery_dependent_absence_v4(
+        final.get("deploymentDependents"), "recovery Deployment dependent absence",
+    )
+    preservation = validate_recovery_preservation_proof_v4(
+        rollback.get("preservation"), p, "recovery rollback preservation",
+    )
+    for name in p["preservation"]:
+        require(
+            preservation[name]["beforeCanonicalSha256"]
+            == preservation[name]["afterCanonicalSha256"]
+            == preflight["preservation"][name]["beforeCanonicalSha256"]
+            == preflight["preservation"][name]["afterCanonicalSha256"],
+            f"recovery rollback preservation no longer binds preflight: {name}",
+        )
+
 def validate_complete_recovery_rollback_v4(
     rollback: Any,
     preflight: dict[str, Any],
     p: dict[str, Any],
     rev: str,
+    incident: dict[str, Any] | None = None,
 ) -> None:
-    preflight = validate_recovery_preflight_receipt_v4(preflight, p, rev)
+    profile = recovery_incident_profile_v4(incident) if incident is not None else None
+    if profile is not None and profile["name"] == "run29-six-created-rbac-readiness-failure":
+        validate_complete_run29_recovery_rollback_v4(rollback, preflight, p, rev, incident)
+        return
+    preflight = validate_recovery_preflight_receipt_v4(preflight, p, rev, incident)
     flux = rollback.get("flux") if isinstance(rollback, dict) else None
     require(
         isinstance(rollback, dict)
@@ -4774,7 +5395,13 @@ def recover_incomplete_activation_v4(
             preserved = preservation_v4(r, snapshot_path, p)
             require_current_preservation_binding_v4(preserved, dormant_ownership, p)
             bootstrap = flux_preflight_v4(r, snapshot_path, p, rev, dormant_ownership)
-            flux = recovery_flux_preflight_v4(bootstrap)
+            flux = recovery_flux_preflight_v4(
+                bootstrap,
+                r=r,
+                kubeconfig=snapshot_path,
+                p=p,
+                incident=incident,
+            )
             targets = bind_recovery_targets_v4(r, snapshot_path, rendered, incident)
             preservation_before = verify_preservation_v4(r, snapshot_path, preserved)
             before_rollback = cluster_binding_v4(r, snapshot, p)
@@ -4787,7 +5414,7 @@ def recover_incomplete_activation_v4(
                 "targets": targets["classifications"],
                 "preservation": preservation_before,
             }
-            validate_recovery_preflight_receipt_v4(preflight, p, rev)
+            validate_recovery_preflight_receipt_v4(preflight, p, rev, incident)
         except (Exception, KeyboardInterrupt) as exc:
             blocked = {
                 "schemaVersion": RECOVERY_RECEIPT_SCHEMA,
@@ -4819,6 +5446,7 @@ def recover_incomplete_activation_v4(
                 rendered=rendered,
                 snapshot=snapshot,
                 initial_cluster=initial_cluster,
+                recovery_incident=incident,
             )
         except (Exception, KeyboardInterrupt) as exc:
             rollback = {
@@ -4828,7 +5456,7 @@ def recover_incomplete_activation_v4(
                 "finalizersRemovedByRunner": False,
             }
         try:
-            validate_complete_recovery_rollback_v4(rollback, preflight, p, rev)
+            validate_complete_recovery_rollback_v4(rollback, preflight, p, rev, incident)
             status = "recovered"
         except ActivationError:
             status = "recovery-incomplete"
@@ -4880,15 +5508,15 @@ def bind_recovery_receipt_v4(
     require(receipt.get("protectedRunnerFileSha256") == runner_hashes, "recovery receipt protected file drift")
     require(receipt.get("automaticActivationRetry") is False, "recovery receipt automatic retry widened")
     require(receipt.get("civicAuthorityEffects") is False, "recovery receipt civic authority widened")
-    validate_recovery_incident_binding_v4(receipt.get("recoveredIncident"))
-    preflight = validate_recovery_preflight_receipt_v4(receipt.get("preflight"), p, rev)
-    validate_complete_recovery_rollback_v4(receipt.get("rollback"), preflight, p, rev)
+    incident = validate_recovery_incident_binding_v4(receipt.get("recoveredIncident"))
+    preflight = validate_recovery_preflight_receipt_v4(receipt.get("preflight"), p, rev, incident)
+    validate_complete_recovery_rollback_v4(receipt.get("rollback"), preflight, p, rev, incident)
     return {
         "schemaVersion": RECOVERY_RECEIPT_SCHEMA,
         "status": "recovered",
         "receiptSha256": checksum,
         "protectedRevision": rev,
-        "sourceFailedReceiptSha256": FAILED_ACTIVATION_CANONICAL_SHA256,
+        "sourceFailedReceiptSha256": incident["originReceiptSha256"],
         "dormantHandoverReceiptSha256": preflight["dormantReceipt"]["receiptSha256"],
         "automaticActivationRetry": False,
         "civicAuthorityEffects": False,
