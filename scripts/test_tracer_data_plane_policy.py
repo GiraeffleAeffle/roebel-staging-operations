@@ -92,6 +92,10 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertNotIn("PersistentVolumeClaim", json.dumps(deployment))
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         environment = {item["name"]: item for item in container["env"]}
+        self.assertEqual(
+            environment["PGDATA"],
+            {"name": "PGDATA", "value": "/var/lib/postgresql/data"},
+        )
         self.assertEqual(environment["POSTGRES_USER"]["value"], "supabase_admin")
         for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
             self.assertIn(

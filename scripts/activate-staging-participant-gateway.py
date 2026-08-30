@@ -75,6 +75,7 @@ HANDOVER_ARCHIVE_REVISION = "08c4171573bb138845a9160e747f6ac56a3c754e"
 SECRET_RECEIPT_ORIGIN_REVISION = "b790fa76d4f2ad4d0bd86663dcd896b97ba0b61e"
 SECRET_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:b8c8aab74cc3101ef20394b080c1e18e7435fb1d07661fcf103b46e73b750be3"
 SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256 = "sha256:173d52ab2fc1b496d61241eebbf986a5ece27bb66298b96db31d16b9ce273aa9"
+SECRET_RECEIPT_ORIGIN_ACTIVATION_POLICY_SHA256 = "sha256:3319969ef3bec5eb3705ac7b551197a89aada430a9bc7b231ad543e10a8ccd51"
 SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256 = {
     "policy/repository-contract.json": "sha256:1e47d943cd741c2d00ef1a14fdeb2dab7e0d5b481af88dce8685ad83519bd29e",
     "policy/staging-participant-gateway-activation-policy.json": "sha256:f9ec42610af3ced30e0951bae9ffa2e0176d555819712b0e9e67e25650817c1a",
@@ -84,6 +85,34 @@ SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256 = {
     "scripts/staging_participant_gateway_policy.py": "sha256:14f78ce3284adb6bba46bfc74c96c62059b12566051f0015c95f2acafa04cd97",
 }
 SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS = {"config": "15906163", "runtime": "15906221"}
+SECRET_RECEIPT_ORIGIN_SECRET_RECORDS = {
+    "config": {
+        "target": {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "name": "roebel-staging-participant-gateway-config",
+            "namespace": "stadtstack-roebel-web-preview",
+        },
+        "uid": "f1ccc7ce-767b-4c08-9afc-d3f1302b1f86",
+        "resourceVersion": "15906163",
+        "keySet": ["allowed-wallets", "invite-sha256", "mecky-pubkey"],
+        "ownershipNonce": "a42a7790e04a116a6f5642f8d9c03e879348bfce24563ddfae7995f5ad354c63",
+        "valuesRead": False,
+    },
+    "runtime": {
+        "target": {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "name": "roebel-staging-participant-gateway-runtime",
+            "namespace": "stadtstack-roebel-web-preview",
+        },
+        "uid": "11b986e3-c6b6-41bd-8744-72a485210988",
+        "resourceVersion": "15906221",
+        "keySet": ["session-key", "supabase-anon-key", "supabase-rpc-secret"],
+        "ownershipNonce": "845f2e0976c5197c417ffe35639ce5204ff4dc54c75ea7ef383803cd33de2359",
+        "valuesRead": False,
+    },
+}
 # One-shot authority for recovering the failed-closed aaca3166 activation.
 # The raw digest binds every byte of the original durable receipt; the deep
 # projection below independently constrains every field later used to delete.
@@ -1183,6 +1212,107 @@ def bind_failed_activation_recovery_source_v4(receipt_fd: int) -> dict[str, Any]
         "civicAuthorityEffects": False,
     }
 
+def bind_historical_secret_materialization_fields_v4(
+    p: dict[str, Any],
+    receipt: dict[str, Any],
+) -> dict[str, Any]:
+    """Close b790 fields and prove current target/keyset compatibility."""
+    require(
+        isinstance(receipt, dict)
+        and set(receipt) == {
+            "schemaVersion", "status", "protectedRevision", "activationPolicySha256",
+            "protectedRunnerFileSha256", "createOrder", "secrets", "inputTransport",
+            "valuesInReceipt", "civicAuthorityEffects", "canonicalSha256",
+        },
+        "historical Secret receipt field closure drift",
+    )
+    require(
+        receipt.get("canonicalSha256") == SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+        "historical Secret receipt canonical checksum drift",
+    )
+    require(
+        receipt.get("schemaVersion") == "roebel_staging_participant_secret_materialization_receipt_v1"
+        and receipt.get("status") == "materialized"
+        and receipt.get("protectedRevision") == SECRET_RECEIPT_ORIGIN_REVISION
+        and receipt.get("activationPolicySha256") == SECRET_RECEIPT_ORIGIN_ACTIVATION_POLICY_SHA256
+        and receipt.get("protectedRunnerFileSha256") == SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256
+        and receipt.get("createOrder") == ["config", "runtime"]
+        and receipt.get("inputTransport") == "owned-private-inherited-descriptors-only"
+        and receipt.get("valuesInReceipt") is False
+        and receipt.get("civicAuthorityEffects") is False,
+        "historical Secret receipt origin field drift",
+    )
+    records = receipt.get("secrets")
+    require(records == SECRET_RECEIPT_ORIGIN_SECRET_RECORDS, "historical Secret receipt origin record drift")
+    references = p.get("runtime", {}).get("secretReferences")
+    require(
+        isinstance(references, dict)
+        and {"config", "runtime"} < set(references),
+        "current participant Secret reference inventory drift",
+    )
+    for label in ("config", "runtime"):
+        reference = references[label]
+        record = records[label]
+        require(
+            isinstance(reference, dict)
+            and set(reference) == {"name", "namespace", "keys"}
+            and record["target"] == {
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "namespace": reference["namespace"],
+                "name": reference["name"],
+            }
+            and record["keySet"] == sorted(reference["keys"])
+            and record["resourceVersion"] == SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS[label],
+            f"historical Secret receipt current target/keyset compatibility drift: {label}",
+        )
+    return {
+        "status": "materialized",
+        "protectedRevision": SECRET_RECEIPT_ORIGIN_REVISION,
+        "receiptSha256": SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+        "secretUids": {label: records[label]["uid"] for label in ("config", "runtime")},
+        "secretRecords": {
+            label: {
+                "target": copy.deepcopy(records[label]["target"]),
+                "uid": records[label]["uid"],
+                "resourceVersion": records[label]["resourceVersion"],
+                "keySet": copy.deepcopy(records[label]["keySet"]),
+                "valuesRead": False,
+            }
+            for label in ("config", "runtime")
+        },
+        "civicAuthorityEffects": False,
+        "receiptProvenance": {
+            "mode": "historical-b790-value-free-secret-materialization",
+            "protectedRevision": SECRET_RECEIPT_ORIGIN_REVISION,
+            "rawSha256": SECRET_RECEIPT_ORIGIN_RAW_SHA256,
+            "canonicalSha256": SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+        },
+    }
+
+
+def bind_historical_secret_materialization_receipt_v4(
+    p: dict[str, Any],
+    receipt: dict[str, Any],
+    raw: bytes,
+) -> dict[str, Any]:
+    """Bind only the exact audited b790 value-free Secret receipt.
+
+    The b790 materializer cannot validate a later activation policy digest.
+    Instead, close every historical field over pinned origin constants and
+    separately prove that its two participant Secret targets/keysets remain
+    compatible with the current policy.  No historical executable is asked
+    to reinterpret the current policy.
+    """
+    require(bytes_digest(raw) == SECRET_RECEIPT_ORIGIN_RAW_SHA256, "historical Secret receipt raw checksum drift")
+    unsigned = {key: copy.deepcopy(value) for key, value in receipt.items() if key != "canonicalSha256"}
+    require(
+        digest(unsigned) == SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
+        "historical Secret receipt canonical checksum drift",
+    )
+    return bind_historical_secret_materialization_fields_v4(p, receipt)
+
+
 def bind_secret_materialization_receipt_v4(
     p: dict[str, Any],
     rev: str,
@@ -1196,47 +1326,19 @@ def bind_secret_materialization_receipt_v4(
     """
     global SECRET_MATERIALIZER
     try:
-        if SECRET_MATERIALIZER is None:
-            SECRET_MATERIALIZER = compile_verified_secret_materializer_v4(git_blob(rev, SECRET_MATERIALIZER_PATH), rev)
         raw = load_owned_receipt_fd_raw_v4(receipt_fd, "Secret materialization receipt")
         try:
             receipt = obj(raw.decode("utf-8"), "Secret materialization receipt")
         except UnicodeDecodeError as exc:
             raise ActivationError("Secret materialization receipt must be UTF-8 JSON") from exc
-        protected_paths = tuple(getattr(SECRET_MATERIALIZER, "PROTECTED_PATHS", ()))
-        require(protected_paths and len(protected_paths) == len(set(protected_paths)), "Secret materializer protected path closure invalid")
         receipt_revision = receipt.get("protectedRevision")
         if receipt_revision == SECRET_RECEIPT_ORIGIN_REVISION:
-            # The old receipt is accepted only as the one audited, value-free
-            # b790 continuation artifact.  Binding the historical hashes is
-            # deliberately explicit; a caller cannot select another old
-            # revision or provide a partially matching runner inventory.
-            historical_materializer = git_blob(SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH)
-            require(
-                "sha256:" + hashlib.sha256(historical_materializer).hexdigest() == SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256[SECRET_MATERIALIZER_PATH],
-                "historical Secret materializer checksum drift",
-            )
-            require(bytes_digest(raw) == SECRET_RECEIPT_ORIGIN_RAW_SHA256, "historical Secret receipt raw checksum drift")
-            require(receipt.get("canonicalSha256") == SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256, "historical Secret receipt canonical checksum drift")
-            require(receipt.get("protectedRunnerFileSha256") == SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256, "historical Secret receipt protected runner binding drift")
-            require(all(path in SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256 for path in protected_paths), "historical Secret receipt protected path closure drift")
-            hashes = {path: SECRET_RECEIPT_ORIGIN_RUNNER_FILE_SHA256[path] for path in protected_paths}
-            ownership = SECRET_MATERIALIZER.bind_materialization_receipt(receipt, p, SECRET_RECEIPT_ORIGIN_REVISION, hashes)
-            records = ownership.get("secretRecords")
-            require(
-                isinstance(records, dict)
-                and set(records) == set(SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS)
-                and all(records[label].get("resourceVersion") == value for label, value in SECRET_RECEIPT_ORIGIN_RESOURCE_VERSIONS.items()),
-                "historical Secret receipt resourceVersion binding drift",
-            )
-            ownership["receiptProvenance"] = {
-                "mode": "historical-b790-value-free-secret-materialization",
-                "protectedRevision": SECRET_RECEIPT_ORIGIN_REVISION,
-                "rawSha256": SECRET_RECEIPT_ORIGIN_RAW_SHA256,
-                "canonicalSha256": SECRET_RECEIPT_ORIGIN_CANONICAL_SHA256,
-            }
-            return ownership
+            return bind_historical_secret_materialization_receipt_v4(p, receipt, raw)
         require(receipt_revision == rev, "Secret materialization receipt protected revision drift")
+        if SECRET_MATERIALIZER is None:
+            SECRET_MATERIALIZER = compile_verified_secret_materializer_v4(git_blob(rev, SECRET_MATERIALIZER_PATH), rev)
+        protected_paths = tuple(getattr(SECRET_MATERIALIZER, "PROTECTED_PATHS", ()))
+        require(protected_paths and len(protected_paths) == len(set(protected_paths)), "Secret materializer protected path closure invalid")
         hashes = {path: bytes_digest(git_blob(rev, path)) for path in protected_paths}
         return SECRET_MATERIALIZER.bind_materialization_receipt(receipt, p, rev, hashes)
     except ActivationError:
