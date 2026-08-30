@@ -128,7 +128,7 @@
           "kind": "Role",
           "name": "roebel-tracer-data-plane-reconciler",
           "namespace": "stadtstack-roebel-staging-lab",
-          "semanticSha256": "sha256:1e83d0ab081e19f1761607889b736ad02d82c58805d572633c40de767bfb4462"
+          "semanticSha256": "sha256:c1ec2f6c317c86515c7a7d360a6b49544148cd4e0e37403e0eda1a11377f0844"
         },
         "roleBinding": {
           "apiVersion": "rbac.authorization.k8s.io/v1",
