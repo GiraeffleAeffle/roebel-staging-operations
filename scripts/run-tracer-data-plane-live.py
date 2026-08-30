@@ -494,30 +494,80 @@ def create_object(core: Any, runner: Any, kubeconfig: str, label: str, desired: 
 
 
 def remove_nonce(core: Any, runner: Any, kubeconfig: str, label: str, desired: dict[str, Any], record: dict[str, Any]) -> dict[str, Any]:
-    current = get_optional(core, runner, kubeconfig, desired)
-    require(current is not None and current["metadata"].get("uid") == record["uid"], f"{label} identity drift before nonce removal")
-    require_semantic(core, current, with_nonce(desired, record["ownershipNonce"]), label)
-    resource_version = current["metadata"].get("resourceVersion")
+    uid = record["uid"]
+    nonce = record["ownershipNonce"]
     annotation_path = "/metadata/annotations/" + NONCE_ANNOTATION.replace("~", "~0").replace("/", "~1")
-    patch = [
-        {"op": "test", "path": "/metadata/uid", "value": record["uid"]},
-        {"op": "test", "path": "/metadata/resourceVersion", "value": resource_version},
-        {"op": "test", "path": annotation_path, "value": record["ownershipNonce"]},
-        {"op": "remove", "path": annotation_path},
-    ]
     metadata = desired["metadata"]
-    response = runner.run([
-        "kubectl", "--kubeconfig", kubeconfig, "-n", metadata["namespace"],
-        "patch", kind_cli(desired["kind"]), metadata["name"], "--type=json", "-p", canonical(patch), "-o", "json",
-    ])
-    require(response.code == 0, f"{label} nonce-removal CAS failed")
-    observed = core.obj(response.out, f"{label} nonce-removal response")
-    require(observed.get("metadata", {}).get("uid") == record["uid"], f"{label} UID changed")
-    require_semantic(core, observed, desired, label)
-    result = copy.deepcopy(record)
-    result["resourceVersion"] = observed["metadata"]["resourceVersion"]
-    result["temporaryNonceRemoved"] = True
-    return result
+    nonce_desired = with_nonce(desired, nonce)
+    last_error = "nonce removal retry exhausted"
+    patch_attempted = False
+
+    for attempt in range(4):
+        current = get_optional(core, runner, kubeconfig, desired)
+        require(current is not None, f"{label} disappeared during nonce removal")
+        current_metadata = current.get("metadata", {})
+        require(current_metadata.get("uid") == uid, f"{label} UID changed during nonce removal")
+        current_rv = current_metadata.get("resourceVersion")
+        require(isinstance(current_rv, str) and current_rv.isdigit(), f"{label} nonce-removal resourceVersion absent")
+        annotations = current_metadata.get("annotations", {})
+        current_nonce = annotations.get(NONCE_ANNOTATION) if isinstance(annotations, dict) else None
+        if current_nonce is None:
+            require(patch_attempted, f"{label} operation nonce disappeared before nonce-removal CAS")
+            require_semantic(core, current, desired, f"{label} completed nonce removal")
+            result = copy.deepcopy(record)
+            result["resourceVersion"] = current_rv
+            result["temporaryNonceRemoved"] = True
+            return result
+        require(current_nonce == nonce, f"{label} operation nonce ownership mismatch")
+        require_semantic(core, current, nonce_desired, f"{label} owned nonce removal")
+        patch = [
+            {"op": "test", "path": "/metadata/uid", "value": uid},
+            {"op": "test", "path": "/metadata/resourceVersion", "value": current_rv},
+            {"op": "test", "path": annotation_path, "value": nonce},
+            {"op": "remove", "path": annotation_path},
+        ]
+        patch_attempted = True
+        response = runner.run([
+            "kubectl", "--kubeconfig", kubeconfig, "-n", metadata["namespace"],
+            "patch", kind_cli(desired["kind"]), metadata["name"], "--type=json", "-p", canonical(patch), "-o", "json",
+        ], timeout=30)
+        if response.code == 0:
+            try:
+                observed = core.obj(response.out, f"{label} nonce-removal response")
+            except Exception as exc:
+                last_error = str(exc)
+            else:
+                observed_metadata = observed.get("metadata", {})
+                require(observed_metadata.get("uid") == uid, f"{label} UID changed during nonce removal")
+                observed_rv = observed_metadata.get("resourceVersion")
+                require(isinstance(observed_rv, str) and observed_rv.isdigit(), f"{label} post-nonce resourceVersion absent")
+                require_semantic(core, observed, desired, f"{label} post-nonce semantics")
+                result = copy.deepcopy(record)
+                result["resourceVersion"] = observed_rv
+                result["temporaryNonceRemoved"] = True
+                return result
+        else:
+            last_error = f"kubectl exited {response.code}"
+        if attempt < 3:
+            time.sleep(0.05 * (attempt + 1))
+
+    final = get_optional(core, runner, kubeconfig, desired)
+    require(final is not None, f"{label} disappeared during nonce removal")
+    final_metadata = final.get("metadata", {})
+    require(final_metadata.get("uid") == uid, f"{label} UID changed during nonce removal")
+    final_rv = final_metadata.get("resourceVersion")
+    require(isinstance(final_rv, str) and final_rv.isdigit(), f"{label} nonce-removal resourceVersion absent")
+    final_annotations = final_metadata.get("annotations", {})
+    final_nonce = final_annotations.get(NONCE_ANNOTATION) if isinstance(final_annotations, dict) else None
+    if final_nonce is None:
+        require_semantic(core, final, desired, f"{label} completed nonce removal")
+        result = copy.deepcopy(record)
+        result["resourceVersion"] = final_rv
+        result["temporaryNonceRemoved"] = True
+        return result
+    require(final_nonce == nonce, f"{label} operation nonce ownership mismatch")
+    require_semantic(core, final, nonce_desired, f"{label} owned nonce removal")
+    raise ActivationError(f"{label} nonce-removal CAS failed: {last_error}")
 
 
 def resource_path(desired: dict[str, Any]) -> str:
