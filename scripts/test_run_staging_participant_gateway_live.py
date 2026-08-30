@@ -1074,6 +1074,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 os.chmod(source, 0o600)
                 receipt_paths.append(source)
             receipt_directory = root / "attempt"
+            runtime = root / "private-runtime"
+            runtime.mkdir(mode=0o700)
             argv = [
                 "--run29-dormant-handover-teardown", "--live",
                 "--expected-protected-revision", revision,
@@ -1171,6 +1173,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
 
             with ExitStack() as stack:
                 stack.enter_context(patch.object(MODULE.sys, "flags", Mock(isolated=1, safe_path=True)))
+                runtime_temp = stack.enter_context(patch.object(MODULE.tempfile, "mkdtemp", side_effect=(str(runtime),)))
                 stack.enter_context(patch.object(MODULE, "CancellationState", return_value=cancellation))
                 stack.enter_context(patch.object(MODULE, "bind_protected_checkout", return_value=(protected_hashes, protected_blobs)))
                 stack.enter_context(patch.object(MODULE, "compile_verified_spawn_module", return_value=Mock()))
@@ -1186,6 +1189,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 stack.enter_context(patch.object(MODULE.secrets, "token_hex", side_effect=("a" * 64, "b" * 64)))
 
                 self.assertEqual(MODULE.main(argv), 0)
+                runtime_temp.assert_called_once_with(prefix="roebel-participant-live-", dir="/private/tmp")
 
             run29_teardown.assert_called_once()
             self.assertEqual(snap_receipt.call_count, 3)
