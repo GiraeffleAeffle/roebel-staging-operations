@@ -926,7 +926,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_seven_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_eight_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -939,6 +939,8 @@ class ExecutorTests(unittest.TestCase):
         origin_runner_hash = sha("9")
         receipt["protectedFileSha256"] = copy.deepcopy(current_hashes)
         receipt["protectedFileSha256"]["scripts/activate-staging-participant-gateway.py"] = origin_runner_hash
+        receipt["protectedFileSha256"][MODULE.POLICY_MODULE_PATH] = sha("8")
+        receipt["protectedFileSha256"][MODULE.POLICY_PATH] = sha("7")
 
         def bind(candidate, *, raw_sha=None, transitions=None):
             with tempfile.TemporaryDirectory() as directory:
@@ -955,7 +957,8 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
-                        set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -973,7 +976,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-seven-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-eight-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -984,6 +987,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_FOURTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_FIFTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1002,7 +1006,8 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_THIRD_TO_FOURTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FOURTH_TO_FIFTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_FIFTH_TO_SIXTH_SUCCESSOR_FILES),
-            set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1011,7 +1016,8 @@ class ExecutorTests(unittest.TestCase):
             "third-to-fourth-successor file set drift",
             "fourth-to-fifth-successor file set drift",
             "fifth-to-sixth-successor file set drift",
-            "sixth-successor-to-acceptor file set drift",
+            "sixth-to-seventh-successor file set drift",
+            "seventh-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1045,6 +1051,10 @@ class ExecutorTests(unittest.TestCase):
             MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_REVISION,
             "720e058a61c185c8c64e2679e14d5dc8eea96ba0",
         )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION,
+            "2002f4da021de7188e86ae4cd7a724bf0e9da0db",
+        )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
             "scripts/test_activate_staging_participant_gateway.py",
@@ -1066,13 +1076,41 @@ class ExecutorTests(unittest.TestCase):
             participant_pair | wrapper_pair,
         )
         self.assertEqual(
-            set(MODULE.TRACER_RECEIPT_SIXTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_SIXTH_TO_SEVENTH_SUCCESSOR_FILES),
             participant_pair | wrapper_pair,
+        )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            {
+                "policy/staging-participant-gateway-activation-policy.json",
+                "reviewed-render/roebel-staging/integrity.json",
+                "reviewed-render/roebel-staging/network-boundary-migration.json",
+                "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+                "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+                "scripts/activate-staging-participant-gateway.py",
+                "scripts/run-staging-participant-gateway-live.py",
+                "scripts/staging_participant_gateway_policy.py",
+                "scripts/test_activate_staging_participant_gateway.py",
+                "scripts/test_run_staging_participant_gateway_live.py",
+                "scripts/test_staging_participant_gateway_policy.py",
+            },
         )
         widened = copy.deepcopy(receipt)
         widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
         with self.assertRaisesRegex(MODULE.ActivationError, "protected path change drift"):
             bind(widened)
+        for path in (
+            "scripts/activate-staging-participant-gateway.py",
+            MODULE.POLICY_MODULE_PATH,
+            MODULE.POLICY_PATH,
+        ):
+            omitted = copy.deepcopy(receipt)
+            omitted["protectedFileSha256"][path] = current_hashes[path]
+            with self.subTest(omitted=path), self.assertRaisesRegex(
+                MODULE.ActivationError,
+                "origin activation-runner hash drift|protected path change drift",
+            ):
+                bind(omitted)
         source_drift = copy.deepcopy(receipt)
         source_drift["sharedFluxSource"]["revision"] = f"main@sha1:{REV}"
         with self.assertRaisesRegex(MODULE.ActivationError, "shared Flux source"):
@@ -1081,6 +1119,30 @@ class ExecutorTests(unittest.TestCase):
         flux_drift["flux"]["lastAppliedRevision"] = f"main@sha1:{REV}"
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
+
+    def test_eighth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_SEVENTH_SUCCESSOR_REVISION
+        child = "c" * 40
+        foreign = "d" * 40
+        for label, lineage in (
+            ("wrong-parent", f"{child} {foreign}\n"),
+            ("merge-parent", f"{child} {parent} {foreign}\n"),
+        ):
+            result = MODULE.subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=lineage, stderr=""
+            )
+            with self.subTest(label=label), patch.object(
+                MODULE, "trusted_git_v4", return_value=result
+            ) as trusted, self.assertRaisesRegex(
+                MODULE.ActivationError,
+                "seventh-successor-to-acceptor protected parent drift",
+            ):
+                MODULE.exact_revision_transition_files_v4(
+                    parent,
+                    child,
+                    "tracer receipt seventh-successor-to-acceptor",
+                )
+            self.assertEqual(trusted.call_count, 1)
 
     def test_live_tracer_binding_revalidates_kustomization_before_first_mutation(self):
         expected = TRACER_POLICY.dormant_flux_objects(suspended=False)["kustomization"]

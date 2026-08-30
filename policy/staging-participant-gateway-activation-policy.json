@@ -694,6 +694,17 @@
     "gatewayIngressNamespaceSelector": {
       "kubernetes.io/metadata.name": "ingress-system"
     },
+    "gatewayIngressHostNetworkSourceCidrs": [
+      "10.42.0.10/32",
+      "10.42.0.11/32",
+      "10.42.0.12/32",
+      "10.244.0.0/32",
+      "10.244.1.0/32",
+      "10.244.2.0/32",
+      "10.244.0.1/32",
+      "10.244.1.1/32",
+      "10.244.2.1/32"
+    ],
     "dnsPodSelector": {
       "k8s-app": "kube-dns"
     },

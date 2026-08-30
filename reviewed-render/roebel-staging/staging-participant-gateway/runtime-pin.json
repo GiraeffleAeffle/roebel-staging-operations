@@ -17,5 +17,5 @@
   "sourceConversationTopic": "roebel-app-conversation",
   "topicPolicyVersion": "staging-participant-topic-v1",
   "deactivationSha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
-  "activationPolicySha256": "sha256:1528a20cc39ea1a850be2d27b775c882bddeb13c51653717caf61b14c6069f42"
+  "activationPolicySha256": "sha256:088e661c2c2e847d310cab42daf09e3ee3c7755db38a11fdb6726d695255c567"
 }

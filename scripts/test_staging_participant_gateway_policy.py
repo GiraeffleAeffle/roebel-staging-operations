@@ -267,6 +267,35 @@ class StaticPolicyTests(unittest.TestCase):
         self.assertTrue(contract["teardown"]["uidResourceVersionPreconditions"])
         self.assertEqual(len(contract["teardown"]["requiredAbsentTargets"]), 8)
 
+    def test_gateway_ingress_policy_matches_the_exact_hostnetwork_controller_sources(self):
+        value = ready_policy()
+        cidrs = [
+            "10.42.0.10/32", "10.42.0.11/32", "10.42.0.12/32",
+            "10.244.0.0/32", "10.244.1.0/32", "10.244.2.0/32",
+            "10.244.0.1/32", "10.244.1.1/32", "10.244.2.1/32",
+        ]
+        self.assertEqual(value["network"]["gatewayIngressHostNetworkSourceCidrs"], cidrs)
+        network_policy = POLICY.expected_gateway_resources(value)["networkPolicy"]
+        self.assertEqual(
+            network_policy["spec"]["ingress"],
+            [{
+                "from": [
+                    {"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "ingress-system"}}},
+                    *[{"ipBlock": {"cidr": cidr}} for cidr in cidrs],
+                ],
+                "ports": [{"port": POLICY.GATEWAY_PORT, "protocol": "TCP"}],
+            }],
+        )
+        for label, mutate in (
+            ("omitted", lambda items: items.pop()),
+            ("widened", lambda items: items.append("10.42.0.0/16")),
+            ("reordered", lambda items: items.reverse()),
+        ):
+            changed = copy.deepcopy(value)
+            mutate(changed["network"]["gatewayIngressHostNetworkSourceCidrs"])
+            with self.subTest(label=label), self.assertRaises(POLICY.PolicyError):
+                POLICY.validate_activation_policy(changed)
+
     def test_reciprocal_network_policy_is_additive_and_does_not_adopt_workbench_policy(self):
         policy = POLICY.expected_workbench_ingress_network_policy()
         self.assertEqual(policy["metadata"]["name"], POLICY.WORKBENCH_INGRESS_POLICY_NAME)
