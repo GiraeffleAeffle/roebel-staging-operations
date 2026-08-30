@@ -20,6 +20,13 @@ TRACER_SPEC = importlib.util.spec_from_file_location(
 assert TRACER_SPEC and TRACER_SPEC.loader
 TRACER_POLICY = importlib.util.module_from_spec(TRACER_SPEC)
 TRACER_SPEC.loader.exec_module(TRACER_POLICY)
+HANDOVER_SPEC = importlib.util.spec_from_file_location(
+    "participant_test_handover_runner",
+    Path(__file__).with_name("handover-staging-participant-dormant-receipt.py"),
+)
+assert HANDOVER_SPEC and HANDOVER_SPEC.loader
+HANDOVER_RUNNER = importlib.util.module_from_spec(HANDOVER_SPEC)
+HANDOVER_SPEC.loader.exec_module(HANDOVER_RUNNER)
 def sha(x="a"): return "sha256:" + x * 64
 def historical_secret_receipt():
     unsigned = {
@@ -751,10 +758,19 @@ class ExecutorTests(unittest.TestCase):
         self.assertNotIn((REV, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         self.assertNotIn((MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH), MODULE.required_nested_handover_prebound_keys_v4(REV))
         nested_expected = MODULE.required_nested_handover_prebound_keys_v4(REV)
-        self.assertTrue(tracer_closure.isdisjoint(nested_expected))
+        self.assertEqual(nested_expected, HANDOVER_RUNNER._required_prebound_keys(REV))
+        self.assertEqual(
+            tracer_closure & nested_expected,
+            {
+                (REV, "policy/repository-contract.json"),
+                (REV, MODULE.POLICY_PATH),
+                (REV, "scripts/activate-staging-participant-gateway.py"),
+                (REV, MODULE.POLICY_MODULE_PATH),
+            },
+        )
         self.assertEqual(
             set(blobs) - nested_expected,
-            tracer_closure
+            (tracer_closure - nested_expected)
             | {
                 (REV, MODULE.SECRET_MATERIALIZER_PATH),
                 (MODULE.SECRET_RECEIPT_ORIGIN_REVISION, MODULE.SECRET_MATERIALIZER_PATH),

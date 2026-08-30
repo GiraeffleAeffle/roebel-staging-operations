@@ -966,10 +966,15 @@ def required_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, 
 
 def required_nested_handover_prebound_keys_v4(current_revision: str) -> set[tuple[str, str]]:
     """Return only the two-revision closure understood by the handover runner."""
-    return required_handover_prebound_keys_v4(current_revision) - {
-        (current_revision, SECRET_MATERIALIZER_PATH),
-        (SECRET_RECEIPT_ORIGIN_REVISION, SECRET_MATERIALIZER_PATH),
-        *((current_revision, path) for path in TRACER_RECEIPT_PROTECTED_PATHS),
+    current_paths = tuple(dict.fromkeys((
+        *BOOTSTRAP_PROTECTED_PATHS,
+        *HANDOVER_COMPATIBILITY_PATHS,
+        *HANDOVER_CURRENT_PRESERVATION_PATHS,
+    )))
+    archived_paths = tuple(dict.fromkeys((*HANDOVER_ARCHIVED_PROTECTED_PATHS, *HANDOVER_COMPATIBILITY_PATHS)))
+    return {
+        *((current_revision, path) for path in current_paths),
+        *((HANDOVER_ARCHIVE_REVISION, path) for path in archived_paths),
     }
 
 def parse_prebound_git_blob_descriptors_v4(values: list[str] | None, current_revision: str) -> dict[tuple[str, str], bytes]:
