@@ -217,6 +217,22 @@ def activation_journal(reservation: dict, records: dict[str, dict]) -> dict:
 
 
 class TracerRunnerTests(unittest.TestCase):
+    def test_dynamic_loader_registers_dataclass_module_during_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "dataclass_probe.py"
+            source.write_text(
+                "from dataclasses import dataclass\n"
+                "@dataclass\n"
+                "class Probe:\n"
+                "    value: int\n",
+            )
+            name = "tracer_runner_dataclass_probe"
+            sys.modules.pop(name, None)
+            self.addCleanup(sys.modules.pop, name, None)
+            loaded = MODULE.load_module(source, name)
+            self.assertIs(sys.modules[name], loaded)
+            self.assertEqual(loaded.Probe(11).value, 11)
+
     core = SimpleNamespace(POLICY=KUBE_POLICY, obj=lambda raw, label: json.loads(raw))
 
     def test_all_twelve_objects_accept_only_documented_kubernetes_defaults(self) -> None:

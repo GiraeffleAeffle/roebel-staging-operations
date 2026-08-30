@@ -189,7 +189,13 @@ def load_module(path: Path, name: str) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     require(spec is not None and spec.loader is not None, f"module unavailable: {path}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    _bootstrap_sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if _bootstrap_sys.modules.get(name) is module:
+            _bootstrap_sys.modules.pop(name, None)
+        raise
     return module
 
 
