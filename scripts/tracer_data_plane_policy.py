@@ -53,7 +53,7 @@ PRODUCT_ARTIFACTS = (
     (
         "71-roebel-tracer-baseline.sql",
         "supabase/staging_incluster_tracer_baseline_v1.sql",
-        "sha256:8fe7fffca7a5b62720254eb4fade61ab7e2767e327af2b117c3c4635f45a9e32",
+        "sha256:f8f9745c1783043334ef24b3cde801d19a609867d12d0c23612bda7c5206ca5a",
     ),
     (
         "73-staging-participant-gateway.sql",

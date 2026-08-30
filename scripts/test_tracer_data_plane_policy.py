@@ -206,6 +206,10 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         pin = POLICY.runtime_pin()
         self.assertIsNone(pin["productSource"]["sourceRevision"])
         self.assertFalse(pin["activationReady"])
+        self.assertEqual(
+            pin["productSource"]["artifacts"][0]["sha256"],
+            "sha256:f8f9745c1783043334ef24b3cde801d19a609867d12d0c23612bda7c5206ca5a",
+        )
 
     def test_repository_contract_keeps_the_inert_render_out_of_routine_promotions(self) -> None:
         boundary = POLICY.contract_boundary()

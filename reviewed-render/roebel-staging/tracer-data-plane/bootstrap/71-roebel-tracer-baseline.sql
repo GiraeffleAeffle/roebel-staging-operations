@@ -553,4 +553,13 @@ before insert on public.posts
 for each row
 execute function public.enforce_posting_rules();
 
+-- The pinned Supabase PostgreSQL image grants EXECUTE on every future public
+-- function created by supabase_admin to its four API/server roles. The pinned
+-- topic-tracer migration intentionally accepts only its owner and the explicit
+-- anon grant on each public RPC. Normalize only future public-function
+-- defaults after this baseline has created its compatibility functions; the
+-- participant migrations then materialize their reviewed ACLs themselves.
+alter default privileges for role supabase_admin in schema public
+  revoke all on functions from postgres, anon, authenticated, service_role;
+
 commit;
