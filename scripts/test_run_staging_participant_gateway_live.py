@@ -1150,6 +1150,224 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 "--handover-dormant-receipt", "/private/dormant.json",
             ])
 
+    def test_tracer_activation_projection_keeps_same_revision_behavior(self):
+        revision = "c" * 40
+        value = {
+            "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": revision,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        }
+        raw = json.dumps(value).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            bound = MODULE.bind_bytes_to_fd(raw, Path(directory) / "receipt.bound", "tracer receipt")
+            try:
+                with patch.object(MODULE, "require_tracer_activation_compatibility_transition") as compatibility:
+                    projection = MODULE.tracer_receipt_projection(
+                        bound,
+                        schema=MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                        statuses={"activated"},
+                        revision=revision,
+                        value_flag="secretValuesRead",
+                    )
+                compatibility.assert_not_called()
+            finally:
+                bound.close()
+        self.assertEqual(projection["protectedRevision"], revision)
+        self.assertEqual(projection["fileSha256"], MODULE.bytes_sha256(raw))
+
+    def test_exact_run19_projection_accepts_only_the_two_hop_successor_and_preserves_origin(self):
+        current = "c" * 40
+        origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
+        value = {
+            "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": origin,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        }
+        raw = json.dumps(value).encode("utf-8")
+        with tempfile.TemporaryDirectory() as directory:
+            bound = MODULE.bind_bytes_to_fd(raw, Path(directory) / "receipt.bound", "run19 receipt")
+            try:
+                with patch.object(
+                    MODULE,
+                    "TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256",
+                    bound.sha256,
+                ), patch.object(
+                    MODULE, "require_protected_revision_parent"
+                ) as parent, patch.object(
+                    MODULE,
+                    "protected_revision_changed_files",
+                    side_effect=[
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES,
+                        MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+                    ],
+                ) as changed:
+                    projection = MODULE.tracer_receipt_projection(
+                        bound,
+                        schema=MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                        statuses={"activated"},
+                        revision=current,
+                        value_flag="secretValuesRead",
+                    )
+            finally:
+                bound.close()
+        self.assertEqual(projection["protectedRevision"], origin)
+        self.assertEqual(parent.call_args_list, [
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+                origin,
+            ),
+            unittest.mock.call(
+                current,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+            ),
+        ])
+        self.assertEqual(changed.call_args_list, [
+            unittest.mock.call(
+                origin,
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+            ),
+            unittest.mock.call(
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_INTERMEDIATE_REVISION,
+                current,
+            ),
+        ])
+
+    def test_run19_compatibility_rejects_checksum_origin_and_lineage_drift(self):
+        current = "c" * 40
+        origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
+
+        def project(receipt_revision, *, expected_sha=None, parent_effect=None):
+            value = {
+                "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                "status": "activated",
+                "protectedRevision": receipt_revision,
+                "secretValuesRead": False,
+                "civicAuthorityEffects": False,
+            }
+            raw = json.dumps(value).encode("utf-8")
+            with tempfile.TemporaryDirectory() as directory:
+                bound = MODULE.bind_bytes_to_fd(raw, Path(directory) / "receipt.bound", "run19 receipt")
+                try:
+                    checksum = expected_sha if expected_sha is not None else MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256
+                    with patch.object(
+                        MODULE, "TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256", checksum
+                    ), patch.object(
+                        MODULE,
+                        "require_protected_revision_parent",
+                        side_effect=parent_effect,
+                    ), patch.object(
+                        MODULE,
+                        "protected_revision_changed_files",
+                        side_effect=[
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES,
+                            MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES,
+                        ],
+                    ):
+                        return MODULE.tracer_receipt_projection(
+                            bound,
+                            schema=MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+                            statuses={"activated"},
+                            revision=current,
+                            value_flag="secretValuesRead",
+                        )
+                finally:
+                    bound.close()
+
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "origin/checksum"):
+            project(origin)
+
+        foreign = "f" * 40
+        foreign_raw = json.dumps({
+            "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": foreign,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        }).encode("utf-8")
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "origin/checksum"):
+            project(foreign, expected_sha=MODULE.bytes_sha256(foreign_raw))
+
+        origin_raw = json.dumps({
+            "schemaVersion": MODULE.TRACER_ACTIVATION_RECEIPT_SCHEMA,
+            "status": "activated",
+            "protectedRevision": origin,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        }).encode("utf-8")
+        exact_sha = MODULE.bytes_sha256(origin_raw)
+        for parent_effect in (
+            MODULE.LiveTransportError("first parent drift"),
+            [None, MODULE.LiveTransportError("second parent drift")],
+        ):
+            with self.subTest(parent_effect=parent_effect), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "parent drift"
+            ):
+                project(origin, expected_sha=exact_sha, parent_effect=parent_effect)
+
+    def test_run19_compatibility_rejects_each_hop_file_set_widening_or_omission(self):
+        current = "c" * 40
+        origin = MODULE.TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
+        first = MODULE.TRACER_ACTIVATION_COMPATIBILITY_FIRST_HOP_FILES
+        second = MODULE.TRACER_ACTIVATION_COMPATIBILITY_SECOND_HOP_FILES
+        cases = (
+            ("first-widened", [first | {"unrelated"}, second], "first-hop"),
+            ("first-omitted", [first - {next(iter(first))}, second], "first-hop"),
+            ("second-widened", [first, second | {"unrelated"}], "second-hop"),
+            ("second-omitted", [first, second - {next(iter(second))}], "second-hop"),
+        )
+        for label, changed_effect, message in cases:
+            with self.subTest(label=label), patch.object(
+                MODULE, "require_protected_revision_parent"
+            ), patch.object(
+                MODULE, "protected_revision_changed_files", side_effect=changed_effect
+            ), self.assertRaisesRegex(MODULE.LiveTransportError, message):
+                MODULE.require_tracer_activation_compatibility_transition(
+                    current,
+                    origin,
+                    MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+                )
+
+    def test_protected_revision_delta_is_exact_nul_delimited_and_duplicate_free(self):
+        origin = "a" * 40
+        successor = "b" * 40
+        completed = MODULE.subprocess.CompletedProcess([], 0, stdout=b"one\0two\0", stderr=b"")
+        with patch.object(MODULE, "trusted_git", return_value=completed) as trusted:
+            self.assertEqual(
+                MODULE.protected_revision_changed_files(origin, successor),
+                frozenset({"one", "two"}),
+            )
+        self.assertEqual(
+            trusted.call_args.args[0],
+            [
+                "-C", str(ROOT), "diff", "--no-ext-diff", "--no-renames",
+                "--name-only", "-z", origin, successor, "--",
+            ],
+        )
+        duplicate = MODULE.subprocess.CompletedProcess([], 0, stdout=b"one\0one\0", stderr=b"")
+        with patch.object(MODULE, "trusted_git", return_value=duplicate), self.assertRaisesRegex(
+            MODULE.LiveTransportError, "duplicate"
+        ):
+            MODULE.protected_revision_changed_files(origin, successor)
+
+    def test_run19_compatibility_constants_match_the_value_free_live_receipt_when_present(self):
+        self.assertEqual(
+            MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+            "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282",
+        )
+        actual = Path.home() / (
+            ".config/stadtstack/participant-live-receipts/"
+            "tracer-data-plane-activation-20260830-run19/tracer-data-plane-activation.json"
+        )
+        if actual.is_file():
+            self.assertEqual(
+                MODULE.bytes_sha256(actual.read_bytes()),
+                MODULE.TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
+            )
+
     def test_tracer_attempt_paths_and_child_argv_are_closed_and_deterministic(self):
         root = Path("/private/receipts")
         paths = MODULE.tracer_attempt_paths(root)

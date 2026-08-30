@@ -43,6 +43,20 @@ TRACER_ACTIVATION_RUNNER_PATH = "scripts/run-tracer-data-plane-live.py"
 TRACER_MATERIALIZER_PATH = "scripts/materialize-tracer-data-plane-secrets.py"
 TRACER_POLICY_PATH = "scripts/tracer_data_plane_policy.py"
 TRACER_RENDER_ROOT = "reviewed-render/roebel-staging/tracer-data-plane"
+TRACER_RECEIPT_ORIGIN_REVISION = "068c1248dcbc7e1967b5822abad42a55dce7c0f8"
+TRACER_RECEIPT_INTERMEDIATE_REVISION = "abd199dff25066e1d60911667b23c2655e826b75"
+TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
+TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
+TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+})
+TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+})
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
     "scripts/activate-staging-participant-gateway.py",
@@ -287,6 +301,22 @@ def compile_verified_bootstrap_module_v4(source: bytes, rev: str) -> Any:
         raise
     return module
 
+def compile_verified_tracer_policy_module_v4(source: bytes, rev: str) -> Any:
+    """Compile only the current protected tracer policy bytes."""
+    revision(rev)
+    require(isinstance(source, bytes) and source, "protected tracer policy blob is empty")
+    name = f"tracer_data_plane_policy_{rev}"
+    module = types.ModuleType(name)
+    module.__file__ = f"git:{rev}:{TRACER_POLICY_PATH}"
+    module.__package__ = ""
+    sys.modules[name] = module
+    try:
+        exec(compile(source, module.__file__, "exec", dont_inherit=True), module.__dict__)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 def compile_verified_handover_runner_v4(source: bytes, rev: str) -> Any:
     """Compile the exact protected handover binder without local imports."""
     revision(rev)
@@ -407,6 +437,41 @@ def trusted_git_v4(args: list[str], **kwargs: Any) -> subprocess.CompletedProces
         "PATH": "/usr/bin:/bin",
     }
     return subprocess.run([str(GIT_BIN), "--no-replace-objects", *args], env=environment, **kwargs)
+
+def exact_revision_transition_files_v4(parent: str, child: str, label: str) -> set[str]:
+    """Prove one non-merge Git edge and return its exact path delta."""
+    revision(parent); revision(child)
+    try:
+        lineage = trusted_git_v4(
+            ["-C", str(ROOT), "rev-list", "--parents", "-n", "1", child],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        require(
+            lineage.returncode == 0
+            and lineage.stdout.strip().split() == [child, parent],
+            f"{label} protected parent drift",
+        )
+        changed = trusted_git_v4(
+            [
+                "-C", str(ROOT), "diff", "--no-ext-diff", "--no-renames",
+                "--name-only", "-z", parent, child, "--",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ActivationError(f"{label} protected transition timed out") from exc
+    require(changed.returncode == 0, f"{label} protected file set unavailable")
+    try:
+        paths = [item.decode("utf-8") for item in changed.stdout.split(b"\0") if item]
+    except UnicodeDecodeError as exc:
+        raise ActivationError(f"{label} protected file set is not UTF-8") from exc
+    require(len(paths) == len(set(paths)), f"{label} protected file set duplicated")
+    return set(paths)
 
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
@@ -1352,6 +1417,84 @@ def bind_secret_materialization_receipt_v4(
         raise ActivationError(f"Secret materialization receipt rejected: {exc}") from exc
 
 
+def bind_tracer_receipt_revision_v4(
+    receipt: dict[str, Any],
+    raw: bytes,
+    rev: str,
+) -> dict[str, Any]:
+    """Admit current receipts or the exact successful run19 two-hop lineage."""
+    receipt_revision = receipt.get("protectedRevision")
+    hashes = receipt.get("protectedFileSha256")
+    require(
+        isinstance(hashes, dict)
+        and set(hashes) == set(TRACER_RECEIPT_PROTECTED_PATHS)
+        and all(
+            isinstance(hashes[path], str)
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", hashes[path]) is not None
+            for path in TRACER_RECEIPT_PROTECTED_PATHS
+        ),
+        "tracer data-plane protected file closure drift",
+    )
+    current_hashes = {
+        path: bytes_digest(git_blob(rev, path))
+        for path in TRACER_RECEIPT_PROTECTED_PATHS
+    }
+    if receipt_revision == rev:
+        require(hashes == current_hashes, "tracer data-plane protected file closure drift")
+        return {
+            "mode": "current-protected-revision",
+            "originProtectedRevision": rev,
+            "acceptedByProtectedRevision": rev,
+            "allowedAppliedRevisions": [rev],
+        }
+
+    require(
+        receipt_revision == TRACER_RECEIPT_ORIGIN_REVISION
+        and bytes_digest(raw) == TRACER_RECEIPT_ORIGIN_RAW_SHA256,
+        "tracer data-plane receipt is not the exact approved run19 predecessor",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_ORIGIN_REVISION,
+            TRACER_RECEIPT_INTERMEDIATE_REVISION,
+            "tracer receipt origin-to-intermediate",
+        ) == set(TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES),
+        "tracer receipt origin-to-intermediate file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_INTERMEDIATE_REVISION,
+            rev,
+            "tracer receipt intermediate-to-acceptor",
+        ) == set(TRACER_RECEIPT_INTERMEDIATE_TO_ACCEPTOR_FILES),
+        "tracer receipt intermediate-to-acceptor file set drift",
+    )
+    require(
+        hashes.get("scripts/activate-staging-participant-gateway.py")
+        == TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256,
+        "tracer origin activation-runner hash drift",
+    )
+    changed_protected_paths = {
+        path
+        for path in TRACER_RECEIPT_PROTECTED_PATHS
+        if hashes[path] != current_hashes[path]
+    }
+    require(
+        changed_protected_paths == {"scripts/activate-staging-participant-gateway.py"},
+        "tracer compatible protected path change drift",
+    )
+    return {
+        "mode": "exact-run19-two-hop-unchanged-tracer-plane",
+        "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
+        "acceptedByProtectedRevision": rev,
+        "allowedAppliedRevisions": [
+            TRACER_RECEIPT_ORIGIN_REVISION,
+            TRACER_RECEIPT_INTERMEDIATE_REVISION,
+            rev,
+        ],
+    }
+
+
 def bind_tracer_activation_receipt_v4(
     p: dict[str, Any],
     rev: str,
@@ -1375,7 +1518,8 @@ def bind_tracer_activation_receipt_v4(
     require(
         receipt.get("schemaVersion") == TRACER_ACTIVATION_RECEIPT_SCHEMA
         and receipt.get("status") == "activated"
-        and receipt.get("protectedRevision") == rev
+        and isinstance(receipt.get("protectedRevision"), str)
+        and re.fullmatch(r"[0-9a-f]{40}", receipt["protectedRevision"]) is not None
         and receipt.get("productSourceRevision") == p["productPins"]["sourceRevision"]
         and isinstance(receipt.get("operationNonce"), str)
         and re.fullmatch(r"[0-9a-f]{64}", receipt["operationNonce"]) is not None
@@ -1386,21 +1530,12 @@ def bind_tracer_activation_receipt_v4(
         and receipt.get("failureRollback") == "exact-operation-owned-uids-only",
         "tracer data-plane activation receipt status/source boundary drift",
     )
-    hashes = receipt.get("protectedFileSha256")
-    require(
-        isinstance(hashes, dict)
-        and set(hashes) == set(TRACER_RECEIPT_PROTECTED_PATHS)
-        and all(
-            isinstance(hashes[path], str)
-            and hashes[path] == bytes_digest(git_blob(rev, path))
-            for path in TRACER_RECEIPT_PROTECTED_PATHS
-        ),
-        "tracer data-plane protected file closure drift",
-    )
+    revision_binding = bind_tracer_receipt_revision_v4(receipt, raw, rev)
+    receipt_revision = receipt["protectedRevision"]
     validate_bound_cluster_identity_v4(receipt.get("clusterBinding"), p, "tracer data-plane")
     require(
         receipt.get("sharedFluxSource")
-        == {"revision": f"main@sha1:{rev}", "ready": True, "mutation": False},
+        == {"revision": f"main@sha1:{receipt_revision}", "ready": True, "mutation": False},
         "tracer shared Flux source receipt drift",
     )
     records = receipt.get("secretRecords")
@@ -1486,7 +1621,7 @@ def bind_tracer_activation_receipt_v4(
     require(
         receipt.get("flux") == {
             "uid": object_records["flux.kustomization"]["uid"],
-            "lastAppliedRevision": f"main@sha1:{rev}",
+            "lastAppliedRevision": f"main@sha1:{receipt_revision}",
             "ready": True,
         },
         "tracer Flux readiness receipt drift",
@@ -1527,8 +1662,10 @@ def bind_tracer_activation_receipt_v4(
     return {
         "receiptFileSha256": bytes_digest(raw),
         "originProtectedRevision": receipt["protectedRevision"],
+        "receiptProvenance": revision_binding,
         "participantPostgrestSecret": copy.deepcopy(postgrest),
         "postgrestService": copy.deepcopy(service),
+        "tracerFluxKustomization": copy.deepcopy(object_records["flux.kustomization"]),
         "civicAuthorityEffects": False,
     }
 
@@ -1537,6 +1674,9 @@ def require_tracer_activation_binding_v4(
     endpoints: dict[str, Any],
     secrets: dict[str, Any],
     ownership: dict[str, Any],
+    r: Runner,
+    kubeconfig: str,
+    current_revision: str,
 ) -> None:
     live_secret = secrets.get("secrets", {}).get("postgrest")
     owned_secret = ownership["participantPostgrestSecret"]
@@ -1558,6 +1698,68 @@ def require_tracer_activation_binding_v4(
         and live_service.get("readyEndpointAddresses") == owned_service["readyEndpointAddresses"]
         and live_service.get("externalIngress") is False,
         "live PostgREST Service no longer binds tracer receipt",
+    )
+    provenance = ownership.get("receiptProvenance")
+    allowed_revisions = provenance.get("allowedAppliedRevisions") if isinstance(provenance, dict) else None
+    require(
+        isinstance(allowed_revisions, list)
+        and allowed_revisions
+        and allowed_revisions[-1] == current_revision
+        and len(allowed_revisions) == len(set(allowed_revisions))
+        and all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{40}", item) is not None for item in allowed_revisions),
+        "tracer receipt revision provenance drift",
+    )
+    tracer_policy = compile_verified_tracer_policy_module_v4(
+        git_blob(current_revision, TRACER_POLICY_PATH), current_revision,
+    )
+    expected_kustomization = tracer_policy.dormant_flux_objects(suspended=False)["kustomization"]
+    owned_kustomization = ownership.get("tracerFluxKustomization")
+    require(
+        isinstance(owned_kustomization, dict)
+        and owned_kustomization.get("target") == {
+            "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+            "kind": "Kustomization",
+            "namespace": FLUX_NAMESPACE,
+            "name": "roebel-tracer-data-plane",
+        }
+        and isinstance(owned_kustomization.get("uid"), str)
+        and bool(owned_kustomization["uid"]),
+        "tracer Flux Kustomization receipt projection drift",
+    )
+    live_kustomization = live_obj(
+        r, kubeconfig, "kustomization", "roebel-tracer-data-plane", FLUX_NAMESPACE,
+    )
+    _policy_call(
+        POLICY.require_semantically_equal,
+        live_kustomization,
+        expected_kustomization,
+        "live tracer Flux Kustomization",
+    )
+    metadata = live_kustomization.get("metadata", {})
+    status = live_kustomization.get("status", {})
+    require(
+        metadata.get("uid") == owned_kustomization["uid"]
+        and isinstance(metadata.get("generation"), int)
+        and status.get("observedGeneration") == metadata["generation"],
+        "live tracer Flux Kustomization identity/generation drift",
+    )
+    ready = next(
+        (condition for condition in status.get("conditions", []) if condition.get("type") == "Ready"),
+        None,
+    )
+    require(
+        isinstance(ready, dict)
+        and ready.get("status") == "True"
+        and ready.get("observedGeneration", metadata["generation"]) == metadata["generation"],
+        "live tracer Flux Kustomization not Ready",
+    )
+    allowed_flux_revisions = {f"main@sha1:{item}" for item in allowed_revisions}
+    applied_revision = status.get("lastAppliedRevision")
+    attempted_revision = status.get("lastAttemptedRevision")
+    require(
+        applied_revision in allowed_flux_revisions
+        and (attempted_revision is None or attempted_revision == applied_revision),
+        "live tracer Flux Kustomization revision drift",
     )
 
 class ReceiptSink:
@@ -4400,6 +4602,7 @@ def activate(
             require_secret_materialization_binding_v4(secret_before, secret_materialization_ownership, p)
         require_tracer_activation_binding_v4(
             partial["endpoints"], secret_before, tracer_activation_ownership,
+            r, snapshot_path, rev,
         )
         policy_before = policy_union_v4(r, snapshot_path)
         cluster_before_mutation = cluster_binding_v4(r, snapshot, p); require_same_cluster_identity_v4(partial["clusterBinding"], cluster_before_mutation, "before mutation")
