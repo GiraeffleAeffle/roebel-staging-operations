@@ -122,6 +122,10 @@ class ObjectRunner:
         self.create_error = ""
         self.create_nonce: str | None = None
         self.patch_codes: list[int] = []
+        self.patch_applies: list[bool] = []
+        self.patch_external_resource_versions: list[str] = []
+        self.patch_resource_version_tests: list[str] = []
+        self.patch_timeouts: list[int | None] = []
         self.mutations: list[str] = []
 
     @staticmethod
@@ -133,7 +137,6 @@ class ObjectRunner:
         )
 
     def run(self, command, *, input_text=None, timeout=None):
-        del timeout
         namespace = command[command.index("-n") + 1]
         if "create" in command:
             body = json.loads(input_text)
@@ -151,6 +154,7 @@ class ObjectRunner:
                 return Result(1, err="Error from server (NotFound): object not found")
             return Result(out=json.dumps(observed))
         if "patch" in command:
+            self.patch_timeouts.append(timeout)
             kind = command[command.index("patch") + 1]
             name = command[command.index(kind) + 1]
             key = (kind, namespace, name)
@@ -159,11 +163,21 @@ class ObjectRunner:
             observed = self.state[key]
             payload = json.loads(command[command.index("-p") + 1])
             if isinstance(payload, list):
-                observed["metadata"].get("annotations", {}).pop(MODULE.NONCE_ANNOTATION, None)
-            else:
-                observed["spec"]["suspend"] = payload["spec"]["suspend"]
-            observed["metadata"]["resourceVersion"] = str(int(observed["metadata"]["resourceVersion"]) + 1)
+                resource_version_tests = [
+                    operation["value"] for operation in payload
+                    if operation.get("op") == "test" and operation.get("path") == "/metadata/resourceVersion"
+                ]
+                self.patch_resource_version_tests.extend(resource_version_tests)
             code = self.patch_codes.pop(0) if self.patch_codes else 0
+            applies = self.patch_applies.pop(0) if self.patch_applies else True
+            if applies:
+                if isinstance(payload, list):
+                    observed["metadata"].get("annotations", {}).pop(MODULE.NONCE_ANNOTATION, None)
+                else:
+                    observed["spec"]["suspend"] = payload["spec"]["suspend"]
+                observed["metadata"]["resourceVersion"] = str(int(observed["metadata"]["resourceVersion"]) + 1)
+            elif self.patch_external_resource_versions:
+                observed["metadata"]["resourceVersion"] = self.patch_external_resource_versions.pop(0)
             self.mutations.append("patch")
             return Result(code, out=json.dumps(observed) if code == 0 else "", err="response lost" if code else "")
         raise AssertionError(command)
@@ -359,8 +373,12 @@ class TracerRunnerTests(unittest.TestCase):
         runner.state[runner.key(live)] = live
         runner.patch_codes = [124]
         record = MODULE.bind_observed(self.core, item, live, NONCE, "serviceAccount")
-        with self.assertRaisesRegex(MODULE.ActivationError, "nonce-removal CAS failed"):
-            MODULE.remove_nonce(self.core, runner, "/snapshot", "serviceAccount", item, record)
+        with patch.object(MODULE.time, "sleep", return_value=None):
+            result = MODULE.remove_nonce(self.core, runner, "/snapshot", "serviceAccount", item, record)
+        self.assertTrue(result["temporaryNonceRemoved"])
+        self.assertEqual(result["resourceVersion"], "18")
+        self.assertEqual(runner.mutations, ["patch"])
+        self.assertEqual(runner.patch_timeouts, [30])
         self.assertNotIn(MODULE.NONCE_ANNOTATION, live["metadata"].get("annotations", {}))
 
         deleted = []
@@ -371,9 +389,41 @@ class TracerRunnerTests(unittest.TestCase):
             runner.state.clear()
 
         core = SimpleNamespace(POLICY=KUBE_POLICY, obj=lambda raw, label: json.loads(raw), raw_delete=raw_delete)
-        with patch.object(MODULE.time, "sleep", return_value=None):
-            MODULE.delete_owned(core, runner, Snapshot(), "/snapshot", "serviceAccount", item, record)
+        MODULE.delete_owned(core, runner, Snapshot(), "/snapshot", "serviceAccount", item, result)
         self.assertEqual(deleted, [MODULE.resource_path(item)])
+
+    def test_nonce_removal_retries_a_resource_version_conflict_with_a_fresh_read(self) -> None:
+        item = desired_objects()["application.serviceAccount"]
+        runner = ObjectRunner()
+        live = defaulted(MODULE.with_nonce(item, NONCE), uid="created-object-uid", rv="17")
+        runner.state[runner.key(live)] = live
+        runner.patch_codes = [1, 0]
+        runner.patch_applies = [False, True]
+        runner.patch_external_resource_versions = ["18"]
+        record = MODULE.bind_observed(self.core, item, live, NONCE, "serviceAccount")
+        with patch.object(MODULE.time, "sleep", return_value=None):
+            result = MODULE.remove_nonce(self.core, runner, "/snapshot", "serviceAccount", item, record)
+        self.assertTrue(result["temporaryNonceRemoved"])
+        self.assertEqual(result["resourceVersion"], "19")
+        self.assertEqual(runner.mutations, ["patch", "patch"])
+        self.assertEqual(runner.patch_resource_version_tests, ["17", "18"])
+        self.assertEqual(runner.patch_timeouts, [30, 30])
+
+    def test_nonce_removal_fails_closed_after_four_unapplied_attempts(self) -> None:
+        item = desired_objects()["application.serviceAccount"]
+        runner = ObjectRunner()
+        live = defaulted(MODULE.with_nonce(item, NONCE), uid="created-object-uid", rv="17")
+        runner.state[runner.key(live)] = live
+        runner.patch_codes = [1, 1, 1, 1]
+        runner.patch_applies = [False, False, False, False]
+        record = MODULE.bind_observed(self.core, item, live, NONCE, "serviceAccount")
+        with (
+            patch.object(MODULE.time, "sleep", return_value=None),
+            self.assertRaisesRegex(MODULE.ActivationError, "nonce-removal CAS failed"),
+        ):
+            MODULE.remove_nonce(self.core, runner, "/snapshot", "serviceAccount", item, record)
+        self.assertEqual(runner.mutations, ["patch"] * 4)
+        self.assertEqual(live["metadata"]["annotations"][MODULE.NONCE_ANNOTATION], NONCE)
 
     def test_lost_unsuspend_response_is_recognized_then_resuspended(self) -> None:
         desired = {"flux.kustomization": desired_objects()["flux.kustomization"]}
