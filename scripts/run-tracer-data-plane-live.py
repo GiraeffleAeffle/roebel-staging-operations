@@ -48,12 +48,29 @@ NONCE_ANNOTATION = "stadtstack.io/tracer-data-plane-activation-nonce"
 RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
 JOURNAL_SCHEMA = "roebel_tracer_data_plane_activation_journal_v1"
 REVISION = re.compile(r"^[0-9a-f]{40}$")
-RECOVERY_COMPATIBLE_ORIGIN_REVISION = "f831f3c6721c1b919c30d443cca8397c2f8363b7"
-RECOVERY_COMPATIBLE_SUCCESSOR_FILES = {
-    "scripts/run-tracer-data-plane-live.py",
-    "scripts/staging_participant_gateway_policy.py",
-    "scripts/test_run_tracer_data_plane_live.py",
-    "scripts/test_staging_participant_gateway_policy.py",
+RECOVERY_COMPATIBLE_TRANSITIONS = {
+    "f831f3c6721c1b919c30d443cca8397c2f8363b7": {
+        "mode": "exact-direct-default-normalizer-successor",
+        "changedFiles": {
+            "scripts/run-tracer-data-plane-live.py",
+            "scripts/staging_participant_gateway_policy.py",
+            "scripts/test_run_tracer_data_plane_live.py",
+            "scripts/test_staging_participant_gateway_policy.py",
+        },
+        "changedProtectedPaths": {SELF_PATH, PARTICIPANT_POLICY_PATH},
+    },
+    "6c4eca51534c2205a89a920adb9b985c4060755f": {
+        "mode": "exact-direct-flux-tracking-normalizer-successor",
+        "changedFiles": {
+            "scripts/run-tracer-data-plane-live.py",
+            "scripts/test_run_tracer_data_plane_live.py",
+        },
+        "changedProtectedPaths": {SELF_PATH},
+    },
+}
+TRACER_FLUX_TRACKING_LABELS = {
+    "kustomize.toolkit.fluxcd.io/name": "roebel-tracer-data-plane",
+    "kustomize.toolkit.fluxcd.io/namespace": "flux-roebel-staging",
 }
 
 
@@ -311,7 +328,7 @@ def bind_recovery_revision(
     current_hashes: dict[str, str],
     tracer: Any,
 ) -> dict[str, Any]:
-    """Admit same-revision recovery or the one exact live-found default fix."""
+    """Admit same-revision recovery or one exact reviewed direct successor."""
     origin = journal.get("protectedRevision")
     origin_hashes = journal.get("protectedFileSha256")
     if origin == expected_revision:
@@ -321,15 +338,13 @@ def bind_recovery_revision(
             "originProtectedRevision": origin,
             "recoveryProtectedRevision": expected_revision,
         }
-    require(
-        origin == RECOVERY_COMPATIBLE_ORIGIN_REVISION,
-        "tracer recovery origin revision is not the exact approved predecessor",
-    )
+    transition = RECOVERY_COMPATIBLE_TRANSITIONS.get(origin)
+    require(transition is not None, "tracer recovery origin revision is not an exact approved predecessor")
     historical_hashes = protected_hashes_at_revision(origin, tracer)
     require(origin_hashes == historical_hashes, "tracer recovery origin protected file binding drift")
     changed_files = direct_successor_changed_files(origin, expected_revision)
     require(
-        changed_files == RECOVERY_COMPATIBLE_SUCCESSOR_FILES,
+        changed_files == transition["changedFiles"],
         "tracer recovery compatible successor file set drift",
     )
     require(set(historical_hashes) == set(current_hashes), "tracer recovery protected path closure drift")
@@ -339,11 +354,11 @@ def bind_recovery_revision(
         if current_hashes[relative] != historical_hashes[relative]
     }
     require(
-        protected_changes == {SELF_PATH, PARTICIPANT_POLICY_PATH},
+        protected_changes == transition["changedProtectedPaths"],
         "tracer recovery compatible protected path change drift",
     )
     return {
-        "mode": "exact-direct-default-normalizer-successor",
+        "mode": transition["mode"],
         "originProtectedRevision": origin,
         "recoveryProtectedRevision": expected_revision,
         "changedFiles": sorted(changed_files),
@@ -370,10 +385,36 @@ def read_private_json(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
+def without_exact_tracer_flux_tracking(value: dict[str, Any]) -> dict[str, Any]:
+    """Remove only the exact controller provenance added by this Kustomization.
+
+    Flux adds these two labels after the transaction unsuspends the reviewed
+    tracer Kustomization.  They do not change workload or network semantics,
+    but accepting a partial pair, a different controller name, or a different
+    Flux namespace would weaken the ownership comparison and remains forbidden.
+    """
+    result = copy.deepcopy(value)
+    metadata = result.get("metadata")
+    labels = metadata.get("labels") if isinstance(metadata, dict) else None
+    if isinstance(labels, dict) and all(
+        labels.get(key) == expected
+        for key, expected in TRACER_FLUX_TRACKING_LABELS.items()
+    ):
+        for key in TRACER_FLUX_TRACKING_LABELS:
+            labels.pop(key)
+        if not labels:
+            metadata.pop("labels")
+    return result
+
+
 def require_semantic(core: Any, observed: dict[str, Any], desired: dict[str, Any], label: str) -> None:
-    """Use the protected server-default normalizer shared with participant activation."""
+    """Use the shared default normalizer plus exact tracer Flux provenance."""
     try:
-        core.POLICY.require_semantically_equal(observed, desired, label)
+        core.POLICY.require_semantically_equal(
+            without_exact_tracer_flux_tracking(observed),
+            without_exact_tracer_flux_tracking(desired),
+            label,
+        )
     except core.POLICY.PolicyError as error:
         raise ActivationError(str(error)) from error
 

@@ -217,7 +217,7 @@ def activation_journal(reservation: dict, records: dict[str, dict]) -> dict:
 
 
 class TracerRunnerTests(unittest.TestCase):
-    def test_recovery_revision_binding_allows_only_the_exact_direct_default_fix(self) -> None:
+    def test_recovery_revision_binding_allows_only_exact_reviewed_direct_successors(self) -> None:
         same = MODULE.bind_recovery_revision(
             {"protectedRevision": REVISION, "protectedFileSha256": HASHES},
             REVISION,
@@ -227,33 +227,40 @@ class TracerRunnerTests(unittest.TestCase):
         self.assertEqual(same["mode"], "same-protected-revision")
 
         historical = {path: f"old:{path}" for path in HASHES}
-        current = copy.deepcopy(historical)
-        current[MODULE.SELF_PATH] = "new:runner"
-        current[MODULE.PARTICIPANT_POLICY_PATH] = "new:normalizer"
-        journal = {
-            "protectedRevision": MODULE.RECOVERY_COMPATIBLE_ORIGIN_REVISION,
-            "protectedFileSha256": historical,
-        }
-        with (
-            patch.object(MODULE, "protected_hashes_at_revision", return_value=historical),
-            patch.object(
-                MODULE,
-                "direct_successor_changed_files",
-                return_value=MODULE.RECOVERY_COMPATIBLE_SUCCESSOR_FILES,
-            ),
-        ):
-            binding = MODULE.bind_recovery_revision(
-                journal,
-                "c" * 40,
-                current,
-                TRACER,
-            )
-        self.assertEqual(binding["mode"], "exact-direct-default-normalizer-successor")
-        self.assertEqual(
-            binding["changedProtectedPaths"],
-            sorted({MODULE.SELF_PATH, MODULE.PARTICIPANT_POLICY_PATH}),
-        )
+        for origin, transition in MODULE.RECOVERY_COMPATIBLE_TRANSITIONS.items():
+            with self.subTest(origin=origin):
+                current = copy.deepcopy(historical)
+                for path in transition["changedProtectedPaths"]:
+                    current[path] = f"new:{path}"
+                journal = {
+                    "protectedRevision": origin,
+                    "protectedFileSha256": historical,
+                }
+                with (
+                    patch.object(MODULE, "protected_hashes_at_revision", return_value=historical),
+                    patch.object(
+                        MODULE,
+                        "direct_successor_changed_files",
+                        return_value=transition["changedFiles"],
+                    ),
+                ):
+                    binding = MODULE.bind_recovery_revision(
+                        journal,
+                        "c" * 40,
+                        current,
+                        TRACER,
+                    )
+                self.assertEqual(binding["mode"], transition["mode"])
+                self.assertEqual(
+                    binding["changedProtectedPaths"],
+                    sorted(transition["changedProtectedPaths"]),
+                )
 
+        origin, transition = next(iter(MODULE.RECOVERY_COMPATIBLE_TRANSITIONS.items()))
+        journal = {"protectedRevision": origin, "protectedFileSha256": historical}
+        current = copy.deepcopy(historical)
+        for path in transition["changedProtectedPaths"]:
+            current[path] = f"new:{path}"
         with (
             patch.object(MODULE, "protected_hashes_at_revision", return_value=historical),
             patch.object(MODULE, "direct_successor_changed_files", return_value={"README.md"}),
@@ -301,6 +308,28 @@ class TracerRunnerTests(unittest.TestCase):
         changed["spec"]["ingress"].append({"from": [{"namespaceSelector": {}}]})
         with self.assertRaisesRegex(MODULE.ActivationError, "semantic drift"):
             MODULE.bind_observed(self.core, network, changed, NONCE, "changed network")
+
+    def test_semantic_comparison_accepts_only_the_exact_flux_tracking_pair(self) -> None:
+        desired = desired_objects()["application.postgresNetworkPolicy"]
+        observed = defaulted(desired, uid="network-policy-uid", rv="41")
+        observed["spec"].pop("egress")
+        observed["metadata"]["labels"].update(MODULE.TRACER_FLUX_TRACKING_LABELS)
+        MODULE.require_semantic(self.core, observed, desired, "flux tracked network policy")
+
+        for key, replacement in (
+            ("kustomize.toolkit.fluxcd.io/name", "another-kustomization"),
+            ("kustomize.toolkit.fluxcd.io/namespace", "another-namespace"),
+        ):
+            with self.subTest(key=key, replacement=replacement):
+                changed = copy.deepcopy(observed)
+                changed["metadata"]["labels"][key] = replacement
+                with self.assertRaisesRegex(MODULE.ActivationError, "semantic drift"):
+                    MODULE.require_semantic(self.core, changed, desired, "wrong Flux tracking")
+
+        partial = copy.deepcopy(observed)
+        partial["metadata"]["labels"].pop("kustomize.toolkit.fluxcd.io/namespace")
+        with self.assertRaisesRegex(MODULE.ActivationError, "semantic drift"):
+            MODULE.require_semantic(self.core, partial, desired, "partial Flux tracking")
 
     def test_uncertain_create_accepts_exact_same_nonce_and_rejects_adoption(self) -> None:
         item = desired_objects()["application.serviceAccount"]
