@@ -284,6 +284,98 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.normalize_no_participant_gateway_seed(destination)
         return temp, destination
 
+    def set_current_tracer_feed_route(self, root: Path, enabled: bool) -> None:
+        """Normalize one current-head fixture to the exact private feed route state."""
+        source = VERIFIER.verify_tree(ROOT)
+        render = root / "reviewed-render/roebel-staging"
+
+        deployment_path = render / "web/deployment.json"
+        deployment = json.loads(deployment_path.read_text())
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        environment[:] = [
+            item
+            for item in environment
+            if item["name"] not in {
+                VERIFIER.TRACER_FEED_URL_ENV["name"],
+                VERIFIER.TRACER_FEED_ANON_ENV["name"],
+            }
+        ]
+        if enabled:
+            names = [item["name"] for item in environment]
+            insertion = names.index("ROEBEL_PUBLIC_THIRDWEB_CLIENT_ID")
+            environment[insertion:insertion] = [
+                copy.deepcopy(VERIFIER.TRACER_FEED_URL_ENV),
+                copy.deepcopy(VERIFIER.TRACER_FEED_ANON_ENV),
+            ]
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+
+        civic_projection = bool(
+            source["stagingParticipantGateway"]
+            and source["stagingParticipantGateway"]["civicProjectionRoute"]
+        )
+        network_policy = VERIFIER.expected_web_network_policy(
+            civic_projection,
+            enabled,
+        )
+        (render / "web/networkpolicy.json").write_text(
+            json.dumps(network_policy, indent=2) + "\n",
+        )
+
+        migration_path = render / "network-boundary-migration.json"
+        migration = copy.deepcopy(source["migration"])
+        if enabled:
+            migration["boundary"]["webTracerFeed"] = {
+                "authority": "none",
+                "credentialSecret": {
+                    "key": VERIFIER.TRACER_DATA_PLANE.WEB_FEED_SECRET_KEYS[0],
+                    "name": VERIFIER.TRACER_DATA_PLANE.WEB_FEED_SECRET,
+                    "namespace": VERIFIER.TRACER_DATA_PLANE.PREVIEW_NAMESPACE,
+                    "valuesCommitted": False,
+                },
+                "destinationNamespace": VERIFIER.TRACER_DATA_PLANE.NAMESPACE,
+                "destinationPodLabels": VERIFIER.TRACER_DATA_PLANE.POSTGREST_LABELS,
+                "port": VERIFIER.TRACER_DATA_PLANE.POSTGREST_PORT,
+                "protocol": "TCP",
+                "source": {
+                    "namespace": VERIFIER.PARTICIPANT_GATEWAY_NAMESPACE,
+                    "podSelector": VERIFIER.WEB_PRESENTATION_LABELS,
+                },
+                "upstreamUrl": VERIFIER.TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
+            }
+        else:
+            migration["boundary"].pop("webTracerFeed", None)
+        web_policy_receipt = next(
+            item
+            for item in migration["objects"]
+            if item["kind"] == "NetworkPolicy"
+            and item["name"] == "roebel-web-presentation"
+        )
+        web_policy_receipt["sha256"] = VERIFIER.digest(network_policy)
+        migration_path.write_text(json.dumps(migration, indent=2) + "\n")
+
+        objects = copy.deepcopy(source["objects"])
+        objects[3] = deployment
+        objects[4] = network_policy
+        payload: dict[str, object] = {
+            "nextEnvironmentHead": json.loads((render / "head.json").read_text()),
+            "objects": objects,
+        }
+        if source["reviewedPublicKnowledge"] is not None:
+            payload["reviewedPublicKnowledge"] = source["reviewedPublicKnowledge"]
+        if source["signedNostr"] is not None:
+            payload["signedNostr"] = source["signedNostr"]
+        if source["stagingParticipantGateway"] is not None:
+            payload["stagingParticipantGateway"] = {
+                key: value
+                for key, value in source["stagingParticipantGateway"].items()
+                if key != "civicProjectionRoute"
+            }
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
     def normalize_no_participant_gateway_seed(self, destination: Path) -> None:
         """Remove only the closed participant subtree from copied mutation fixtures."""
         participant = destination / VERIFIER.PARTICIPANT_GATEWAY_ROOT
@@ -296,7 +388,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         env[:] = [
             item
             for item in env
-            if item["name"] != "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL"
+            if item["name"] not in {
+                "STADTSTACK_CIVIC_PROJECTION_UPSTREAM_URL",
+                VERIFIER.TRACER_FEED_URL_ENV["name"],
+                VERIFIER.TRACER_FEED_ANON_ENV["name"],
+            }
         ]
         web_path.write_text(json.dumps(web, indent=2) + "\n")
         network_policy_path = (
@@ -1191,7 +1287,34 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             f"{VERIFIER.COMPONENTS['roebel-web-staging']['repository']}@"
             f"{web_component['manifestDigest']}"
         )
+        web_environment = template["spec"]["containers"][0]["env"]
+        web_environment[:] = [
+            item
+            for item in web_environment
+            if item["name"] not in {
+                VERIFIER.TRACER_FEED_URL_ENV["name"],
+                VERIFIER.TRACER_FEED_ANON_ENV["name"],
+            }
+        ]
         web_path.write_text(json.dumps(web, indent=2) + "\n")
+
+        web_policy = VERIFIER.expected_web_network_policy(True, False)
+        (render / "web/networkpolicy.json").write_text(
+            json.dumps(web_policy, indent=2) + "\n",
+        )
+        boundary_path = render / "network-boundary-migration.json"
+        boundary = json.loads(boundary_path.read_text())
+        boundary["boundary"].pop("webTracerFeed", None)
+        next(
+            item
+            for item in boundary["objects"]
+            if item["kind"] == "NetworkPolicy"
+            and item["name"] == "roebel-web-presentation"
+        )["sha256"] = VERIFIER.digest(web_policy)
+        boundary_path.write_text(json.dumps(boundary, indent=2) + "\n")
+        integrity = json.loads(integrity_path.read_text())
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(boundary)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
         previous_components = {
             item["component"]: item
@@ -1227,10 +1350,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 expected_digest,
                 f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
             )
-        self.assertEqual(
-            VERIFIER.changed_repository_files(destination, ROOT),
-            TRACER_PHASE_A_FIXTURE_FILES,
-        )
+        expected_changes = set(TRACER_PHASE_A_FIXTURE_FILES)
+        if VERIFIER.web_tracer_feed_route_enabled(ROOT):
+            expected_changes.update({
+                "reviewed-render/roebel-staging/network-boundary-migration.json",
+                "reviewed-render/roebel-staging/web/networkpolicy.json",
+            })
+        self.assertEqual(VERIFIER.changed_repository_files(destination, ROOT), expected_changes)
         return temp, destination
 
     def make_tracer_phase_b_successor(self, candidate: Path, base_root: Path) -> None:
@@ -1565,6 +1691,107 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ingress.write_bytes(ingress.read_bytes() + b"\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Phase B changed file set drift"):
             VERIFIER.verify(candidate, base)
+
+    def test_current_head_admits_only_the_exact_private_tracer_feed_route(self) -> None:
+        self.assertEqual(
+            VERIFIER.CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES,
+            {
+                "reviewed-render/roebel-staging/integrity.json",
+                "reviewed-render/roebel-staging/network-boundary-migration.json",
+                "reviewed-render/roebel-staging/web/deployment.json",
+                "reviewed-render/roebel-staging/web/networkpolicy.json",
+            },
+        )
+        base_temp = tempfile.TemporaryDirectory()
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(candidate_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.set_current_tracer_feed_route(base, False)
+        self.set_current_tracer_feed_route(candidate, True)
+
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(
+            json.loads((candidate / "reviewed-render/roebel-staging/head.json").read_text()),
+            json.loads((base / "reviewed-render/roebel-staging/head.json").read_text()),
+        )
+        web = json.loads(
+            (candidate / "reviewed-render/roebel-staging/web/deployment.json").read_text(),
+        )
+        environment = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        self.assertEqual(
+            [
+                item
+                for item in environment
+                if item["name"] in {
+                    VERIFIER.TRACER_FEED_URL_ENV["name"],
+                    VERIFIER.TRACER_FEED_ANON_ENV["name"],
+                }
+            ],
+            [VERIFIER.TRACER_FEED_URL_ENV, VERIFIER.TRACER_FEED_ANON_ENV],
+        )
+        policy = json.loads(
+            (candidate / "reviewed-render/roebel-staging/web/networkpolicy.json").read_text(),
+        )
+        self.assertEqual(
+            policy["spec"]["egress"][0],
+            VERIFIER.tracer_postgrest_web_egress(),
+        )
+
+    def test_current_head_rejects_partial_widened_or_unrelated_tracer_feed_changes(self) -> None:
+        base_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.set_current_tracer_feed_route(base, False)
+
+        def partial_environment(candidate: Path) -> None:
+            path = candidate / "reviewed-render/roebel-staging/web/deployment.json"
+            value = json.loads(path.read_text())
+            env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+            env[:] = [
+                item
+                for item in env
+                if item["name"] != VERIFIER.TRACER_FEED_ANON_ENV["name"]
+            ]
+            path.write_text(json.dumps(value, indent=2) + "\n")
+
+        def widened_network(candidate: Path) -> None:
+            path = candidate / "reviewed-render/roebel-staging/web/networkpolicy.json"
+            value = json.loads(path.read_text())
+            value["spec"]["egress"][0]["to"][0]["podSelector"]["matchLabels"].clear()
+            path.write_text(json.dumps(value, indent=2) + "\n")
+
+        def unrelated_file(candidate: Path) -> None:
+            path = candidate / "README.md"
+            path.write_bytes(path.read_bytes() + b"\nunrelated tracer-feed change\n")
+
+        for label, mutate, expected_error in (
+            (
+                "partial-environment",
+                partial_environment,
+                "Web tracer feed Secret reference invalid",
+            ),
+            ("widened-network", widened_network, "Web NetworkPolicy drift"),
+            (
+                "unrelated-file",
+                unrelated_file,
+                "current tracer-feed route changed protected file: README.md",
+            ),
+        ):
+            with self.subTest(label=label):
+                candidate_temp = tempfile.TemporaryDirectory()
+                self.addCleanup(candidate_temp.cleanup)
+                candidate = Path(candidate_temp.name) / "candidate"
+                shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                self.set_current_tracer_feed_route(candidate, True)
+                mutate(candidate)
+                with self.assertRaisesRegex(VERIFIER.VerificationError, expected_error):
+                    VERIFIER.verify(candidate, base)
 
     def test_signed_nostr_policy_reserves_exactly_sixteen_files(self) -> None:
         self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 16)

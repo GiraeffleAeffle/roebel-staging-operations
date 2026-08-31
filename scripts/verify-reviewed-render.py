@@ -281,6 +281,12 @@ CIVIC_PROJECTION_ROUTE_TRANSITION_FILES = {
     f"{RENDER_ROOT}/web/networkpolicy.json",
     f"{PARTICIPANT_GATEWAY_ROOT}/workbench-ingress/networkpolicy.json",
 }
+CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES = {
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
+}
 
 # Phase A admits only the inert in-cluster tracer capability.  In particular,
 # none of the currently reconciled Web/Public-Mecky release inputs may change
@@ -5033,6 +5039,85 @@ def verify_tracer_phase_b_transition(
     )
 
 
+def expected_current_tracer_feed_web_deployment(
+    base_deployment: dict[str, Any],
+) -> dict[str, Any]:
+    value = copy.deepcopy(base_deployment)
+    environment = value["spec"]["template"]["spec"]["containers"][0]["env"]
+    names = [item["name"] for item in environment]
+    require(
+        TRACER_FEED_URL_ENV["name"] not in names
+        and TRACER_FEED_ANON_ENV["name"] not in names,
+        "current tracer-feed predecessor already contains feed environment",
+    )
+    insertion = names.index("ROEBEL_PUBLIC_THIRDWEB_CLIENT_ID")
+    environment[insertion:insertion] = [
+        copy.deepcopy(TRACER_FEED_URL_ENV),
+        copy.deepcopy(TRACER_FEED_ANON_ENV),
+    ]
+    return value
+
+
+def verify_current_tracer_feed_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(base["webTracerFeed"] is False, "current tracer-feed predecessor route already active")
+    require(candidate["webTracerFeed"] is True, "current tracer-feed successor route missing")
+    require(
+        base["renderFileSet"] in {
+            "reviewed-public-knowledge-participant-gateway",
+            "signed-nostr-participant-gateway",
+        }
+        and candidate["renderFileSet"] == base["renderFileSet"],
+        "current tracer-feed route requires the admitted participant data plane",
+    )
+    require(candidate["head"] == base["head"], "current tracer-feed route must preserve the Release Set head")
+    require(
+        candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+        "current tracer-feed route may not change Public Mecky egress",
+    )
+    require(
+        candidate["stagingParticipantGatewayPolicy"] == base["stagingParticipantGatewayPolicy"],
+        "current tracer-feed route may not change participant policy",
+    )
+    require(
+        (candidate_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes()
+        == (base_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes(),
+        "current tracer-feed route must preserve live preconditions",
+    )
+    require(
+        candidate["deployments"]["public-mecky"] == base["deployments"]["public-mecky"],
+        "current tracer-feed route may not change Public Mecky",
+    )
+    require(
+        candidate["deployments"]["roebel-web-staging"]
+        == expected_current_tracer_feed_web_deployment(
+            base["deployments"]["roebel-web-staging"],
+        ),
+        "current tracer-feed Web transformation drift",
+    )
+    base_civic_route = bool(
+        base["stagingParticipantGateway"]
+        and base["stagingParticipantGateway"]["civicProjectionRoute"]
+    )
+    require(
+        candidate["objects"][4]
+        == expected_web_network_policy(base_civic_route, True),
+        "current tracer-feed PostgREST NetworkPolicy drift",
+    )
+    candidate_files = repository_files(candidate_root)
+    require(candidate_files == repository_files(base_root), "current tracer-feed route file set drift")
+    for relative in sorted(candidate_files - CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES):
+        require(
+            (candidate_root / relative).read_bytes()
+            == (base_root / relative).read_bytes(),
+            f"current tracer-feed route changed protected file: {relative}",
+        )
+
+
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
@@ -5056,7 +5141,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         "Web tracer feed route cannot regress",
     )
     if candidate["webTracerFeed"] and not base["webTracerFeed"]:
-        verify_tracer_phase_b_transition(candidate, base)
+        if base["head"] == TRACER_PHASE_A_HEAD:
+            verify_tracer_phase_b_transition(candidate, base)
+        else:
+            verify_current_tracer_feed_transition(candidate, base)
         return
 
     require(
