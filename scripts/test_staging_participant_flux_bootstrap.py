@@ -838,6 +838,7 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
         bound = BOOTSTRAP.bind_success_receipt(plan, closed)
 
         self.assertEqual(bound["status"], "dormant-ready")
+        self.assertFalse(bound["civicAuthorityEffects"])
         self.assertEqual(len(bound["objects"]), 8)
         self.assertEqual(bound["objects"][0]["uid"], "uid-1")
         self.assertNotIn("operationNonce", json.dumps(bound))

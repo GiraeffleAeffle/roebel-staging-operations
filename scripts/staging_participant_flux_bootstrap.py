@@ -673,6 +673,7 @@ def bind_success_receipt(plan: dict[str, Any], receipt: dict[str, Any]) -> dict[
         "activationPolicySha256": plan["activationPolicySha256"],
         "objects": bound,
         "bothKustomizationsSuspended": True,
+        "civicAuthorityEffects": False,
     }
 
 
