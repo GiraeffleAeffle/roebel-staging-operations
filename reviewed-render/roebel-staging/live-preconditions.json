@@ -11,7 +11,7 @@
         {
           "op": "add",
           "path": "/metadata/annotations/stadtstack.io~1release-set-sha256",
-          "value": "sha256:7b8a5e0e9f88027d48053a7e104bfc43cd2686db4b026b23f867d26ce0d574d6"
+          "value": "sha256:ebaf05e854fb7ffdf763e4653d7d6943068f91c566ab5deef837c24d3c76c490"
         },
         {
           "op": "replace",
@@ -42,22 +42,22 @@
         {
           "op": "add",
           "path": "/metadata/annotations/stadtstack.io~1source-revision",
-          "value": "75f6fae2994d72f889bf372839bf3ce5bf3520da"
+          "value": "a665939d5883c5da262bafd012f549201ceacedb"
         },
         {
           "op": "add",
           "path": "/metadata/annotations/stadtstack.io~1release-set-sha256",
-          "value": "sha256:7b8a5e0e9f88027d48053a7e104bfc43cd2686db4b026b23f867d26ce0d574d6"
+          "value": "sha256:ebaf05e854fb7ffdf763e4653d7d6943068f91c566ab5deef837c24d3c76c490"
         },
         {
           "op": "replace",
           "path": "/spec/template/metadata/annotations/stadtstack.io~1source-revision",
-          "value": "75f6fae2994d72f889bf372839bf3ce5bf3520da"
+          "value": "a665939d5883c5da262bafd012f549201ceacedb"
         },
         {
           "op": "replace",
           "path": "/spec/template/spec/containers/0/image",
-          "value": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:ace2822fdfbe64c2c1df340302c51c08b2738d29cdddb8c7d70bbe4ee6df37a2"
+          "value": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:f84d7500fa55a85084507bde525ccc1c1dc1ea9aff3fc6f60bdef3aa49ad460c"
         },
         {
           "op": "replace",
@@ -82,12 +82,12 @@
       },
       {
         "component": "roebel-web-staging",
-        "manifestDigest": "sha256:407f43baca8ea4911400e8847c5b136d8c99ee800c03a3d8395287ada3fe098b",
-        "sourceRevision": "f3ddff78b594f6a7f34b0fbb704f6243bd97de70"
+        "manifestDigest": "sha256:ace2822fdfbe64c2c1df340302c51c08b2738d29cdddb8c7d70bbe4ee6df37a2",
+        "sourceRevision": "75f6fae2994d72f889bf372839bf3ce5bf3520da"
       }
     ],
-    "promotionRevision": "f3ddff78b594f6a7f34b0fbb704f6243bd97de70",
-    "releaseSetDigest": "sha256:e1fa9442377aa10640f0cd4caf237585c4f977cc0b4a92d0ffce580ba6dbbb5b",
+    "promotionRevision": "75f6fae2994d72f889bf372839bf3ce5bf3520da",
+    "releaseSetDigest": "sha256:7b8a5e0e9f88027d48053a7e104bfc43cd2686db4b026b23f867d26ce0d574d6",
     "schemaVersion": "roebel_staging_release_set_head_v1"
   },
   "requiredLivePreconditions": [
@@ -105,7 +105,7 @@
     },
     {
       "component": "roebel-web-staging",
-      "currentImage": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:407f43baca8ea4911400e8847c5b136d8c99ee800c03a3d8395287ada3fe098b",
+      "currentImage": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:ace2822fdfbe64c2c1df340302c51c08b2738d29cdddb8c7d70bbe4ee6df37a2",
       "resourceVersion": "12037856",
       "target": {
         "apiVersion": "apps/v1",
