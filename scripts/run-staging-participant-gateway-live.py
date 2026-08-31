@@ -326,15 +326,19 @@ FAILED_ACTIVATION_RECEIPT_SHA256_PROFILES = {
 }
 WORKBENCH_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_live_transport_receipt_v1"
 WORKBENCH_RECOVERY_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_baseline_recovery_live_transport_receipt_v1"
-WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v1"
+WORKBENCH_PROMOTION_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_live_transport_receipt_v2"
 RELAY_FIXTURE_RESET_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_relay_fixture_reset_live_transport_receipt_v1"
 # The approved reset is callable only with the strict final-v2 evidence
 # verifier below.  Keep this guard before output reservation, credential
 # decryption, and cluster contact so any future verifier disablement fails shut.
 RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED = True
-WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:872e3e2180e16f69157c5a142c7aa20e3f2e0ea93c10e5363800148b30c99e4c"
-WORKBENCH_PROMOTION_SOURCE_REVISION = "b57a3ae2e8ce613bfae4b6ab96e20b95f578ca67"
+WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683"
+WORKBENCH_PROMOTION_SOURCE_REVISION = "6b78c635f5b8f9603e16d3fe386eb8574df27740"
 WORKBENCH_PROMOTION_TARGET_IMAGE = (
+    "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
+    "sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529"
+)
+WORKBENCH_PROMOTION_PREDECESSOR_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
     "sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2"
 )
@@ -2878,7 +2882,7 @@ def verify_workbench_image_promotion_evidence(
         "workbench image promotion receipt field set drift",
     )
     require(
-        evidence.get("schemaVersion") == "roebel_staging_workbench_image_promotion_receipt_v1"
+        evidence.get("schemaVersion") == "roebel_staging_workbench_image_promotion_receipt_v2"
         and evidence.get("status") == "completed"
         and evidence.get("mode") == "live",
         "workbench image promotion receipt status drift",
@@ -2947,21 +2951,18 @@ def verify_workbench_image_promotion_evidence(
     require(
         isinstance(deployment, dict)
         and deployment.get("environmentTransition") == {
-            "added": [
-                {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
-                {
-                    "name": "LEGACY_SYNTHETIC_PUBKEYS_JSON",
-                    "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]",
-                },
-            ],
-            "removedNames": [
-                "CASE_STEWARD_TOKEN",
-                "STADTSTACK_CONTROL_BASE_URL",
-                "STADTSTACK_PUBLIC_BASE_URL",
-                "SYNTHETIC_CITIZENS_JSON",
-            ],
+            "mode": "public-signed-only",
+            "preservedByteForByte": True,
+            "added": [],
+            "removedNames": [],
         },
-        "workbench image promotion public-mode transition proof drift",
+        "workbench image promotion public-mode preservation proof drift",
+    )
+    require(
+        deployment.get("oldImage") == WORKBENCH_PROMOTION_PREDECESSOR_IMAGE
+        and deployment.get("targetImage") == WORKBENCH_PROMOTION_TARGET_IMAGE
+        and deployment.get("beforeNormalizedSpecSha256") == deployment.get("afterNormalizedSpecSha256"),
+        "workbench image-only successor proof drift",
     )
     rollout = evidence.get("rollout")
     backend = evidence.get("backendBinding")
@@ -3011,7 +3012,7 @@ def verify_workbench_image_promotion_evidence(
             "schemaVersion", "status", "operationId", "protectedRevision",
             "protectedGitBlobSha256", "artifact", "target", "events", "before", "journalSha256",
         }
-        and state.get("schemaVersion") == "roebel_staging_workbench_image_promotion_journal_v1"
+        and state.get("schemaVersion") == "roebel_staging_workbench_image_promotion_journal_v2"
         and state.get("status") == "completed"
         and state.get("operationId") == operation["operationId"]
         and state.get("protectedRevision") == revision

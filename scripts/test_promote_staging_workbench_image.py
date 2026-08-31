@@ -81,6 +81,18 @@ def deployment() -> dict[str, Any]:
     }
 
 
+def public_mode_deployment(*, image: str | None = None) -> dict[str, Any]:
+    value = deployment()
+    container = value["spec"]["template"]["spec"]["containers"][0]
+    container["image"] = image or MODULE.OLD_IMAGE
+    container["env"] = [
+        entry
+        for entry in container["env"]
+        if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
+    ] + [copy.deepcopy(item) for item in MODULE.PUBLIC_MODE_ENV_ADDITIONS]
+    return value
+
+
 def service() -> dict[str, Any]:
     return {
         "apiVersion": "v1", "kind": "Service",
@@ -258,7 +270,7 @@ def write_pin(directory: Path) -> tuple[Path, str]:
 class FakeKubernetes:
     def __init__(self) -> None:
         self.objects = {
-            "deployment": deployment(),
+            "deployment": public_mode_deployment(),
             "service": service(),
             "networkpolicy": network_policy(),
         }
@@ -392,12 +404,12 @@ class PromotionTests(unittest.TestCase):
         )
         return result, kube, journal, receipt
 
-    def test_patch_is_exact_public_mode_transition(self) -> None:
-        before = deployment()
+    def test_patch_is_exact_image_only_public_mode_successor(self) -> None:
+        before = public_mode_deployment()
         patch = MODULE.build_image_patch(before)
         self.assertEqual(
             [item["op"] for item in patch],
-            ["test"] * 5 + ["replace"] + ["remove"] * 4 + ["add"] * 2,
+            ["test"] * 5 + ["replace"],
         )
         self.assertEqual({item["path"] for item in patch[:5]}, {
             "/metadata/uid",
@@ -407,63 +419,43 @@ class PromotionTests(unittest.TestCase):
             "/spec/template/spec/containers/0/image",
         })
         self.assertEqual(patch[5], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.TARGET_IMAGE})
-        self.assertEqual(
-            [item["path"] for item in patch[6:10]],
-            [
-                "/spec/template/spec/containers/0/env/8",
-                "/spec/template/spec/containers/0/env/7",
-                "/spec/template/spec/containers/0/env/5",
-                "/spec/template/spec/containers/0/env/4",
-            ],
-        )
-        self.assertEqual(
-            patch[10],
-            {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE}},
-        )
-        self.assertEqual(
-            patch[11],
-            {"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE}},
-        )
+        self.assertFalse(any("/env" in item["path"] for item in patch))
 
-    def test_rollback_patch_restores_exact_old_public_environment(self) -> None:
-        before = deployment()
-        current = deployment()
+    def test_successor_patch_is_image_only_and_byte_preserves_public_mode_environment(self) -> None:
+        before = public_mode_deployment()
+        before_env = copy.deepcopy(before["spec"]["template"]["spec"]["containers"][0]["env"])
+
+        patch = MODULE.build_image_patch(before)
+
+        self.assertEqual([item["op"] for item in patch], ["test"] * 5 + ["replace"])
+        self.assertEqual(
+            patch[-1],
+            {
+                "op": "replace",
+                "path": "/spec/template/spec/containers/0/image",
+                "value": MODULE.TARGET_IMAGE,
+            },
+        )
+        self.assertFalse(any("/env" in item["path"] for item in patch))
+        after = copy.deepcopy(before)
+        after["spec"]["template"]["spec"]["containers"][0]["image"] = MODULE.TARGET_IMAGE
+        self.assertEqual(after["spec"]["template"]["spec"]["containers"][0]["env"], before_env)
+        self.assertTrue(MODULE.spec_equal_except_image(before, after))
+
+    def test_rollback_patch_restores_exact_public_predecessor_image_only(self) -> None:
+        before = public_mode_deployment()
+        current = public_mode_deployment()
         current["spec"]["template"]["spec"]["containers"][0]["image"] = MODULE.TARGET_IMAGE
-        current["spec"]["template"]["spec"]["containers"][0]["env"] = [
-            entry for entry in current["spec"]["template"]["spec"]["containers"][0]["env"]
-            if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
-        ] + [
-            {"name": MODULE.WORKBENCH_MODE_ENV_NAME, "value": MODULE.WORKBENCH_MODE_ENV_VALUE},
-            {"name": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": MODULE.LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE},
-        ]
         patch = MODULE.build_rollback_patch(current, before=before)
         self.assertEqual(
             [item["op"] for item in patch],
-            ["test"] * 5 + ["replace"] + ["remove"] * 2 + ["add"] * 4,
+            ["test"] * 5 + ["replace"],
         )
         self.assertEqual(patch[5], {"op": "replace", "path": "/spec/template/spec/containers/0/image", "value": MODULE.OLD_IMAGE})
-        self.assertEqual(patch[6], {"op": "remove", "path": "/spec/template/spec/containers/0/env/8"})
-        self.assertEqual(patch[7], {"op": "remove", "path": "/spec/template/spec/containers/0/env/7"})
-        self.assertEqual(
-            [item["path"] for item in patch[8:]],
-            [
-                "/spec/template/spec/containers/0/env/4",
-                "/spec/template/spec/containers/0/env/5",
-                "/spec/template/spec/containers/0/env/7",
-                "/spec/template/spec/containers/0/env/8",
-            ],
-        )
+        self.assertFalse(any("/env" in item["path"] for item in patch))
 
     def test_target_requires_exact_nonempty_sorted_legacy_public_keys(self) -> None:
-        target = deployment()
-        target["spec"]["template"]["spec"]["containers"][0]["image"] = MODULE.TARGET_IMAGE
-        base_env = [
-            entry for entry in target["spec"]["template"]["spec"]["containers"][0]["env"]
-            if entry["name"] not in MODULE.FORBIDDEN_PUBLIC_MODE_ENV_SET
-        ]
-        target["spec"]["template"]["spec"]["containers"][0]["env"] = base_env + [
-            copy.deepcopy(item) for item in MODULE.PUBLIC_MODE_ENV_ADDITIONS
-        ]
+        target = public_mode_deployment(image=MODULE.TARGET_IMAGE)
         MODULE.validate_workbench_deployment(target, expected_image=MODULE.TARGET_IMAGE)
 
         cases = {
@@ -798,7 +790,7 @@ class PromotionTests(unittest.TestCase):
                 self.assertEqual(kube.patch_calls[-1][5]["value"], MODULE.OLD_IMAGE)
 
     def test_rollout_failure_rolls_back_with_inverse_cas_patch(self) -> None:
-        before = deployment()
+        before = public_mode_deployment()
         kube = FakeKubernetes()
         kube.rollout_failure = True
         result, kube, journal, receipt = self.invoke(kube)
@@ -819,7 +811,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(journal.commits[-1]["status"], "rolled-back")
 
     def test_rollback_rollout_timeout_never_retries_a_mutation(self) -> None:
-        before = deployment()
+        before = public_mode_deployment()
         kube = FakeKubernetes()
         kube.rollout_failure = True
         kube.rollback_rollout_failure = True
@@ -843,7 +835,7 @@ class PromotionTests(unittest.TestCase):
         self.assertEqual(journal.commits[-1]["status"], "rollback-incomplete")
 
     def test_rollback_classification_requires_exact_old_environment(self) -> None:
-        before = deployment()
+        before = public_mode_deployment()
         incomplete = copy.deepcopy(before)
         env = incomplete["spec"]["template"]["spec"]["containers"][0]["env"]
         incomplete["spec"]["template"]["spec"]["containers"][0]["env"] = [
@@ -1062,7 +1054,7 @@ class PromotionTests(unittest.TestCase):
         self.assertIsNone(journal.state)
 
     def test_owner_references_are_rejected(self) -> None:
-        value = deployment()
+        value = public_mode_deployment()
         value["metadata"]["ownerReferences"] = [{"uid": uid(55)}]
         with self.assertRaises(MODULE.PromotionError):
             MODULE.validate_workbench_deployment(value, expected_image=MODULE.OLD_IMAGE)

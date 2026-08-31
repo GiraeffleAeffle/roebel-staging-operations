@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""One-time, CAS-bound promotion of the public E2E workbench image.
+"""One-time, image-only CAS successor for the public E2E workbench.
 
-This runner owns exactly one existing Deployment public-mode transition.  It
+This runner owns exactly one existing public-mode Deployment image transition. It
 does not adopt a name, apply a manifest, touch a Secret, or change the
 Service or NetworkPolicy which make the workbench reachable.  The live path
 is bounded to one preflight, one JSON Patch, and (when a known postcondition
 fails) one CAS rollback patch.  A lost mutation response is classified with
-one GET; there is deliberately no blind mutation retry.
+one GET; there is deliberately no blind mutation retry. The complete current
+public-mode environment is required before mutation and preserved byte-for-byte
+in both the forward and rollback patches.
 
 The module is dependency-free so the wrapper can execute the protected bytes
 with ``python3 -I``.  Tests inject a narrow Kubernetes-like object instead of
@@ -36,9 +38,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "roebel_staging_workbench_image_promotion_v1"
-JOURNAL_SCHEMA = "roebel_staging_workbench_image_promotion_journal_v1"
-RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_receipt_v1"
+SCHEMA_VERSION = "roebel_staging_workbench_image_promotion_v2"
+JOURNAL_SCHEMA = "roebel_staging_workbench_image_promotion_journal_v2"
+RECEIPT_SCHEMA = "roebel_staging_workbench_image_promotion_receipt_v2"
 
 WORKBENCH_NAMESPACE = "stadtstack-roebel-staging-lab"
 WORKBENCH_NAME = "e2e-workbench"
@@ -62,9 +64,9 @@ PUBLIC_MODE_ENV_ADDITIONS = (
     {"name": LEGACY_SYNTHETIC_PUBKEYS_ENV_NAME, "value": LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE},
 )
 PUBLIC_MODE_ENV_ADDITION_NAMES = frozenset(item["name"] for item in PUBLIC_MODE_ENV_ADDITIONS)
-# These four fixture-only inputs are the only environment entries admitted
-# for removal.  Every other entry remains byte-for-byte in its original list
-# position, including SecretKeyRef references (whose values are never read).
+# These four historical fixture-only inputs must remain absent from the
+# predecessor and target public environments. The image-only successor does
+# not add, remove, reorder, or read any environment entry.
 FORBIDDEN_PUBLIC_MODE_ENV_NAMES = (
     "CASE_STEWARD_TOKEN",
     "STADTSTACK_CONTROL_BASE_URL",
@@ -72,26 +74,17 @@ FORBIDDEN_PUBLIC_MODE_ENV_NAMES = (
     "SYNTHETIC_CITIZENS_JSON",
 )
 FORBIDDEN_PUBLIC_MODE_ENV_SET = frozenset(FORBIDDEN_PUBLIC_MODE_ENV_NAMES)
-# These fixture values can contain credential-like material and are therefore
-# admitted in the old Deployment only as a value-free Secret reference. The
-# reference itself is journaled for exact rollback; the Secret is never read.
-PUBLIC_MODE_SECRET_REF_ENV_NAMES = frozenset({
-    "CASE_STEWARD_TOKEN",
-    "CITIZEN_RELAY_ADMISSION_TOKEN",
-    "SYNTHETIC_CITIZENS_JSON",
-})
-
 OLD_IMAGE = (
-    "registry.agentcart.eu/civic/roebel-staging-workbench@"
-    "sha256:1a7f53a4dc367c8170ca7021de622f6517784d8acabdfba6c06272e500a337dc"
-)
-TARGET_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
     "sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2"
 )
+TARGET_IMAGE = (
+    "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
+    "sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529"
+)
 TARGET_DIGEST = TARGET_IMAGE.rsplit("@", 1)[1]
-SOURCE_REVISION = "b57a3ae2e8ce613bfae4b6ab96e20b95f578ca67"
-ARTIFACT_PIN_RECEIPT_SHA256 = "sha256:872e3e2180e16f69157c5a142c7aa20e3f2e0ea93c10e5363800148b30c99e4c"
+SOURCE_REVISION = "6b78c635f5b8f9603e16d3fe386eb8574df27740"
+ARTIFACT_PIN_RECEIPT_SHA256 = "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683"
 PROTECTED_PATHS = (
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/promote-staging-workbench-image.py",
@@ -461,47 +454,31 @@ def _container_env(value: dict[str, Any], label: str = "workbench Deployment") -
 
 
 def _public_mode_source_env(value: dict[str, Any], label: str = "workbench Deployment") -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Validate the exact old fixture environment and return removal indexes."""
+    """Validate the existing public environment without reading Secret values."""
     env = _container_env(value, label)
     return _public_mode_source_entries(env, label)
 
 
 def _public_mode_source_entries(env: list[dict[str, Any]], label: str) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Validate a stored old environment without reading referenced Secrets."""
+    """Validate a stored public environment and return required-entry indexes."""
     require(isinstance(env, list), f"{label} environment list absent")
     require(
         all(isinstance(item, dict) and isinstance(item.get("name"), str) and bool(item["name"]) for item in env),
         f"{label} environment entry invalid",
     )
-    for name in PUBLIC_MODE_ENV_ADDITION_NAMES:
-        require(not any(item.get("name") == name for item in env), f"{label} already has {name}")
-    indexes: dict[str, int] = {}
-    for name in FORBIDDEN_PUBLIC_MODE_ENV_NAMES:
-        matches = [index for index, item in enumerate(env) if item.get("name") == name]
-        require(len(matches) == 1, f"{label} must contain exactly one {name}")
-        indexes[name] = matches[0]
-    for name in FORBIDDEN_PUBLIC_MODE_ENV_NAMES:
-        if name in PUBLIC_MODE_SECRET_REF_ENV_NAMES:
-            entry = env[indexes[name]]
-            require(
-                "value" not in entry
-                and isinstance(entry.get("valueFrom"), dict)
-                and set(entry["valueFrom"]) == {"secretKeyRef"},
-                f"{label} literal credential environment value forbidden: {name}",
-            )
-    return env, indexes
-
-
-def _public_mode_target_env(value: dict[str, Any], label: str = "workbench Deployment") -> list[dict[str, Any]]:
-    """Validate the target's fixture-free public environment."""
-    env = _container_env(value, label)
     require(
         not any(item.get("name") in FORBIDDEN_PUBLIC_MODE_ENV_SET for item in env),
         f"{label} contains forbidden public-mode environment entries",
     )
-    additions = [item for item in env if item.get("name") in PUBLIC_MODE_ENV_ADDITION_NAMES]
-    require(additions == list(PUBLIC_MODE_ENV_ADDITIONS), f"{label} public-mode environment additions drift")
-    require(env[-len(PUBLIC_MODE_ENV_ADDITIONS):] == list(PUBLIC_MODE_ENV_ADDITIONS), f"{label} public-mode environment additions must be final and ordered")
+    indexes: dict[str, int] = {}
+    for name in PUBLIC_MODE_ENV_ADDITION_NAMES:
+        matches = [index for index, item in enumerate(env) if item.get("name") == name]
+        require(len(matches) == 1, f"{label} must contain exactly one {name}")
+        indexes[name] = matches[0]
+    require(
+        env[-len(PUBLIC_MODE_ENV_ADDITIONS):] == list(PUBLIC_MODE_ENV_ADDITIONS),
+        f"{label} public-mode environment additions must be final and ordered",
+    )
     legacy = parse_json(LEGACY_SYNTHETIC_PUBKEYS_ENV_VALUE, "reviewed legacy synthetic public keys")
     require(
         isinstance(legacy, list)
@@ -511,18 +488,14 @@ def _public_mode_target_env(value: dict[str, Any], label: str = "workbench Deplo
         and all(isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item) is not None for item in legacy),
         "reviewed legacy synthetic public keys invalid",
     )
+    return env, indexes
+
+
+def _public_mode_target_env(value: dict[str, Any], label: str = "workbench Deployment") -> list[dict[str, Any]]:
+    """Validate the target's byte-preserved public environment."""
+    env = _container_env(value, label)
+    _public_mode_source_entries(env, label)
     return env
-
-
-def _normalized_public_mode_env(env: Any) -> Any:
-    if not isinstance(env, list):
-        return env
-    return [
-        copy.deepcopy(item)
-        for item in env
-        if not isinstance(item, dict)
-        or item.get("name") not in FORBIDDEN_PUBLIC_MODE_ENV_SET | PUBLIC_MODE_ENV_ADDITION_NAMES
-    ]
 
 
 def normalized_deployment_spec(value: dict[str, Any], *, index: int | None = None) -> dict[str, Any]:
@@ -535,12 +508,8 @@ def normalized_deployment_spec(value: dict[str, Any], *, index: int | None = Non
     require(isinstance(containers[index], dict), "workbench container invalid")
     containers[index] = copy.deepcopy(containers[index])
     containers[index]["image"] = IMAGE_PLACEHOLDER
-    # The normalized digest is the transition invariant: image, the four
-    # removed fixture entries, and the newly appended public-mode marker are
-    # deliberately omitted.  Any other field, reference, or list ordering
-    # remains part of the digest and therefore cannot drift silently.
-    if "env" in containers[index]:
-        containers[index]["env"] = _normalized_public_mode_env(containers[index]["env"])
+    # Image is the only omitted field. The complete environment, including
+    # list ordering and value-free Secret references, remains in the digest.
     return result
 
 
@@ -637,7 +606,7 @@ def _public_mode_patch_test_operations(deployment: dict[str, Any], *, expected_i
 def _validate_public_mode_patch_shape(operations: list[dict[str, Any]]) -> None:
     """Enforce the closed JSON-Patch grammar at the transport boundary."""
     require(isinstance(operations, list), "workbench Deployment patch must be a list")
-    require(len(operations) == 12, "workbench Deployment public-mode patch shape widened")
+    require(len(operations) == 6, "workbench Deployment image-only patch shape widened")
     require(all(isinstance(item, dict) for item in operations), "workbench Deployment patch entry invalid")
     require([item.get("op") for item in operations[:5]] == ["test"] * 5, "workbench Deployment CAS tests widened")
     require(all(set(item) == {"op", "path", "value"} for item in operations[:5]), "workbench Deployment CAS test fields widened")
@@ -665,72 +634,15 @@ def _validate_public_mode_patch_shape(operations: list[dict[str, Any]]) -> None:
         and image_operation.get("value") in {OLD_IMAGE, TARGET_IMAGE},
         "workbench Deployment image transition widened",
     )
-    transition = operations[6:]
-    env_paths = [item.get("path") for item in transition]
-    require(all(isinstance(path, str) for path in env_paths), "workbench Deployment environment patch path invalid")
-    env_prefix = f"{container_prefix}/env/"
-
-    def env_index(path: Any) -> int:
-        require(isinstance(path, str) and path.startswith(env_prefix), "workbench Deployment environment patch path invalid")
-        suffix = path[len(env_prefix):]
-        require(re.fullmatch(r"[0-9]+", suffix) is not None, "workbench Deployment environment index invalid")
-        return int(suffix)
-
-    if image_operation["value"] == TARGET_IMAGE:
-        removals = transition[:4]
-        require(
-            all(set(item) == {"op", "path"} and item.get("op") == "remove" for item in removals),
-            "workbench Deployment fixture removal shape widened",
-        )
-        indexes = [env_index(item["path"]) for item in removals]
-        require(indexes == sorted(indexes, reverse=True) and len(set(indexes)) == 4, "workbench Deployment fixture removal order drift")
-        additions = transition[4:]
-        require(
-            additions
-            == [
-                {"op": "add", "path": f"{env_prefix}-", "value": copy.deepcopy(item)}
-                for item in PUBLIC_MODE_ENV_ADDITIONS
-            ],
-            "workbench Deployment public mode additions drift",
-        )
-    else:
-        require(
-            all(set(item) == {"op", "path"} and item.get("op") == "remove" for item in transition[:2]),
-            "workbench Deployment public mode removals drift",
-        )
-        removal_indexes = [env_index(item["path"]) for item in transition[:2]]
-        require(
-            removal_indexes == sorted(removal_indexes, reverse=True) and len(set(removal_indexes)) == 2,
-            "workbench Deployment public mode removal order drift",
-        )
-        require(
-            all(set(item) == {"op", "path", "value"} and item.get("op") == "add" for item in transition[2:]),
-            "workbench Deployment fixture restoration shape widened",
-        )
-        indexes = [env_index(item["path"]) for item in transition[2:]]
-        require(indexes == sorted(indexes) and len(set(indexes)) == 4, "workbench Deployment fixture restoration order drift")
-        require(
-            all(isinstance(item.get("value"), dict) and item["value"].get("name") in FORBIDDEN_PUBLIC_MODE_ENV_SET for item in transition[2:]),
-            "workbench Deployment fixture restoration names drift",
-        )
 
 
 def build_image_patch(deployment: dict[str, Any], *, image: str = TARGET_IMAGE) -> list[dict[str, Any]]:
-    """Build the exact public-mode Deployment transition patch."""
+    """Build the exact image-only public-mode successor patch."""
     require(image == TARGET_IMAGE, "workbench Deployment target image drift")
-    env, indexes = _public_mode_source_env(deployment)
+    _public_mode_source_env(deployment)
     tests, index = _public_mode_patch_test_operations(deployment, expected_image=OLD_IMAGE)
     require(index == container_index(deployment), "workbench container index drift")
-    env_path = _container_path(index, "env")
     operations = tests + [{"op": "replace", "path": _container_path(index, "image"), "value": TARGET_IMAGE}]
-    operations.extend(
-        {"op": "remove", "path": f"{env_path}/{env_index}"}
-        for env_index in sorted(indexes.values(), reverse=True)
-    )
-    operations.extend(
-        {"op": "add", "path": f"{env_path}/-", "value": copy.deepcopy(item)}
-        for item in PUBLIC_MODE_ENV_ADDITIONS
-    )
     # The transport adapter only accepts the fixed-container path; reject an
     # unexpected container position before any caller can send this patch.
     _validate_public_mode_patch_shape(operations)
@@ -743,28 +655,14 @@ def build_public_mode_patch(deployment: dict[str, Any], *, image: str = TARGET_I
 
 
 def build_rollback_patch(deployment: dict[str, Any], *, before: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build an exact inverse restoring the complete old environment order."""
-    env, indexes = _public_mode_source_env(before)
+    """Build an image-only inverse restoring the exact public predecessor."""
+    env, _indexes = _public_mode_source_env(before)
     current_env = _public_mode_target_env(deployment)
     tests, index = _public_mode_patch_test_operations(deployment, expected_image=TARGET_IMAGE)
     before_index = container_index(before)
     require(index == before_index, "workbench rollback container index drift")
-    expected_target_env = [
-        copy.deepcopy(item)
-        for item in env
-        if item.get("name") not in FORBIDDEN_PUBLIC_MODE_ENV_SET
-    ] + [copy.deepcopy(item) for item in PUBLIC_MODE_ENV_ADDITIONS]
-    require(current_env == expected_target_env, "workbench rollback public environment drift", PostconditionFailure)
-    env_path = _container_path(index, "env")
+    require(current_env == env, "workbench rollback public environment drift", PostconditionFailure)
     operations = tests + [{"op": "replace", "path": _container_path(index, "image"), "value": OLD_IMAGE}]
-    operations.extend(
-        {"op": "remove", "path": f"{env_path}/{env_index}"}
-        for env_index in range(len(current_env) - 1, len(current_env) - len(PUBLIC_MODE_ENV_ADDITIONS) - 1, -1)
-    )
-    operations.extend(
-        {"op": "add", "path": f"{env_path}/{env_index}", "value": copy.deepcopy(env[env_index])}
-        for env_index in sorted(indexes.values())
-    )
     _validate_public_mode_patch_shape(operations)
     return operations
 
@@ -802,8 +700,7 @@ def validate_workbench_deployment(value: Any, *, expected_image: str, label: str
         and ports[0].get("protocol", "TCP") == "TCP",
         f"{label} container port drift",
     )
-    if expected_image == TARGET_IMAGE:
-        _public_mode_target_env(value, label)
+    _public_mode_target_env(value, label)
     return {
         "uid": uid,
         "resourceVersion": resource_version,
@@ -1364,8 +1261,10 @@ def _receipt_base(
             "oldImage": OLD_IMAGE,
             "targetImage": TARGET_IMAGE,
             "environmentTransition": {
-                "added": [copy.deepcopy(item) for item in PUBLIC_MODE_ENV_ADDITIONS],
-                "removedNames": list(FORBIDDEN_PUBLIC_MODE_ENV_NAMES),
+                "mode": WORKBENCH_MODE_ENV_VALUE,
+                "preservedByteForByte": True,
+                "added": [],
+                "removedNames": [],
             },
             "beforeResourceVersion": None,
             "afterResourceVersion": None,
