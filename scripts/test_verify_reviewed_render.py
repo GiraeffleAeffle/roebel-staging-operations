@@ -6,6 +6,7 @@ import importlib.util
 import json
 import copy
 import shutil
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -18,6 +19,15 @@ SPEC = importlib.util.spec_from_file_location("reviewed_render_verifier", ROOT /
 assert SPEC and SPEC.loader
 VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
+
+TRACER_PHASE_A_FIXTURE_REVISION = "7b7893a0ae7b8e509e9794625019626c9f0654df"
+TRACER_PHASE_A_FIXTURE_FILES = {
+    "reviewed-render/roebel-staging/head.json",
+    "reviewed-render/roebel-staging/integrity.json",
+    "reviewed-render/roebel-staging/live-preconditions.json",
+    "reviewed-render/roebel-staging/public-mecky/deployment.json",
+    "reviewed-render/roebel-staging/web/deployment.json",
+}
 
 
 def participant_ready_policy() -> dict:
@@ -1087,10 +1097,39 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ) + "\n")
         self.refresh_reviewed_integrity(candidate)
 
-    def make_tracer_phase_b_successor(self, candidate: Path) -> None:
+    def materialize_tracer_phase_a_fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """Overlay the pinned Phase-A render on current policy and test code."""
+        temp = tempfile.TemporaryDirectory()
+        destination = Path(temp.name) / "phase-a"
+        shutil.copytree(
+            ROOT,
+            destination,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        for relative in sorted(TRACER_PHASE_A_FIXTURE_FILES):
+            historical = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(ROOT),
+                    "show",
+                    f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            (destination / relative).write_bytes(historical.stdout)
+        self.assertEqual(
+            VERIFIER.changed_repository_files(destination, ROOT),
+            TRACER_PHASE_A_FIXTURE_FILES,
+        )
+        return temp, destination
+
+    def make_tracer_phase_b_successor(self, candidate: Path, base_root: Path) -> None:
         """Materialize the exact seven-file active successor without using its stash."""
         render = candidate / "reviewed-render/roebel-staging"
-        base = VERIFIER.verify_tree(ROOT)
+        base = VERIFIER.verify_tree(base_root)
         successor_head = VERIFIER.expected_tracer_phase_b_head(base["head"])
         (render / "head.json").write_text(json.dumps(successor_head, indent=2) + "\n")
 
@@ -1113,7 +1152,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             json.dumps(web_policy, indent=2) + "\n",
         )
         live = VERIFIER.expected_tracer_phase_b_live_preconditions(
-            ROOT,
+            base_root,
             base,
             successor_head,
         )
@@ -1251,7 +1290,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertTrue(
             expected_active.isdisjoint(VERIFIER.TRACER_PHASE_A_TRANSITION_FILES),
         )
-        phase_a = VERIFIER.verify_tree(ROOT)
+        phase_a_temp, phase_a_root = self.materialize_tracer_phase_a_fixture()
+        self.addCleanup(phase_a_temp.cleanup)
+        phase_a = VERIFIER.verify_tree(phase_a_root)
         self.assertEqual(phase_a["head"], VERIFIER.TRACER_PHASE_A_HEAD)
         self.assertFalse(phase_a["webTracerFeed"])
         self.assertTrue(phase_a["tracerDataPlane"]["activationReady"])
@@ -1280,8 +1321,16 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.addCleanup(candidate_temp.cleanup)
         base = Path(base_temp.name) / "base"
         candidate = Path(candidate_temp.name) / "candidate"
-        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        shutil.copytree(
+            phase_a_root,
+            base,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        shutil.copytree(
+            phase_a_root,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
 
         for relative in VERIFIER.TRACER_PHASE_A_TRANSITION_FILES:
             path = base / relative
@@ -1315,13 +1364,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "reviewed-render/roebel-staging/web/networkpolicy.json",
             },
         )
+        base_temp, base = self.materialize_tracer_phase_a_fixture()
         temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
         self.addCleanup(temp.cleanup)
         candidate = Path(temp.name) / "candidate"
-        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-        self.make_tracer_phase_b_successor(candidate)
+        shutil.copytree(base, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.make_tracer_phase_b_successor(candidate, base)
 
-        result = VERIFIER.verify(candidate, ROOT)
+        result = VERIFIER.verify(candidate, base)
         self.assertTrue(result["baseTransitionVerified"])
         self.assertEqual(result["releaseSetDigest"], VERIFIER.TRACER_PHASE_B_RELEASE_SET_DIGEST)
         web = json.loads(
@@ -1345,13 +1396,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(policy["spec"]["egress"][0], VERIFIER.tracer_postgrest_web_egress())
 
     def test_phase_b_rejects_feed_secret_network_release_or_eighth_file_drift(self) -> None:
+        base_temp, base = self.materialize_tracer_phase_a_fixture()
+        self.addCleanup(base_temp.cleanup)
         for label in ("feed-url", "secret-name"):
             with self.subTest(label=label):
                 temp = tempfile.TemporaryDirectory()
                 self.addCleanup(temp.cleanup)
                 candidate = Path(temp.name) / "candidate"
-                shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-                self.make_tracer_phase_b_successor(candidate)
+                shutil.copytree(base, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                self.make_tracer_phase_b_successor(candidate, base)
                 path = candidate / "reviewed-render/roebel-staging/web/deployment.json"
                 value = json.loads(path.read_text())
                 env = value["spec"]["template"]["spec"]["containers"][0]["env"]
@@ -1369,7 +1422,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                     target["valueFrom"]["secretKeyRef"]["name"] = "other-secret"
                 path.write_text(json.dumps(value, indent=2) + "\n")
                 with self.assertRaises(VERIFIER.VerificationError):
-                    VERIFIER.verify(candidate, ROOT)
+                    VERIFIER.verify(candidate, base)
 
         for label, relative, mutate in (
             (
@@ -1387,24 +1440,24 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 temp = tempfile.TemporaryDirectory()
                 self.addCleanup(temp.cleanup)
                 candidate = Path(temp.name) / "candidate"
-                shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-                self.make_tracer_phase_b_successor(candidate)
+                shutil.copytree(base, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                self.make_tracer_phase_b_successor(candidate, base)
                 path = candidate / relative
                 value = json.loads(path.read_text())
                 mutate(value)
                 path.write_text(json.dumps(value, indent=2) + "\n")
                 with self.assertRaises(VERIFIER.VerificationError):
-                    VERIFIER.verify(candidate, ROOT)
+                    VERIFIER.verify(candidate, base)
 
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         candidate = Path(temp.name) / "candidate"
-        shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
-        self.make_tracer_phase_b_successor(candidate)
+        shutil.copytree(base, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        self.make_tracer_phase_b_successor(candidate, base)
         ingress = candidate / "reviewed-render/roebel-staging/web/ingress.json"
         ingress.write_bytes(ingress.read_bytes() + b"\n")
         with self.assertRaisesRegex(VERIFIER.VerificationError, "Phase B changed file set drift"):
-            VERIFIER.verify(candidate, ROOT)
+            VERIFIER.verify(candidate, base)
 
     def test_signed_nostr_policy_reserves_exactly_sixteen_files(self) -> None:
         self.assertEqual(len(VERIFIER.SIGNED_NOSTR_FILES), 16)
