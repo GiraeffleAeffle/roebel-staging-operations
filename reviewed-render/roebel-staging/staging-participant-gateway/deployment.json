@@ -157,11 +157,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
+                "value": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e"
+                "value": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -192,7 +192,7 @@
                 "value": "staging-participant-topic-v1"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
             "imagePullPolicy": "IfNotPresent",
             "name": "staging-participant-gateway",
             "ports": [
