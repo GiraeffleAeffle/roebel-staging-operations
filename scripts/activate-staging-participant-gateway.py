@@ -72,6 +72,7 @@ TRACER_RECEIPT_FOURTEENTH_SUCCESSOR_REVISION = "136f0ac1ca31c9beda8f7208ed01a122
 TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION = "96795cc20a28e93a9ed00208bb2311efcdb8a1ae"
 TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION = "4de9d00696a7c43694bf66edbf79d1fb1fd080de"
 TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION = "c126f1f680bd65079a941af61fb108ced777c0dc"
+TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION = "8149f8b2fa8459f140d68de4c5883319a15c2ad0"
 TRACER_RECEIPT_ORIGIN_RAW_SHA256 = "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 TRACER_RECEIPT_ORIGIN_ACTIVATION_RUNNER_SHA256 = "sha256:83f7b1f6fd9830436e97a1c90d30976610908368bbbc2a9a408cb8dd7862a547"
 TRACER_RECEIPT_ORIGIN_TO_INTERMEDIATE_FILES = frozenset({
@@ -175,6 +176,14 @@ TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
 })
 TRACER_RECEIPT_PROTECTED_PATHS = (
     TRACER_ACTIVATION_RUNNER_PATH,
@@ -402,6 +411,29 @@ BOOTSTRAP_PROTECTED_PATHS = (
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
 )
+RUN36_BOOTSTRAP_ORIGIN_REVISION = "8149f8b2fa8459f140d68de4c5883319a15c2ad0"
+RUN36_BOOTSTRAP_ORIGIN_TREE = "95ecf0384fcc99cea8b840d9ee86638d68f95a8d"
+RUN36_BOOTSTRAP_RAW_SHA256 = "sha256:756c44dacfbd30f248251bf2551e5e2650149d84fa58548638bfef14be7163a3"
+RUN36_BOOTSTRAP_CANONICAL_SHA256 = "sha256:fdea59cdeddf2d961c9f8eee0e922434b4d668d0b40cca9ef1ef454c7911a554"
+RUN36_BOOTSTRAP_ORIGIN_PROTECTED_PATHS = (
+    BOOTSTRAP_RUNNER_PATH,
+    LIVE_WRAPPER_PATH,
+    BOOTSTRAP_MODULE_PATH,
+    POLICY_MODULE_PATH,
+    POLICY_PATH,
+    "scripts/activate-staging-participant-gateway.py",
+    BOOTSTRAP_WORKFLOW_PATH,
+    "scripts/verify-reviewed-render.py",
+    "policy/repository-contract.json",
+)
+RUN36_BOOTSTRAP_SUCCESSOR_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
+})
 HANDOVER_COMPATIBILITY_PATHS = (
     POLICY_PATH,
     POLICY_MODULE_PATH,
@@ -642,6 +674,32 @@ def exact_revision_transition_files_v4(parent: str, child: str, label: str) -> s
         raise ActivationError(f"{label} protected file set is not UTF-8") from exc
     require(len(paths) == len(set(paths)), f"{label} protected file set duplicated")
     return set(paths)
+
+def require_run36_bootstrap_transition_v4(current_revision: str) -> None:
+    """Admit the exact run36 receipt only at its reviewed direct successor."""
+    revision(current_revision)
+    try:
+        tree = trusted_git_v4(
+            ["-C", str(ROOT), "rev-parse", f"{RUN36_BOOTSTRAP_ORIGIN_REVISION}^{{tree}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ActivationError("run36 bootstrap origin tree lookup timed out") from exc
+    require(
+        tree.returncode == 0 and tree.stdout.strip() == RUN36_BOOTSTRAP_ORIGIN_TREE,
+        "run36 bootstrap origin tree drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            RUN36_BOOTSTRAP_ORIGIN_REVISION,
+            current_revision,
+            "run36 bootstrap origin-to-successor",
+        ) == set(RUN36_BOOTSTRAP_SUCCESSOR_FILES),
+        "run36 bootstrap origin-to-successor file set drift",
+    )
 
 def protected_checkout(rev: str) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
@@ -1316,20 +1374,135 @@ def bind_flux_bootstrap_receipt_v4(
     except (BOOTSTRAP.BootstrapError, OSError) as exc:
         raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
 
+def require_run36_bootstrap_receipt_identity_v4(
+    receipt: dict[str, Any],
+    raw: bytes,
+) -> None:
+    require(
+        receipt.get("protectedRevision") == RUN36_BOOTSTRAP_ORIGIN_REVISION,
+        "dormant continuation verifier requires the exact run36 origin receipt",
+    )
+    require(
+        isinstance(raw, bytes) and bytes_digest(raw) == RUN36_BOOTSTRAP_RAW_SHA256,
+        "run36 bootstrap receipt raw checksum drift",
+    )
+    require(
+        receipt.get("canonicalSha256") == RUN36_BOOTSTRAP_CANONICAL_SHA256,
+        "run36 bootstrap receipt canonical checksum drift",
+    )
+
 def bind_flux_bootstrap_receipt_value_v4(
     p: dict[str, Any],
     rev: str,
     runner_hashes: dict[str, str],
     receipt: dict[str, Any],
+    *,
+    raw: bytes | None = None,
 ) -> dict[str, Any]:
     """Bind an already snapshotted dormant receipt before Kubernetes access."""
     require(BOOTSTRAP is not None, "protected dormant Flux bootstrap binder unavailable")
     bootstrap_hashes = {path: runner_hashes[path] for path in BOOTSTRAP_PROTECTED_PATHS}
     try:
         plan = BOOTSTRAP.build_plan(POLICY, p, rev, bootstrap_hashes)
+        if receipt.get("protectedRevision") == RUN36_BOOTSTRAP_ORIGIN_REVISION:
+            require(raw is not None, "run36 bootstrap continuation requires exact raw receipt bytes")
+            require_run36_bootstrap_receipt_identity_v4(receipt, raw)
+            require_run36_bootstrap_transition_v4(rev)
+            origin_policy = compile_verified_policy_module_v4(
+                git_blob(RUN36_BOOTSTRAP_ORIGIN_REVISION, POLICY_MODULE_PATH),
+                RUN36_BOOTSTRAP_ORIGIN_REVISION,
+            )
+            origin_bootstrap = compile_verified_bootstrap_module_v4(
+                git_blob(RUN36_BOOTSTRAP_ORIGIN_REVISION, BOOTSTRAP_MODULE_PATH),
+                RUN36_BOOTSTRAP_ORIGIN_REVISION,
+            )
+            origin_descriptor = origin_policy.validate_activation_policy(
+                origin_bootstrap._json_object(
+                    git_blob(RUN36_BOOTSTRAP_ORIGIN_REVISION, POLICY_PATH).decode("utf-8"),
+                    "run36 activation policy",
+                ),
+            )
+            origin_hashes = {
+                path: bytes_digest(git_blob(RUN36_BOOTSTRAP_ORIGIN_REVISION, path))
+                for path in RUN36_BOOTSTRAP_ORIGIN_PROTECTED_PATHS
+            }
+            origin_plan = origin_bootstrap.build_plan(
+                origin_policy,
+                origin_descriptor,
+                RUN36_BOOTSTRAP_ORIGIN_REVISION,
+                origin_hashes,
+            )
+            origin_bound = origin_bootstrap.bind_success_receipt(origin_plan, receipt)
+            require(
+                set(origin_bound) == {
+                    "schemaVersion", "status", "receiptSha256", "protectedRevision",
+                    "activationPolicySha256", "objects", "bothKustomizationsSuspended",
+                }
+                and origin_bound["receiptSha256"] == RUN36_BOOTSTRAP_CANONICAL_SHA256
+                and origin_bound["protectedRevision"] == RUN36_BOOTSTRAP_ORIGIN_REVISION
+                and origin_bound["status"] == "dormant-ready"
+                and origin_bound["bothKustomizationsSuspended"] is True,
+                "run36 bootstrap bound projection drift",
+            )
+            require(
+                receipt.get("effects") == {
+                    "applicationMutation": False,
+                    "secretRead": False,
+                    "secretWrite": False,
+                    "sharedSourceMutation": False,
+                    "webIngressMutation": False,
+                    "existingWorkbenchNetworkPolicyMutation": False,
+                    "civicAuthorityEffects": False,
+                },
+                "run36 bootstrap authority effects drift",
+            )
+            origin_plan_projection = {
+                key: copy.deepcopy(value)
+                for key, value in origin_plan.items()
+                if key not in {"protectedRevision", "protectedFileSha256"}
+            }
+            current_plan_projection = {
+                key: copy.deepcopy(value)
+                for key, value in plan.items()
+                if key not in {"protectedRevision", "protectedFileSha256"}
+            }
+            require(
+                origin_plan_projection == current_plan_projection,
+                "run36 bootstrap current plan semantic projection drift",
+            )
+            return {
+                "schemaVersion": BOOTSTRAP.RECEIPT_SCHEMA,
+                "status": "dormant-ready",
+                "receiptSha256": RUN36_BOOTSTRAP_CANONICAL_SHA256,
+                "protectedRevision": rev,
+                "activationPolicySha256": plan["activationPolicySha256"],
+                "objects": copy.deepcopy(origin_bound["objects"]),
+                "bothKustomizationsSuspended": True,
+                "civicAuthorityEffects": False,
+            }
         return BOOTSTRAP.bind_success_receipt(plan, receipt)
-    except BOOTSTRAP.BootstrapError as exc:
+    except ActivationError:
+        raise
+    except Exception as exc:
         raise ActivationError(f"dormant Flux bootstrap receipt rejected: {exc}") from exc
+
+def bind_run36_flux_bootstrap_receipt_value_v4(
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+    receipt: dict[str, Any],
+    *,
+    raw: bytes,
+) -> dict[str, Any]:
+    """Bind only the exact run36 receipt selected by the continuation wrapper."""
+    require_run36_bootstrap_receipt_identity_v4(receipt, raw)
+    return bind_flux_bootstrap_receipt_value_v4(
+        p,
+        rev,
+        runner_hashes,
+        receipt,
+        raw=raw,
+    )
 
 def bind_handover_receipt_pair_v4(
     p: dict[str, Any],
@@ -1647,7 +1820,7 @@ def bind_tracer_receipt_revision_v4(
     raw: bytes,
     rev: str,
 ) -> dict[str, Any]:
-    """Admit current receipts or the exact successful run19 eighteen-hop lineage."""
+    """Admit current receipts or the exact successful run19 nineteen-hop lineage."""
     receipt_revision = receipt.get("protectedRevision")
     hashes = receipt.get("protectedFileSha256")
     require(
@@ -1817,10 +1990,18 @@ def bind_tracer_receipt_revision_v4(
     require(
         exact_revision_transition_files_v4(
             TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
-            rev,
-            "tracer receipt seventeenth-successor-to-acceptor",
+            TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION,
+            "tracer receipt seventeenth-to-eighteenth-successor",
         ) == set(TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
-        "tracer receipt seventeenth-successor-to-acceptor file set drift",
+        "tracer receipt seventeenth-to-eighteenth-successor file set drift",
+    )
+    require(
+        exact_revision_transition_files_v4(
+            TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION,
+            rev,
+            "tracer receipt eighteenth-successor-to-acceptor",
+        ) == set(TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+        "tracer receipt eighteenth-successor-to-acceptor file set drift",
     )
     require(
         hashes.get("scripts/activate-staging-participant-gateway.py")
@@ -1841,7 +2022,7 @@ def bind_tracer_receipt_revision_v4(
         "tracer compatible protected path change drift",
     )
     return {
-        "mode": "exact-run19-eighteen-hop-unchanged-tracer-plane",
+        "mode": "exact-run19-nineteen-hop-unchanged-tracer-plane",
         "originProtectedRevision": TRACER_RECEIPT_ORIGIN_REVISION,
         "acceptedByProtectedRevision": rev,
         "allowedAppliedRevisions": [
@@ -1863,6 +2044,7 @@ def bind_tracer_receipt_revision_v4(
             TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
             TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
+            TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION,
             rev,
         ],
     }
@@ -6335,6 +6517,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--live", action="store_true")
     modes.add_argument("--verify-success-receipt", type=Path)
     modes.add_argument("--verify-success-receipt-fd", type=int)
+    modes.add_argument("--verify-flux-bootstrap-receipt-fd", type=int)
     modes.add_argument("--verify-secret-materialization-receipt-fd", type=int)
     modes.add_argument("--recover-rollback-incomplete-receipt-fd", type=int)
     modes.add_argument("--verify-recovery-receipt-fd", type=int)
@@ -6387,6 +6570,7 @@ def main(argv: list[str] | None = None) -> int:
         if (
             a.verify_success_receipt is not None
             or a.verify_success_receipt_fd is not None
+            or a.verify_flux_bootstrap_receipt_fd is not None
             or a.verify_secret_materialization_receipt_fd is not None
             or a.verify_recovery_receipt_fd is not None
             or a.verify_failed_activation_recovery_source_fd is not None
@@ -6402,6 +6586,24 @@ def main(argv: list[str] | None = None) -> int:
                 "receipt verification accepts no kubeconfig or continuation receipts",
             )
             require(a.prebound_blob is None, "receipt verification accepts no prebound Git closure")
+            if a.verify_flux_bootstrap_receipt_fd is not None:
+                raw = load_owned_receipt_fd_raw_v4(
+                    a.verify_flux_bootstrap_receipt_fd,
+                    "dormant Flux bootstrap receipt",
+                )
+                try:
+                    receipt = obj(raw.decode("utf-8"), "dormant Flux bootstrap receipt")
+                except UnicodeDecodeError as exc:
+                    raise ActivationError("dormant Flux bootstrap receipt must be UTF-8 JSON") from exc
+                result = bind_run36_flux_bootstrap_receipt_value_v4(
+                    p,
+                    rev,
+                    runner_hashes,
+                    receipt,
+                    raw=raw,
+                )
+                print(canonical(result))
+                return 0
             if a.verify_secret_materialization_receipt_fd is not None:
                 result = bind_secret_materialization_receipt_v4(p, rev, a.verify_secret_materialization_receipt_fd)
                 print(canonical(result))
@@ -6504,11 +6706,20 @@ def main(argv: list[str] | None = None) -> int:
             if a.flux_bootstrap_receipt is not None:
                 dormant_ownership = bind_flux_bootstrap_receipt_v4(p, rev, runner_hashes, a.flux_bootstrap_receipt)
             else:
+                raw = load_owned_receipt_fd_raw_v4(
+                    a.flux_bootstrap_receipt_fd,
+                    "dormant Flux bootstrap receipt",
+                )
+                try:
+                    bootstrap_receipt = obj(raw.decode("utf-8"), "dormant Flux bootstrap receipt")
+                except UnicodeDecodeError as exc:
+                    raise ActivationError("dormant Flux bootstrap receipt must be UTF-8 JSON") from exc
                 dormant_ownership = bind_flux_bootstrap_receipt_value_v4(
                     p,
                     rev,
                     runner_hashes,
-                    BOOTSTRAP.load_receipt_fd(a.flux_bootstrap_receipt_fd),
+                    bootstrap_receipt,
+                    raw=raw,
                 )
             secret_materialization_ownership = (
                 bind_secret_materialization_receipt_v4(

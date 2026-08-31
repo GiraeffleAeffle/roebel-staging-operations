@@ -27,6 +27,13 @@ HANDOVER_SPEC = importlib.util.spec_from_file_location(
 assert HANDOVER_SPEC and HANDOVER_SPEC.loader
 HANDOVER_RUNNER = importlib.util.module_from_spec(HANDOVER_SPEC)
 HANDOVER_SPEC.loader.exec_module(HANDOVER_RUNNER)
+BOOTSTRAP_TEST_SPEC = importlib.util.spec_from_file_location(
+    "participant_bootstrap_test_support",
+    Path(__file__).with_name("test_staging_participant_flux_bootstrap.py"),
+)
+assert BOOTSTRAP_TEST_SPEC and BOOTSTRAP_TEST_SPEC.loader
+BOOTSTRAP_TEST_SUPPORT = importlib.util.module_from_spec(BOOTSTRAP_TEST_SPEC)
+BOOTSTRAP_TEST_SPEC.loader.exec_module(BOOTSTRAP_TEST_SUPPORT)
 def sha(x="a"): return "sha256:" + x * 64
 def historical_secret_receipt():
     unsigned = {
@@ -760,6 +767,275 @@ class Fake(MODULE.Runner):
         return MODULE.Result()
 
 class ExecutorTests(unittest.TestCase):
+    def test_run36_continuation_requires_exact_parent_tree_and_six_file_delta(self):
+        child = "c" * 40
+        expected_files = {
+            "scripts/activate-staging-participant-gateway.py",
+            "scripts/run-staging-participant-gateway-live.py",
+            "scripts/staging_participant_flux_bootstrap.py",
+            "scripts/test_activate_staging_participant_gateway.py",
+            "scripts/test_run_staging_participant_gateway_live.py",
+            "scripts/test_staging_participant_flux_bootstrap.py",
+        }
+        tree = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=MODULE.RUN36_BOOTSTRAP_ORIGIN_TREE + "\n", stderr="",
+        )
+        lineage = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=f"{child} {MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION}\n", stderr="",
+        )
+        changed = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=b"\0".join(path.encode() for path in sorted(expected_files)) + b"\0",
+            stderr=b"",
+        )
+        with patch.object(MODULE, "trusted_git_v4", side_effect=[tree, lineage, changed]) as trusted:
+            MODULE.require_run36_bootstrap_transition_v4(child)
+        self.assertEqual(trusted.call_count, 3)
+        self.assertEqual(set(MODULE.RUN36_BOOTSTRAP_SUCCESSOR_FILES), expected_files)
+
+        wrong_tree = copy.deepcopy(tree)
+        wrong_tree.stdout = "f" * 40 + "\n"
+        with patch.object(MODULE, "trusted_git_v4", return_value=wrong_tree), self.assertRaisesRegex(
+            MODULE.ActivationError, "origin tree drift",
+        ):
+            MODULE.require_run36_bootstrap_transition_v4(child)
+
+        for label, parent_line in (
+            ("wrong", f"{child} {'f' * 40}\n"),
+            ("merge", f"{child} {MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION} {'f' * 40}\n"),
+        ):
+            bad_lineage = copy.deepcopy(lineage)
+            bad_lineage.stdout = parent_line
+            with self.subTest(parent=label), patch.object(
+                MODULE, "trusted_git_v4", side_effect=[tree, bad_lineage],
+            ), self.assertRaisesRegex(MODULE.ActivationError, "protected parent drift"):
+                MODULE.require_run36_bootstrap_transition_v4(child)
+
+        for label, files in (
+            ("widened", expected_files | {"README.md"}),
+            ("omitted", expected_files - {next(iter(expected_files))}),
+        ):
+            bad_changed = copy.deepcopy(changed)
+            bad_changed.stdout = b"\0".join(path.encode() for path in sorted(files)) + b"\0"
+            with self.subTest(delta=label), patch.object(
+                MODULE, "trusted_git_v4", side_effect=[tree, lineage, bad_changed],
+            ), self.assertRaisesRegex(MODULE.ActivationError, "successor file set drift"):
+                MODULE.require_run36_bootstrap_transition_v4(child)
+
+    def test_run36_continuation_deep_binds_parent_receipt_and_translates_only_equivalent_plan(self):
+        current_revision = "c" * 40
+        blobs = {
+            path: subprocess.run(
+                [
+                    "/usr/bin/git", "--no-replace-objects", "-C", str(Path(__file__).parent.parent),
+                    "show", f"{MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION}:{path}",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+            for path in MODULE.BOOTSTRAP_PROTECTED_PATHS
+        }
+
+        parent_policy = MODULE.compile_verified_policy_module_v4(
+            blobs[MODULE.POLICY_MODULE_PATH], MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION,
+        )
+        parent_bootstrap = MODULE.compile_verified_bootstrap_module_v4(
+            blobs[MODULE.BOOTSTRAP_MODULE_PATH], MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION,
+        )
+        descriptor = parent_policy.validate_activation_policy(
+            parent_bootstrap._json_object(blobs[MODULE.POLICY_PATH].decode("utf-8"), "policy"),
+        )
+        hashes = {
+            path: MODULE.bytes_digest(blobs[path])
+            for path in MODULE.BOOTSTRAP_PROTECTED_PATHS
+        }
+        origin_hashes = {
+            path: MODULE.bytes_digest(blobs[path])
+            for path in MODULE.RUN36_BOOTSTRAP_ORIGIN_PROTECTED_PATHS
+        }
+        parent_plan = parent_bootstrap.build_plan(
+            parent_policy,
+            descriptor,
+            MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION,
+            origin_hashes,
+        )
+        self.assertEqual(
+            set(MODULE.RUN36_BOOTSTRAP_ORIGIN_PROTECTED_PATHS),
+            {
+                "scripts/bootstrap-staging-participant-flux.py",
+                "scripts/run-staging-participant-gateway-live.py",
+                "scripts/staging_participant_flux_bootstrap.py",
+                "scripts/staging_participant_gateway_policy.py",
+                "policy/staging-participant-gateway-activation-policy.json",
+                "scripts/activate-staging-participant-gateway.py",
+                ".github/workflows/staging-participant-flux-bootstrap.yml",
+                "scripts/verify-reviewed-render.py",
+                "policy/repository-contract.json",
+            },
+        )
+        class OriginKube(BOOTSTRAP_TEST_SUPPORT.FakeKube):
+            def preflight(self, plan):
+                value = super().preflight(plan)
+                value["sharedSource"]["artifactRevision"] = (
+                    "main@sha1:" + MODULE.RUN36_BOOTSTRAP_ORIGIN_REVISION
+                )
+                return value
+        receipt = parent_bootstrap.run(
+            parent_plan,
+            mode="live",
+            kube=OriginKube(),
+            sink=BOOTSTRAP_TEST_SUPPORT.MemorySink(),
+            policy_module=parent_policy,
+        )
+        receipt = copy.deepcopy(receipt)
+        receipt["canonicalSha256"] = parent_bootstrap.canonical_sha256(receipt)
+        raw = (parent_bootstrap.canonical(receipt) + "\n").encode("utf-8")
+
+        def bind(candidate, candidate_raw, *, raw_pin=None, canonical_pin=None):
+            with patch.object(
+                MODULE, "git_blob", side_effect=lambda _revision, path: blobs[path]
+            ), patch.object(
+                MODULE, "require_run36_bootstrap_transition_v4"
+            ), patch.object(
+                MODULE, "RUN36_BOOTSTRAP_RAW_SHA256",
+                raw_pin or MODULE.bytes_digest(candidate_raw),
+            ), patch.object(
+                MODULE, "RUN36_BOOTSTRAP_CANONICAL_SHA256",
+                canonical_pin or candidate["canonicalSha256"],
+            ):
+                return MODULE.bind_flux_bootstrap_receipt_value_v4(
+                    ready_policy(), current_revision, hashes, candidate, raw=candidate_raw,
+                )
+
+        bound = bind(receipt, raw)
+
+        self.assertEqual(bound["protectedRevision"], current_revision)
+        self.assertEqual(bound["receiptSha256"], receipt["canonicalSha256"])
+        self.assertFalse(bound["civicAuthorityEffects"])
+        self.assertEqual(
+            [(item["logicalName"], item["uid"], item["resourceVersion"]) for item in bound["objects"]],
+            [(item["logicalName"], f"uid-{index}", item["resourceVersion"]) for index, item in enumerate(bound["objects"], start=1)],
+        )
+
+        with self.assertRaisesRegex(MODULE.ActivationError, "raw checksum drift"):
+            bind(receipt, raw, raw_pin=sha("f"))
+        with self.assertRaisesRegex(MODULE.ActivationError, "canonical checksum drift"):
+            bind(receipt, raw, canonical_pin=sha("e"))
+
+        def closed(mutator):
+            candidate = copy.deepcopy(receipt)
+            mutator(candidate)
+            candidate["canonicalSha256"] = parent_bootstrap.canonical_sha256(candidate)
+            candidate_raw = (parent_bootstrap.canonical(candidate) + "\n").encode("utf-8")
+            return candidate, candidate_raw
+
+        semantic_drifts = {
+            "authority-true": lambda item: item["effects"].__setitem__("civicAuthorityEffects", True),
+            "authority-missing": lambda item: item["effects"].pop("civicAuthorityEffects"),
+            "uid": lambda item: item["postconditions"]["objects"][0].__setitem__("uid", "foreign-uid"),
+            "resource-version": lambda item: item["postconditions"]["objects"][0].__setitem__("resourceVersion", "999"),
+            "target": lambda item: item["postconditions"]["objects"][0]["target"].__setitem__("name", "foreign"),
+            "semantic": lambda item: item["postconditions"]["objects"][0].__setitem__("desiredSemanticSha256", sha("d")),
+            "postcondition": lambda item: item["postconditions"].__setitem__("bothKustomizationsSuspended", False),
+            "nonce-journal": lambda item: item["journal"][0].__setitem__("status", "foreign"),
+        }
+        for label, mutator in semantic_drifts.items():
+            candidate, candidate_raw = closed(mutator)
+            with self.subTest(drift=label), self.assertRaises(MODULE.ActivationError):
+                bind(candidate, candidate_raw)
+
+        original_build_plan = MODULE.BOOTSTRAP.build_plan
+        with patch.object(
+            MODULE.BOOTSTRAP,
+            "build_plan",
+            side_effect=lambda *args, **kwargs: {
+                **original_build_plan(*args, **kwargs),
+                "mode": "semantic-drift",
+            },
+        ), self.assertRaisesRegex(MODULE.ActivationError, "semantic projection drift"):
+            bind(receipt, raw)
+
+    def test_arbitrary_historical_bootstrap_receipt_does_not_enter_run36_compatibility(self):
+        foreign = {"protectedRevision": "f" * 40}
+        bootstrap = Mock()
+        bootstrap.BootstrapError = BOOTSTRAP_TEST_SUPPORT.BOOTSTRAP.BootstrapError
+        bootstrap.build_plan.return_value = {"protectedRevision": REV}
+        bootstrap.bind_success_receipt.side_effect = bootstrap.BootstrapError("revision drift")
+        with patch.object(MODULE, "BOOTSTRAP", bootstrap), patch.object(
+            MODULE, "require_run36_bootstrap_transition_v4"
+        ) as transition, self.assertRaisesRegex(MODULE.ActivationError, "revision drift"):
+            MODULE.bind_flux_bootstrap_receipt_value_v4(
+                ready_policy(), REV, {path: sha() for path in MODULE.BOOTSTRAP_PROTECTED_PATHS},
+                foreign, raw=b"arbitrary",
+            )
+        transition.assert_not_called()
+        bootstrap.bind_success_receipt.assert_called_once()
+
+    def test_run36_bootstrap_has_a_receipt_only_protected_verifier_mode(self):
+        parsed = MODULE.parse_args([
+            "--expected-protected-revision", "c" * 40,
+            "--verify-flux-bootstrap-receipt-fd", "11",
+        ])
+        self.assertEqual(parsed.verify_flux_bootstrap_receipt_fd, 11)
+        self.assertFalse(parsed.live)
+
+        value = ready_policy()
+        hashes = {path: sha() for path in MODULE.BOOTSTRAP_PROTECTED_PATHS}
+        plan = MODULE.BOOTSTRAP.build_plan(MODULE.POLICY, value, REV, hashes)
+        class CurrentKube(BOOTSTRAP_TEST_SUPPORT.FakeKube):
+            def preflight(self, candidate_plan):
+                result = super().preflight(candidate_plan)
+                result["sharedSource"]["artifactRevision"] = "main@sha1:" + REV
+                return result
+        generic_receipt = MODULE.BOOTSTRAP.run(
+            plan,
+            mode="live",
+            kube=CurrentKube(),
+            sink=BOOTSTRAP_TEST_SUPPORT.MemorySink(),
+            policy_module=MODULE.POLICY,
+        )
+        generic_receipt = BOOTSTRAP_TEST_SUPPORT.close_receipt(generic_receipt)
+        generic_raw = (MODULE.BOOTSTRAP.canonical(generic_receipt) + "\n").encode("utf-8")
+        self.assertEqual(
+            MODULE.bind_flux_bootstrap_receipt_value_v4(
+                value, REV, hashes, generic_receipt, raw=generic_raw,
+            )["status"],
+            "dormant-ready",
+        )
+        with self.assertRaisesRegex(MODULE.ActivationError, "exact run36 origin"):
+            MODULE.bind_run36_flux_bootstrap_receipt_value_v4(
+                value, REV, hashes, generic_receipt, raw=generic_raw,
+            )
+        verifier = inspect.getsource(MODULE.main)
+        self.assertIn("result = bind_run36_flux_bootstrap_receipt_value_v4(", verifier)
+
+        original_bootstrap = MODULE.BOOTSTRAP
+        generic_binder = Mock()
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(MODULE, "sys", Mock(flags=Mock(isolated=1, safe_path=True))))
+                stack.enter_context(patch.object(MODULE, "revision", return_value=REV))
+                stack.enter_context(patch.object(MODULE, "trusted_git_v4", return_value=Mock(stdout=REV)))
+                stack.enter_context(patch.object(MODULE, "protected_checkout", return_value=hashes))
+                stack.enter_context(patch.object(MODULE, "git_blob", return_value=b"verified"))
+                stack.enter_context(patch.object(MODULE, "compile_verified_policy_module_v4", return_value=MODULE.POLICY))
+                stack.enter_context(patch.object(MODULE, "compile_verified_bootstrap_module_v4", return_value=original_bootstrap))
+                stack.enter_context(patch.object(MODULE, "bind_verified_policy_identity_v4"))
+                stack.enter_context(patch.object(MODULE, "policy", return_value=value))
+                stack.enter_context(patch.object(MODULE.POLICY, "assert_activation_ready"))
+                stack.enter_context(patch.object(MODULE, "load_owned_receipt_fd_raw_v4", return_value=generic_raw))
+                stack.enter_context(patch.object(MODULE, "bind_flux_bootstrap_receipt_value_v4", generic_binder))
+                stack.enter_context(patch("builtins.print"))
+                return_code = MODULE.main([
+                    "--expected-protected-revision", REV,
+                    "--verify-flux-bootstrap-receipt-fd", "11",
+                ])
+        finally:
+            MODULE.BOOTSTRAP = original_bootstrap
+        self.assertEqual(return_code, 2)
+        generic_binder.assert_not_called()
+
     def test_handover_preservation_digest_is_bound_before_and_after_every_mutation(self):
         value = ready_policy()
         snapshots = {}
@@ -1019,9 +1295,11 @@ class ExecutorTests(unittest.TestCase):
 
     def test_fresh_bootstrap_secret_reuse_is_accepted_by_live_cli(self):
         value = ready_policy()
+        original_bootstrap = MODULE.BOOTSTRAP
         bootstrap_module = Mock()
         bootstrap_value = {"status": "dormant-ready"}
-        bootstrap_module.load_receipt_fd.return_value = bootstrap_value
+        bootstrap_raw = json.dumps(bootstrap_value).encode("utf-8")
+        load_bootstrap_raw = Mock(return_value=bootstrap_raw)
         dormant = {"bound": "fresh-bootstrap"}
         secret = {"bound": "historical-secret"}
         tracer = {"bound": "tracer"}
@@ -1030,40 +1308,44 @@ class ExecutorTests(unittest.TestCase):
         order = []
 
         bind_tracer = Mock(side_effect=lambda *_: order.append("tracer") or tracer)
-        bind_bootstrap = Mock(side_effect=lambda *_: order.append("bootstrap") or dormant)
+        bind_bootstrap = Mock(side_effect=lambda *_, **__: order.append("bootstrap") or dormant)
         bind_secret = Mock(side_effect=lambda *_: order.append("secret") or secret)
         activate = Mock(side_effect=lambda *_: order.append("activate") or result)
 
-        with contextlib.ExitStack() as stack:
-            stack.enter_context(patch.object(MODULE, "sys", Mock(flags=Mock(isolated=1, safe_path=True))))
-            stack.enter_context(patch.object(MODULE, "revision", return_value=REV))
-            stack.enter_context(patch.object(MODULE, "trusted_git_v4", return_value=Mock(stdout=REV)))
-            stack.enter_context(patch.object(MODULE, "protected_checkout", return_value={"runner": sha()}))
-            stack.enter_context(patch.object(MODULE, "git_blob", return_value=b"verified"))
-            stack.enter_context(patch.object(MODULE, "compile_verified_policy_module_v4", return_value=MODULE.POLICY))
-            stack.enter_context(patch.object(MODULE, "compile_verified_bootstrap_module_v4", return_value=bootstrap_module))
-            stack.enter_context(patch.object(MODULE, "bind_verified_policy_identity_v4"))
-            stack.enter_context(patch.object(MODULE, "policy", return_value=value))
-            stack.enter_context(patch.object(MODULE.POLICY, "assert_activation_ready"))
-            stack.enter_context(patch.object(MODULE, "bind_tracer_activation_receipt_v4", bind_tracer))
-            stack.enter_context(patch.object(MODULE, "bind_flux_bootstrap_receipt_value_v4", bind_bootstrap))
-            stack.enter_context(patch.object(MODULE, "bind_secret_materialization_receipt_v4", bind_secret))
-            stack.enter_context(patch.object(MODULE.ReceiptSink, "reserve", return_value=sink))
-            stack.enter_context(patch.object(MODULE, "activate", activate))
-            stack.enter_context(patch("builtins.print"))
-            return_code = MODULE.main([
-                "--live",
-                "--expected-protected-revision", REV,
-                "--kubeconfig", "/private/kubeconfig",
-                "--flux-bootstrap-receipt-fd", "41",
-                "--secret-materialization-receipt-fd", "42",
-                "--tracer-data-plane-activation-receipt-fd", "43",
-                "--receipt", "/private/activation.json",
-            ])
+        try:
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(patch.object(MODULE, "sys", Mock(flags=Mock(isolated=1, safe_path=True))))
+                stack.enter_context(patch.object(MODULE, "revision", return_value=REV))
+                stack.enter_context(patch.object(MODULE, "trusted_git_v4", return_value=Mock(stdout=REV)))
+                stack.enter_context(patch.object(MODULE, "protected_checkout", return_value={"runner": sha()}))
+                stack.enter_context(patch.object(MODULE, "git_blob", return_value=b"verified"))
+                stack.enter_context(patch.object(MODULE, "compile_verified_policy_module_v4", return_value=MODULE.POLICY))
+                stack.enter_context(patch.object(MODULE, "compile_verified_bootstrap_module_v4", return_value=bootstrap_module))
+                stack.enter_context(patch.object(MODULE, "bind_verified_policy_identity_v4"))
+                stack.enter_context(patch.object(MODULE, "policy", return_value=value))
+                stack.enter_context(patch.object(MODULE.POLICY, "assert_activation_ready"))
+                stack.enter_context(patch.object(MODULE, "bind_tracer_activation_receipt_v4", bind_tracer))
+                stack.enter_context(patch.object(MODULE, "load_owned_receipt_fd_raw_v4", load_bootstrap_raw))
+                stack.enter_context(patch.object(MODULE, "bind_flux_bootstrap_receipt_value_v4", bind_bootstrap))
+                stack.enter_context(patch.object(MODULE, "bind_secret_materialization_receipt_v4", bind_secret))
+                stack.enter_context(patch.object(MODULE.ReceiptSink, "reserve", return_value=sink))
+                stack.enter_context(patch.object(MODULE, "activate", activate))
+                stack.enter_context(patch("builtins.print"))
+                return_code = MODULE.main([
+                    "--live",
+                    "--expected-protected-revision", REV,
+                    "--kubeconfig", "/private/kubeconfig",
+                    "--flux-bootstrap-receipt-fd", "41",
+                    "--secret-materialization-receipt-fd", "42",
+                    "--tracer-data-plane-activation-receipt-fd", "43",
+                    "--receipt", "/private/activation.json",
+                ])
+        finally:
+            MODULE.BOOTSTRAP = original_bootstrap
 
         self.assertEqual(return_code, 0)
         self.assertEqual(order, ["tracer", "bootstrap", "secret", "activate"])
-        bootstrap_module.load_receipt_fd.assert_called_once_with(41)
+        load_bootstrap_raw.assert_called_once_with(41, "dormant Flux bootstrap receipt")
         bind_secret.assert_called_once_with(value, REV, 42)
         activate.assert_called_once_with(
             value,
@@ -1278,7 +1560,7 @@ class ExecutorTests(unittest.TestCase):
                 with self.assertRaises(MODULE.ActivationError):
                     bind(changed)
 
-    def test_exact_run19_receipt_binds_only_across_the_closed_eighteen_hop_lineage(self):
+    def test_exact_run19_receipt_binds_only_across_the_closed_nineteen_hop_lineage(self):
         value = ready_policy()
         receipt = tracer_activation_receipt(value)
         receipt["protectedRevision"] = MODULE.TRACER_RECEIPT_ORIGIN_REVISION
@@ -1321,6 +1603,7 @@ class ExecutorTests(unittest.TestCase):
                         set(MODULE.TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
                         set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+                        set(MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
                     ]
                     with patch.object(MODULE, "git_blob", side_effect=lambda revision, relative: relative.encode()), patch.object(
                         MODULE, "exact_revision_transition_files_v4", side_effect=transition_values,
@@ -1338,7 +1621,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             ownership["receiptProvenance"],
             {
-                "mode": "exact-run19-eighteen-hop-unchanged-tracer-plane",
+                "mode": "exact-run19-nineteen-hop-unchanged-tracer-plane",
                 "originProtectedRevision": MODULE.TRACER_RECEIPT_ORIGIN_REVISION,
                 "acceptedByProtectedRevision": REV,
                 "allowedAppliedRevisions": [
@@ -1360,6 +1643,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.TRACER_RECEIPT_FIFTEENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SIXTEENTH_SUCCESSOR_REVISION,
                     MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
+                    MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION,
                     REV,
                 ],
             },
@@ -1390,6 +1674,7 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_FIFTEENTH_TO_SIXTEENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SIXTEENTH_TO_SEVENTEENTH_SUCCESSOR_FILES),
             set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            set(MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
         ]
         transition_messages = (
             "origin-to-intermediate file set drift",
@@ -1409,7 +1694,8 @@ class ExecutorTests(unittest.TestCase):
             "fourteenth-to-fifteenth-successor file set drift",
             "fifteenth-to-sixteenth-successor file set drift",
             "sixteenth-to-seventeenth-successor file set drift",
-            "seventeenth-successor-to-acceptor file set drift",
+            "seventeenth-to-eighteenth-successor file set drift",
+            "eighteenth-successor-to-acceptor file set drift",
         )
         for index, message in enumerate(transition_messages):
             for variant in (
@@ -1486,6 +1772,10 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(
             MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION,
             "c126f1f680bd65079a941af61fb108ced777c0dc",
+        )
+        self.assertEqual(
+            MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION,
+            "8149f8b2fa8459f140d68de4c5883319a15c2ad0",
         )
         participant_pair = {
             "scripts/activate-staging-participant-gateway.py",
@@ -1584,6 +1874,17 @@ class ExecutorTests(unittest.TestCase):
             set(MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
             participant_pair | wrapper_pair,
         )
+        self.assertEqual(
+            set(MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_TO_ACCEPTOR_FILES),
+            {
+                "scripts/activate-staging-participant-gateway.py",
+                "scripts/run-staging-participant-gateway-live.py",
+                "scripts/staging_participant_flux_bootstrap.py",
+                "scripts/test_activate_staging_participant_gateway.py",
+                "scripts/test_run_staging_participant_gateway_live.py",
+                "scripts/test_staging_participant_flux_bootstrap.py",
+            },
+        )
         widened = copy.deepcopy(receipt)
         widened["protectedFileSha256"][MODULE.TRACER_POLICY_PATH] = sha("8")
         with self.assertRaisesRegex(MODULE.ActivationError, "protected path change drift"):
@@ -1609,8 +1910,8 @@ class ExecutorTests(unittest.TestCase):
         with self.assertRaisesRegex(MODULE.ActivationError, "Flux readiness"):
             bind(flux_drift)
 
-    def test_eighteenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
-        parent = MODULE.TRACER_RECEIPT_SEVENTEENTH_SUCCESSOR_REVISION
+    def test_nineteenth_hop_rejects_wrong_or_merge_parent_before_reading_the_delta(self):
+        parent = MODULE.TRACER_RECEIPT_EIGHTEENTH_SUCCESSOR_REVISION
         child = "c" * 40
         foreign = "d" * 40
         for label, lineage in (
@@ -1624,12 +1925,12 @@ class ExecutorTests(unittest.TestCase):
                 MODULE, "trusted_git_v4", return_value=result
             ) as trusted, self.assertRaisesRegex(
                 MODULE.ActivationError,
-                "seventeenth-successor-to-acceptor protected parent drift",
+                "eighteenth-successor-to-acceptor protected parent drift",
             ):
                 MODULE.exact_revision_transition_files_v4(
                     parent,
                     child,
-                    "tracer receipt seventeenth-successor-to-acceptor",
+                    "tracer receipt eighteenth-successor-to-acceptor",
                 )
             self.assertEqual(trusted.call_count, 1)
 

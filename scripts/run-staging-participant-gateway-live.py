@@ -202,6 +202,7 @@ TRACER_ACTIVATION_COMPATIBILITY_FOURTEENTH_SUCCESSOR_REVISION = "136f0ac1ca31c9b
 TRACER_ACTIVATION_COMPATIBILITY_FIFTEENTH_SUCCESSOR_REVISION = "96795cc20a28e93a9ed00208bb2311efcdb8a1ae"
 TRACER_ACTIVATION_COMPATIBILITY_SIXTEENTH_SUCCESSOR_REVISION = "4de9d00696a7c43694bf66edbf79d1fb1fd080de"
 TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION = "c126f1f680bd65079a941af61fb108ced777c0dc"
+TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_SUCCESSOR_REVISION = "8149f8b2fa8459f140d68de4c5883319a15c2ad0"
 TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256 = (
     "sha256:75b92c90537734f9e514dee6bbee0d3a09fcc9dc9cfad8fe039b7a8f159ea282"
 )
@@ -306,6 +307,14 @@ TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES = frozenset({
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/test_run_staging_participant_gateway_live.py",
+})
+TRACER_ACTIVATION_COMPATIBILITY_NINETEENTH_HOP_FILES = frozenset({
+    "scripts/activate-staging-participant-gateway.py",
+    "scripts/run-staging-participant-gateway-live.py",
+    "scripts/staging_participant_flux_bootstrap.py",
+    "scripts/test_activate_staging_participant_gateway.py",
+    "scripts/test_run_staging_participant_gateway_live.py",
+    "scripts/test_staging_participant_flux_bootstrap.py",
 })
 FAILED_ACTIVATION_RAW_SHA256 = "sha256:4cc9272ddccd8b42a3c7748fdc51b0ae1c0374f29c5d83b59578da540dcf3545"
 FAILED_ACTIVATION_CANONICAL_SHA256 = "sha256:b043effbf0764042d32283b2e856c850380fe0bcc180febc71e3566dc2cabfda"
@@ -601,7 +610,7 @@ def require_tracer_activation_compatibility_transition(
     receipt_revision: Any,
     receipt_file_sha256: str,
 ) -> str:
-    """Admit only run19 across its eighteen exact, tracer-plane-compatible successors."""
+    """Admit only run19 across its nineteen exact, tracer-plane-compatible successors."""
     require(
         receipt_revision == TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
         and receipt_file_sha256 == TRACER_ACTIVATION_COMPATIBILITY_RECEIPT_FILE_SHA256,
@@ -812,16 +821,28 @@ def require_tracer_activation_compatibility_transition(
         "tracer activation compatibility seventeenth-hop file set drift",
     )
     require_protected_revision_parent(
-        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_SUCCESSOR_REVISION,
         TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
     )
     require(
         protected_revision_changed_files(
             TRACER_ACTIVATION_COMPATIBILITY_SEVENTEENTH_SUCCESSOR_REVISION,
-            current_revision,
+            TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_SUCCESSOR_REVISION,
         )
         == TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_HOP_FILES,
         "tracer activation compatibility eighteenth-hop file set drift",
+    )
+    require_protected_revision_parent(
+        current_revision,
+        TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_SUCCESSOR_REVISION,
+    )
+    require(
+        protected_revision_changed_files(
+            TRACER_ACTIVATION_COMPATIBILITY_EIGHTEENTH_SUCCESSOR_REVISION,
+            current_revision,
+        )
+        == TRACER_ACTIVATION_COMPATIBILITY_NINETEENTH_HOP_FILES,
+        "tracer activation compatibility nineteenth-hop file set drift",
     )
     return TRACER_ACTIVATION_COMPATIBILITY_ORIGIN_REVISION
 
@@ -3519,6 +3540,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--participant-secret-bundle", type=Path)
     parser.add_argument("--teardown-participant-secret-receipt", type=Path)
     parser.add_argument("--handover-dormant-receipt", type=Path)
+    parser.add_argument("--continue-dormant-receipt", type=Path)
     parser.add_argument("--failed-participant-activation-receipt", type=Path)
     parser.add_argument(
         "--participant-secret-materialization-receipt",
@@ -3569,6 +3591,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.participant_secret_bundle,
         args.teardown_participant_secret_receipt,
         args.handover_dormant_receipt,
+        args.continue_dormant_receipt,
         args.failed_participant_activation_receipt,
         args.participant_secret_materialization_receipt,
     )
@@ -3600,6 +3623,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 args.participant_secret_bundle,
                 args.teardown_participant_secret_receipt,
                 args.handover_dormant_receipt,
+                args.continue_dormant_receipt,
                 args.failed_participant_activation_receipt,
                 args.participant_secret_materialization_receipt,
                 args.tracer_secret_materialization_receipt,
@@ -3680,6 +3704,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 args.teardown_dormant_receipt,
                 args.participant_secret_bundle,
                 args.teardown_participant_secret_receipt,
+                args.continue_dormant_receipt,
                 args.participant_secret_materialization_receipt,
                 args.workbench_handover_receipt,
                 args.workbench_handover_journal,
@@ -3703,6 +3728,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 args.participant_secret_bundle,
                 args.teardown_participant_secret_receipt,
                 args.handover_dormant_receipt,
+                args.continue_dormant_receipt,
                 args.participant_secret_materialization_receipt,
                 args.workbench_handover_receipt,
                 args.workbench_handover_journal,
@@ -3729,6 +3755,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 args.participant_secret_bundle,
                 args.teardown_participant_secret_receipt,
                 args.handover_dormant_receipt,
+                args.continue_dormant_receipt,
                 args.participant_secret_materialization_receipt,
                 args.workbench_handover_receipt,
                 args.workbench_handover_journal,
@@ -3754,6 +3781,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.participant_secret_bundle is None
             and args.teardown_participant_secret_receipt is None
             and args.handover_dormant_receipt is None
+            and args.continue_dormant_receipt is None
             and args.participant_secret_materialization_receipt is None,
             "workbench handover may not receive participant Secret or continuation inputs",
         )
@@ -3765,6 +3793,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             args.participant_secret_bundle is None
             and args.teardown_participant_secret_receipt is None
             and args.handover_dormant_receipt is None
+            and args.continue_dormant_receipt is None
             and args.participant_secret_materialization_receipt is None,
             "workbench recovery may not receive participant Secret or continuation inputs",
         )
@@ -3772,7 +3801,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         require(args.workbench_handover_receipt is None and args.workbench_handover_journal is None, "workbench recovery may not receive handover paths")
     else:
         require(all(value is None for value in (args.workbench_handover_receipt, args.workbench_handover_journal, args.workbench_recovery_receipt, args.workbench_recovery_journal, args.workbench_origin_journal, args.workbench_attempt_receipt, args.workbench_inspection)), "participant mode may not receive workbench paths")
-        if args.handover_dormant_receipt is not None:
+        if args.continue_dormant_receipt is not None:
+            require(
+                args.participant_secret_materialization_receipt is not None
+                and args.tracer_data_plane_activation_receipt is not None
+                and args.teardown_dormant_receipt is None
+                and args.teardown_participant_secret_receipt is None
+                and args.handover_dormant_receipt is None
+                and args.participant_secret_bundle is None,
+                "run36 participant continuation requires exact dormant, historical participant Secret, and tracer activation receipts only",
+            )
+        elif args.handover_dormant_receipt is not None:
             require(
                 args.participant_secret_materialization_receipt is not None
                 and args.teardown_dormant_receipt is None
@@ -3785,19 +3824,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             require(
                 args.teardown_dormant_receipt is None
                 and args.teardown_participant_secret_receipt is None
+                and args.continue_dormant_receipt is None
                 and args.participant_secret_bundle is None
                 and args.tracer_data_plane_activation_receipt is not None,
                 "fresh participant activation Secret reuse requires only the historical Secret and tracer activation receipts",
             )
         elif args.teardown_participant_secret_receipt is not None:
             require(args.teardown_dormant_receipt is None, "participant Secret teardown may not combine with dormant Flux teardown")
-            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "participant Secret teardown accepts no Secret input or continuation receipts")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.continue_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "participant Secret teardown accepts no Secret input or continuation receipts")
         elif args.teardown_dormant_receipt is not None:
-            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "dormant Flux teardown accepts no Secret input or continuation receipts")
+            require(args.participant_secret_bundle is None and args.handover_dormant_receipt is None and args.continue_dormant_receipt is None and args.participant_secret_materialization_receipt is None and args.tracer_data_plane_activation_receipt is None, "dormant Flux teardown accepts no Secret input or continuation receipts")
         else:
             require(args.participant_secret_bundle is not None, "participant activation requires an explicit private Secret bundle")
             require(
                 args.handover_dormant_receipt is None
+                and args.continue_dormant_receipt is None
                 and args.participant_secret_materialization_receipt is None
                 and args.tracer_data_plane_activation_receipt is not None,
                 "participant activation requires the completed tracer data-plane receipt and accepts no other continuation receipts",
@@ -4748,7 +4789,8 @@ def main(argv: list[str] | None = None) -> int:
     bound_runners: dict[str, BoundRunner] = {}; bound_receipts: list[BoundBlob] = []
     handover_prebound: dict[tuple[str, str], BoundBlob] = {}; handover_prebound_owned: list[BoundBlob] = []
     verified_spawn_module: Any | None = None; executable_bindings: dict[str, Any] = {}
-    source_dormant_receipt: BoundBlob | None = None; handover_archive_receipt: BoundBlob | None = None; handover_bound: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
+    source_dormant_receipt: BoundBlob | None = None; source_continue_dormant_receipt: BoundBlob | None = None
+    handover_archive_receipt: BoundBlob | None = None; handover_bound: BoundBlob | None = None; bootstrap_bound: BoundBlob | None = None
     run29_teardown_sources: dict[str, BoundBlob] = {}
     run29_teardown_source_projection: dict[str, Any] | None = None
     recovery_bound: BoundBlob | None = None; teardown_bound: BoundBlob | None = None
@@ -4763,6 +4805,7 @@ def main(argv: list[str] | None = None) -> int:
     bootstrap_receipt: Path | None = None; handover_receipt: Path | None = None; recovery_receipt: Path | None = None
     teardown_receipt: Path | None = None; activation_receipt: Path | None = None
     source_dormant_projection: dict[str, Any] | None = None
+    source_continue_dormant_projection: dict[str, Any] | None = None
     bootstrap_projection: dict[str, Any] | None = None; handover_projection: dict[str, Any] | None = None
     teardown_projection: dict[str, Any] | None = None
     activation_projection: dict[str, Any] | None = None
@@ -4887,6 +4930,23 @@ def main(argv: list[str] | None = None) -> int:
                 statuses={"activated"},
                 revision=revision,
                 value_flag="secretValuesRead",
+            )
+        if args.continue_dormant_receipt is not None:
+            source_continue_dormant_receipt = snapshot_owned_receipt(
+                args.continue_dormant_receipt,
+                binding_dir / "source-run36-dormant-receipt.bound",
+                "source run36 dormant bootstrap receipt",
+            )
+            bound_receipts.append(source_continue_dormant_receipt)
+            source_continue_dormant_projection = verify_receipt_with_protected_cli(
+                cancellation,
+                bound_runners[ACTIVATION_RUNNER],
+                "--verify-flux-bootstrap-receipt-fd",
+                source_continue_dormant_receipt,
+                revision,
+                verifier_environment,
+                "dormant-ready",
+                allow_cancelled=False,
             )
         if run29_handover_teardown_mode:
             # The incident-only run29 capability binds its exact three
@@ -5632,6 +5692,73 @@ def main(argv: list[str] | None = None) -> int:
                 if activation.returncode != 0:
                     child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
                     raise LiveTransportError("protected activation cleanup incomplete after durable commit")
+        elif source_continue_dormant_receipt is not None:
+            require(
+                source_continue_dormant_projection is not None
+                and source_secret_receipt is not None
+                and source_tracer_activation_receipt is not None
+                and source_tracer_activation_projection is not None,
+                "run36 continuation receipt bindings unavailable",
+            )
+            bootstrap_bound = source_continue_dormant_receipt
+            bootstrap_projection = source_continue_dormant_projection
+            if cancellation.signals or not session.transport_alive():
+                base_status = "dormant-continuation-required"
+                raise LiveTransportError("transport ended before exact run36 continuation activation")
+            activation_receipt = receipt_dir / "participant-gateway-activation.json"
+            activation = session.run_child(
+                activation_runner.command([
+                    "--live",
+                    "--expected-protected-revision",
+                    revision,
+                    "--kubeconfig",
+                    str(kubeconfig),
+                    "--flux-bootstrap-receipt-fd",
+                    str(source_continue_dormant_receipt.fd),
+                    "--secret-materialization-receipt-fd",
+                    str(source_secret_receipt.fd),
+                    "--tracer-data-plane-activation-receipt-fd",
+                    str(source_tracer_activation_receipt.fd),
+                    "--receipt",
+                    str(activation_receipt),
+                ]),
+                child_environment,
+                pass_fds=(
+                    activation_runner.blob.fd,
+                    source_continue_dormant_receipt.fd,
+                    source_secret_receipt.fd,
+                    source_tracer_activation_receipt.fd,
+                    kubectl_fd,
+                ),
+            )
+            try:
+                reject_failed_activation_without_durable_receipt(activation, activation_receipt)
+                require(activation_receipt.exists(), "activation runner produced no durable receipt")
+                activation_bound = snapshot_owned_receipt(
+                    activation_receipt,
+                    binding_dir / "activation-receipt.bound",
+                    "activation success receipt",
+                )
+                bound_receipts.append(activation_bound)
+                activation_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    activation_runner,
+                    "--verify-success-receipt-fd",
+                    activation_bound,
+                    revision,
+                    child_environment,
+                    "activated",
+                    allow_cancelled=True,
+                )
+            finally:
+                session.receipt_reconciled()
+                activation_logging_error = best_effort_print_child(activation)
+                if activation_logging_error is not None:
+                    child_cleanup_errors.append(activation_logging_error)
+            activation_committed = True; operation_succeeded = True; base_status = "activated"
+            if activation.returncode != 0:
+                child_cleanup_errors.append(f"protected activation exited {activation.returncode} after durable commit")
+                raise LiveTransportError("protected activation cleanup incomplete after durable commit")
         elif source_secret_receipt is not None and args.teardown_participant_secret_receipt is not None:
             secret_teardown_receipt = receipt_dir / "participant-secret-teardown.json"
             secret_teardown = session.run_child(
@@ -6009,6 +6136,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     source_record = receipt_record(source_dormant_projection, source_dormant_receipt)
+    source_continue_record = receipt_record(
+        source_continue_dormant_projection,
+        source_continue_dormant_receipt,
+    )
     source_secret_record = receipt_record(source_secret_projection, source_secret_receipt)
     secret_materialization_record = receipt_record(secret_materialization_projection, secret_materialization_bound)
     secret_teardown_record = receipt_record(secret_teardown_projection, secret_teardown_bound)
@@ -6061,6 +6192,7 @@ def main(argv: list[str] | None = None) -> int:
             "wrapperReceiptCommit": "atomic-replace-file-and-parent-fsync",
         },
         "sourceDormant": source_record,
+        "sourceDormantContinuation": source_continue_record,
         "sourceArchivedDormant": {
             "fileSha256": handover_archive_receipt.sha256 if handover_archive_receipt is not None else None,
             "canonicalSha256": None,
@@ -6130,6 +6262,7 @@ def main(argv: list[str] | None = None) -> int:
             "required": (
                 base_status in {"dormant-cleanup-required", "bootstrap-state-indeterminate", "dormant-ready"}
                 or (participant_recovery_mode and not operation_succeeded)
+                or (source_continue_dormant_receipt is not None and not activation_committed)
             ),
             "mode": (
                 "--run29-dormant-handover-teardown"
@@ -6138,11 +6271,20 @@ def main(argv: list[str] | None = None) -> int:
                 if participant_recovery_mode
                 else "--handover-dormant-receipt"
                 if handover_archive_receipt is not None
+                else "--continue-dormant-receipt"
+                if source_continue_dormant_receipt is not None
                 else "--teardown-dormant-receipt"
             ),
             "requiresClosedDormantPreflight": True,
-            "requiresExistingSecretMaterializationReceipt": handover_archive_receipt is not None and not participant_recovery_mode,
+            "requiresExistingSecretMaterializationReceipt": (
+                (handover_archive_receipt is not None and not participant_recovery_mode)
+                or source_continue_dormant_receipt is not None
+            ),
             "handoverReceiptSha256": handover_projection.get("receiptSha256") if handover_projection is not None else None,
+            "sourceReceiptSha256": (
+                source_continue_dormant_projection.get("receiptSha256")
+                if source_continue_dormant_projection is not None else None
+            ),
             "adoptsArbitraryObjects": False,
         },
         "secretContinuation": {
