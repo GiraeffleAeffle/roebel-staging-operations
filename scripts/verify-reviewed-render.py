@@ -267,16 +267,24 @@ PARTICIPANT_GATEWAY_WORKFLOW = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["prod
 PARTICIPANT_GATEWAY_ORIGIN = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["endpoints"]["browserOrigin"]
 PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
 # The activation policy records the immutable decision that first admitted the
-# writer. Runtime releases are a separate concern: this one closed successor
-# advances only the published gateway artifact that fixes the no-authority
-# topic-publish acknowledgement envelope. Every other activation, database,
-# topic, Secret, network, and authority fact remains pinned by the predecessor.
-PARTICIPANT_GATEWAY_TOPIC_PUBLISH_ENVELOPE_RELEASE = {
-    "sourceRevision": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b",
-    "sourceTreeSha256": "sha256:06955333455bc805645ed1f956aa79dfea1b556be970da2182bb2e76b29b4a68",
-    "manifestDigest": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
-    "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
-}
+# writer. Runtime releases are a separate, append-only concern. Each entry
+# advances only the four published-artifact leaves; every activation,
+# database, topic, Secret, network, and authority fact remains inherited from
+# its exact predecessor.
+PARTICIPANT_GATEWAY_RUNTIME_RELEASES = (
+    {
+        "sourceRevision": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b",
+        "sourceTreeSha256": "sha256:06955333455bc805645ed1f956aa79dfea1b556be970da2182bb2e76b29b4a68",
+        "manifestDigest": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
+        "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+    },
+    {
+        "sourceRevision": "f2e5c93c8fb0127d3aacc33d4be1a1a63f707dc1",
+        "sourceTreeSha256": "sha256:0325e742e595de75a694d6662ffe6d84cd38818239c3f334d4ce802ed48ca819",
+        "manifestDigest": "sha256:ba12dea1ebffa2cb85b58f135882085c66c1675f4461f27af116b63737a95a57",
+        "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+    },
+)
 PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES = {
     f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
     f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
@@ -4085,32 +4093,60 @@ def verify_participant_gateway_runtime_pin(
         activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
-    successor = expected_participant_gateway_runtime_release_pin(participant_policy)
+    release_pins = participant_gateway_runtime_release_pins(participant_policy)
     require(
-        value in (activation_pin, successor),
+        value in (activation_pin, *release_pins),
         "staging participant gateway runtime pin drift",
     )
     require("activationEvidence" not in value, "participant runtime pin may not carry live activation evidence")
     return copy.deepcopy(value)
 
 
-def expected_participant_gateway_runtime_release_pin(
+def participant_gateway_runtime_release_pins(
     participant_policy: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return the one exact post-activation gateway runtime successor."""
+) -> tuple[dict[str, Any], ...]:
+    """Return the exact append-only runtime release lineage."""
     try:
         activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
-    release = PARTICIPANT_GATEWAY_TOPIC_PUBLISH_ENVELOPE_RELEASE
-    require(
-        activation_pin["workflowSha256"] == release["workflowSha256"],
-        "participant gateway release workflow predecessor drift",
-    )
-    successor = copy.deepcopy(activation_pin)
-    for key in ("sourceRevision", "sourceTreeSha256", "manifestDigest", "workflowSha256"):
-        successor[key] = release[key]
-    return successor
+    predecessor = activation_pin
+    lineage: list[dict[str, Any]] = []
+    for release in PARTICIPANT_GATEWAY_RUNTIME_RELEASES:
+        require(
+            predecessor["workflowSha256"] == release["workflowSha256"],
+            "participant gateway release workflow predecessor drift",
+        )
+        successor = copy.deepcopy(predecessor)
+        for key in ("sourceRevision", "sourceTreeSha256", "manifestDigest", "workflowSha256"):
+            successor[key] = release[key]
+        require(
+            successor not in (activation_pin, *lineage),
+            "participant gateway release lineage duplicate",
+        )
+        lineage.append(successor)
+        predecessor = successor
+    require(lineage, "participant gateway release lineage missing")
+    return tuple(copy.deepcopy(value) for value in lineage)
+
+
+def expected_participant_gateway_runtime_release_predecessor_pin(
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the exact predecessor of the newest admitted runtime release."""
+    try:
+        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    lineage = participant_gateway_runtime_release_pins(participant_policy)
+    return copy.deepcopy(lineage[-2] if len(lineage) > 1 else activation_pin)
+
+
+def expected_participant_gateway_runtime_release_pin(
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the newest exact post-activation gateway runtime successor."""
+    return copy.deepcopy(participant_gateway_runtime_release_pins(participant_policy)[-1])
 
 
 def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
@@ -4148,23 +4184,23 @@ def expected_participant_gateway_resources(
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     activation_pin = expected["runtimePin"]
-    successor = expected_participant_gateway_runtime_release_pin(participant_policy)
+    release_pins = participant_gateway_runtime_release_pins(participant_policy)
     require(
-        runtime_pin in (activation_pin, successor),
+        runtime_pin in (activation_pin, *release_pins),
         "participant runtime pin differs from protected policy or approved runtime release",
     )
-    if runtime_pin == successor:
+    if runtime_pin != activation_pin:
         expected = copy.deepcopy(expected)
-        expected["runtimePin"] = copy.deepcopy(successor)
+        expected["runtimePin"] = copy.deepcopy(runtime_pin)
         container = expected["deployment"]["spec"]["template"]["spec"]["containers"][0]
         environment = {item["name"]: item for item in container["env"]}
         require(
             len(environment) == len(container["env"]),
             "participant gateway deployment environment names are not unique",
         )
-        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = successor["sourceRevision"]
-        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = successor["manifestDigest"]
-        container["image"] = successor["imageRepository"] + "@" + successor["manifestDigest"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = runtime_pin["sourceRevision"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = runtime_pin["manifestDigest"]
+        container["image"] = runtime_pin["imageRepository"] + "@" + runtime_pin["manifestDigest"]
     return {
         "deployment": expected["deployment"],
         "service": expected["service"],
@@ -5213,17 +5249,14 @@ def verify_participant_gateway_runtime_release_transition(
         == (base_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes(),
         "participant gateway runtime release changed live preconditions",
     )
-    try:
-        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(
-            base["stagingParticipantGatewayPolicy"],
-        )
-    except PARTICIPANT_POLICY.PolicyError as error:
-        raise VerificationError(str(error)) from error
+    predecessor = expected_participant_gateway_runtime_release_predecessor_pin(
+        base["stagingParticipantGatewayPolicy"],
+    )
     successor = expected_participant_gateway_runtime_release_pin(
         base["stagingParticipantGatewayPolicy"],
     )
     require(
-        base["stagingParticipantGateway"]["runtimePin"] == activation_pin,
+        base["stagingParticipantGateway"]["runtimePin"] == predecessor,
         "participant gateway runtime release predecessor pin drift",
     )
     require(

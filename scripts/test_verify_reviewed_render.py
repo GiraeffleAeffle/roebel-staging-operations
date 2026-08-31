@@ -439,7 +439,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         """Restore the exact gateway predecessor when ROOT already has the release."""
         protected = VERIFIER.verify_tree(root)
         policy = protected["stagingParticipantGatewayPolicy"]
-        predecessor = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        predecessor = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         current = protected["stagingParticipantGateway"]["runtimePin"]
         if current == predecessor:
             return
@@ -448,6 +448,20 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             VERIFIER.expected_participant_gateway_runtime_release_pin(policy),
         )
         self.render_participant_gateway_runtime_pin(root, predecessor)
+
+    def normalize_participant_gateway_runtime_activation(self, root: Path) -> None:
+        """Restore the immutable activation pin for historical tracer fixtures."""
+        protected = VERIFIER.verify_tree(root)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        activation = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        current = protected["stagingParticipantGateway"]["runtimePin"]
+        if current == activation:
+            return
+        self.assertIn(
+            current,
+            VERIFIER.participant_gateway_runtime_release_pins(policy),
+        )
+        self.render_participant_gateway_runtime_pin(root, activation)
 
     def render_participant_gateway_runtime_pin(
         self,
@@ -1325,7 +1339,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
-        self.normalize_participant_gateway_runtime_predecessor(destination)
+        self.normalize_participant_gateway_runtime_activation(destination)
 
         render = destination / "reviewed-render/roebel-staging"
         phase_a_head = copy.deepcopy(VERIFIER.TRACER_PHASE_A_HEAD)
@@ -1450,7 +1464,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         protected_policy = protected_root["stagingParticipantGatewayPolicy"]
         if (
             protected_root["stagingParticipantGateway"]["runtimePin"]
-            == VERIFIER.expected_participant_gateway_runtime_release_pin(protected_policy)
+            != VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(protected_policy)
         ):
             expected_changes.update(
                 VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
@@ -2101,19 +2115,19 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_participant_gateway_runtime_release_pin_changes_only_published_artifact_leaves(self) -> None:
         protected = VERIFIER.verify_tree(ROOT)
         policy = protected["stagingParticipantGatewayPolicy"]
-        activation_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        predecessor = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
         self.assertEqual(
             {
                 key
-                for key in activation_pin
-                if activation_pin[key] != successor[key]
+                for key in predecessor
+                if predecessor[key] != successor[key]
             },
             {"sourceRevision", "sourceTreeSha256", "manifestDigest"},
         )
         self.assertEqual(
             successor["workflowSha256"],
-            activation_pin["workflowSha256"],
+            predecessor["workflowSha256"],
         )
         for key in (
             "activationPolicySha256",
@@ -2126,16 +2140,50 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "sourceConversationTopic",
             "topicPolicyVersion",
         ):
-            self.assertEqual(successor[key], activation_pin[key])
+            self.assertEqual(successor[key], predecessor[key])
+
+    def test_participant_gateway_runtime_release_lineage_is_exact_and_closed(self) -> None:
+        protected = VERIFIER.verify_tree(ROOT)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        predecessor = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
+        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
+        self.assertEqual(
+            {
+                "sourceRevision": predecessor["sourceRevision"],
+                "sourceTreeSha256": predecessor["sourceTreeSha256"],
+                "manifestDigest": predecessor["manifestDigest"],
+                "workflowSha256": predecessor["workflowSha256"],
+            },
+            {
+                "sourceRevision": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b",
+                "sourceTreeSha256": "sha256:06955333455bc805645ed1f956aa79dfea1b556be970da2182bb2e76b29b4a68",
+                "manifestDigest": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
+                "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+            },
+        )
+        self.assertEqual(
+            {
+                "sourceRevision": successor["sourceRevision"],
+                "sourceTreeSha256": successor["sourceTreeSha256"],
+                "manifestDigest": successor["manifestDigest"],
+                "workflowSha256": successor["workflowSha256"],
+            },
+            {
+                "sourceRevision": "f2e5c93c8fb0127d3aacc33d4be1a1a63f707dc1",
+                "sourceTreeSha256": "sha256:0325e742e595de75a694d6662ffe6d84cd38818239c3f334d4ce802ed48ca819",
+                "manifestDigest": "sha256:ba12dea1ebffa2cb85b58f135882085c66c1675f4461f27af116b63737a95a57",
+                "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+            },
+        )
 
     def test_participant_gateway_runtime_release_resources_change_only_three_deployment_leaves(self) -> None:
         protected = VERIFIER.verify_tree(ROOT)
         policy = protected["stagingParticipantGatewayPolicy"]
-        activation_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        predecessor_pin = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
         civic_projection = protected["stagingParticipantGateway"]["civicProjectionRoute"]
         predecessor = VERIFIER.expected_participant_gateway_resources(
-            activation_pin,
+            predecessor_pin,
             policy,
             civic_projection_route=civic_projection,
         )
@@ -2146,14 +2194,14 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
         normalized = copy.deepcopy(candidate)
         normalized["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"] = (
-            activation_pin["imageRepository"] + "@" + activation_pin["manifestDigest"]
+            predecessor_pin["imageRepository"] + "@" + predecessor_pin["manifestDigest"]
         )
         environment = {
             item["name"]: item
             for item in normalized["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
         }
-        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = activation_pin["sourceRevision"]
-        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = activation_pin["manifestDigest"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = predecessor_pin["sourceRevision"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = predecessor_pin["manifestDigest"]
         self.assertEqual(normalized, predecessor)
 
     def test_exact_participant_gateway_runtime_release_transition_is_admitted(self) -> None:
@@ -2168,6 +2216,32 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             VERIFIER.changed_repository_files(candidate, base),
             VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
         )
+
+    def test_participant_gateway_runtime_release_rejects_activation_skips(self) -> None:
+        base_temp, activation_base = self.protected_participant_candidate()
+        predecessor_temp, predecessor = self.protected_participant_candidate()
+        successor_temp, successor = self.protected_participant_candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(predecessor_temp.cleanup)
+        self.addCleanup(successor_temp.cleanup)
+
+        protected = VERIFIER.verify_tree(activation_base)
+        activation_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(
+            protected["stagingParticipantGatewayPolicy"],
+        )
+        self.render_participant_gateway_runtime_pin(activation_base, activation_pin)
+        self.apply_participant_gateway_runtime_release(successor)
+
+        for label, candidate in (
+            ("activation-to-predecessor", predecessor),
+            ("activation-to-successor", successor),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    VERIFIER.VerificationError,
+                    "predecessor pin drift",
+                ):
+                    VERIFIER.verify(candidate, activation_base)
 
     def test_participant_gateway_runtime_release_rejects_pin_resource_file_and_reverse_drift(self) -> None:
         pin_mutations = {
