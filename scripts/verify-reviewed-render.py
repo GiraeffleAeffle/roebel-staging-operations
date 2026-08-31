@@ -266,6 +266,23 @@ PARTICIPANT_GATEWAY_IMAGE = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["product
 PARTICIPANT_GATEWAY_WORKFLOW = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["productPins"]["workflowIdentity"]
 PARTICIPANT_GATEWAY_ORIGIN = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["endpoints"]["browserOrigin"]
 PARTICIPANT_GATEWAY_LABELS = PARTICIPANT_POLICY.GATEWAY_LABELS
+# The activation policy records the immutable decision that first admitted the
+# writer. Runtime releases are a separate concern: this one closed successor
+# advances only the published gateway artifact that fixes the no-authority
+# topic-publish acknowledgement envelope. Every other activation, database,
+# topic, Secret, network, and authority fact remains pinned by the predecessor.
+PARTICIPANT_GATEWAY_TOPIC_PUBLISH_ENVELOPE_RELEASE = {
+    "sourceRevision": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b",
+    "sourceTreeSha256": "sha256:06955333455bc805645ed1f956aa79dfea1b556be970da2182bb2e76b29b4a68",
+    "manifestDigest": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
+    "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+}
+PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES = {
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+}
 PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES = {
     "policy/repository-contract.json",
     PARTICIPANT_POLICY.POLICY_PATH,
@@ -4065,12 +4082,35 @@ def verify_participant_gateway_runtime_pin(
     participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        expected = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
+        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
-    require(value == expected, "staging participant gateway runtime pin drift")
+    successor = expected_participant_gateway_runtime_release_pin(participant_policy)
+    require(
+        value in (activation_pin, successor),
+        "staging participant gateway runtime pin drift",
+    )
     require("activationEvidence" not in value, "participant runtime pin may not carry live activation evidence")
-    return copy.deepcopy(expected)
+    return copy.deepcopy(value)
+
+
+def expected_participant_gateway_runtime_release_pin(
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the one exact post-activation gateway runtime successor."""
+    try:
+        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    release = PARTICIPANT_GATEWAY_TOPIC_PUBLISH_ENVELOPE_RELEASE
+    require(
+        activation_pin["workflowSha256"] == release["workflowSha256"],
+        "participant gateway release workflow predecessor drift",
+    )
+    successor = copy.deepcopy(activation_pin)
+    for key in ("sourceRevision", "sourceTreeSha256", "manifestDigest", "workflowSha256"):
+        successor[key] = release[key]
+    return successor
 
 
 def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
@@ -4107,7 +4147,24 @@ def expected_participant_gateway_resources(
         )
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
-    require(runtime_pin == expected["runtimePin"], "participant runtime pin differs from protected policy")
+    activation_pin = expected["runtimePin"]
+    successor = expected_participant_gateway_runtime_release_pin(participant_policy)
+    require(
+        runtime_pin in (activation_pin, successor),
+        "participant runtime pin differs from protected policy or approved runtime release",
+    )
+    if runtime_pin == successor:
+        expected = copy.deepcopy(expected)
+        expected["runtimePin"] = copy.deepcopy(successor)
+        container = expected["deployment"]["spec"]["template"]["spec"]["containers"][0]
+        environment = {item["name"]: item for item in container["env"]}
+        require(
+            len(environment) == len(container["env"]),
+            "participant gateway deployment environment names are not unique",
+        )
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = successor["sourceRevision"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = successor["manifestDigest"]
+        container["image"] = successor["imageRepository"] + "@" + successor["manifestDigest"]
     return {
         "deployment": expected["deployment"],
         "service": expected["service"],
@@ -5118,6 +5175,70 @@ def verify_current_tracer_feed_transition(
         )
 
 
+def verify_participant_gateway_runtime_release_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    """Admit only the exact release render plus its deployment-bound receipt."""
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"]
+        and candidate["renderFileSet"] in {
+            "reviewed-public-knowledge-participant-gateway",
+            "signed-nostr-participant-gateway",
+        },
+        "participant gateway runtime release render shape drift",
+    )
+    require(candidate["head"] == base["head"], "participant gateway runtime release changed the Release Set head")
+    require(
+        candidate["stagingParticipantGatewayPolicy"] == base["stagingParticipantGatewayPolicy"],
+        "participant gateway runtime release changed the activation policy",
+    )
+    require(
+        candidate["publicMeckyReviewedEgress"] == base["publicMeckyReviewedEgress"],
+        "participant gateway runtime release changed Public Mecky egress",
+    )
+    require(
+        candidate["webTracerFeed"] == base["webTracerFeed"],
+        "participant gateway runtime release changed the Web tracer feed",
+    )
+    require(
+        candidate["stagingParticipantGateway"]["civicProjectionRoute"]
+        == base["stagingParticipantGateway"]["civicProjectionRoute"],
+        "participant gateway runtime release changed the civic projection route",
+    )
+    require(
+        (candidate_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes()
+        == (base_root / f"{RENDER_ROOT}/live-preconditions.json").read_bytes(),
+        "participant gateway runtime release changed live preconditions",
+    )
+    try:
+        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(
+            base["stagingParticipantGatewayPolicy"],
+        )
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    successor = expected_participant_gateway_runtime_release_pin(
+        base["stagingParticipantGatewayPolicy"],
+    )
+    require(
+        base["stagingParticipantGateway"]["runtimePin"] == activation_pin,
+        "participant gateway runtime release predecessor pin drift",
+    )
+    require(
+        candidate["stagingParticipantGateway"]["runtimePin"] == successor,
+        "participant gateway runtime release successor pin drift",
+    )
+    changed = changed_repository_files(candidate_root, base_root)
+    require(
+        changed == PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
+        "participant gateway runtime release changed file set drift "
+        f"(missing={sorted(PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES - changed)!r}, "
+        f"unexpected={sorted(changed - PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES)!r})",
+    )
+
+
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
@@ -5212,6 +5333,22 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
                 (candidate_root / relative).read_bytes() == (base_root / relative).read_bytes(),
                 f"participant activation-policy transition changed protected file: {relative}",
             )
+        return
+
+    base_gateway_pin = (
+        base["stagingParticipantGateway"]["runtimePin"]
+        if base_participant_gateway else None
+    )
+    candidate_gateway_pin = (
+        candidate["stagingParticipantGateway"]["runtimePin"]
+        if candidate_participant_gateway else None
+    )
+    if base_gateway_pin != candidate_gateway_pin:
+        require(
+            base_participant_gateway and candidate_participant_gateway,
+            "participant gateway runtime release requires the admitted gateway render",
+        )
+        verify_participant_gateway_runtime_release_transition(candidate, base)
         return
 
     require(

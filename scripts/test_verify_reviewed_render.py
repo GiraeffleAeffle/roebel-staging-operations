@@ -423,6 +423,70 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         return base
 
+    def protected_participant_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """Copy the real protected participant render without fixture normalization."""
+        temp = tempfile.TemporaryDirectory()
+        destination = Path(temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            destination,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        return temp, destination
+
+    def apply_participant_gateway_runtime_release(self, root: Path) -> None:
+        """Render the exact successor and recompute only the desired checksum."""
+        predecessor = VERIFIER.verify_tree(root)
+        policy = predecessor["stagingParticipantGatewayPolicy"]
+        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
+        civic_projection = predecessor["stagingParticipantGateway"]["civicProjectionRoute"]
+        resources = VERIFIER.expected_participant_gateway_resources(
+            successor,
+            policy,
+            civic_projection_route=civic_projection,
+        )
+        render = root / VERIFIER.RENDER_ROOT
+        participant = root / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+        (participant / "runtime-pin.json").write_text(
+            json.dumps(successor, indent=2) + "\n",
+        )
+        (participant / "deployment.json").write_text(
+            json.dumps(resources["deployment"], indent=2) + "\n",
+        )
+
+        migration_path = render / "network-boundary-migration.json"
+        migration = copy.deepcopy(predecessor["migration"])
+        deployment_receipt = next(
+            item
+            for item in migration["objects"]
+            if item["kind"] == "Deployment"
+            and item["name"] == VERIFIER.PARTICIPANT_GATEWAY_NAME
+        )
+        deployment_receipt["sha256"] = VERIFIER.digest(resources["deployment"])
+        migration_path.write_text(json.dumps(migration, indent=2) + "\n")
+
+        gateway = {
+            key: copy.deepcopy(value)
+            for key, value in predecessor["stagingParticipantGateway"].items()
+            if key != "civicProjectionRoute"
+        }
+        gateway["runtimePin"] = successor
+        gateway["deployment"] = resources["deployment"]
+        payload: dict[str, object] = {
+            "nextEnvironmentHead": predecessor["head"],
+            "objects": predecessor["objects"],
+            "stagingParticipantGateway": gateway,
+        }
+        if predecessor["reviewedPublicKnowledge"] is not None:
+            payload["reviewedPublicKnowledge"] = predecessor["reviewedPublicKnowledge"]
+        if predecessor["signedNostr"] is not None:
+            payload["signedNostr"] = predecessor["signedNostr"]
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
     def participant_activation_policy_transition(self, root: Path) -> None:
         policy_path = root / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
         policy_path.write_text(
@@ -1998,6 +2062,131 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertNotIn("command", container)
         self.assertNotIn("args", container)
         self.assertNotIn("/app", [mount["mountPath"] for mount in container.get("volumeMounts", [])])
+
+    def test_participant_gateway_runtime_release_pin_changes_only_published_artifact_leaves(self) -> None:
+        protected = VERIFIER.verify_tree(ROOT)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        activation_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
+        self.assertEqual(
+            {
+                key
+                for key in activation_pin
+                if activation_pin[key] != successor[key]
+            },
+            {"sourceRevision", "sourceTreeSha256", "manifestDigest"},
+        )
+        self.assertEqual(
+            successor["workflowSha256"],
+            activation_pin["workflowSha256"],
+        )
+        for key in (
+            "activationPolicySha256",
+            "migrationSha256",
+            "databaseSchemaSha256",
+            "topicTracerMigrationSha256",
+            "topicTracerDatabaseSchemaSha256",
+            "deactivationSha256",
+            "municipalityId",
+            "sourceConversationTopic",
+            "topicPolicyVersion",
+        ):
+            self.assertEqual(successor[key], activation_pin[key])
+
+    def test_participant_gateway_runtime_release_resources_change_only_three_deployment_leaves(self) -> None:
+        protected = VERIFIER.verify_tree(ROOT)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        activation_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
+        civic_projection = protected["stagingParticipantGateway"]["civicProjectionRoute"]
+        predecessor = VERIFIER.expected_participant_gateway_resources(
+            activation_pin,
+            policy,
+            civic_projection_route=civic_projection,
+        )
+        candidate = VERIFIER.expected_participant_gateway_resources(
+            successor,
+            policy,
+            civic_projection_route=civic_projection,
+        )
+        normalized = copy.deepcopy(candidate)
+        normalized["deployment"]["spec"]["template"]["spec"]["containers"][0]["image"] = (
+            activation_pin["imageRepository"] + "@" + activation_pin["manifestDigest"]
+        )
+        environment = {
+            item["name"]: item
+            for item in normalized["deployment"]["spec"]["template"]["spec"]["containers"][0]["env"]
+        }
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = activation_pin["sourceRevision"]
+        environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = activation_pin["manifestDigest"]
+        self.assertEqual(normalized, predecessor)
+
+    def test_exact_participant_gateway_runtime_release_transition_is_admitted(self) -> None:
+        base_temp, base = self.protected_participant_candidate()
+        candidate_temp, candidate = self.protected_participant_candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(candidate_temp.cleanup)
+        self.apply_participant_gateway_runtime_release(candidate)
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(
+            VERIFIER.changed_repository_files(candidate, base),
+            VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
+        )
+
+    def test_participant_gateway_runtime_release_rejects_pin_resource_file_and_reverse_drift(self) -> None:
+        pin_mutations = {
+            "source": lambda value: value.__setitem__("sourceRevision", "f" * 40),
+            "tree": lambda value: value.__setitem__("sourceTreeSha256", "sha256:" + "f" * 64),
+            "image": lambda value: value.__setitem__("manifestDigest", "sha256:" + "f" * 64),
+            "workflow": lambda value: value.__setitem__("workflowSha256", "sha256:" + "f" * 64),
+            "activation": lambda value: value.__setitem__("activationPolicySha256", "sha256:" + "f" * 64),
+            "database": lambda value: value.__setitem__("databaseSchemaSha256", "sha256:" + "f" * 64),
+        }
+        for label, mutate in pin_mutations.items():
+            with self.subTest(label=label):
+                candidate_temp, candidate = self.protected_participant_candidate()
+                self.addCleanup(candidate_temp.cleanup)
+                self.apply_participant_gateway_runtime_release(candidate)
+                path = candidate / VERIFIER.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"
+                value = json.loads(path.read_text())
+                mutate(value)
+                path.write_text(json.dumps(value, indent=2) + "\n")
+                with self.assertRaisesRegex(
+                    VERIFIER.VerificationError,
+                    "runtime pin drift",
+                ):
+                    VERIFIER.verify(candidate)
+
+        base_temp, base = self.protected_participant_candidate()
+        candidate_temp, candidate = self.protected_participant_candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(candidate_temp.cleanup)
+        self.apply_participant_gateway_runtime_release(candidate)
+        deployment_path = candidate / VERIFIER.PARTICIPANT_GATEWAY_ROOT / "deployment.json"
+        deployment = json.loads(deployment_path.read_text())
+        deployment["spec"]["template"]["spec"]["containers"][0]["image"] = "invalid"
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "resource drift"):
+            VERIFIER.verify(candidate)
+
+        base_temp, base = self.protected_participant_candidate()
+        candidate_temp, candidate = self.protected_participant_candidate()
+        self.addCleanup(base_temp.cleanup)
+        self.addCleanup(candidate_temp.cleanup)
+        self.apply_participant_gateway_runtime_release(candidate)
+        policy_path = candidate / VERIFIER.PARTICIPANT_GATEWAY_ROOT / "networkpolicy.json"
+        policy_path.write_text(policy_path.read_text() + "\n")
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "changed file set drift"):
+            VERIFIER.verify(candidate, base)
+
+        successor_temp, successor = self.protected_participant_candidate()
+        old_temp, old = self.protected_participant_candidate()
+        self.addCleanup(successor_temp.cleanup)
+        self.addCleanup(old_temp.cleanup)
+        self.apply_participant_gateway_runtime_release(successor)
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "predecessor pin drift"):
+            VERIFIER.verify(old, successor)
 
     def test_legacy_participant_secret_verifier_matches_static_three_key_contract(self) -> None:
         def record(target_name: str, key_set: list[str], semantic_checks: dict[str, bool]) -> dict:
