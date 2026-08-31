@@ -100,6 +100,20 @@
                 }
               },
               {
+                "name": "ROEBEL_FEED_SUPABASE_URL",
+                "value": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
+              },
+              {
+                "name": "ROEBEL_FEED_SUPABASE_ANON_KEY",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "supabase-anon-key",
+                    "name": "roebel-tracer-feed-runtime",
+                    "optional": false
+                  }
+                }
+              },
+              {
                 "name": "ROEBEL_PUBLIC_THIRDWEB_CLIENT_ID",
                 "valueFrom": {
                   "configMapKeyRef": {

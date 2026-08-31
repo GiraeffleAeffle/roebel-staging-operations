@@ -150,6 +150,37 @@
         }
       },
       "upstreamUrl": "http://e2e-workbench.stadtstack-roebel-staging-lab.svc.cluster.local:18083/stadtstack-test/api"
+    },
+    "webTracerFeed": {
+      "authority": "none",
+      "credentialSecret": {
+        "key": "supabase-anon-key",
+        "name": "roebel-tracer-feed-runtime",
+        "namespace": "stadtstack-roebel-web-preview",
+        "valuesCommitted": false
+      },
+      "destinationNamespace": "stadtstack-roebel-staging-lab",
+      "destinationPodLabels": {
+        "app.kubernetes.io/component": "tracer-postgrest",
+        "app.kubernetes.io/name": "roebel-tracer-postgrest",
+        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+        "stadtstack.io/authority": "none",
+        "stadtstack.io/civic-authority": "none",
+        "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+        "stadtstack.io/environment": "staging"
+      },
+      "port": 3000,
+      "protocol": "TCP",
+      "source": {
+        "namespace": "stadtstack-roebel-web-preview",
+        "podSelector": {
+          "app.kubernetes.io/component": "readonly-presentation",
+          "app.kubernetes.io/name": "roebel-web-presentation",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "upstreamUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
     }
   },
   "effects": {
@@ -163,7 +194,7 @@
       "kind": "NetworkPolicy",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:b7315ec8535908ad54d79729e1590fea0c96ac1c73cfdc6c3053763232b8f34e"
+      "sha256": "sha256:c7416ec6deffc6c7df4a7b4ffcdae7c413ca850dae8f5429ae8916cd34883a89"
     },
     {
       "kind": "Ingress",
