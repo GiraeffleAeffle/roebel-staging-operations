@@ -236,7 +236,14 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         public_path = render / "public-mecky/deployment.json"
         public = json.loads(public_path.read_text())
         env = public["spec"]["template"]["spec"]["containers"][0]["env"]
-        env[:] = [item for item in env if item["name"] != "MECKY_REVIEWED_SOURCE_KINDS"]
+        env[:] = [
+            item
+            for item in env
+            if item["name"] not in {
+                "MECKY_REVIEWED_SOURCE_KINDS",
+                "MECKY_REVIEWED_KNOWLEDGE_BASE_URL",
+            }
+        ]
         base_url = next(item for item in env if item["name"] == "STADTSTACK_PUBLIC_BASE_URL")
         base_url["value"] = "http://stadtstack-public.stadtstack-roebel-staging-lab.svc.cluster.local:18080"
         url_index = env.index(base_url)
@@ -316,6 +323,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         network_policy = VERIFIER.expected_web_network_policy(
             civic_projection,
             enabled,
+            source["publicMeckyReviewedWebSource"],
         )
         (render / "web/networkpolicy.json").write_text(
             json.dumps(network_policy, indent=2) + "\n",
@@ -373,6 +381,242 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         integrity_path = render / "integrity.json"
         integrity = json.loads(integrity_path.read_text())
         integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+    def enable_public_mecky_reviewed_web_source(self, root: Path) -> None:
+        """Materialize the exact internal Web knowledge route under review."""
+        source = VERIFIER.verify_tree(root)
+        if source["publicMeckyReviewedWebSource"]:
+            return
+        render = root / "reviewed-render/roebel-staging"
+
+        deployment_path = render / "public-mecky/deployment.json"
+        deployment = json.loads(deployment_path.read_text())
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        environment.append({
+            "name": "MECKY_REVIEWED_KNOWLEDGE_BASE_URL",
+            "value": (
+                "http://roebel-web-presentation.stadtstack-roebel-web-preview."
+                "svc.cluster.local:8080"
+            ),
+        })
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+
+        public_policy = copy.deepcopy(source["objects"][2])
+        public_policy["spec"]["egress"].extend([
+            {
+                "to": [{
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                    },
+                    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                }],
+                "ports": [
+                    {"port": 53, "protocol": "UDP"},
+                    {"port": 53, "protocol": "TCP"},
+                ],
+            },
+            {
+                "to": [{
+                    "namespaceSelector": {
+                        "matchLabels": {
+                            "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview",
+                        },
+                    },
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "roebel-web-presentation",
+                        },
+                    },
+                }],
+                "ports": [{"port": 8080, "protocol": "TCP"}],
+            },
+        ])
+        (render / "public-mecky/networkpolicy.json").write_text(
+            json.dumps(public_policy, indent=2) + "\n",
+        )
+
+        web_policy = copy.deepcopy(source["objects"][4])
+        web_policy["spec"]["ingress"].append({
+            "from": [{
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab",
+                    },
+                },
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/component": "public-mecky",
+                        "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                    },
+                },
+            }],
+            "ports": [{"port": 8080, "protocol": "TCP"}],
+        })
+        (render / "web/networkpolicy.json").write_text(
+            json.dumps(web_policy, indent=2) + "\n",
+        )
+
+        migration = copy.deepcopy(source["migration"])
+        migration["boundary"]["publicMeckyReviewedWebSource"] = {
+            "authority": "none",
+            "destinationNamespace": "stadtstack-roebel-web-preview",
+            "destinationPodLabels": {
+                "app.kubernetes.io/name": "roebel-web-presentation",
+            },
+            "dns": {
+                "destinationNamespace": "kube-system",
+                "destinationPodLabels": {"k8s-app": "kube-dns"},
+                "ports": [
+                    {"port": 53, "protocol": "UDP"},
+                    {"port": 53, "protocol": "TCP"},
+                ],
+            },
+            "knowledgeOrigin": (
+                "http://roebel-web-presentation.stadtstack-roebel-web-preview."
+                "svc.cluster.local:8080"
+            ),
+            "port": 8080,
+            "protocol": "TCP",
+            "publicIndexOrigin": None,
+            "source": {
+                "namespace": "stadtstack-roebel-staging-lab",
+                "podSelector": {
+                    "app.kubernetes.io/component": "public-mecky",
+                    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                },
+            },
+            "sourceKinds": "local_news,ratsinformation",
+        }
+        next(
+            item
+            for item in migration["objects"]
+            if item["kind"] == "NetworkPolicy"
+            and item["name"] == "roebel-web-presentation"
+        )["sha256"] = VERIFIER.digest(web_policy)
+        migration["objects"].append({
+            "kind": "NetworkPolicy",
+            "name": "public-mecky-chat-from-web",
+            "namespace": "stadtstack-roebel-staging-lab",
+            "sha256": VERIFIER.digest(public_policy),
+        })
+        (render / "network-boundary-migration.json").write_text(
+            json.dumps(migration, indent=2) + "\n",
+        )
+
+        objects = copy.deepcopy(source["objects"])
+        objects[0] = deployment
+        objects[2] = public_policy
+        objects[4] = web_policy
+        checksum_payload: dict[str, object] = {
+            "nextEnvironmentHead": source["head"],
+            "objects": objects,
+        }
+        if source["reviewedPublicKnowledge"] is not None:
+            checksum_payload["reviewedPublicKnowledge"] = source["reviewedPublicKnowledge"]
+        if source["signedNostr"] is not None:
+            checksum_payload["signedNostr"] = source["signedNostr"]
+        if source["stagingParticipantGateway"] is not None:
+            checksum_payload["stagingParticipantGateway"] = {
+                key: value
+                for key, value in source["stagingParticipantGateway"].items()
+                if key != "civicProjectionRoute"
+            }
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(checksum_payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+    def disable_public_mecky_reviewed_web_source(self, root: Path) -> None:
+        """Restore the exact predecessor route for historical transition fixtures."""
+        source = VERIFIER.verify_tree(root)
+        if not source["publicMeckyReviewedWebSource"]:
+            return
+        render = root / "reviewed-render/roebel-staging"
+
+        deployment_path = render / "public-mecky/deployment.json"
+        deployment = json.loads(deployment_path.read_text())
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        environment[:] = [
+            item
+            for item in environment
+            if item["name"] != "MECKY_REVIEWED_KNOWLEDGE_BASE_URL"
+        ]
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+
+        signed_nostr = source["signedNostr"] is not None
+        public_policy = VERIFIER.expected_public_mecky_network_policy(
+            True,
+            signed_nostr,
+            False,
+        )
+        (render / "public-mecky/networkpolicy.json").write_text(
+            json.dumps(public_policy, indent=2) + "\n",
+        )
+        civic_projection = bool(
+            source["stagingParticipantGateway"]
+            and source["stagingParticipantGateway"]["civicProjectionRoute"]
+        )
+        web_policy = VERIFIER.expected_web_network_policy(
+            civic_projection,
+            source["webTracerFeed"],
+            False,
+        )
+        (render / "web/networkpolicy.json").write_text(
+            json.dumps(web_policy, indent=2) + "\n",
+        )
+
+        migration = copy.deepcopy(source["migration"])
+        migration["boundary"].pop("publicMeckyReviewedWebSource", None)
+        next(
+            item
+            for item in migration["objects"]
+            if item["kind"] == "NetworkPolicy"
+            and item["name"] == "roebel-web-presentation"
+        )["sha256"] = VERIFIER.digest(web_policy)
+        public_receipts = [
+            item
+            for item in migration["objects"]
+            if item["kind"] == "NetworkPolicy"
+            and item["name"] == "public-mecky-chat-from-web"
+            and item["namespace"] == "stadtstack-roebel-staging-lab"
+        ]
+        if signed_nostr:
+            self.assertEqual(len(public_receipts), 1)
+            public_receipts[0]["sha256"] = VERIFIER.digest(public_policy)
+        else:
+            migration["objects"][:] = [
+                item
+                for item in migration["objects"]
+                if item not in public_receipts
+            ]
+        (render / "network-boundary-migration.json").write_text(
+            json.dumps(migration, indent=2) + "\n",
+        )
+
+        objects = copy.deepcopy(source["objects"])
+        objects[0] = deployment
+        objects[2] = public_policy
+        objects[4] = web_policy
+        checksum_payload: dict[str, object] = {
+            "nextEnvironmentHead": source["head"],
+            "objects": objects,
+        }
+        if source["reviewedPublicKnowledge"] is not None:
+            checksum_payload["reviewedPublicKnowledge"] = source["reviewedPublicKnowledge"]
+        if source["signedNostr"] is not None:
+            checksum_payload["signedNostr"] = source["signedNostr"]
+        if source["stagingParticipantGateway"] is not None:
+            checksum_payload["stagingParticipantGateway"] = {
+                key: value
+                for key, value in source["stagingParticipantGateway"].items()
+                if key != "civicProjectionRoute"
+            }
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(checksum_payload)
         integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
         integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
@@ -1340,6 +1584,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
         self.normalize_participant_gateway_runtime_activation(destination)
+        self.disable_public_mecky_reviewed_web_source(destination)
 
         render = destination / "reviewed-render/roebel-staging"
         phase_a_head = copy.deepcopy(VERIFIER.TRACER_PHASE_A_HEAD)
@@ -1455,6 +1700,14 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
             )
         expected_changes = set(TRACER_PHASE_A_FIXTURE_FILES)
+        if VERIFIER.public_mecky_reviewed_web_source_enabled(ROOT):
+            expected_changes.update({
+                "reviewed-render/roebel-staging/public-mecky/deployment.json",
+                "reviewed-render/roebel-staging/public-mecky/networkpolicy.json",
+                "reviewed-render/roebel-staging/web/networkpolicy.json",
+                "reviewed-render/roebel-staging/network-boundary-migration.json",
+                "reviewed-render/roebel-staging/integrity.json",
+            })
         if VERIFIER.web_tracer_feed_route_enabled(ROOT):
             expected_changes.update({
                 "reviewed-render/roebel-staging/network-boundary-migration.json",
@@ -1569,6 +1822,105 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         fixture = VERIFIER.verify(candidate)
         self.assertEqual(fixture["status"], "passed")
         self.assertEqual(fixture["renderFileSet"], "current")
+
+    def test_exact_public_mecky_reviewed_web_source_transition_is_accepted(self) -> None:
+        base_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        shutil.copytree(
+            ROOT,
+            base,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.disable_public_mecky_reviewed_web_source(base)
+        for relative in (
+            "README.md",
+            "scripts/test_verify_reviewed_render.py",
+            "scripts/verify-reviewed-render.py",
+        ):
+            (base / relative).write_text("protected predecessor bytes\n")
+
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(candidate_temp.cleanup)
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.enable_public_mecky_reviewed_web_source(candidate)
+
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+
+    def test_public_mecky_reviewed_web_source_rejects_dead_public_index(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        candidate = Path(temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        deployment_path = (
+            candidate
+            / "reviewed-render/roebel-staging/public-mecky/deployment.json"
+        )
+        deployment = json.loads(deployment_path.read_text())
+        deployment["spec"]["template"]["spec"]["containers"][0]["env"].append({
+            "name": "MECKY_PUBLIC_INDEX_BASE_URL",
+            "value": "https://index.roebel.app",
+        })
+        deployment_path.write_text(json.dumps(deployment, indent=2) + "\n")
+
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "public index is blocked until the exact signed event is queryable",
+        ):
+            VERIFIER.verify(candidate)
+
+    def test_public_mecky_reviewed_web_source_rejects_network_widening(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        candidate = Path(temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.enable_public_mecky_reviewed_web_source(candidate)
+        policy_path = (
+            candidate
+            / "reviewed-render/roebel-staging/public-mecky/networkpolicy.json"
+        )
+        policy = json.loads(policy_path.read_text())
+        policy["spec"]["egress"].append({
+            "to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}],
+        })
+        policy_path.write_text(json.dumps(policy, indent=2) + "\n")
+
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "Public Mecky NetworkPolicy drift",
+        ):
+            VERIFIER.verify(candidate)
+
+    def test_public_mecky_reviewed_web_source_cannot_regress(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        candidate = Path(temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.disable_public_mecky_reviewed_web_source(candidate)
+
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "reviewed Web source cannot regress",
+        ):
+            VERIFIER.verify(candidate, ROOT)
 
     def test_live_participant_wrapper_is_pinned_in_every_repository_shape(self) -> None:
         live_wrapper_files = {
