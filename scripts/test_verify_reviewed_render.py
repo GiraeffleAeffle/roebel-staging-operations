@@ -3509,19 +3509,28 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         contract = json.loads((ROOT / "policy/repository-contract.json").read_text())
         workbench = contract["workbenchImagePromotionBoundary"]
         relay_reset = contract["ephemeralRelayFixtureResetBoundary"]
+        self.assertEqual(workbench["transactionSchemaVersion"], "roebel_staging_workbench_image_promotion_v2")
+        self.assertEqual(workbench["journalSchemaVersion"], "roebel_staging_workbench_image_promotion_journal_v2")
+        self.assertEqual(workbench["receiptSchemaVersion"], "roebel_staging_workbench_image_promotion_receipt_v2")
+        self.assertEqual(workbench["transportReceiptSchemaVersion"], "roebel_staging_workbench_image_promotion_live_transport_receipt_v2")
         self.assertEqual(workbench["artifactPin"], {
             "schemaVersion": "roebel_e2e_runtime_pin_v1",
-            "sourceRevision": "b57a3ae2e8ce613bfae4b6ab96e20b95f578ca67",
-            "receiptSha256": "sha256:872e3e2180e16f69157c5a142c7aa20e3f2e0ea93c10e5363800148b30c99e4c",
-            "targetImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2",
+            "sourceRevision": "6b78c635f5b8f9603e16d3fe386eb8574df27740",
+            "receiptSha256": "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683",
+            "targetImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529",
         })
-        self.assertEqual(workbench["environmentTransition"]["added"], [
-            {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
-            {
-                "name": "LEGACY_SYNTHETIC_PUBKEYS_JSON",
-                "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]",
-            },
-        ])
+        self.assertEqual(workbench["environmentTransition"], {
+            "mode": "public-signed-only",
+            "preservedByteForByte": True,
+            "removedNames": [],
+            "added": [],
+        })
+        self.assertEqual(workbench["imageTransition"], {
+            "predecessorImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2",
+            "targetImage": "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529",
+            "forward": "image-only-exact-cas",
+            "rollback": "target-to-predecessor-image-only-exact-cas",
+        })
         self.assertEqual(relay_reset["artifactPin"]["sourceRevision"], "36ac41d7049df815aaebbe4301c098a0ec7e4101")
         self.assertEqual(relay_reset["artifactPin"]["receiptSha256"], "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b")
 

@@ -86,7 +86,7 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
         ("completed", "transaction", {"receiptStatus": "completed"}),
     ])
     journal = {
-        "schemaVersion": "roebel_staging_workbench_image_promotion_journal_v1", "status": "completed",
+        "schemaVersion": "roebel_staging_workbench_image_promotion_journal_v2", "status": "completed",
         "operationId": operation_id, "protectedRevision": revision, "protectedGitBlobSha256": protected,
         "artifact": artifact, "target": target, "events": events,
         "before": {
@@ -94,7 +94,11 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
             "resourceVersion": "1",
             "specSha256": MODULE.bytes_sha256(b"spec"),
             "normalizedSpecSha256": MODULE.bytes_sha256(b"normalized"),
-            "environment": {"containerIndex": 0, "entries": [{"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"}]},
+            "environment": {"containerIndex": 0, "entries": [
+                {"name": "WORKBENCH_BIND_HOST", "value": "0.0.0.0"},
+                {"name": "WORKBENCH_MODE", "value": "public-signed-only"},
+                {"name": "LEGACY_SYNTHETIC_PUBKEYS_JSON", "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]"},
+            ]},
             "service": service,
             "serviceRouting": routing,
             "networkPolicy": network,
@@ -102,10 +106,10 @@ def promotion_verifier_fixture() -> tuple[dict, dict, str, dict[str, str]]:
     }
     journal["journalSha256"] = MODULE.bytes_sha256(MODULE.canonical(journal).encode())
     payload = {
-        "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v1", "status": "completed", "mode": "live",
+        "schemaVersion": "roebel_staging_workbench_image_promotion_receipt_v2", "status": "completed", "mode": "live",
         "operation": {"operationId": operation_id}, "protectedRevision": revision, "protectedGitBlobSha256": protected,
         "probeBinding": MODULE.workbench_public_probe_binding(), "artifact": artifact, "target": target,
-        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": "old", "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"added": [{"name": "WORKBENCH_MODE", "value": "public-signed-only"}, {"name": "LEGACY_SYNTHETIC_PUBKEYS_JSON", "value": "[\"21abe1bf2bf9a906d356488d107db36d505b55d54c20ab46792fcd31c4e1b88a\",\"7c6ed2e0b6ae1ea67523d055b1194e55036522c397e589c2bb20f0c68b558974\"]"}], "removedNames": ["CASE_STEWARD_TOKEN", "STADTSTACK_CONTROL_BASE_URL", "STADTSTACK_PUBLIC_BASE_URL", "SYNTHETIC_CITIZENS_JSON"]}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
+        "deployment": {"uid": journal["before"]["deploymentUid"], "container": "e2e-workbench", "oldImage": MODULE.WORKBENCH_PROMOTION_PREDECESSOR_IMAGE, "targetImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "environmentTransition": {"mode": "public-signed-only", "preservedByteForByte": True, "added": [], "removedNames": []}, "beforeResourceVersion": "1", "afterResourceVersion": "2", "beforeSpecSha256": journal["before"]["specSha256"], "beforeNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"], "afterSpecSha256": MODULE.bytes_sha256(b"after"), "afterNormalizedSpecSha256": journal["before"]["normalizedSpecSha256"]},
         "preservation": {"service": service, "networkPolicy": network, "unchanged": True},
         "rollout": {"podImageProof": {"expectedImage": MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "pods": [{"uid": "12345678-1234-4123-8123-123456789abd", "name": "pod", "podIPs": ["10.0.0.12"]}]}},
         "backendBinding": routing | {
@@ -2614,6 +2618,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("private_workbench_promotion_outputs", source)
 
     def test_relay_fixture_reset_pin_stays_independent_from_workbench_promotion(self):
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION, "6b78c635f5b8f9603e16d3fe386eb8574df27740")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256, "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_PREDECESSOR_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529")
         self.assertEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, "36ac41d7049df815aaebbe4301c098a0ec7e4101")
         self.assertEqual(MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256, "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b")
         self.assertNotEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION)
@@ -2764,6 +2772,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             ("operation", lambda value: value[1].__setitem__("operationId", "22345678-1234-4123-8123-123456789abc")),
             ("probe-binding", lambda value: value[0]["probeBinding"].__setitem__("origin", "https://attacker.invalid")),
             ("artifact", lambda value: value[1]["artifact"].__setitem__("sourceRevision", "b" * 40)),
+            ("predecessor-image", lambda value: value[0]["deployment"].__setitem__("oldImage", "ghcr.io/example/workbench@sha256:" + "0" * 64)),
+            ("environment-preservation", lambda value: value[0]["deployment"]["environmentTransition"].__setitem__("preservedByteForByte", False)),
             ("protected", lambda value: value[1].__setitem__("protectedGitBlobSha256", dict(value[1]["protectedGitBlobSha256"]) | {next(iter(protected)): MODULE.bytes_sha256(b"wrong")})),
             ("grammar", lambda value: value[1]["events"][2].__setitem__("operation", "unknown")),
             ("backend-address", lambda value: value[0]["backendBinding"]["podTargets"][0]["addresses"].__setitem__(0, "10.0.0.99")),
