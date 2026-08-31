@@ -424,7 +424,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         return base
 
     def protected_participant_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        """Copy the real protected participant render without fixture normalization."""
+        """Copy the protected render and pin the runtime-release predecessor."""
         temp = tempfile.TemporaryDirectory()
         destination = Path(temp.name) / "candidate"
         shutil.copytree(
@@ -432,30 +432,48 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_participant_gateway_runtime_predecessor(destination)
         return temp, destination
 
-    def apply_participant_gateway_runtime_release(self, root: Path) -> None:
-        """Render the exact successor and recompute only the desired checksum."""
-        predecessor = VERIFIER.verify_tree(root)
-        policy = predecessor["stagingParticipantGatewayPolicy"]
-        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
-        civic_projection = predecessor["stagingParticipantGateway"]["civicProjectionRoute"]
+    def normalize_participant_gateway_runtime_predecessor(self, root: Path) -> None:
+        """Restore the exact gateway predecessor when ROOT already has the release."""
+        protected = VERIFIER.verify_tree(root)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        predecessor = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        current = protected["stagingParticipantGateway"]["runtimePin"]
+        if current == predecessor:
+            return
+        self.assertEqual(
+            current,
+            VERIFIER.expected_participant_gateway_runtime_release_pin(policy),
+        )
+        self.render_participant_gateway_runtime_pin(root, predecessor)
+
+    def render_participant_gateway_runtime_pin(
+        self,
+        root: Path,
+        runtime_pin: dict[str, object],
+    ) -> None:
+        """Render one admitted gateway pin and its two integrity bindings."""
+        protected = VERIFIER.verify_tree(root)
+        policy = protected["stagingParticipantGatewayPolicy"]
+        civic_projection = protected["stagingParticipantGateway"]["civicProjectionRoute"]
         resources = VERIFIER.expected_participant_gateway_resources(
-            successor,
+            runtime_pin,
             policy,
             civic_projection_route=civic_projection,
         )
         render = root / VERIFIER.RENDER_ROOT
         participant = root / VERIFIER.PARTICIPANT_GATEWAY_ROOT
         (participant / "runtime-pin.json").write_text(
-            json.dumps(successor, indent=2) + "\n",
+            json.dumps(runtime_pin, indent=2) + "\n",
         )
         (participant / "deployment.json").write_text(
             json.dumps(resources["deployment"], indent=2) + "\n",
         )
 
         migration_path = render / "network-boundary-migration.json"
-        migration = copy.deepcopy(predecessor["migration"])
+        migration = copy.deepcopy(protected["migration"])
         deployment_receipt = next(
             item
             for item in migration["objects"]
@@ -467,25 +485,32 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
         gateway = {
             key: copy.deepcopy(value)
-            for key, value in predecessor["stagingParticipantGateway"].items()
+            for key, value in protected["stagingParticipantGateway"].items()
             if key != "civicProjectionRoute"
         }
-        gateway["runtimePin"] = successor
+        gateway["runtimePin"] = runtime_pin
         gateway["deployment"] = resources["deployment"]
         payload: dict[str, object] = {
-            "nextEnvironmentHead": predecessor["head"],
-            "objects": predecessor["objects"],
+            "nextEnvironmentHead": protected["head"],
+            "objects": protected["objects"],
             "stagingParticipantGateway": gateway,
         }
-        if predecessor["reviewedPublicKnowledge"] is not None:
-            payload["reviewedPublicKnowledge"] = predecessor["reviewedPublicKnowledge"]
-        if predecessor["signedNostr"] is not None:
-            payload["signedNostr"] = predecessor["signedNostr"]
+        if protected["reviewedPublicKnowledge"] is not None:
+            payload["reviewedPublicKnowledge"] = protected["reviewedPublicKnowledge"]
+        if protected["signedNostr"] is not None:
+            payload["signedNostr"] = protected["signedNostr"]
         integrity_path = render / "integrity.json"
         integrity = json.loads(integrity_path.read_text())
         integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
         integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
         integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+    def apply_participant_gateway_runtime_release(self, root: Path) -> None:
+        """Render the exact successor and recompute only the desired checksum."""
+        predecessor = VERIFIER.verify_tree(root)
+        policy = predecessor["stagingParticipantGatewayPolicy"]
+        successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
+        self.render_participant_gateway_runtime_pin(root, successor)
 
     def participant_activation_policy_transition(self, root: Path) -> None:
         policy_path = root / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
@@ -1300,6 +1325,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_participant_gateway_runtime_predecessor(destination)
 
         render = destination / "reviewed-render/roebel-staging"
         phase_a_head = copy.deepcopy(VERIFIER.TRACER_PHASE_A_HEAD)
@@ -1420,6 +1446,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "reviewed-render/roebel-staging/network-boundary-migration.json",
                 "reviewed-render/roebel-staging/web/networkpolicy.json",
             })
+        protected_root = VERIFIER.verify_tree(ROOT)
+        protected_policy = protected_root["stagingParticipantGatewayPolicy"]
+        if (
+            protected_root["stagingParticipantGateway"]["runtimePin"]
+            == VERIFIER.expected_participant_gateway_runtime_release_pin(protected_policy)
+        ):
+            expected_changes.update(
+                VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
+            )
         self.assertEqual(VERIFIER.changed_repository_files(destination, ROOT), expected_changes)
         return temp, destination
 
