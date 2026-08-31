@@ -6,7 +6,6 @@ import importlib.util
 import json
 import copy
 import shutil
-import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -27,6 +26,41 @@ TRACER_PHASE_A_FIXTURE_FILES = {
     "reviewed-render/roebel-staging/live-preconditions.json",
     "reviewed-render/roebel-staging/public-mecky/deployment.json",
     "reviewed-render/roebel-staging/web/deployment.json",
+}
+# The protected automatic-promotion workflow runs these tests from a Git
+# archive. Keep the historical active render self-contained and bind every
+# reconstructed file to the exact predecessor revision's bytes.
+TRACER_PHASE_A_FIXTURE_SHA256 = {
+    "reviewed-render/roebel-staging/head.json":
+        "sha256:78f40bde028ccbdf51c030fc0b8060607b156b86a2b0079dc0d3ae254e87d686",
+    "reviewed-render/roebel-staging/integrity.json":
+        "sha256:94f8c8d0aee19bc4b6dde09b917580cae36afc578038b1b6fc56dd5b0e28548c",
+    "reviewed-render/roebel-staging/live-preconditions.json":
+        "sha256:4e4062db4703f8b9e90741c81ee132864dcdb5287f581212a316ef8cac7afade",
+    "reviewed-render/roebel-staging/public-mecky/deployment.json":
+        "sha256:d70d4d5e57dafdc903d3d8ab83aa03ef3b5fbd6d59e5ddcc5bbabb7ec7878eac",
+    "reviewed-render/roebel-staging/web/deployment.json":
+        "sha256:8285b66120a7ba7cb747e8e3d9aa5ee1ffaf99decc9ef7b1d7c219b79d8571c0",
+}
+TRACER_PHASE_A_DESIRED_RENDER_SHA256 = (
+    "sha256:25b94898d375c1d7e5a50ba82d7cda2c9668fc567237490f599ccdcec70d1339"
+)
+TRACER_PHASE_A_PREVIOUS_HEAD = {
+    "components": [
+        {
+            "component": "public-mecky",
+            "manifestDigest": "sha256:aa66c9b8bb75989e1c47b628845523fa345a944b0a1a82bd17863f96c1f128e4",
+            "sourceRevision": "9a478809a3d64b9efea279b6ee088a1346b045b4",
+        },
+        {
+            "component": "roebel-web-staging",
+            "manifestDigest": "sha256:ffe0fb8ec74040a960d62ff4a8da3fd4763832b45d10358173947504aef586b0",
+            "sourceRevision": "460944f4e87fb09b3a33b4a843b01a4e8e8a5115",
+        },
+    ],
+    "promotionRevision": "460944f4e87fb09b3a33b4a843b01a4e8e8a5115",
+    "releaseSetDigest": "sha256:5e898a86b17c5af6b921eb785177da1670db45cf60c0fd0a04fc7e81457c6b97",
+    "schemaVersion": "roebel_staging_release_set_head_v1",
 }
 
 
@@ -1098,7 +1132,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.refresh_reviewed_integrity(candidate)
 
     def materialize_tracer_phase_a_fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        """Overlay the pinned Phase-A render on current policy and test code."""
+        """Overlay the byte-pinned Phase-A render without requiring Git metadata."""
         temp = tempfile.TemporaryDirectory()
         destination = Path(temp.name) / "phase-a"
         shutil.copytree(
@@ -1106,20 +1140,93 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
-        for relative in sorted(TRACER_PHASE_A_FIXTURE_FILES):
-            historical = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(ROOT),
-                    "show",
-                    f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
-                ],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+
+        render = destination / "reviewed-render/roebel-staging"
+        phase_a_head = copy.deepcopy(VERIFIER.TRACER_PHASE_A_HEAD)
+        phase_a_components = {
+            item["component"]: item for item in phase_a_head["components"]
+        }
+
+        head_path = render / "head.json"
+        head = json.loads(head_path.read_text())
+        self.assertEqual(
+            {item["component"] for item in head["components"]},
+            set(phase_a_components),
+        )
+        head["promotionRevision"] = phase_a_head["promotionRevision"]
+        head["releaseSetDigest"] = phase_a_head["releaseSetDigest"]
+        for item in head["components"]:
+            expected = phase_a_components[item["component"]]
+            item["sourceRevision"] = expected["sourceRevision"]
+            item["manifestDigest"] = expected["manifestDigest"]
+        head_path.write_text(json.dumps(head, indent=2) + "\n")
+
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = TRACER_PHASE_A_DESIRED_RENDER_SHA256
+        integrity["releaseSetDigest"] = phase_a_head["releaseSetDigest"]
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+        public_path = render / "public-mecky/deployment.json"
+        public = json.loads(public_path.read_text())
+        public["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+            phase_a_head["releaseSetDigest"]
+        )
+        public_path.write_text(json.dumps(public, indent=2) + "\n")
+
+        web_path = render / "web/deployment.json"
+        web = json.loads(web_path.read_text())
+        web_component = phase_a_components["roebel-web-staging"]
+        web["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+            phase_a_head["releaseSetDigest"]
+        )
+        web["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+            web_component["sourceRevision"]
+        )
+        template = web["spec"]["template"]
+        template["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+            web_component["sourceRevision"]
+        )
+        template["spec"]["containers"][0]["image"] = (
+            f"{VERIFIER.COMPONENTS['roebel-web-staging']['repository']}@"
+            f"{web_component['manifestDigest']}"
+        )
+        web_path.write_text(json.dumps(web, indent=2) + "\n")
+
+        previous_components = {
+            item["component"]: item
+            for item in TRACER_PHASE_A_PREVIOUS_HEAD["components"]
+        }
+        live_path = render / "live-preconditions.json"
+        live = json.loads(live_path.read_text())
+        live["previousEnvironmentHead"] = copy.deepcopy(TRACER_PHASE_A_PREVIOUS_HEAD)
+        for precondition in live["requiredLivePreconditions"]:
+            component = precondition["component"]
+            previous = previous_components[component]
+            precondition["currentImage"] = (
+                f"{VERIFIER.COMPONENTS[component]['repository']}@"
+                f"{previous['manifestDigest']}"
             )
-            (destination / relative).write_bytes(historical.stdout)
+        for patch in live["patches"]:
+            component = patch["component"]
+            for operation in patch["operations"]:
+                operation["value"] = VERIFIER.expected_patch_value(
+                    component,
+                    operation["path"],
+                    phase_a_head,
+                )
+        live_path.write_text(json.dumps(live, indent=2) + "\n")
+
+        self.assertEqual(
+            set(TRACER_PHASE_A_FIXTURE_SHA256),
+            TRACER_PHASE_A_FIXTURE_FILES,
+        )
+        for relative, expected_digest in TRACER_PHASE_A_FIXTURE_SHA256.items():
+            self.assertEqual(
+                VERIFIER.bytes_digest((destination / relative).read_bytes()),
+                expected_digest,
+                f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
+            )
         self.assertEqual(
             VERIFIER.changed_repository_files(destination, ROOT),
             TRACER_PHASE_A_FIXTURE_FILES,
