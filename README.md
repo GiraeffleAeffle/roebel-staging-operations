@@ -379,6 +379,30 @@ only establishes this admission policy; the actual runtime image publication,
 reviewed render values, and one separately reviewed Flux activation remain
 future work.
 
+### Reviewed Röbel knowledge from the Web release
+
+Public Mecky may additionally read the city-owned reviewed projection served
+by the Röbel Web release at the exact internal origin
+`http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080`.
+This is a one-way, head-preserving staging transition. It appends only
+`MECKY_REVIEWED_KNOWLEDGE_BASE_URL`, retains the separate CivicCase origin and
+the ordered `local_news,ratsinformation` declaration, permits kube-dns plus
+Public Mecky-to-Web TCP/8080 egress, and adds the exact reciprocal Web ingress.
+It does not add a Secret, external egress, storage, civic authority, vote,
+treasury action, or administration endorsement.
+
+The transition changes exactly the Public Mecky Deployment, both affected
+NetworkPolicies, the network-boundary receipt, and render integrity. Release
+Set head, images, live preconditions, Services, Ingresses, Kustomizations, and
+all other render bytes remain unchanged. Regression and combination with an
+image, feed, civic-projection, gateway, participant-policy, or signed-Nostr
+transition fail closed. Later image-only promotions preserve this route.
+
+`MECKY_PUBLIC_INDEX_BASE_URL` remains forbidden until the exact signed Röbel
+event is actually returned by the configured public index. An online endpoint
+with an empty event result is not sufficient evidence and must not be exposed
+as a citation.
+
 ## Signed-Nostr staging runtime policy (blocked future activation)
 
 The normal Röbel Web + Public Mecky Release Set stays two components. A

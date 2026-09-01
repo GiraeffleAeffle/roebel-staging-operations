@@ -118,6 +118,16 @@ REVIEWED_PUBLIC_KNOWLEDGE_BASE_URL = (
     "svc.cluster.local:18080"
 )
 REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS = "local_news,ratsinformation"
+PUBLIC_MECKY_REVIEWED_WEB_SOURCE_BASE_URL = (
+    "http://roebel-web-presentation.stadtstack-roebel-web-preview."
+    "svc.cluster.local:8080"
+)
+PUBLIC_MECKY_REVIEWED_WEB_SOURCE_ENV = [
+    {
+        "name": "MECKY_REVIEWED_KNOWLEDGE_BASE_URL",
+        "value": PUBLIC_MECKY_REVIEWED_WEB_SOURCE_BASE_URL,
+    },
+]
 REVIEWED_PUBLIC_KNOWLEDGE_LABELS = {
     "app.kubernetes.io/component": "reviewed-public-knowledge",
     "app.kubernetes.io/name": "reviewed-public-knowledge",
@@ -152,6 +162,13 @@ LEGACY_SYNTHETIC_EVIDENCE_ENV_NAMES = {
 PUBLIC_MECKY_LABELS = {
     "app.kubernetes.io/component": "public-mecky",
     "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+}
+PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES = {
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/public-mecky/networkpolicy.json",
+    f"{RENDER_ROOT}/web/networkpolicy.json",
 }
 PUBLIC_MECKY_NETWORK_POLICY_LABELS = {
     **PUBLIC_MECKY_LABELS,
@@ -1502,6 +1519,7 @@ def verify_deployment(
     component: str,
     head: dict[str, Any],
     reviewed_knowledge: bool = False,
+    reviewed_web_source: bool = False,
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
 ) -> dict[str, Any]:
@@ -1580,6 +1598,22 @@ def verify_deployment(
                 value_from = item.get("valueFrom", {}) if isinstance(item, dict) else {}
                 config_map = value_from.get("configMapKeyRef", {}) if isinstance(value_from, dict) else {}
                 require(config_map.get("name") != "reviewed-evidence", "public-mecky legacy synthetic evidence ConfigMap present")
+        reviewed_web_env = PUBLIC_MECKY_REVIEWED_WEB_SOURCE_ENV[0]
+        if reviewed_web_source:
+            require(reviewed_knowledge, "public-mecky reviewed Web source requires reviewed knowledge mode")
+            require(
+                by_name.get(reviewed_web_env["name"]) == reviewed_web_env,
+                "public-mecky reviewed Web knowledge origin invalid",
+            )
+        else:
+            require(
+                reviewed_web_env["name"] not in by_name,
+                "public-mecky reviewed Web source is not admitted",
+            )
+        require(
+            "MECKY_PUBLIC_INDEX_BASE_URL" not in by_name,
+            "public-mecky public index is blocked until the exact signed event is queryable",
+        )
         for name, value in expected_chat.items():
             require(by_name.get(name) == {"name": name, "value": value}, f"public-mecky {name} binding invalid")
         require(primary[0].get("ports") == [{"containerPort": 18084, "name": "mecky-chat", "protocol": "TCP"}], "public-mecky chat port invalid")
@@ -1656,6 +1690,19 @@ def web_tracer_feed_route_enabled(root: Path) -> bool:
     }
     return bool(
         names & {TRACER_FEED_URL_ENV["name"], TRACER_FEED_ANON_ENV["name"]}
+    )
+
+
+def public_mecky_reviewed_web_source_enabled(root: Path) -> bool:
+    deployment = load_json(root / RENDER_ROOT / "public-mecky/deployment.json")
+    try:
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("name") == PUBLIC_MECKY_REVIEWED_WEB_SOURCE_ENV[0]["name"]
+        for item in environment
     )
 
 
@@ -3109,7 +3156,11 @@ def expected_signed_nostr_resources(runtime_pin: dict[str, Any]) -> dict[str, An
     return resources
 
 
-def expected_public_mecky_network_policy(reviewed_egress: bool, signed_nostr: bool = False) -> dict[str, Any]:
+def expected_public_mecky_network_policy(
+    reviewed_egress: bool,
+    signed_nostr: bool = False,
+    reviewed_web_source: bool = False,
+) -> dict[str, Any]:
     spec: dict[str, Any] = {
         "ingress": [{
             "from": [{
@@ -3151,6 +3202,41 @@ def expected_public_mecky_network_policy(reviewed_egress: bool, signed_nostr: bo
                     }
                     for relay in ("citizen-relay", "agent-relay")
                 ],
+            ],
+        }
+    if reviewed_web_source:
+        require(reviewed_egress, "reviewed Web source requires reviewed knowledge egress")
+        spec = {
+            **spec,
+            "egress": [
+                *spec["egress"],
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                        },
+                        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+                    }],
+                    "ports": [
+                        {"port": 53, "protocol": "UDP"},
+                        {"port": 53, "protocol": "TCP"},
+                    ],
+                },
+                {
+                    "to": [{
+                        "namespaceSelector": {
+                            "matchLabels": {
+                                "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview",
+                            },
+                        },
+                        "podSelector": {
+                            "matchLabels": {
+                                "app.kubernetes.io/name": "roebel-web-presentation",
+                            },
+                        },
+                    }],
+                    "ports": [{"port": 8080, "protocol": "TCP"}],
+                },
             ],
         }
     return {
@@ -3222,21 +3308,32 @@ def verify_public_mecky_network_policy(
     root: Path,
     reviewed_knowledge: bool,
     signed_nostr: bool,
-) -> tuple[dict[str, Any], bool]:
+    reviewed_web_source: bool,
+) -> tuple[dict[str, Any], bool, bool]:
     policy = load_json(root / RENDER_ROOT / "public-mecky/networkpolicy.json")
     legacy = expected_public_mecky_network_policy(False)
     reviewed = expected_public_mecky_network_policy(True)
     signed = expected_public_mecky_network_policy(True, True)
-    require(policy in (legacy, reviewed, signed), "Public Mecky NetworkPolicy drift")
-    reviewed_egress = policy == reviewed
-    signed_egress = policy == signed
+    reviewed_web = expected_public_mecky_network_policy(True, False, True)
+    signed_web = expected_public_mecky_network_policy(True, True, True)
+    require(
+        policy in (legacy, reviewed, signed, reviewed_web, signed_web),
+        "Public Mecky NetworkPolicy drift",
+    )
+    reviewed_egress = policy != legacy
+    signed_egress = policy in (signed, signed_web)
+    reviewed_web_egress = policy in (reviewed_web, signed_web)
     require(
         not reviewed_egress or reviewed_knowledge,
         "Public Mecky reviewed-runtime egress requires the complete reviewed runtime render",
     )
     require(not signed_egress or signed_nostr, "Public Mecky relay egress requires the complete signed-Nostr render")
     require(not signed_nostr or signed_egress, "signed-Nostr render requires exact Public Mecky relay egress")
-    return policy, reviewed_egress or signed_egress
+    require(
+        reviewed_web_source == reviewed_web_egress,
+        "Public Mecky reviewed Web source requires exact matching egress",
+    )
+    return policy, reviewed_egress, reviewed_web_egress
 
 
 def tracer_postgrest_web_egress() -> dict[str, Any]:
@@ -3258,6 +3355,7 @@ def tracer_postgrest_web_egress() -> dict[str, Any]:
 def expected_web_network_policy(
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
+    reviewed_web_source: bool = False,
 ) -> dict[str, Any]:
     policy = {
         "apiVersion": "networking.k8s.io/v1",
@@ -3352,6 +3450,20 @@ def expected_web_network_policy(
             }],
             "ports": [{"port": PARTICIPANT_POLICY.WORKBENCH_PORT, "protocol": "TCP"}],
         })
+    if reviewed_web_source:
+        policy["spec"]["ingress"].append({
+            "from": [{
+                "namespaceSelector": {
+                    "matchLabels": {
+                        "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab",
+                    },
+                },
+                "podSelector": {
+                    "matchLabels": PUBLIC_MECKY_LABELS,
+                },
+            }],
+            "ports": [{"port": 8080, "protocol": "TCP"}],
+        })
     return policy
 
 
@@ -3359,10 +3471,15 @@ def verify_web_network_policy(
     root: Path,
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
+    reviewed_web_source: bool = False,
 ) -> dict[str, Any]:
     policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
     require(
-        policy == expected_web_network_policy(civic_projection_route, tracer_feed_route),
+        policy == expected_web_network_policy(
+            civic_projection_route,
+            tracer_feed_route,
+            reviewed_web_source,
+        ),
         "Web NetworkPolicy drift",
     )
     return policy
@@ -4486,6 +4603,55 @@ def verify_web_ingress(root: Path, signed_nostr: bool, participant_gateway: bool
     return ingress
 
 
+def bind_public_mecky_reviewed_web_source_boundary(
+    receipt: dict[str, Any],
+    public_mecky_network_policy: dict[str, Any],
+) -> None:
+    receipt["boundary"]["publicMeckyReviewedWebSource"] = {
+        "authority": "none",
+        "destinationNamespace": "stadtstack-roebel-web-preview",
+        "destinationPodLabels": {
+            "app.kubernetes.io/name": "roebel-web-presentation",
+        },
+        "dns": {
+            "destinationNamespace": "kube-system",
+            "destinationPodLabels": {"k8s-app": "kube-dns"},
+            "ports": [
+                {"port": 53, "protocol": "UDP"},
+                {"port": 53, "protocol": "TCP"},
+            ],
+        },
+        "knowledgeOrigin": PUBLIC_MECKY_REVIEWED_WEB_SOURCE_BASE_URL,
+        "port": 8080,
+        "protocol": "TCP",
+        "publicIndexOrigin": None,
+        "source": {
+            "namespace": "stadtstack-roebel-staging-lab",
+            "podSelector": PUBLIC_MECKY_LABELS,
+        },
+        "sourceKinds": REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS,
+    }
+    policy_receipt = {
+        "kind": "NetworkPolicy",
+        "name": "public-mecky-chat-from-web",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "sha256": digest(public_mecky_network_policy),
+    }
+    existing = [
+        item
+        for item in receipt["objects"]
+        if item.get("kind") == "NetworkPolicy"
+        and item.get("name") == "public-mecky-chat-from-web"
+        and item.get("namespace") == "stadtstack-roebel-staging-lab"
+    ]
+    require(len(existing) <= 1, "Public Mecky boundary receipt repeated")
+    if existing:
+        existing[0].clear()
+        existing[0].update(policy_receipt)
+    else:
+        receipt["objects"].append(policy_receipt)
+
+
 def verify_network_boundary_migration(
     root: Path,
     web_network_policy: dict[str, Any],
@@ -4496,6 +4662,7 @@ def verify_network_boundary_migration(
     participant_gateway_objects: dict[str, Any] | None = None,
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
+    reviewed_web_source: bool = False,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
     if participant_gateway:
@@ -4641,6 +4808,11 @@ def verify_network_boundary_migration(
                 },
                 "upstreamUrl": TRACER_DATA_PLANE.POSTGREST_CLUSTER_URL,
             }
+        if reviewed_web_source:
+            bind_public_mecky_reviewed_web_source_boundary(
+                expected,
+                public_mecky_network_policy,
+            )
         require(migration == expected, "participant gateway network-boundary receipt drift")
         return migration
     if signed_nostr:
@@ -4702,6 +4874,11 @@ def verify_network_boundary_migration(
             "schemaVersion": "roebel_staging_signed_nostr_boundary_v1",
             "status": "blocked_pending_separately_reviewed_signed_nostr_evidence",
         }
+        if reviewed_web_source:
+            bind_public_mecky_reviewed_web_source_boundary(
+                expected_signed_nostr,
+                public_mecky_network_policy,
+            )
         require(migration == expected_signed_nostr, "signed-Nostr network-boundary receipt drift")
         return migration
     expected = {
@@ -4787,6 +4964,11 @@ def verify_network_boundary_migration(
         "schemaVersion": "roebel_staging_network_boundary_bootstrap_v1",
         "status": "local_candidate_ready_for_one_time_policy_bootstrap",
     }
+    if reviewed_web_source:
+        bind_public_mecky_reviewed_web_source_boundary(
+            expected,
+            public_mecky_network_policy,
+        )
     require(migration == expected, "network-boundary migration receipt drift")
     return migration
 
@@ -4914,27 +5096,35 @@ def verify_tree(root: Path) -> dict[str, Any]:
     }
     civic_projection_route = web_civic_projection_route_enabled(root)
     tracer_feed_route = web_tracer_feed_route_enabled(root)
+    reviewed_web_source = public_mecky_reviewed_web_source_enabled(root)
     deployments = {
         component: verify_deployment(
             root,
             component,
             head,
             reviewed_knowledge,
+            reviewed_web_source=reviewed_web_source and component == "public-mecky",
             civic_projection_route=civic_projection_route and component == "roebel-web-staging",
             tracer_feed_route=tracer_feed_route and component == "roebel-web-staging",
         )
         for component in COMPONENT_ORDER
     }
     service = verify_public_mecky_service(root)
-    network_policy, public_mecky_reviewed_egress = verify_public_mecky_network_policy(
+    (
+        network_policy,
+        public_mecky_reviewed_egress,
+        public_mecky_reviewed_web_egress,
+    ) = verify_public_mecky_network_policy(
         root,
         reviewed_knowledge,
         signed_nostr,
+        reviewed_web_source,
     )
     web_network_policy = verify_web_network_policy(
         root,
         civic_projection_route,
         tracer_feed_route,
+        reviewed_web_source,
     )
     participant_gateway_objects = (
         verify_participant_gateway(root, participant_policy)
@@ -4959,7 +5149,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
         participant_gateway, participant_gateway_objects, civic_projection_route,
-        tracer_feed_route,
+        tracer_feed_route, reviewed_web_source,
     )
     objects = [
         deployments["public-mecky"],
@@ -4998,6 +5188,9 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "live": live,
         "renderFileSet": render_file_set,
         "publicMeckyReviewedEgress": public_mecky_reviewed_egress,
+        "publicMeckyReviewedWebSource": (
+            reviewed_web_source and public_mecky_reviewed_web_egress
+        ),
         "reviewedPublicKnowledge": reviewed_objects,
         "signedNostr": signed_nostr_objects,
         "stagingParticipantGateway": participant_gateway_objects,
@@ -5199,7 +5392,11 @@ def verify_current_tracer_feed_transition(
     )
     require(
         candidate["objects"][4]
-        == expected_web_network_policy(base_civic_route, True),
+        == expected_web_network_policy(
+            base_civic_route,
+            True,
+            base["publicMeckyReviewedWebSource"],
+        ),
         "current tracer-feed PostgREST NetworkPolicy drift",
     )
     candidate_files = repository_files(candidate_root)
@@ -5290,6 +5487,68 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         candidate["stagingParticipantGateway"]
         and candidate["stagingParticipantGateway"]["civicProjectionRoute"]
     )
+    base_reviewed_web_source = base["publicMeckyReviewedWebSource"]
+    candidate_reviewed_web_source = candidate["publicMeckyReviewedWebSource"]
+
+    require(
+        not (base_reviewed_web_source and not candidate_reviewed_web_source),
+        "Public Mecky reviewed Web source cannot regress",
+    )
+    if candidate_reviewed_web_source and not base_reviewed_web_source:
+        require(
+            candidate["renderFileSet"] == base["renderFileSet"],
+            "Public Mecky reviewed Web source may not change the render shape",
+        )
+        require(
+            candidate["head"] == base["head"],
+            "Public Mecky reviewed Web source must preserve the Release Set head",
+        )
+        require(
+            candidate["webTracerFeed"] == base["webTracerFeed"],
+            "Public Mecky reviewed Web source may not change the tracer feed route",
+        )
+        require(
+            candidate_civic_projection_route == base_civic_projection_route,
+            "Public Mecky reviewed Web source may not change the civic projection route",
+        )
+        require(
+            candidate["stagingParticipantGatewayPolicy"]
+            == base["stagingParticipantGatewayPolicy"],
+            "Public Mecky reviewed Web source may not change participant policy",
+        )
+        require(
+            candidate["publicMeckyReviewedEgress"]
+            == base["publicMeckyReviewedEgress"],
+            "Public Mecky reviewed Web source must preserve reviewed-runtime egress",
+        )
+        base_gateway_pin = (
+            base["stagingParticipantGateway"]["runtimePin"]
+            if base_participant_gateway else None
+        )
+        candidate_gateway_pin = (
+            candidate["stagingParticipantGateway"]["runtimePin"]
+            if candidate_participant_gateway else None
+        )
+        require(
+            candidate_gateway_pin == base_gateway_pin,
+            "Public Mecky reviewed Web source may not change the gateway release",
+        )
+        expected_public = copy.deepcopy(base["deployments"]["public-mecky"])
+        expected_public["spec"]["template"]["spec"]["containers"][0]["env"].extend(
+            copy.deepcopy(PUBLIC_MECKY_REVIEWED_WEB_SOURCE_ENV)
+        )
+        require(
+            candidate["deployments"]["public-mecky"] == expected_public,
+            "Public Mecky reviewed Web source environment transform drift",
+        )
+        changed = changed_repository_files(candidate_root, base_root)
+        require(
+            changed == PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES,
+            "Public Mecky reviewed Web source changed file set drift "
+            f"(missing={sorted(PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES - changed)!r}, "
+            f"unexpected={sorted(changed - PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES)!r})",
+        )
+        return
 
     require(
         not (base["webTracerFeed"] and not candidate["webTracerFeed"]),
