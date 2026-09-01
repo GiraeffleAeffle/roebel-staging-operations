@@ -301,6 +301,12 @@ PARTICIPANT_GATEWAY_RUNTIME_RELEASES = (
         "manifestDigest": "sha256:ba12dea1ebffa2cb85b58f135882085c66c1675f4461f27af116b63737a95a57",
         "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
     },
+    {
+        "sourceRevision": "b81f273c8de5e825b60468df302f0e2057f51e2e",
+        "sourceTreeSha256": "sha256:3b49a62498d560da36d0cb67121a1622260fb5690a51123e74c3c88712720974",
+        "manifestDigest": "sha256:e8ba5a0dfce7340575abcd7e06e10f8153343571776b29f6ab3f54467ec80391",
+        "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+    },
 )
 PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES = {
     f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
