@@ -1614,8 +1614,20 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
         public_path = render / "public-mecky/deployment.json"
         public = json.loads(public_path.read_text())
+        public_component = phase_a_components["public-mecky"]
         public["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
             phase_a_head["releaseSetDigest"]
+        )
+        public["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+            public_component["sourceRevision"]
+        )
+        public_template = public["spec"]["template"]
+        public_template["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+            public_component["sourceRevision"]
+        )
+        public_template["spec"]["containers"][0]["image"] = (
+            f"{VERIFIER.COMPONENTS['public-mecky']['repository']}@"
+            f"{public_component['manifestDigest']}"
         )
         public_path.write_text(json.dumps(public, indent=2) + "\n")
 
