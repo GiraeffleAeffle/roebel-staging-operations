@@ -25,6 +25,8 @@ SECRET_RUNNER = "scripts/materialize-staging-participant-gateway-secrets.py"
 TRACER_SECRET_RUNNER = "scripts/materialize-tracer-data-plane-secrets.py"
 TRACER_DATA_PLANE_RUNNER = "scripts/run-tracer-data-plane-live.py"
 TRACER_POLICY = "scripts/tracer_data_plane_policy.py"
+ELIGIBILITY_ISSUER_RUNNER = "scripts/materialize-staging-participant-eligibility-issuer.py"
+ELIGIBILITY_ISSUER_POLICY = "policy/staging-participant-eligibility-issuer-materialization-policy.json"
 HANDOVER_RUNNER = "scripts/handover-staging-participant-dormant-receipt.py"
 HANDOVER_IMPLEMENTATION = "scripts/staging_participant_dormant_receipt_handover.py"
 WORKBENCH_PROMOTER = "scripts/promote-staging-workbench-image.py"
@@ -100,6 +102,13 @@ HANDOVER_COMPATIBILITY_PATHS = (
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
 )
+CITIZEN_ADOPTION_PROTECTED_PATHS = tuple(dict.fromkeys((
+    *PROTECTED_PATHS,
+    ELIGIBILITY_ISSUER_RUNNER,
+    ELIGIBILITY_ISSUER_POLICY,
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/75-staging-citizen-adoption.sql",
+    *HANDOVER_COMPATIBILITY_PATHS,
+)))
 HANDOVER_CURRENT_PRESERVATION_PATHS = (
     "reviewed-render/roebel-staging/web/ingress.json",
     "reviewed-render/roebel-staging/workbench-baseline/networkpolicy.json",
@@ -181,6 +190,11 @@ scope={'__name__':'__main__','__file__':path,'__package__':None,'__cached__':Non
 exec(compile(source,path,'exec',dont_inherit=True),scope)
 """
 WRAPPER_RECEIPT_SCHEMA = "roebel_staging_participant_live_transport_receipt_v3"
+CITIZEN_ADOPTION_WRAPPER_RECEIPT_SCHEMA = "roebel_staging_citizen_adoption_live_transport_receipt_v1"
+ELIGIBILITY_ISSUER_RECEIPT_SCHEMA = "roebel_staging_participant_eligibility_issuer_materialization_receipt_v1"
+ELIGIBILITY_ISSUER_KEY_ID = "roebel-staging-citizen-eligibility-2026-09"
+ELIGIBILITY_ISSUER_PUBLIC_KEY = "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8"
+ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT = "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc"
 TRACER_SECRET_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_materialization_receipt_v1"
 TRACER_SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_tracer_data_plane_secret_teardown_receipt_v1"
 TRACER_ACTIVATION_RECEIPT_SCHEMA = "roebel_tracer_data_plane_activation_receipt_v1"
@@ -1282,6 +1296,44 @@ def bind_bytes_to_fd(value: bytes, destination: Path, label: str) -> BoundBlob:
         raise
 
 
+def bind_eligibility_issuer_private_key(
+    source: Path,
+    destination: Path,
+) -> BoundBlob:
+    """Normalize the owned 65-byte LF source into a distinct exact-64-byte FD."""
+    selected = private_file(source, "eligibility issuer private-key source", 65)
+    before = os.lstat(selected)
+    require(
+        stat.S_IMODE(before.st_mode) == 0o600 and before.st_size == 65,
+        "eligibility issuer private-key source must be owned 0600 and exactly 65 bytes",
+    )
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(selected, flags)
+    try:
+        opened = os.fstat(fd)
+        raw = os.pread(fd, 66, 0)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    require(
+        (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
+        == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+        and len(raw) == 65
+        and raw[-1:] == b"\n"
+        and re.fullmatch(rb"[0-9a-f]{64}", raw[:64]) is not None
+        and bytes_sha256(raw[:64]) == ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT,
+        "eligibility issuer private-key source encoding or commitment drift",
+    )
+    bound = bind_bytes_to_fd(
+        raw[:64], destination, "normalized eligibility issuer private-key descriptor",
+    )
+    require(bound.size == 64, "normalized eligibility issuer private-key size drift")
+    return bound
+
+
 def bind_handover_git_closure(
     revision: str,
     binding_dir: Path,
@@ -2084,6 +2136,64 @@ def verify_receipt_with_protected_cli(
     require(projection.get("civicAuthorityEffects") is False, f"protected receipt widened civic authority: {receipt.label}")
     return projection
 
+
+def verify_eligibility_issuer_receipt_with_protected_cli(
+    cancellation: CancellationState,
+    runner: BoundRunner,
+    receipt: BoundBlob,
+    revision: str,
+    environment: dict[str, str],
+    *,
+    allow_cancelled: bool,
+) -> dict[str, Any]:
+    """Run the issuer's descriptor-only verifier and bind its public projection."""
+    result = cancellation.run(
+        runner.command([
+            "--expected-protected-revision", revision,
+            "--verify-receipt-fd", str(receipt.fd),
+        ]),
+        allow_cancelled=allow_cancelled,
+        forward_signals=False,
+        receipt_pending=False,
+        timeout=60,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environment,
+        pass_fds=(runner.blob.fd, receipt.fd),
+    )
+    require(result.returncode == 0, "protected eligibility issuer receipt verifier rejected receipt")
+    output = result.stdout.strip() if isinstance(result.stdout, str) else ""
+    require(output and "\n" not in output, "protected eligibility issuer verifier output invalid")
+    projection = json_object(output, "verified eligibility issuer receipt")
+    require(
+        set(projection) == {
+            "schemaVersion", "status", "protectedRevision", "protectedFileSha256",
+            "policy", "clusterBinding", "target", "uid", "resourceVersion",
+            "operationNonce", "keyId", "publicKey", "privateKeyCommitmentSha256",
+            "valuesRead", "receiptContainsValues", "authority",
+            "canonicalReceiptSha256",
+        }
+        and projection.get("schemaVersion") == ELIGIBILITY_ISSUER_RECEIPT_SCHEMA
+        and projection.get("status") == "materialized"
+        and projection.get("protectedRevision") == revision
+        and projection.get("keyId") == ELIGIBILITY_ISSUER_KEY_ID
+        and projection.get("publicKey") == ELIGIBILITY_ISSUER_PUBLIC_KEY
+        and projection.get("privateKeyCommitmentSha256") == ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT
+        and projection.get("valuesRead") is False
+        and projection.get("receiptContainsValues") is False
+        and projection.get("authority") == {
+            "environment": "staging", "civicAuthority": "none",
+            "citizenVerification": False, "municipalPublication": False,
+            "proposalMutation": False, "voteMutation": False,
+            "treasuryMutation": False,
+        }
+        and isinstance(projection.get("canonicalReceiptSha256"), str)
+        and SHA256.fullmatch(projection["canonicalReceiptSha256"]) is not None,
+        "protected eligibility issuer receipt public projection drift",
+    )
+    return projection
+
 def bind_incident_recovery_handover_projection(
     recovery_projection: Any,
     handover_projection: Any,
@@ -2156,6 +2266,26 @@ def tracer_receipt_record(projection: dict[str, Any] | None, receipt: BoundBlob 
         "protectedRevision": projection.get("protectedRevision") if projection is not None else None,
         "fileSha256": receipt.sha256 if receipt is not None else None,
         "valueFree": projection is not None,
+        "civicAuthorityEffects": False,
+    }
+
+
+def eligibility_issuer_receipt_record(
+    projection: dict[str, Any] | None,
+    receipt: BoundBlob | None,
+    journal: BoundBlob | None,
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": projection.get("schemaVersion") if projection is not None else None,
+        "status": projection.get("status") if projection is not None else None,
+        "protectedRevision": projection.get("protectedRevision") if projection is not None else None,
+        "receiptFileSha256": receipt.sha256 if receipt is not None else None,
+        "canonicalReceiptSha256": projection.get("canonicalReceiptSha256") if projection is not None else None,
+        "journalFileSha256": journal.sha256 if journal is not None else None,
+        "keyId": projection.get("keyId") if projection is not None else None,
+        "publicKey": projection.get("publicKey") if projection is not None else None,
+        "valuesRead": False,
+        "receiptContainsValues": False,
         "civicAuthorityEffects": False,
     }
 
@@ -3526,6 +3656,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--workbench-baseline-recovery-finalize", action="store_true")
     mode.add_argument("--workbench-image-promotion", action="store_true")
     mode.add_argument("--relay-fixture-reset", action="store_true")
+    mode.add_argument("--participant-gateway-verify-active-runtime", action="store_true")
+    mode.add_argument("--eligibility-issuer-materialize", action="store_true")
+    mode.add_argument("--eligibility-issuer-recover", action="store_true")
+    mode.add_argument("--eligibility-issuer-verify", action="store_true")
     parser.add_argument("--expected-protected-revision", required=True)
     parser.add_argument("--age-bin", required=True, type=Path)
     parser.add_argument("--age-identity", required=True, type=Path)
@@ -3553,6 +3687,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tracer-secret-materialization-journal", type=Path)
     parser.add_argument("--tracer-data-plane-activation-receipt", type=Path)
     parser.add_argument("--tracer-data-plane-activation-journal", type=Path)
+    parser.add_argument("--eligibility-issuer-private-key", type=Path)
+    parser.add_argument("--eligibility-issuer-receipt", type=Path)
+    parser.add_argument("--eligibility-issuer-journal", type=Path)
     parser.add_argument("--workbench-handover-receipt", type=Path)
     parser.add_argument("--workbench-handover-journal", type=Path)
     parser.add_argument("--workbench-recovery-receipt", type=Path)
@@ -3584,6 +3721,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.tracer_data_plane_recover_activation,
         args.tracer_data_plane_teardown_secrets,
     )
+    citizen_modes = (
+        args.participant_gateway_verify_active_runtime,
+        args.eligibility_issuer_materialize,
+        args.eligibility_issuer_recover,
+        args.eligibility_issuer_verify,
+    )
+    citizen_paths = (
+        args.eligibility_issuer_private_key,
+        args.eligibility_issuer_receipt,
+        args.eligibility_issuer_journal,
+    )
     participant_paths = (
         args.teardown_dormant_receipt,
         args.run29_archived_dormant_receipt,
@@ -3612,6 +3760,45 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.run29_dormant_handover_receipt,
         args.run29_participant_recovery_receipt,
     )
+    tracer_paths = (
+        args.tracer_secret_materialization_receipt,
+        args.tracer_secret_materialization_journal,
+        args.tracer_data_plane_activation_receipt,
+        args.tracer_data_plane_activation_journal,
+    )
+    if any(citizen_modes):
+        require(args.live is True, "citizen-adoption runtime modes require --live")
+        require(
+            all(value is None for value in (*participant_paths, *workbench_paths, *tracer_paths)),
+            "citizen-adoption runtime modes accept no participant, tracer, workbench, promotion, or relay inputs",
+        )
+        if args.participant_gateway_verify_active_runtime:
+            require(
+                all(value is None for value in citizen_paths),
+                "active participant runtime verification accepts no issuer inputs",
+            )
+        elif args.eligibility_issuer_materialize:
+            require(
+                all(value is not None for value in citizen_paths),
+                "eligibility issuer materialization requires private key, receipt, and journal",
+            )
+        elif args.eligibility_issuer_recover:
+            require(
+                args.eligibility_issuer_private_key is None
+                and args.eligibility_issuer_receipt is not None
+                and args.eligibility_issuer_journal is not None,
+                "eligibility issuer recovery requires only its reserved receipt and journal",
+            )
+        else:
+            require(
+                args.eligibility_issuer_private_key is None
+                and args.eligibility_issuer_receipt is not None
+                and args.eligibility_issuer_journal is None,
+                "eligibility issuer verification requires only its completed receipt",
+            )
+        return args
+    if any(value is not None for value in citizen_paths):
+        raise LiveTransportError("eligibility issuer inputs require an explicit citizen-adoption runtime mode")
     if args.run29_dormant_handover_teardown:
         require(args.live is True, "run29 dormant handover teardown requires --live")
         require(
@@ -4045,6 +4232,10 @@ def classify_final_status(
         "tracer-secrets-already-materialized",
         "tracer-recovery-completed",
         "tracer-secrets-torn-down",
+        "participant-runtime-verified",
+        "eligibility-issuer-materialized",
+        "eligibility-issuer-recovered",
+        "eligibility-issuer-receipt-verified",
     }:
         return (base_status, 0) if cleanup_complete else (f"{base_status}-cleanup-incomplete", 3)
     if not cleanup_complete:
@@ -4803,6 +4994,10 @@ def main(argv: list[str] | None = None) -> int:
     source_tracer_activation_receipt: BoundBlob | None = None
     tracer_secret_bound: BoundBlob | None = None; tracer_activation_bound: BoundBlob | None = None
     tracer_teardown_bound: BoundBlob | None = None
+    issuer_private_key_bound: BoundBlob | None = None
+    issuer_receipt_bound: BoundBlob | None = None
+    issuer_journal_bound: BoundBlob | None = None
+    active_runtime_bound: BoundBlob | None = None
     bootstrap_receipt: Path | None = None; handover_receipt: Path | None = None; recovery_receipt: Path | None = None
     teardown_receipt: Path | None = None; activation_receipt: Path | None = None
     source_dormant_projection: dict[str, Any] | None = None
@@ -4819,6 +5014,8 @@ def main(argv: list[str] | None = None) -> int:
     tracer_secret_projection: dict[str, Any] | None = None
     tracer_activation_projection: dict[str, Any] | None = None
     tracer_teardown_projection: dict[str, Any] | None = None
+    issuer_projection: dict[str, Any] | None = None
+    active_runtime_projection: dict[str, Any] | None = None
     recovery_attempted = False; recovery_returncode: int | None = None
     child_cleanup_errors: list[str] = []
     base_status = "blocked"; error: str | None = None
@@ -4826,6 +5023,7 @@ def main(argv: list[str] | None = None) -> int:
     participant_recovery_mode = False
     run29_handover_teardown_mode = False
     tracer_mode: str | None = None
+    citizen_mode: str | None = None
     tracer_recovery_required: dict[str, Any] | None = None
     tracer_secret_source_path: Path | None = None
     tracer_recovery_receipt_path: Path | None = None
@@ -4840,6 +5038,12 @@ def main(argv: list[str] | None = None) -> int:
             (args.tracer_data_plane_recover_materialization, "recover-materialization"),
             (args.tracer_data_plane_recover_activation, "recover-activation"),
             (args.tracer_data_plane_teardown_secrets, "teardown-secrets"),
+        ) if enabled), None)
+        citizen_mode = next((name for enabled, name in (
+            (args.participant_gateway_verify_active_runtime, "verify-active-runtime"),
+            (args.eligibility_issuer_materialize, "issuer-materialize"),
+            (args.eligibility_issuer_recover, "issuer-recover"),
+            (args.eligibility_issuer_verify, "issuer-verify"),
         ) if enabled), None)
         if args.workbench_baseline_handover or args.workbench_baseline_recovery or args.workbench_baseline_recovery_finalize:
             return run_workbench_baseline_handover_transport(args)
@@ -4856,7 +5060,14 @@ def main(argv: list[str] | None = None) -> int:
         receipt_dir = reserve_output_directory(args.receipt_directory)
         receipt_sink = WrapperReceiptSink.reserve(receipt_dir / "transport-transaction.json")
         cancellation.checkpoint()
-        protected_hashes, protected_blobs = bind_protected_checkout(revision)
+        protected_hashes, protected_blobs = bind_protected_checkout(
+            revision,
+            paths=(
+                CITIZEN_ADOPTION_PROTECTED_PATHS
+                if citizen_mode is not None
+                else PROTECTED_PATHS
+            ),
+        )
         verified_spawn_module = compile_verified_spawn_module(protected_blobs[ACTIVATION_RUNNER], revision)
         cancellation.checkpoint()
 
@@ -4876,14 +5087,17 @@ def main(argv: list[str] | None = None) -> int:
 
         temp = Path(tempfile.mkdtemp(prefix="roebel-participant-live-", dir="/private/tmp")); os.chmod(temp, 0o700)
         binding_dir = temp / "bindings"; binding_dir.mkdir(mode=0o700)
-        for runner_path in (
+        runner_paths = [
             BOOTSTRAP_RUNNER,
             ACTIVATION_RUNNER,
             SECRET_RUNNER,
             HANDOVER_RUNNER,
             TRACER_SECRET_RUNNER,
             TRACER_DATA_PLANE_RUNNER,
-        ):
+        ]
+        if citizen_mode is not None:
+            runner_paths.append(ELIGIBILITY_ISSUER_RUNNER)
+        for runner_path in runner_paths:
             runner_blob = bind_bytes_to_fd(
                 protected_blobs[runner_path],
                 binding_dir / (Path(runner_path).name + ".bound"),
@@ -4896,7 +5110,58 @@ def main(argv: list[str] | None = None) -> int:
         cancellation.checkpoint()
 
         verifier_environment = sanitized_environment() | {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"}
-        if run29_handover_teardown_mode:
+        if citizen_mode is not None:
+            issuer_runner = bound_runners[ELIGIBILITY_ISSUER_RUNNER]
+            if citizen_mode == "issuer-materialize":
+                args.eligibility_issuer_receipt = private_new_workbench_output(
+                    args.eligibility_issuer_receipt,
+                    "eligibility issuer materialization receipt",
+                )
+                args.eligibility_issuer_journal = private_new_workbench_output(
+                    args.eligibility_issuer_journal,
+                    "eligibility issuer materialization journal",
+                )
+                require(
+                    os.path.abspath(args.eligibility_issuer_receipt)
+                    != os.path.abspath(args.eligibility_issuer_journal),
+                    "eligibility issuer receipt and journal paths must be distinct",
+                )
+                issuer_private_key_bound = bind_eligibility_issuer_private_key(
+                    args.eligibility_issuer_private_key,
+                    binding_dir / "eligibility-issuer-private-key.bound",
+                )
+                bound_receipts.append(issuer_private_key_bound)
+            elif citizen_mode == "issuer-recover":
+                args.eligibility_issuer_receipt = private_reserved_receipt(
+                    args.eligibility_issuer_receipt,
+                    "eligibility issuer recovery receipt reservation",
+                )
+                args.eligibility_issuer_journal = private_file(
+                    args.eligibility_issuer_journal,
+                    "eligibility issuer recovery journal",
+                    MAX_RECEIPT_BYTES,
+                )
+                require(
+                    os.path.abspath(args.eligibility_issuer_receipt)
+                    != os.path.abspath(args.eligibility_issuer_journal),
+                    "eligibility issuer recovery receipt and journal paths must be distinct",
+                )
+            elif citizen_mode == "issuer-verify":
+                issuer_receipt_bound = snapshot_owned_receipt(
+                    args.eligibility_issuer_receipt,
+                    binding_dir / "eligibility-issuer-source-receipt.bound",
+                    "eligibility issuer source receipt",
+                )
+                bound_receipts.append(issuer_receipt_bound)
+                issuer_projection = verify_eligibility_issuer_receipt_with_protected_cli(
+                    cancellation,
+                    issuer_runner,
+                    issuer_receipt_bound,
+                    revision,
+                    verifier_environment,
+                    allow_cancelled=False,
+                )
+        elif run29_handover_teardown_mode:
             run29_sources = (
                 ("archivedDormant", args.run29_archived_dormant_receipt),
                 ("dormantHandover", args.run29_dormant_handover_receipt),
@@ -4949,7 +5214,11 @@ def main(argv: list[str] | None = None) -> int:
                 "dormant-ready",
                 allow_cancelled=False,
             )
-        if run29_handover_teardown_mode:
+        if citizen_mode is not None:
+            # Citizen-adoption modes bind only their dedicated inputs above.
+            # They never enter legacy bootstrap, handover, or Secret flows.
+            pass
+        elif run29_handover_teardown_mode:
             # The incident-only run29 capability binds its exact three
             # receipts above and intentionally has no participant Secret
             # bundle.  Keep it out of the ordinary source-selection chain.
@@ -5215,6 +5484,11 @@ def main(argv: list[str] | None = None) -> int:
         handover_runner = bound_runners[HANDOVER_RUNNER]
         tracer_secret_runner = bound_runners[TRACER_SECRET_RUNNER]
         tracer_data_plane_runner = bound_runners[TRACER_DATA_PLANE_RUNNER]
+        issuer_runner = (
+            bound_runners[ELIGIBILITY_ISSUER_RUNNER]
+            if citizen_mode is not None
+            else None
+        )
         kubectl_fd = executable_bindings["kubectl"].fd
         participant_blob_args: list[str] = []
         participant_blob_fds: list[int] = []
@@ -5241,7 +5515,113 @@ def main(argv: list[str] | None = None) -> int:
                 and len(participant_blob_fds) == len(handover_prebound),
                 "participant continuation protected Git closure was not prebound",
             )
-        if tracer_mode is not None:
+        if citizen_mode == "verify-active-runtime":
+            active_runtime_receipt = receipt_dir / "participant-gateway-active-runtime.json"
+            active = session.run_child(
+                activation_runner.command([
+                    "--verify-active-runtime",
+                    "--expected-protected-revision", revision,
+                    "--kubeconfig", str(kubeconfig),
+                    "--receipt", str(active_runtime_receipt),
+                ]),
+                child_environment,
+                forward_signals=False,
+                pass_fds=(activation_runner.blob.fd, kubectl_fd),
+            )
+            try:
+                require(active_runtime_receipt.exists(), "active runtime verifier produced no durable receipt")
+                active_runtime_bound = snapshot_owned_receipt(
+                    active_runtime_receipt,
+                    binding_dir / "participant-gateway-active-runtime.bound",
+                    "participant gateway active runtime receipt",
+                )
+                bound_receipts.append(active_runtime_bound)
+                active_runtime_projection = verify_receipt_with_protected_cli(
+                    cancellation,
+                    activation_runner,
+                    "--verify-active-runtime-receipt-fd",
+                    active_runtime_bound,
+                    revision,
+                    child_environment,
+                    "active-runtime-verified",
+                    allow_cancelled=True,
+                )
+            finally:
+                session.receipt_reconciled()
+            logging_error = best_effort_print_child(active)
+            if logging_error is not None:
+                child_cleanup_errors.append(logging_error)
+            require(active.returncode == 0, "protected active runtime verifier did not complete cleanly")
+            operation_succeeded = True
+            base_status = "participant-runtime-verified"
+        elif citizen_mode in {"issuer-materialize", "issuer-recover"}:
+            require(issuer_runner is not None, "eligibility issuer protected runner binding absent")
+            if citizen_mode == "issuer-materialize":
+                require(issuer_private_key_bound is not None, "normalized eligibility issuer private-key descriptor absent")
+                issuer_arguments = [
+                    "--expected-protected-revision", revision,
+                    "--materialize",
+                    "--kubeconfig", str(kubeconfig),
+                    "--private-key-fd", str(issuer_private_key_bound.fd),
+                    "--receipt", str(args.eligibility_issuer_receipt),
+                    "--journal", str(args.eligibility_issuer_journal),
+                ]
+                issuer_fds = (issuer_runner.blob.fd, issuer_private_key_bound.fd, kubectl_fd)
+            else:
+                issuer_arguments = [
+                    "--expected-protected-revision", revision,
+                    "--recover-journal", str(args.eligibility_issuer_journal),
+                    "--kubeconfig", str(kubeconfig),
+                    "--receipt", str(args.eligibility_issuer_receipt),
+                ]
+                issuer_fds = (issuer_runner.blob.fd, kubectl_fd)
+            issuer_child = session.run_child(
+                issuer_runner.command(issuer_arguments),
+                child_environment,
+                forward_signals=False,
+                pass_fds=issuer_fds,
+            )
+            try:
+                require(args.eligibility_issuer_receipt.exists(), "eligibility issuer runner produced no durable receipt")
+                issuer_receipt_bound = snapshot_owned_receipt(
+                    args.eligibility_issuer_receipt,
+                    binding_dir / "eligibility-issuer-receipt.bound",
+                    "eligibility issuer receipt",
+                )
+                issuer_journal_bound = snapshot_owned_receipt(
+                    args.eligibility_issuer_journal,
+                    binding_dir / "eligibility-issuer-journal.bound",
+                    "eligibility issuer journal",
+                )
+                bound_receipts.extend((issuer_receipt_bound, issuer_journal_bound))
+                issuer_projection = verify_eligibility_issuer_receipt_with_protected_cli(
+                    cancellation,
+                    issuer_runner,
+                    issuer_receipt_bound,
+                    revision,
+                    child_environment,
+                    allow_cancelled=True,
+                )
+            finally:
+                session.receipt_reconciled()
+            logging_error = best_effort_print_child(issuer_child)
+            if logging_error is not None:
+                child_cleanup_errors.append(logging_error)
+            require(issuer_child.returncode == 0, "protected eligibility issuer operation did not complete cleanly")
+            operation_succeeded = True
+            base_status = (
+                "eligibility-issuer-materialized"
+                if citizen_mode == "issuer-materialize"
+                else "eligibility-issuer-recovered"
+            )
+        elif citizen_mode == "issuer-verify":
+            require(
+                issuer_projection is not None and issuer_receipt_bound is not None,
+                "eligibility issuer source receipt verification absent",
+            )
+            operation_succeeded = True
+            base_status = "eligibility-issuer-receipt-verified"
+        elif tracer_mode is not None:
             attempt_paths = tracer_attempt_paths(receipt_dir)
             if tracer_mode in {"recover-materialization", "recover-activation"}:
                 require(
@@ -6155,6 +6535,10 @@ def main(argv: list[str] | None = None) -> int:
     tracer_secret_record = tracer_receipt_record(tracer_secret_projection, tracer_secret_bound)
     tracer_activation_record = tracer_receipt_record(tracer_activation_projection, tracer_activation_bound)
     tracer_teardown_record = tracer_receipt_record(tracer_teardown_projection, tracer_teardown_bound)
+    active_runtime_record = receipt_record(active_runtime_projection, active_runtime_bound)
+    issuer_record = eligibility_issuer_receipt_record(
+        issuer_projection, issuer_receipt_bound, issuer_journal_bound,
+    )
     status, exit_code = classify_final_status(
         base_status,
         activation_committed=activation_committed,
@@ -6163,7 +6547,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     interrupted = bool(cancellation.signals)
     wrapper_receipt = {
-        "schemaVersion": WRAPPER_RECEIPT_SCHEMA,
+        "schemaVersion": (
+            CITIZEN_ADOPTION_WRAPPER_RECEIPT_SCHEMA
+            if citizen_mode is not None
+            else WRAPPER_RECEIPT_SCHEMA
+        ),
         "status": status,
         "protectedRevision": revision,
         "protectedGitBlobSha256": protected_hashes,
@@ -6257,6 +6645,16 @@ def main(argv: list[str] | None = None) -> int:
             "secretValuesPrinted": False,
             "civicAuthorityEffects": False,
         },
+        **({
+            "citizenAdoptionRuntime": {
+                "mode": citizen_mode,
+                "activeRuntime": active_runtime_record,
+                "eligibilityIssuer": issuer_record,
+                "readOnly": citizen_mode in {"verify-active-runtime", "issuer-verify"},
+                "secretValuesRead": False,
+                "civicAuthorityEffects": False,
+            },
+        } if citizen_mode is not None else {}),
         "teardown": teardown_record,
         "activation": activation_record,
         "dormantContinuation": {

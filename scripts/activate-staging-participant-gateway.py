@@ -28,6 +28,8 @@ NAME, SOURCE = "roebel-staging-participant-gateway", "roebel-staging-operations"
 WORKBENCH_NAMESPACE, WORKBENCH_POLICY_NAME = "stadtstack-roebel-staging-lab", "roebel-staging-participant-workbench-ingress"
 RECEIPT_SCHEMA = "roebel_staging_participant_gateway_activation_receipt_v4"
 RECOVERY_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_recovery_receipt_v1"
+ACTIVE_RUNTIME_RECEIPT_SCHEMA = "roebel_staging_participant_gateway_active_runtime_receipt_v1"
+ACTIVE_RUNTIME_FACTS_SCHEMA = "roebel_staging_participant_gateway_active_runtime_facts_v1"
 PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS = 0.25
 HAPROXY_METHOD_DENIED_BODY = (
     "<html><body><h1>405 Method Not Allowed</h1>\n"
@@ -54,6 +56,30 @@ TRACER_ACTIVATION_RUNNER_PATH = "scripts/run-tracer-data-plane-live.py"
 TRACER_MATERIALIZER_PATH = "scripts/materialize-tracer-data-plane-secrets.py"
 TRACER_POLICY_PATH = "scripts/tracer_data_plane_policy.py"
 TRACER_RENDER_ROOT = "reviewed-render/roebel-staging/tracer-data-plane"
+ELIGIBILITY_ISSUER_MATERIALIZER_PATH = "scripts/materialize-staging-participant-eligibility-issuer.py"
+ELIGIBILITY_ISSUER_POLICY_PATH = "policy/staging-participant-eligibility-issuer-materialization-policy.json"
+ELIGIBILITY_ISSUER_POLICY_SCHEMA = "roebel_staging_participant_eligibility_issuer_materialization_policy_v2"
+ELIGIBILITY_ISSUER_SECRET_NAME = "roebel-staging-participant-gateway-eligibility-issuer"
+ELIGIBILITY_ISSUER_SECRET_KEY = "private-key-hex"
+ELIGIBILITY_ISSUER_KEY_ID = "roebel-staging-citizen-eligibility-2026-09"
+ELIGIBILITY_ISSUER_PUBLIC_KEY = "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8"
+ELIGIBILITY_ISSUER_NONCE_ANNOTATION = "stadtstack.io/eligibility-issuer-materialization-nonce"
+ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION = "stadtstack.io/eligibility-issuer-key-id"
+ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION = "stadtstack.io/eligibility-issuer-public-key"
+ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION = "stadtstack.io/eligibility-issuer-content-contract-sha256"
+ELIGIBILITY_ISSUER_KEYSET_ANNOTATION = "stadtstack.io/eligibility-issuer-keyset-sha256"
+ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT = "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc"
+ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT = "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1"
+ELIGIBILITY_ISSUER_SECRET_API_PATH = "/api/v1/namespaces/stadtstack-roebel-web-preview/secrets/roebel-staging-participant-gateway-eligibility-issuer"
+ELIGIBILITY_ISSUER_MAX_METADATA_RESPONSE_BYTES = 256 * 1024
+ELIGIBILITY_ISSUER_LABELS = {
+    "app.kubernetes.io/component": "staging-participant-gateway",
+    "app.kubernetes.io/part-of": "stadtstack",
+    "stadtstack.io/authority": "none",
+    "stadtstack.io/civic-authority": "none",
+    "stadtstack.io/environment": "staging",
+    "stadtstack.io/secret-owner": "eligibility-issuer-materializer",
+}
 TRACER_RECEIPT_ORIGIN_REVISION = "068c1248dcbc7e1967b5822abad42a55dce7c0f8"
 TRACER_RECEIPT_INTERMEDIATE_REVISION = "abd199dff25066e1d60911667b23c2655e826b75"
 TRACER_RECEIPT_SECOND_SUCCESSOR_REVISION = "f41bb1ac2ec27c6332a3b5614e65516349f239b0"
@@ -411,6 +437,37 @@ BOOTSTRAP_PROTECTED_PATHS = (
     "scripts/verify-reviewed-render.py",
     "policy/repository-contract.json",
 )
+ACTIVE_RUNTIME_PROTECTED_PATHS = tuple(dict.fromkeys((
+    *BOOTSTRAP_PROTECTED_PATHS,
+    WORKFLOW_PATH,
+    ELIGIBILITY_ISSUER_MATERIALIZER_PATH,
+    ELIGIBILITY_ISSUER_POLICY_PATH,
+    TRACER_POLICY_PATH,
+    f"{TRACER_RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_RENDER_ROOT}/serviceaccount.json",
+    f"{TRACER_RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_RENDER_ROOT}/postgres-service.json",
+    f"{TRACER_RENDER_ROOT}/postgres-networkpolicy.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-deployment.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-service.json",
+    f"{TRACER_RENDER_ROOT}/postgrest-networkpolicy.json",
+    f"{TRACER_RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    f"{TRACER_RENDER_ROOT}/bootstrap/71-roebel-tracer-baseline.sql",
+    f"{TRACER_RENDER_ROOT}/bootstrap/72-provision-roebel-vault.sh",
+    f"{TRACER_RENDER_ROOT}/bootstrap/73-staging-participant-gateway.sql",
+    f"{TRACER_RENDER_ROOT}/bootstrap/74-staging-participant-topic-tracer.sql",
+    f"{TRACER_RENDER_ROOT}/bootstrap/75-staging-citizen-adoption.sql",
+    "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/service.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/deployment.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/ingress.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/kustomization.yaml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/networkpolicy.json",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
+)))
 RUN36_BOOTSTRAP_ORIGIN_REVISION = "8149f8b2fa8459f140d68de4c5883319a15c2ad0"
 RUN36_BOOTSTRAP_ORIGIN_TREE = "95ecf0384fcc99cea8b840d9ee86638d68f95a8d"
 RUN36_BOOTSTRAP_RAW_SHA256 = "sha256:756c44dacfbd30f248251bf2551e5e2650149d84fa58548638bfef14be7163a3"
@@ -701,9 +758,18 @@ def require_run36_bootstrap_transition_v4(current_revision: str) -> None:
         "run36 bootstrap origin-to-successor file set drift",
     )
 
-def protected_checkout(rev: str) -> dict[str, str]:
+def protected_checkout(
+    rev: str,
+    *,
+    paths: tuple[str, ...] | None = None,
+) -> dict[str, str]:
     """Bind every executable repo file before any Kubernetes subprocess exists."""
-    paths = tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, WORKFLOW_PATH)))
+    paths = (
+        tuple(dict.fromkeys((*BOOTSTRAP_PROTECTED_PATHS, WORKFLOW_PATH)))
+        if paths is None
+        else paths
+    )
+    require(paths and len(paths) == len(set(paths)), "protected executable closure is invalid")
     hashes: dict[str, str] = {}
     for path in paths:
         local = ROOT / path
@@ -1326,9 +1392,19 @@ def git_blob(rev: str, path: str) -> bytes:
     if p.returncode: raise ActivationError(f"protected Git blob unavailable: {path}")
     return p.stdout
 def live_obj(r: Runner, kube: str, kind: str, name: str, namespace: str) -> dict[str, Any]: return get(r, kb(kube) + ["-n", namespace, "get", kind, name], f"live {kind}/{name}")
-def public_projection(value: Any) -> Any:
+def public_projection(
+    value: Any,
+    *,
+    allow_private_key_commitments: bool = False,
+) -> Any:
     """Policy and receipts cannot carry Secret data; refuse it rather than scrub."""
     encoded = canonical(value).lower()
+    # A checksum commitment is public identity, not private key material.  The
+    # v5 policy carries only these exact commitment field names; all other
+    # private-key-shaped fields remain forbidden below.
+    if allow_private_key_commitments:
+        for allowed in ('"privatekeysha256commitment"', '"privatekeycommitmentsha256"'):
+            encoded = encoded.replace(allowed, '"publiccommitment"')
     require(not any(x in encoded for x in ('"data"', '"stringdata"', '"token"', '"password"', '"privatekey"')), "secret-shaped value is forbidden")
     return value
 
@@ -1337,7 +1413,14 @@ def policy(rev: str) -> dict[str, Any]:
     require(path.is_file() and not path.is_symlink(), "protected activation policy descriptor is not wired")
     raw = path.read_bytes()
     require(raw == git_blob(rev, POLICY_PATH), "policy descriptor is not the exact checked-out protected Git blob")
-    p = obj(raw.decode(), "activation policy descriptor"); public_projection(p)
+    p = obj(raw.decode(), "activation policy descriptor")
+    public_projection(
+        p,
+        allow_private_key_commitments=(
+            p.get("schemaVersion")
+            == "roebel_staging_participant_gateway_activation_policy_v5"
+        ),
+    )
     try: return POLICY.validate_activation_policy(p)
     except POLICY.PolicyError as exc: raise ActivationError(str(exc)) from exc
 
@@ -3305,6 +3388,269 @@ def secret_materialization_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> 
 def require_same_secret_materialization_v4(before: dict[str, Any], after: dict[str, Any], label: str) -> None:
     require(after == before, f"Secret identity/keyset/resourceVersion changed {label}")
 
+def eligibility_issuer_policy_v5(rev: str, p: dict[str, Any]) -> dict[str, Any]:
+    """Bind the public issuer identity from its separately protected policy."""
+    raw = git_blob(rev, ELIGIBILITY_ISSUER_POLICY_PATH)
+    value = obj(raw.decode("utf-8"), "eligibility issuer materialization policy")
+    public_value = copy.deepcopy(value)
+    public_receipt = public_value.get("receipt") if isinstance(public_value, dict) else None
+    require(
+        isinstance(public_receipt, dict)
+        and public_receipt.get("containsPrivateKey") is False,
+        "eligibility issuer protected public policy drift",
+    )
+    public_receipt["containsSecretMaterial"] = public_receipt.pop("containsPrivateKey")
+    public_projection(public_value, allow_private_key_commitments=True)
+    citizen = p["runtime"]["citizenAdoption"]["eligibilityIssuer"]
+    require(
+        value.get("schemaVersion") == ELIGIBILITY_ISSUER_POLICY_SCHEMA
+        and value.get("keyId") == citizen["keyId"] == ELIGIBILITY_ISSUER_KEY_ID
+        and value.get("publicKey", {}).get("expected")
+        == citizen["publicKey"] == ELIGIBILITY_ISSUER_PUBLIC_KEY
+        and value.get("input", {}).get("sha256Commitment")
+        == citizen["privateKeySha256Commitment"]
+        == ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT
+        and value.get("target") == {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "namespace": citizen["secret"]["namespace"],
+            "name": citizen["secret"]["name"],
+            "type": "Opaque",
+            "key": citizen["secret"]["key"],
+            "immutable": True,
+        }
+        and citizen["secret"] == {
+            "name": ELIGIBILITY_ISSUER_SECRET_NAME,
+            "namespace": NAMESPACE,
+            "key": ELIGIBILITY_ISSUER_SECRET_KEY,
+        }
+        and value.get("authority") == {
+            "environment": "staging",
+            "civicAuthority": "none",
+            "citizenVerification": False,
+            "municipalPublication": False,
+            "proposalMutation": False,
+            "voteMutation": False,
+            "treasuryMutation": False,
+        }
+        and value.get("materialization", {}).get("readSecretValues") is False,
+        "eligibility issuer protected public policy drift",
+    )
+    materialization = value["materialization"]
+    require(
+        materialization.get("metadataOnlyRead") == {
+            "representation": "PartialObjectMetadata",
+            "accept": ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT,
+            "apiPath": ELIGIBILITY_ISSUER_SECRET_API_PATH,
+        }
+        and materialization.get("metadataCommitments") == {
+            "contentContractAnnotation": ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION,
+            "contentContractFields": [
+                "target", "input.sha256Commitment", "keyId", "publicKey.expected",
+            ],
+            "keySetAnnotation": ELIGIBILITY_ISSUER_KEYSET_ANNOTATION,
+            "keySet": [ELIGIBILITY_ISSUER_SECRET_KEY],
+        },
+        "eligibility issuer metadata-only policy drift",
+    )
+    return value
+
+def eligibility_issuer_content_contract_commitment_v5() -> str:
+    return digest({
+        "target": {
+            "apiVersion": "v1", "kind": "Secret", "namespace": NAMESPACE,
+            "name": ELIGIBILITY_ISSUER_SECRET_NAME, "type": "Opaque",
+            "key": ELIGIBILITY_ISSUER_SECRET_KEY, "immutable": True,
+        },
+        "privateKeyCommitmentSha256": ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT,
+        "keyId": ELIGIBILITY_ISSUER_KEY_ID,
+        "publicKey": ELIGIBILITY_ISSUER_PUBLIC_KEY,
+    })
+
+def eligibility_issuer_keyset_commitment_v5() -> str:
+    return digest([ELIGIBILITY_ISSUER_SECRET_KEY])
+
+def eligibility_issuer_exact_annotations_v5(operation_nonce: str) -> dict[str, str]:
+    require(POLICY.NONCE.fullmatch(operation_nonce) is not None, "eligibility issuer operation nonce drift")
+    return {
+        ELIGIBILITY_ISSUER_NONCE_ANNOTATION: operation_nonce,
+        ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION: ELIGIBILITY_ISSUER_KEY_ID,
+        ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION: ELIGIBILITY_ISSUER_PUBLIC_KEY,
+        ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION: eligibility_issuer_content_contract_commitment_v5(),
+        ELIGIBILITY_ISSUER_KEYSET_ANNOTATION: eligibility_issuer_keyset_commitment_v5(),
+    }
+
+def _parse_eligibility_issuer_partial_metadata_v5(value: Any) -> dict[str, Any]:
+    metadata = value.get("metadata") if isinstance(value, dict) else None
+    annotations = metadata.get("annotations") if isinstance(metadata, dict) else None
+    operation_nonce = (
+        annotations.get(ELIGIBILITY_ISSUER_NONCE_ANNOTATION)
+        if isinstance(annotations, dict) else None
+    )
+    expected_annotations = (
+        eligibility_issuer_exact_annotations_v5(operation_nonce)
+        if isinstance(operation_nonce, str) else None
+    )
+    require(
+        isinstance(value, dict)
+        and set(value) == {"apiVersion", "kind", "metadata"}
+        and value.get("apiVersion") == "meta.k8s.io/v1"
+        and value.get("kind") == "PartialObjectMetadata"
+        and isinstance(metadata, dict)
+        and metadata.get("namespace") == NAMESPACE
+        and metadata.get("name") == ELIGIBILITY_ISSUER_SECRET_NAME
+        and isinstance(metadata.get("uid"), str)
+        and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", metadata["uid"]) is not None
+        and recovery_ascii_decimal_v4(metadata.get("resourceVersion"))
+        and metadata.get("labels") == ELIGIBILITY_ISSUER_LABELS
+        and isinstance(operation_nonce, str)
+        and isinstance(expected_annotations, dict)
+        and annotations == expected_annotations,
+        "eligibility issuer PartialObjectMetadata projection mismatch",
+    )
+    result = {
+        "target": {
+            "apiVersion": "v1", "kind": "Secret", "namespace": NAMESPACE,
+            "name": ELIGIBILITY_ISSUER_SECRET_NAME,
+        },
+        "uid": metadata["uid"],
+        "resourceVersion": metadata["resourceVersion"],
+        "type": "Opaque",
+        "immutable": True,
+        "keySet": [ELIGIBILITY_ISSUER_SECRET_KEY],
+        "labels": copy.deepcopy(ELIGIBILITY_ISSUER_LABELS),
+        "annotations": copy.deepcopy(expected_annotations),
+        "valuesRead": False,
+    }
+    public_projection(result)
+    return result
+
+def eligibility_issuer_secret_projection_v5(
+    snapshot: KubeconfigSnapshot,
+    p: dict[str, Any],
+    rev: str,
+) -> dict[str, Any]:
+    """Read the issuer through authenticated PartialObjectMetadata only."""
+    issuer_policy = eligibility_issuer_policy_v5(rev, p)
+    boundary = issuer_policy["materialization"]["metadataOnlyRead"]
+    require(boundary == {
+        "representation": "PartialObjectMetadata",
+        "accept": ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT,
+        "apiPath": ELIGIBILITY_ISSUER_SECRET_API_PATH,
+    }, "eligibility issuer metadata-only policy drift")
+    timeout = issuer_policy["httpBoundary"]["timeoutsSeconds"]["routeRequest"]
+    context = ssl.create_default_context(cadata=snapshot.ca_pem.decode("ascii"))
+    if snapshot.client_certificate_path is not None or snapshot.client_key_path is not None:
+        require(
+            snapshot.client_certificate_path is not None
+            and snapshot.client_key_path is not None,
+            "eligibility issuer Kubernetes client certificate snapshot incomplete",
+        )
+        context.load_cert_chain(
+            str(snapshot.client_certificate_path), str(snapshot.client_key_path),
+        )
+    raw = _api_tcp_transport_v4(snapshot, timeout)
+    secured = None
+    try:
+        secured = context.wrap_socket(raw, server_hostname=snapshot.tls_server_name)
+        host = f"[{snapshot.hostname}]" if ":" in snapshot.hostname else snapshot.hostname
+        authority = host if snapshot.port == 443 else f"{host}:{snapshot.port}"
+        headers = [
+            f"GET {ELIGIBILITY_ISSUER_SECRET_API_PATH} HTTP/1.1",
+            f"Host: {authority}",
+            f"Accept: {ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT}",
+            "Connection: close",
+        ]
+        if snapshot.bearer_token is not None:
+            headers.append(f"Authorization: Bearer {snapshot.bearer_token}")
+        secured.sendall(("\r\n".join(headers) + "\r\n\r\n").encode("ascii"))
+        response = http.client.HTTPResponse(secured)
+        response.begin()
+        require(response.status == 200, "eligibility issuer metadata-only Kubernetes GET rejected")
+        content_type = response.getheader("Content-Type", "")
+        require(
+            content_type.split(";", 1)[0].strip().lower() == "application/json",
+            "eligibility issuer metadata-only response type invalid",
+        )
+        require(
+            response.getheader("Content-Encoding") is None,
+            "eligibility issuer metadata-only response encoding forbidden",
+        )
+        content_length = response.getheader("Content-Length")
+        require(
+            content_length is None
+            or (
+                content_length.isdigit()
+                and int(content_length) <= ELIGIBILITY_ISSUER_MAX_METADATA_RESPONSE_BYTES
+            ),
+            "eligibility issuer metadata-only response length invalid",
+        )
+        body = response.read(ELIGIBILITY_ISSUER_MAX_METADATA_RESPONSE_BYTES + 1)
+        require(
+            len(body) <= ELIGIBILITY_ISSUER_MAX_METADATA_RESPONSE_BYTES
+            and (content_length is None or len(body) == int(content_length)),
+            "eligibility issuer metadata-only response length mismatch",
+        )
+        try:
+            document = json.loads(body, object_pairs_hook=_unique_object)
+        except (UnicodeDecodeError, ValueError, TypeError) as exc:
+            raise ActivationError("eligibility issuer metadata-only response invalid") from exc
+        return _parse_eligibility_issuer_partial_metadata_v5(document)
+    finally:
+        if secured is not None:
+            try: secured.close()
+            except OSError: pass
+        else:
+            try: raw.close()
+            except OSError: pass
+
+def validate_eligibility_issuer_secret_projection_v5(value: Any) -> dict[str, Any]:
+    require(
+        isinstance(value, dict)
+        and set(value) == {
+            "target", "uid", "resourceVersion", "type", "immutable",
+            "keySet", "labels", "annotations", "valuesRead",
+        }
+        and value.get("target") == {
+            "apiVersion": "v1", "kind": "Secret",
+            "namespace": NAMESPACE, "name": ELIGIBILITY_ISSUER_SECRET_NAME,
+        }
+        and isinstance(value.get("uid"), str)
+        and re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value["uid"]) is not None
+        and recovery_ascii_decimal_v4(value.get("resourceVersion"))
+        and value.get("type") == "Opaque"
+        and value.get("immutable") is True
+        and value.get("keySet") == [ELIGIBILITY_ISSUER_SECRET_KEY]
+        and value.get("labels") == ELIGIBILITY_ISSUER_LABELS
+        and isinstance(value.get("annotations"), dict)
+        and set(value["annotations"]) == {
+            ELIGIBILITY_ISSUER_NONCE_ANNOTATION,
+            ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION,
+            ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION,
+            ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION,
+            ELIGIBILITY_ISSUER_KEYSET_ANNOTATION,
+        }
+        and POLICY.NONCE.fullmatch(value["annotations"].get(ELIGIBILITY_ISSUER_NONCE_ANNOTATION, "")) is not None
+        and value["annotations"].get(ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION) == ELIGIBILITY_ISSUER_KEY_ID
+        and value["annotations"].get(ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION) == ELIGIBILITY_ISSUER_PUBLIC_KEY
+        and value["annotations"].get(ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION) == eligibility_issuer_content_contract_commitment_v5()
+        and value["annotations"].get(ELIGIBILITY_ISSUER_KEYSET_ANNOTATION) == eligibility_issuer_keyset_commitment_v5()
+        and value.get("valuesRead") is False,
+        "eligibility issuer Secret receipt projection drift",
+    )
+    return copy.deepcopy(value)
+
+def require_same_eligibility_issuer_secret_projection_v5(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> None:
+    validate_eligibility_issuer_secret_projection_v5(before)
+    validate_eligibility_issuer_secret_projection_v5(after)
+    require(
+        after == before,
+        "eligibility issuer Secret UID/resourceVersion/keyset/public metadata changed after Flux",
+    )
+
 def cluster_binding_v4(r: Runner, snapshot: KubeconfigSnapshot, p: dict[str, Any]) -> dict[str, Any]:
     """Bind the snapshotted credentials to the protected cluster identity."""
     expected = p["clusterIdentity"]
@@ -3477,6 +3823,30 @@ def anonymous_publication_v4(p: dict[str, Any]) -> dict[str, Any]:
             "workflowHashSemantics": pins["workflowHashSemantics"],
         },
     }
+
+def anonymous_publication_v5(p: dict[str, Any]) -> dict[str, Any]:
+    """Extend the unchanged v4 registry proof with the exact v3 receipt pins."""
+    require(
+        p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5",
+        "participant v5 publication policy schema drift",
+    )
+    pins = p["productPins"]
+    result = anonymous_publication_v4(p)
+    result["reviewedStaticPins"].update({
+        "publicationReceiptSchemaVersion": pins["publicationReceiptSchemaVersion"],
+        "migrationSha256": pins["migration"]["sha256"],
+        "databaseSchemaSha256": pins["databaseSchemaSha256"],
+        "topicTracerMigrationSha256": pins["topicTracerMigration"]["sha256"],
+        "topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
+        "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
+        "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
+    })
+    require(
+        result["reviewedStaticPins"]["publicationReceiptSchemaVersion"]
+        == "roebel_staging_publication_receipt_v3",
+        "participant publication receipt schema drift",
+    )
+    return result
 
 def runtime_image_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> dict[str, Any]:
     selector = ",".join(f"{key}={value}" for key, value in sorted(POLICY.GATEWAY_LABELS.items()))
@@ -4046,6 +4416,29 @@ def expected_database_status_v4(p: dict[str, Any]) -> dict[str, str]:
         **topic_tracer_readiness_projection_v4(p),
     }
 
+def expected_database_status_v5(p: dict[str, Any]) -> dict[str, str]:
+    """Exact private readiness payload emitted by the citizen-adoption image."""
+    require(
+        p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5",
+        "participant v5 readiness policy schema drift",
+    )
+    pins = p["productPins"]
+    return {
+        "schemaVersion": "roebel_staging_participant_gateway_status_v3",
+        "status": "ready",
+        "municipalityId": p["runtime"]["topicPolicy"]["municipalityId"],
+        "sourceConversationTopic": p["runtime"]["topicPolicy"]["sourceConversationTopic"],
+        "topicPolicyVersion": p["runtime"]["topicPolicy"]["policyVersion"],
+        "sourceRevision": pins["sourceRevision"],
+        "manifestDigest": pins["imageManifestDigest"],
+        "migrationSha256": pins["migration"]["sha256"],
+        "databaseSchemaSha256": pins["databaseSchemaSha256"],
+        "topicTracerMigrationSha256": pins["topicTracerMigration"]["sha256"],
+        "topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
+        "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
+        "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
+    }
+
 
 def validate_database_status_receipt_v4(value: Any, p: dict[str, Any]) -> dict[str, Any]:
     """Fail closed on the complete private readiness receipt, not a subset."""
@@ -4117,6 +4510,55 @@ def validate_database_status_receipt_v4(value: Any, p: dict[str, Any]) -> dict[s
     )
     return copy.deepcopy(value)
 
+def validate_database_status_receipt_v5(value: Any, p: dict[str, Any]) -> dict[str, Any]:
+    """Fail closed on the complete v3 readiness and citizen database pins."""
+    require(isinstance(value, dict), "internal participant v5 readiness receipt must be an object")
+    expected_status = expected_database_status_v5(p)
+    require(
+        set(value) == set(expected_status) | {"probe", "rbac"},
+        "internal participant v5 readiness receipt field set drift",
+    )
+    require(
+        {key: value[key] for key in expected_status} == expected_status,
+        "internal participant v5 readiness product/database contract drift",
+    )
+    probe = value["probe"]
+    expected_image = p["productPins"]["imageRepository"] + "@" + p["productPins"]["imageManifestDigest"]
+    require(
+        isinstance(probe, dict)
+        and set(probe) == {
+            "transport", "pod", "loopbackOnly", "publicIngressUsed",
+            "serviceProxyUsed", "redirectsAllowed", "path", "remotePort",
+            "podUid", "podImage", "podImageId", "podReadyAfter",
+            "podResourceVersionBefore", "podResourceVersionAfter",
+        }
+        and probe.get("transport") == "authenticated-kubernetes-pod-port-forward"
+        and isinstance(probe.get("pod"), str) and bool(probe["pod"])
+        and probe.get("loopbackOnly") is True
+        and probe.get("publicIngressUsed") is False
+        and probe.get("serviceProxyUsed") is False
+        and probe.get("redirectsAllowed") is False
+        and probe.get("path") == "/status"
+        and probe.get("remotePort") == POLICY.GATEWAY_PORT
+        and isinstance(probe.get("podUid"), str) and bool(probe["podUid"])
+        and probe.get("podImage") == expected_image
+        and isinstance(probe.get("podImageId"), str) and bool(probe["podImageId"])
+        and probe.get("podReadyAfter") is True
+        and recovery_ascii_decimal_v4(probe.get("podResourceVersionBefore"))
+        and recovery_ascii_decimal_v4(probe.get("podResourceVersionAfter"))
+        and int(probe["podResourceVersionAfter"]) >= int(probe["podResourceVersionBefore"]),
+        "internal participant v5 readiness probe receipt drift",
+    )
+    require(
+        value["rbac"] == {
+            "getPods": True,
+            "listPods": True,
+            "createPodsPortforward": True,
+        },
+        "internal participant v5 readiness RBAC receipt drift",
+    )
+    return copy.deepcopy(value)
+
 
 def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
     # This is the container-internal readiness contract. It is reached only by
@@ -4175,6 +4617,102 @@ def database_status_v4(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: d
     return validate_database_status_receipt_v4(expected | {
         "probe": probe | {"podUid": selected["uid"], "podImage": exact_image, "podImageId": selected["imageId"], "podReadyAfter": True, "podResourceVersionBefore": selected["resourceVersion"], "podResourceVersionAfter": current_metadata.get("resourceVersion")},
         "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
+    }, p)
+
+def database_status_v5(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: dict[str, Any]) -> dict[str, Any]:
+    """Probe the v5 Pod directly and bind all three checksum-pinned schemas."""
+    require(
+        runtime.get("readyPodCount") == p["runtime"]["replicas"]
+        and len(runtime.get("pods", [])) == p["runtime"]["replicas"],
+        "verified participant v5 Pod set absent",
+    )
+    for verb in ("get", "list"):
+        checked(
+            r,
+            kb(kubeconfig) + ["auth", "can-i", "--quiet", verb, "pods", "-n", NAMESPACE],
+            f"internal v5 status RBAC {verb} pods",
+        )
+    checked(
+        r,
+        kb(kubeconfig) + ["auth", "can-i", "--quiet", "create", "pods/portforward", "-n", NAMESPACE],
+        "internal v5 status RBAC create pods/portforward",
+    )
+    selected = runtime["pods"][0]
+    timeout = p["httpBoundary"]["timeoutsSeconds"]["routeRequest"]
+    participant_http_status_preflight_v4(kubeconfig, selected["name"], timeout)
+    try:
+        body, probe = _pod_port_forward_get_v4(
+            kubeconfig,
+            selected["name"],
+            POLICY.GATEWAY_PORT,
+            "/status",
+            startup_timeout=timeout,
+            request_timeout=timeout,
+        )
+    except ActivationError as database_failure:
+        database_projection = _readiness_failure_projection_v4(database_failure)
+        try:
+            participant_http_status_preflight_v4(
+                kubeconfig, selected["name"], timeout, retry_timeout=False,
+            )
+        except ActivationError as db_free_failure:
+            evidence = {
+                "classification": "db-backed-failed",
+                "dbFreeBefore": {"kind": "healthy"},
+                "dbBacked": database_projection,
+                "dbFreeAfter": _readiness_failure_projection_v4(db_free_failure),
+            }
+            raise ActivationError(
+                "internal participant v5 readiness discriminator: " + canonical(evidence)
+            ) from database_failure
+        evidence = {
+            "classification": "db-backed-failed",
+            "dbFreeBefore": {"kind": "healthy"},
+            "dbBacked": database_projection,
+            "dbFreeAfter": {"kind": "healthy"},
+        }
+        raise ActivationError(
+            "internal participant v5 readiness discriminator: " + canonical(evidence)
+        ) from database_failure
+    current = live_obj(r, kubeconfig, "pod", selected["name"], NAMESPACE)
+    pins = p["productPins"]
+    current_metadata = current.get("metadata", {})
+    current_spec = current.get("spec", {})
+    current_status = current.get("status", {})
+    current_containers = current_spec.get("containers", [])
+    current_container_statuses = current_status.get("containerStatuses", [])
+    exact_image = pins["imageRepository"] + "@" + pins["imageManifestDigest"]
+    require(
+        current_metadata.get("uid") == selected["uid"],
+        "readiness-probed participant v5 Pod UID changed",
+    )
+    require(
+        len(current_containers) == len(current_container_statuses) == 1
+        and current_containers[0].get("image") == exact_image
+        and current_container_statuses[0].get("imageID") == selected["imageId"]
+        and current_container_statuses[0].get("ready") is True
+        and not current_spec.get("imagePullSecrets"),
+        "readiness-probed participant v5 Pod runtime pin changed",
+    )
+    expected = expected_database_status_v5(p)
+    require(
+        obj(body, "internal participant v5 /status") == expected,
+        "internal participant v5 /status citizen/database contract drift",
+    )
+    return validate_database_status_receipt_v5(expected | {
+        "probe": probe | {
+            "podUid": selected["uid"],
+            "podImage": exact_image,
+            "podImageId": selected["imageId"],
+            "podReadyAfter": True,
+            "podResourceVersionBefore": selected["resourceVersion"],
+            "podResourceVersionAfter": current_metadata.get("resourceVersion"),
+        },
+        "rbac": {
+            "getPods": True,
+            "listPods": True,
+            "createPodsPortforward": True,
+        },
     }, p)
 
 def _route_request_v4(origin: str, method: str, path: str, headers: dict[str, str], body: bytes | None, timeout: int | float) -> dict[str, Any]:
@@ -4255,8 +4793,8 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     total_deadline = time.monotonic() + boundary["timeoutsSeconds"]["routeMatrixTotal"]
     origin = p["endpoints"]["browserOrigin"].rstrip("/"); prefix = boundary["prefix"]
     require(prefix == POLICY.HTTP_PREFIX, "fixed route prefix drift")
-    status_path = POLICY.ROUTES[0]; posts = list(POLICY.POST_ROUTES)
-    require([entry["path"] for entry in boundary["routes"]] == list(POLICY.ROUTES), "fixed eight-route inventory drift")
+    status_path = POLICY.LEGACY_ROUTES[0]; posts = list(POLICY.LEGACY_POST_ROUTES)
+    require([entry["path"] for entry in boundary["routes"]] == list(POLICY.LEGACY_ROUTES), "fixed eight-route inventory drift")
     result: list[dict[str, Any]] = []
 
     def propagation_timeout(attempts: int, status: int) -> None:
@@ -4333,6 +4871,187 @@ def route_matrix_v4(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     require(result == boundary["expectations"], "route matrix receipt differs from protected static expectations")
     return result
 
+def route_matrix_v5(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prove the exact v5 static and dynamic public route boundary."""
+    del r
+    boundary = p["httpBoundary"]
+    timeout = boundary["timeoutsSeconds"]["routeRequest"]
+    total_deadline = time.monotonic() + boundary["timeoutsSeconds"]["routeMatrixTotal"]
+    origin = p["endpoints"]["browserOrigin"].rstrip("/")
+    prefix = boundary["prefix"]
+    require(
+        p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5"
+        and prefix == POLICY.HTTP_PREFIX
+        and [entry["path"] for entry in boundary["routes"]] == list(POLICY.ALL_HTTP_ROUTES),
+        "fixed v5 route inventory drift",
+    )
+    status_path = POLICY.ROUTES[0]
+    posts = list(POLICY.POST_ROUTES)
+    public_gets = list(POLICY.PUBLIC_GET_ROUTES)
+    result: list[dict[str, Any]] = []
+
+    def propagation_timeout(attempts: int, status: int) -> None:
+        raise ActivationError(
+            f"GET status route propagation timeout: attempts={attempts} lastStatus={status}"
+        )
+
+    def call(
+        method: str,
+        path: str,
+        *,
+        request_origin: str | None = origin,
+        body: bytes | None = None,
+        requested_method: str | None = None,
+        propagation_attempt: int | None = None,
+    ) -> dict[str, Any]:
+        before_request = time.monotonic()
+        if before_request >= total_deadline:
+            if propagation_attempt is not None and propagation_attempt > 1:
+                propagation_timeout(propagation_attempt - 1, 404)
+            raise ActivationError("route matrix total timeout")
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if request_origin is not None:
+            headers["Origin"] = request_origin
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        if requested_method is not None:
+            headers["Access-Control-Request-Method"] = requested_method
+            headers["Access-Control-Request-Headers"] = "content-type"
+        observed = _route_request_v4(origin, method, path, headers, body, timeout)
+        if time.monotonic() >= total_deadline:
+            if propagation_attempt is not None and observed["status"] == 404:
+                propagation_timeout(propagation_attempt, 404)
+            raise ActivationError("route matrix total timeout after request")
+        return observed
+
+    status_body = expected_participant_http_status_v4()
+    attempts = 0
+    while True:
+        if attempts and time.monotonic() >= total_deadline:
+            propagation_timeout(attempts, 404)
+        observed = call("GET", status_path, propagation_attempt=attempts + 1)
+        attempts += 1
+        if observed["status"] != 404:
+            break
+        if time.monotonic() >= total_deadline:
+            propagation_timeout(attempts, 404)
+        time.sleep(PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS)
+    _require_json_response_v4(observed, 200, status_body, "GET v5 status")
+    _require_cors_v4(observed, origin)
+    result.append({"case": "status", "method": "GET", "path": status_path, "status": 200})
+
+    for path, allowed in [
+        (status_path, "GET"),
+        *[(path, "POST") for path in posts],
+    ]:
+        observed = call("OPTIONS", path, requested_method=allowed)
+        require(
+            observed["status"] == 204
+            and observed["body"] == ""
+            and "content-type" not in observed["headers"],
+            f"OPTIONS {path} response drift",
+        )
+        _require_cors_v4(observed, origin, preflight_method=allowed)
+        result.append({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204})
+
+    post_errors = {
+        posts[0]: (401, {"error": "admission_invalid"}),
+        posts[1]: (401, {"error": "challenge_invalid"}),
+        **{path: (401, {"error": "session_required"}) for path in posts[2:]},
+    }
+    for path, (status, expected_body) in post_errors.items():
+        observed = call("POST", path, body=b"{}")
+        _require_json_response_v4(observed, status, expected_body, f"POST {path}")
+        _require_cors_v4(observed, origin)
+        result.append({
+            "case": "unauthenticated-post", "method": "POST",
+            "path": path, "status": status,
+        })
+
+    for method, path in [
+        ("POST", status_path),
+        *[("GET", path) for path in posts],
+        *[("POST", path) for path in public_gets],
+        ("HEAD", status_path),
+        ("DELETE", status_path),
+    ]:
+        observed = call(method, path, body=b"{}" if method == "POST" else None)
+        _require_haproxy_method_denied_v4(observed, method, path)
+        result.append({
+            "case": "method-denied", "method": method,
+            "path": path, "status": 405,
+        })
+
+    for label, method, path in (
+        ("unknown", "GET", prefix + "/unknown"),
+        ("trailing-slash", "GET", status_path + "/"),
+        ("query", "GET", status_path + "?unexpected=1"),
+        ("unknown-preflight", "OPTIONS", prefix + "/unknown"),
+    ):
+        observed = call(
+            method,
+            path,
+            requested_method="POST" if method == "OPTIONS" else None,
+        )
+        if label == "query":
+            _require_json_response_v4(observed, 404, {"error": "not_found"}, "query route")
+            require(
+                "access-control-allow-origin" not in observed["headers"],
+                "query rejection exposed CORS authority",
+            )
+        else:
+            _require_haproxy_not_found_v4(observed, method, path)
+        result.append({"case": label, "method": method, "path": path, "status": 404})
+
+    wrong_origin = "https://attacker.invalid"
+    for path in (posts[0], posts[-3]):
+        observed = call("POST", path, request_origin=wrong_origin, body=b"{}")
+        _require_json_response_v4(observed, 403, {"error": "origin_forbidden"}, f"wrong-origin {path}")
+        require(
+            "access-control-allow-origin" not in observed["headers"],
+            "wrong-origin response reflected CORS authority",
+        )
+        result.append({
+            "case": "wrong-origin", "method": "POST", "path": path, "status": 403,
+        })
+
+    adoption_sample, eligibility_sample = public_gets
+    observed = call("GET", adoption_sample)
+    _require_json_response_v4(
+        observed, 404, {"error": "citizen_adoption_not_found"},
+        "public citizen adoption absent",
+    )
+    _require_cors_v4(observed, origin)
+    result.append({
+        "case": "public-adoption-absent", "method": "GET",
+        "path": adoption_sample, "status": 404,
+    })
+
+    malformed = POLICY.CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid"
+    observed = call("GET", malformed)
+    _require_json_response_v4(observed, 404, {"error": "not_found"}, "malformed public adoption")
+    _require_cors_v4(observed, origin)
+    result.append({
+        "case": "public-adoption-malformed", "method": "GET",
+        "path": malformed, "status": 404,
+    })
+
+    observed = call("GET", eligibility_sample)
+    _require_json_response_v4(
+        observed, 503, {"error": "citizen_eligibility_status_not_activated"},
+        "reserved citizen eligibility status",
+    )
+    _require_cors_v4(observed, origin)
+    result.append({
+        "case": "eligibility-status-reserved", "method": "GET",
+        "path": eligibility_sample, "status": 503,
+    })
+    require(
+        result == boundary["expectations"] == list(POLICY.ROUTE_EXPECTATIONS),
+        "v5 route matrix receipt differs from protected expectations",
+    )
+    return result
+
 def health_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     timeout = p["httpBoundary"]["timeoutsSeconds"]["deploymentRollout"]
     checked(r, kb(kubeconfig) + ["-n", NAMESPACE, "rollout", "status", f"deployment/{NAME}", f"--timeout={timeout}s"], "Deployment readiness", timeout=timeout + 5)
@@ -4386,6 +5105,82 @@ def semantic_postconditions_v4(r: Runner, kubeconfig: str, created: list[Created
             "fluxTrackingLabels": expected_flux_tracking_labels_v4(item.logical_name),
         }
     return result
+
+def active_semantic_objects_v5(
+    r: Runner,
+    kubeconfig: str,
+    rendered: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], dict[tuple[str, str], CreatedV4]]:
+    """Admit existing Flux-owned objects without creating or adopting them."""
+    require(len(rendered) == 6, "active runtime requires exact six-object render")
+    result: dict[str, Any] = {}
+    owned_network_policies: dict[tuple[str, str], CreatedV4] = {}
+    for logical_name, item in rendered.items():
+        desired = item["desired"]
+        metadata = desired["metadata"]
+        live = live_obj(
+            r, kubeconfig, desired["kind"].lower(), metadata["name"], metadata["namespace"],
+        )
+        normalized, tracking_state = require_flux_tracking_semantics_v4(
+            live, desired, logical_name, "complete",
+        )
+        uid = live.get("metadata", {}).get("uid")
+        resource_version = live.get("metadata", {}).get("resourceVersion")
+        require(
+            isinstance(uid, str) and uid
+            and recovery_ascii_decimal_v4(resource_version),
+            f"active runtime object identity absent: {logical_name}",
+        )
+        result[logical_name] = {
+            "target": {
+                "apiVersion": desired["apiVersion"],
+                "kind": desired["kind"],
+                "namespace": metadata["namespace"],
+                "name": metadata["name"],
+            },
+            "uid": uid,
+            "resourceVersion": resource_version,
+            "semanticSha256": POLICY.canonical_sha256(normalized),
+            "protectedRenderPath": item["path"],
+            "protectedRenderBlobSha256": item["blobSha256"],
+            "fluxTrackingState": tracking_state,
+            "fluxTrackingLabels": expected_flux_tracking_labels_v4(logical_name),
+        }
+        if desired["kind"] == "NetworkPolicy":
+            owned_network_policies[(metadata["namespace"], metadata["name"])] = CreatedV4(
+                logical_name, desired, live, {},
+            )
+    require(
+        len(owned_network_policies) == 2,
+        "active runtime exact NetworkPolicy pair absent",
+    )
+    return result, owned_network_policies
+
+def active_flux_success_proof_v5(
+    r: Runner,
+    kubeconfig: str,
+    p: dict[str, Any],
+    rev: str,
+) -> dict[str, Any]:
+    """Read both already-active reconcilers and the exact shared revision."""
+    ready: dict[str, Any] = {}
+    seen_uids: set[str] = set()
+    for owner in ("gateway", "workbenchIngress"):
+        target = p["gitOps"]["reconcilers"][owner]["kustomization"]
+        live = _target_live(r, kubeconfig, target)
+        uid = live.get("metadata", {}).get("uid")
+        require(
+            isinstance(uid, str) and uid and uid not in seen_uids,
+            f"active {owner} Flux UID invalid or duplicated",
+        )
+        seen_uids.add(uid)
+        ready[owner] = flux_ready_v4(live, owner, uid, rev)
+    source = shared_source_revision_v4(r, kubeconfig, rev)
+    return {
+        "ready": ready,
+        "source": source_success_projection_v4(source, rev),
+        "mutation": False,
+    }
 
 def delete_with_preconditions_v4(r: Runner, kubeconfig: str, created: CreatedV4, timeout: int = 120, snapshot: KubeconfigSnapshot | None = None) -> dict[str, Any]:
     desired, admitted = created.desired, created.observed; metadata = desired["metadata"]
@@ -6188,6 +6983,456 @@ def validate_preservation_success_fact_v4(value: Any, p: dict[str, Any]) -> None
             f"trusted preservation receipt drift: {label}",
         )
 
+def _validate_active_runtime_semantic_objects_v5(
+    value: Any,
+    p: dict[str, Any],
+    rev: str,
+) -> dict[str, Any]:
+    require(
+        isinstance(value, dict) and set(value) == {"beforeIngress", "afterFlux"},
+        "active runtime semantic-object stage set drift",
+    )
+    expected_render = render_v4(rev, p)
+    expected_names = set(expected_render)
+    for stage in ("beforeIngress", "afterFlux"):
+        records = value[stage]
+        require(
+            isinstance(records, dict) and set(records) == expected_names,
+            f"active runtime semantic-object inventory drift: {stage}",
+        )
+        seen_uids: set[str] = set()
+        for logical_name, item in expected_render.items():
+            desired = item["desired"]
+            metadata = desired["metadata"]
+            record = records[logical_name]
+            require(
+                isinstance(record, dict)
+                and set(record) == {
+                    "target", "uid", "resourceVersion", "semanticSha256",
+                    "protectedRenderPath", "protectedRenderBlobSha256",
+                    "fluxTrackingState", "fluxTrackingLabels",
+                }
+                and record.get("target") == {
+                    "apiVersion": desired["apiVersion"], "kind": desired["kind"],
+                    "namespace": metadata["namespace"], "name": metadata["name"],
+                }
+                and isinstance(record.get("uid"), str) and record["uid"]
+                and record["uid"] not in seen_uids
+                and recovery_ascii_decimal_v4(record.get("resourceVersion"))
+                and record.get("semanticSha256") == POLICY.semantic_sha256(desired)
+                and record.get("protectedRenderPath") == item["path"]
+                and record.get("protectedRenderBlobSha256") == item["blobSha256"]
+                and record.get("fluxTrackingState") == "complete"
+                and record.get("fluxTrackingLabels")
+                == expected_flux_tracking_labels_v4(logical_name),
+                f"active runtime semantic-object receipt drift: {stage}/{logical_name}",
+            )
+            seen_uids.add(record["uid"])
+    for logical_name in expected_names:
+        before = value["beforeIngress"][logical_name]
+        after = value["afterFlux"][logical_name]
+        require(
+            before["uid"] == after["uid"]
+            and int(after["resourceVersion"]) >= int(before["resourceVersion"])
+            and {
+                key: before[key]
+                for key in before
+                if key != "resourceVersion"
+            } == {
+                key: after[key]
+                for key in after
+                if key != "resourceVersion"
+            },
+            f"active runtime object identity/semantics changed across Flux proof: {logical_name}",
+        )
+    return copy.deepcopy(value)
+
+def _validate_active_runtime_flux_v5(value: Any, p: dict[str, Any], rev: str) -> dict[str, Any]:
+    require(
+        isinstance(value, dict)
+        and set(value) == {"ready", "source", "mutation"}
+        and value.get("mutation") is False
+        and isinstance(value.get("ready"), dict)
+        and set(value["ready"]) == {"gateway", "workbenchIngress"},
+        "active runtime Flux proof field drift",
+    )
+    expected_revision = f"main@sha1:{rev}"
+    seen_uids: set[str] = set()
+    for owner in ("gateway", "workbenchIngress"):
+        proof = value["ready"][owner]
+        builder = POLICY.gateway_flux_objects if owner == "gateway" else POLICY.workbench_ingress_flux_objects
+        active_spec = _policy_call(builder, suspended=False)["kustomization"]["spec"]
+        require(
+            isinstance(proof, dict)
+            and set(proof) == {
+                "uid", "resourceVersion", "generation", "observedGeneration",
+                "activeSpecSha256", "lastAppliedRevision", "ready",
+            }
+            and isinstance(proof.get("uid"), str) and proof["uid"]
+            and proof["uid"] not in seen_uids
+            and recovery_ascii_decimal_v4(proof.get("resourceVersion"))
+            and type(proof.get("generation")) is int and proof["generation"] > 0
+            and proof.get("observedGeneration") == proof["generation"]
+            and proof.get("activeSpecSha256") == POLICY.canonical_sha256(active_spec)
+            and proof.get("lastAppliedRevision") == expected_revision
+            and proof.get("ready") is True,
+            f"active runtime Flux proof drift: {owner}",
+        )
+        seen_uids.add(proof["uid"])
+    source = value["source"]
+    require(
+        isinstance(source, dict)
+        and set(source) == {"uid", "resourceVersion", "artifactRevision"}
+        and isinstance(source.get("uid"), str) and source["uid"]
+        and recovery_ascii_decimal_v4(source.get("resourceVersion"))
+        and source.get("artifactRevision") == expected_revision,
+        "active runtime shared Flux source proof drift",
+    )
+    return copy.deepcopy(value)
+
+def validate_active_runtime_facts_v5(
+    facts: Any,
+    p: dict[str, Any],
+    rev: str,
+) -> dict[str, Any]:
+    required = {
+        "schemaVersion", "policySha256", "protectedRevision", "collectedAt",
+        "validUntil", "maxAgeSeconds", "clusterBinding", "publication",
+        "endpoints", "secretMaterialization", "eligibilityIssuerSecret",
+        "runtime", "database", "semanticObjects", "deployment", "haproxy",
+        "routeMatrix", "flux", "networkPolicyConflictScan", "preservation",
+        "effects",
+    }
+    require(
+        isinstance(facts, dict)
+        and set(facts) == required
+        and facts.get("schemaVersion") == ACTIVE_RUNTIME_FACTS_SCHEMA
+        and facts.get("policySha256") == POLICY.activation_policy_sha256(p)
+        and facts.get("protectedRevision") == rev
+        and facts.get("maxAgeSeconds") == 300,
+        "active runtime trusted facts closure drift",
+    )
+    require(
+        POLICY.RFC3339_UTC.fullmatch(facts.get("collectedAt", "")) is not None
+        and POLICY.RFC3339_UTC.fullmatch(facts.get("validUntil", "")) is not None,
+        "active runtime trusted facts time boundary drift",
+    )
+    collected = dt.datetime.strptime(facts["collectedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    valid_until = dt.datetime.strptime(facts["validUntil"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    require(
+        valid_until - collected == dt.timedelta(seconds=300),
+        "active runtime trusted facts validity interval drift",
+    )
+    cluster = facts["clusterBinding"]
+    require(
+        isinstance(cluster, dict)
+        and set(cluster) == {"initial", "beforeIngress", "afterFlux"}
+        and cluster["initial"] == cluster["beforeIngress"] == cluster["afterFlux"],
+        "active runtime cluster identity recheck drift",
+    )
+    validate_bound_cluster_identity_v4(cluster["initial"], p, "active runtime")
+
+    publication = facts["publication"]
+    pins = p["productPins"]
+    expected_publication_pins = {
+        "sourceRevision": pins["sourceRevision"],
+        "sourceTreeSha256": pins["sourceTreeSha256"],
+        "sourceTreeHashSemantics": pins["sourceTreeHashSemantics"],
+        "workflowIdentity": pins["workflowIdentity"],
+        "workflowSha256": pins["workflowSha256"],
+        "workflowHashSemantics": pins["workflowHashSemantics"],
+        "publicationReceiptSchemaVersion": "roebel_staging_publication_receipt_v3",
+        "migrationSha256": pins["migration"]["sha256"],
+        "databaseSchemaSha256": pins["databaseSchemaSha256"],
+        "topicTracerMigrationSha256": pins["topicTracerMigration"]["sha256"],
+        "topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
+        "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
+        "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
+    }
+    require(
+        isinstance(publication, dict)
+        and publication.get("manifestDigest") == pins["imageManifestDigest"]
+        and publication.get("manifestBodySha256") == pins["imageManifestDigest"]
+        and publication.get("reviewedStaticPins") == expected_publication_pins
+        and publication.get("verificationLevel") == "anonymous-registry-manifest-digest-only"
+        and publication.get("cryptographicPublicationProvenanceVerified") is False
+        and publication.get("sbomOrAttestationVerified") is False,
+        "active runtime v3 publication pin receipt drift",
+    )
+    runtime = facts["runtime"]
+    exact_image = pins["imageRepository"] + "@" + pins["imageManifestDigest"]
+    require(
+        isinstance(runtime, dict)
+        and set(runtime) == {
+            "expectedImage", "readyPodCount", "runtimeImageIds", "pods",
+            "imagePullSecretRefsAbsent",
+        }
+        and runtime.get("expectedImage") == exact_image
+        and runtime.get("readyPodCount") == p["runtime"]["replicas"]
+        and runtime.get("imagePullSecretRefsAbsent") is True
+        and isinstance(runtime.get("pods"), list)
+        and len(runtime["pods"]) == p["runtime"]["replicas"]
+        and all(
+            isinstance(item, dict)
+            and set(item) == {"name", "uid", "resourceVersion", "imageId"}
+            and isinstance(item["name"], str) and item["name"]
+            and isinstance(item["uid"], str) and item["uid"]
+            and recovery_ascii_decimal_v4(item["resourceVersion"])
+            and isinstance(item["imageId"], str)
+            and item["imageId"].endswith("@" + pins["imageManifestDigest"])
+            for item in runtime["pods"]
+        ),
+        "active runtime Pod image/readiness receipt drift",
+    )
+    require(
+        runtime["runtimeImageIds"] == sorted(item["imageId"] for item in runtime["pods"]),
+        "active runtime imageID inventory drift",
+    )
+    validate_database_status_receipt_v5(facts["database"], p)
+    _validate_active_runtime_semantic_objects_v5(facts["semanticObjects"], p, rev)
+    _validate_active_runtime_flux_v5(facts["flux"], p, rev)
+
+    deployment = facts["deployment"]
+    require(
+        isinstance(deployment, dict)
+        and set(deployment) == {
+            "uid", "resourceVersion", "generation", "observedGeneration", "availableReplicas",
+        }
+        and isinstance(deployment.get("uid"), str) and deployment["uid"]
+        and recovery_ascii_decimal_v4(deployment.get("resourceVersion"))
+        and type(deployment.get("generation")) is int and deployment["generation"] > 0
+        and deployment.get("observedGeneration") == deployment["generation"]
+        and deployment.get("availableReplicas") == p["runtime"]["replicas"],
+        "active runtime Deployment readiness receipt drift",
+    )
+    validate_haproxy_success_fact_v4(facts["haproxy"], p, "active runtime")
+    require(
+        facts["routeMatrix"] == p["httpBoundary"]["expectations"]
+        == list(POLICY.ROUTE_EXPECTATIONS),
+        "active runtime v5 route matrix drift",
+    )
+    secrets_receipt = facts["secretMaterialization"]
+    require(
+        isinstance(secrets_receipt, dict)
+        and set(secrets_receipt) == {"beforeIngress", "afterFlux"},
+        "active runtime participant Secret stage set drift",
+    )
+    before_secrets = validate_secret_materialization_success_fact_v4(
+        secrets_receipt["beforeIngress"], p, "active runtime before ingress",
+    )
+    after_secrets = validate_secret_materialization_success_fact_v4(
+        secrets_receipt["afterFlux"], p, "active runtime after Flux",
+    )
+    require(before_secrets == after_secrets, "active runtime participant Secret continuity drift")
+    issuer = facts["eligibilityIssuerSecret"]
+    require(
+        isinstance(issuer, dict) and set(issuer) == {"beforeIngress", "afterFlux"},
+        "active runtime issuer Secret stage set drift",
+    )
+    require_same_eligibility_issuer_secret_projection_v5(
+        issuer["beforeIngress"], issuer["afterFlux"],
+    )
+    policies = facts["networkPolicyConflictScan"]
+    require(
+        isinstance(policies, dict)
+        and set(policies) == {"beforeIngress", "afterFlux"}
+        and policies["beforeIngress"] == policies["afterFlux"]
+        and policies["beforeIngress"].get("status") == "no-additive-participant-allow-conflicts",
+        "active runtime NetworkPolicy preservation receipt drift",
+    )
+    validate_preservation_success_fact_v4(facts["preservation"], p)
+    endpoints = facts["endpoints"]
+    require(
+        isinstance(endpoints, dict)
+        and endpoints.get("status") == "fixed-external-tls-and-internal-service-binding-match"
+        and endpoints.get("postgrest", {}).get("externalIngress") is False
+        and endpoints.get("postgrest", {}).get("origin") == p["endpoints"]["supabase"]["internalOrigin"]
+        and endpoints.get("gnosis", {}).get("origin") == p["endpoints"]["gnosis"]["httpsOrigin"],
+        "active runtime endpoint binding receipt drift",
+    )
+    require(
+        facts["effects"] == {
+            "clusterMutation": False,
+            "objectCreateCount": 0,
+            "objectPatchCount": 0,
+            "objectDeleteCount": 0,
+            "fluxSuspendChanged": False,
+            "secretValuesRead": False,
+            "publicIngressProbed": True,
+            "civicAuthorityEffects": False,
+        },
+        "active runtime read-only effects boundary drift",
+    )
+    public_projection(facts)
+    return copy.deepcopy(facts)
+
+def bind_active_runtime_receipt_v5(
+    receipt: Any,
+    p: dict[str, Any],
+    rev: str,
+    runner_hashes: dict[str, str],
+) -> dict[str, Any]:
+    require(
+        isinstance(receipt, dict)
+        and set(receipt) == {
+            "schemaVersion", "status", "protectedRevision", "activationPolicySha256",
+            "protectedRunnerFileSha256", "trustedLiveFacts", "effects",
+            "civicAuthorityEffects", "canonicalSha256",
+        },
+        "active runtime receipt field set drift",
+    )
+    unsigned = {key: copy.deepcopy(value) for key, value in receipt.items() if key != "canonicalSha256"}
+    require(
+        receipt.get("canonicalSha256") == digest(unsigned)
+        and receipt.get("schemaVersion") == ACTIVE_RUNTIME_RECEIPT_SCHEMA
+        and receipt.get("status") == "active-runtime-verified"
+        and receipt.get("protectedRevision") == rev
+        and receipt.get("activationPolicySha256") == POLICY.activation_policy_sha256(p)
+        and receipt.get("protectedRunnerFileSha256") == runner_hashes
+        and receipt.get("effects") == {
+            "clusterMutation": False,
+            "secretValuesRead": False,
+            "civicAuthorityEffects": False,
+        }
+        and receipt.get("civicAuthorityEffects") is False,
+        "active runtime receipt identity/effects drift",
+    )
+    validate_active_runtime_facts_v5(receipt["trustedLiveFacts"], p, rev)
+    public_projection(unsigned)
+    return {
+        "schemaVersion": ACTIVE_RUNTIME_RECEIPT_SCHEMA,
+        "status": "active-runtime-verified",
+        "receiptSha256": receipt["canonicalSha256"],
+        "protectedRevision": rev,
+        "activationPolicySha256": receipt["activationPolicySha256"],
+        "clusterMutation": False,
+        "secretValuesRead": False,
+        "civicAuthorityEffects": False,
+    }
+
+def verify_active_runtime_v5(
+    p: dict[str, Any],
+    rev: str,
+    kube: str | None,
+    r: Runner,
+    sink: ReceiptSink,
+    runner_hashes: dict[str, str],
+) -> dict[str, Any]:
+    """Verify the already-active v5 runtime without creating any object."""
+    _policy_call(POLICY.assert_activation_ready, p)
+    require(
+        p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5",
+        "active runtime verification requires the exact v5 policy",
+    )
+    require(kube is not None and Path(kube).is_file(), "active runtime verification requires explicit existing kubeconfig")
+    started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    valid_until = started + dt.timedelta(seconds=300)
+    rendered = render_v4(rev, p)
+    snapshot: KubeconfigSnapshot | None = None
+    try:
+        snapshot = snapshot_kubeconfig_v4(kube, r)
+        snapshot_path = str(snapshot.path)
+        initial_cluster = cluster_binding_v4(r, snapshot, p)
+        publication = anonymous_publication_v5(p)
+        endpoints = endpoint_facts_v4(r, snapshot_path, p)
+        preserved = preservation_v4(r, snapshot_path, p)
+        semantics_before, owned_before = active_semantic_objects_v5(r, snapshot_path, rendered)
+        policies_before = policy_union_v4(
+            r, snapshot_path, owned_before, flux_tracking_state="complete",
+        )
+        secrets_before = secret_materialization_v4(r, snapshot_path, p)
+        issuer_before = eligibility_issuer_secret_projection_v5(snapshot, p, rev)
+        before_ingress_cluster = cluster_binding_v4(r, snapshot, p)
+        require_same_cluster_identity_v4(initial_cluster, before_ingress_cluster, "before active ingress probe")
+        deployment, haproxy = health_v4(r, snapshot_path, p)
+        runtime = runtime_image_v4(r, snapshot_path, p)
+        database = database_status_v5(r, snapshot_path, p, runtime)
+        routes = route_matrix_v5(r, p)
+        flux = active_flux_success_proof_v5(r, snapshot_path, p, rev)
+        semantics_after, owned_after = active_semantic_objects_v5(r, snapshot_path, rendered)
+        policies_after = policy_union_v4(
+            r, snapshot_path, owned_after, flux_tracking_state="complete",
+        )
+        secrets_after = secret_materialization_v4(r, snapshot_path, p)
+        require_same_secret_materialization_v4(secrets_before, secrets_after, "after active Flux proof")
+        issuer_after = eligibility_issuer_secret_projection_v5(snapshot, p, rev)
+        require_same_eligibility_issuer_secret_projection_v5(issuer_before, issuer_after)
+        preservation = verify_preservation_v4(r, snapshot_path, preserved)
+        final_cluster = cluster_binding_v4(r, snapshot, p)
+        require_same_cluster_identity_v4(initial_cluster, final_cluster, "after active Flux proof")
+        facts = {
+            "schemaVersion": ACTIVE_RUNTIME_FACTS_SCHEMA,
+            "policySha256": POLICY.activation_policy_sha256(p),
+            "protectedRevision": rev,
+            "collectedAt": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "validUntil": valid_until.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "maxAgeSeconds": 300,
+            "clusterBinding": {
+                "initial": initial_cluster,
+                "beforeIngress": before_ingress_cluster,
+                "afterFlux": final_cluster,
+            },
+            "publication": publication,
+            "endpoints": endpoints,
+            "secretMaterialization": {
+                "beforeIngress": secrets_before,
+                "afterFlux": secrets_after,
+            },
+            "eligibilityIssuerSecret": {
+                "beforeIngress": issuer_before,
+                "afterFlux": issuer_after,
+            },
+            "runtime": runtime,
+            "database": database,
+            "semanticObjects": {
+                "beforeIngress": semantics_before,
+                "afterFlux": semantics_after,
+            },
+            "deployment": deployment_health_fact_v4(deployment, p),
+            "haproxy": haproxy,
+            "routeMatrix": routes,
+            "flux": flux,
+            "networkPolicyConflictScan": {
+                "beforeIngress": policies_before,
+                "afterFlux": policies_after,
+            },
+            "preservation": preservation,
+            "effects": {
+                "clusterMutation": False,
+                "objectCreateCount": 0,
+                "objectPatchCount": 0,
+                "objectDeleteCount": 0,
+                "fluxSuspendChanged": False,
+                "secretValuesRead": False,
+                "publicIngressProbed": True,
+                "civicAuthorityEffects": False,
+            },
+        }
+        validate_active_runtime_facts_v5(facts, p, rev)
+        require(
+            dt.datetime.now(dt.timezone.utc) <= valid_until,
+            "active runtime trusted facts expired",
+        )
+        success = {
+            "schemaVersion": ACTIVE_RUNTIME_RECEIPT_SCHEMA,
+            "status": "active-runtime-verified",
+            "protectedRevision": rev,
+            "activationPolicySha256": POLICY.activation_policy_sha256(p),
+            "protectedRunnerFileSha256": runner_hashes,
+            "trustedLiveFacts": facts,
+            "effects": {
+                "clusterMutation": False,
+                "secretValuesRead": False,
+                "civicAuthorityEffects": False,
+            },
+            "civicAuthorityEffects": False,
+        }
+        sink.commit(success)
+        return success
+    finally:
+        if snapshot is not None:
+            snapshot.close()
+
 def validate_success_facts_v4(facts: dict[str, Any], p: dict[str, Any], rev: str) -> None:
     _policy_call(POLICY.validate_trusted_live_facts, facts)
     require(facts["protectedRevision"] == rev and facts["policySha256"] == POLICY.activation_policy_sha256(p), "trusted facts Git/policy binding drift")
@@ -6522,6 +7767,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     modes.add_argument("--recover-rollback-incomplete-receipt-fd", type=int)
     modes.add_argument("--verify-recovery-receipt-fd", type=int)
     modes.add_argument("--verify-failed-activation-recovery-source-fd", type=int)
+    modes.add_argument("--verify-active-runtime", action="store_true")
+    modes.add_argument("--verify-active-runtime-receipt-fd", type=int)
     parser.add_argument("--kubeconfig")
     bootstrap = parser.add_mutually_exclusive_group()
     bootstrap.add_argument("--flux-bootstrap-receipt", type=Path)
@@ -6545,7 +7792,13 @@ def main(argv: list[str] | None = None) -> int:
         if a.prebound_blob:
             _PREBOUND_GIT_BLOBS = parse_prebound_git_blob_descriptors_v4(a.prebound_blob, rev)
         require(trusted_git_v4(["-C", str(ROOT), "rev-parse", "HEAD"], text=True, capture_output=True, check=False).stdout.strip() == rev, "checked-out Git revision is not expected protected revision")
-        runner_hashes = protected_checkout(rev)
+        active_runtime_mode = (
+            a.verify_active_runtime or a.verify_active_runtime_receipt_fd is not None
+        )
+        runner_hashes = protected_checkout(
+            rev,
+            paths=ACTIVE_RUNTIME_PROTECTED_PATHS if active_runtime_mode else None,
+        )
         POLICY = compile_verified_policy_module_v4(git_blob(rev, POLICY_MODULE_PATH), rev)
         BOOTSTRAP = compile_verified_bootstrap_module_v4(git_blob(rev, BOOTSTRAP_MODULE_PATH), rev)
         bind_verified_policy_identity_v4(POLICY)
@@ -6574,6 +7827,7 @@ def main(argv: list[str] | None = None) -> int:
             or a.verify_secret_materialization_receipt_fd is not None
             or a.verify_recovery_receipt_fd is not None
             or a.verify_failed_activation_recovery_source_fd is not None
+            or a.verify_active_runtime_receipt_fd is not None
         ):
             require(
                 a.kubeconfig is None
@@ -6586,6 +7840,16 @@ def main(argv: list[str] | None = None) -> int:
                 "receipt verification accepts no kubeconfig or continuation receipts",
             )
             require(a.prebound_blob is None, "receipt verification accepts no prebound Git closure")
+            if a.verify_active_runtime_receipt_fd is not None:
+                receipt = load_owned_receipt_fd_v4(
+                    a.verify_active_runtime_receipt_fd,
+                    "active runtime verification receipt",
+                )
+                result = bind_active_runtime_receipt_v5(
+                    receipt, p, rev, runner_hashes,
+                )
+                print(canonical(result))
+                return 0
             if a.verify_flux_bootstrap_receipt_fd is not None:
                 raw = load_owned_receipt_fd_raw_v4(
                     a.verify_flux_bootstrap_receipt_fd,
@@ -6633,6 +7897,24 @@ def main(argv: list[str] | None = None) -> int:
             result = bind_success_receipt_v4(receipt, p, rev, runner_hashes)
             print(canonical(result))
             return 0
+        if a.verify_active_runtime:
+            require(
+                a.kubeconfig is not None
+                and a.flux_bootstrap_receipt is None
+                and a.flux_bootstrap_receipt_fd is None
+                and a.archived_flux_bootstrap_receipt_fd is None
+                and a.dormant_bootstrap_handover_receipt_fd is None
+                and a.secret_materialization_receipt_fd is None
+                and a.tracer_data_plane_activation_receipt_fd is None
+                and a.prebound_blob is None,
+                "active runtime verification accepts only kubeconfig and receipt output",
+            )
+            sink = ReceiptSink.reserve(a.receipt)
+            result = verify_active_runtime_v5(
+                p, rev, a.kubeconfig, Runner(), sink, runner_hashes,
+            )
+            print(canonical(result))
+            return 0
         if a.recover_rollback_incomplete_receipt_fd is not None:
             require(
                 a.kubeconfig is not None
@@ -6667,6 +7949,10 @@ def main(argv: list[str] | None = None) -> int:
             print(canonical(result))
             return 0
         require(a.live is True, "ordinary participant activation requires --live")
+        require(
+            p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v4",
+            "v5 participant objects are already active; use read-only --verify-active-runtime",
+        )
         require(
             a.tracer_data_plane_activation_receipt_fd is not None,
             "ordinary participant activation requires completed tracer data-plane receipt",

@@ -626,6 +626,28 @@ def valid_database_status(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid",
         },
         "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
     }
+def valid_database_status_v5(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid", before="10", after="11", image_id=None):
+    """The closed status-v3 receipt, including both citizen-adoption pins."""
+    image = value["productPins"]["imageRepository"] + "@" + value["productPins"]["imageManifestDigest"]
+    return MODULE.expected_database_status_v5(value) | {
+        "probe": {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": pod_name,
+            "loopbackOnly": True,
+            "publicIngressUsed": False,
+            "serviceProxyUsed": False,
+            "redirectsAllowed": False,
+            "path": "/status",
+            "remotePort": MODULE.POLICY.GATEWAY_PORT,
+            "podUid": pod_uid,
+            "podImage": image,
+            "podImageId": image_id or "docker-pullable://" + image,
+            "podReadyAfter": True,
+            "podResourceVersionBefore": before,
+            "podResourceVersionAfter": after,
+        },
+        "rbac": {"getPods": True, "listPods": True, "createPodsPortforward": True},
+    }
 def valid_success_facts(value):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0); nonce = "a" * 64
     sections = {name: {"ok": True} for name in MODULE.POLICY.trusted_live_facts_contract()["requiredSections"] if name != "protectedRevision"}
@@ -905,7 +927,7 @@ class ExecutorTests(unittest.TestCase):
                 canonical_pin or candidate["canonicalSha256"],
             ):
                 return MODULE.bind_flux_bootstrap_receipt_value_v4(
-                    ready_policy(), current_revision, hashes, candidate, raw=candidate_raw,
+                    policy(), current_revision, hashes, candidate, raw=candidate_raw,
                 )
 
         bound = bind(receipt, raw)
@@ -1294,7 +1316,7 @@ class ExecutorTests(unittest.TestCase):
         snapshot.close.assert_called_once()
 
     def test_fresh_bootstrap_secret_reuse_is_accepted_by_live_cli(self):
-        value = ready_policy()
+        value = policy()
         original_bootstrap = MODULE.BOOTSTRAP
         bootstrap_module = Mock()
         bootstrap_value = {"status": "dormant-ready"}
@@ -1470,12 +1492,12 @@ class ExecutorTests(unittest.TestCase):
         })
         with self.assertRaisesRegex(MODULE.ActivationError, "runner/policy identity drift"):
             MODULE.bind_verified_policy_identity_v4(drifted)
-    def test_inert_dry_run_reports_every_blocker_without_runner(self):
+    def test_v4_dry_run_reports_ready_without_contacting_cluster(self):
         value = policy(); hashes = {"runner": sha()}
         result = MODULE.dry_run_plan(value, REV, hashes)
-        self.assertEqual(result["status"], "blocked-policy-incomplete")
-        self.assertFalse(result["activationReady"])
-        self.assertEqual(result["blockers"], list(MODULE.POLICY.activation_blockers(value)))
+        self.assertEqual(result["status"], "ready-no-cluster-plan")
+        self.assertTrue(result["activationReady"])
+        self.assertEqual(result["blockers"], [])
         self.assertFalse(result["kubernetesContacted"])
         self.assertEqual(result["protectedRunnerFileSha256"], hashes)
     def test_no_evidence_command_or_allowlist_surface_exists(self):
@@ -1488,7 +1510,7 @@ class ExecutorTests(unittest.TestCase):
 
     def test_command_requires_isolated_mode_before_local_imports_and_policy_compilation(self):
         source = Path(MODULE.__file__).read_text()
-        self.assertLess(source.index("runner_hashes = protected_checkout(rev)"), source.index("POLICY = compile_verified_policy_module_v4"))
+        self.assertLess(source.index("runner_hashes = protected_checkout("), source.index("POLICY = compile_verified_policy_module_v4"))
         with tempfile.TemporaryDirectory() as directory:
             scripts = Path(directory) / "scripts"; scripts.mkdir()
             runner = scripts / "activate-staging-participant-gateway.py"; runner.write_text(source)
@@ -1507,11 +1529,10 @@ class ExecutorTests(unittest.TestCase):
         self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"pod-template-hash": "future"}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertTrue(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"k8s:io.cilium.k8s.policy.serviceaccount": MODULE.NAME}}, MODULE.POLICY.GATEWAY_LABELS))
         self.assertFalse(MODULE._selector_could_match_with_additional_labels_v4({"matchLabels": {"app.kubernetes.io/name": "other"}}, MODULE.POLICY.GATEWAY_LABELS))
-    def test_live_gate_fails_before_runner_or_kubeconfig_validation(self):
+    def test_exact_v4_predecessor_remains_ready_for_legacy_runner(self):
         value = policy()
-        with self.assertRaisesRegex(MODULE.POLICY.PolicyError, "activation blocked"):
-            MODULE.POLICY.assert_activation_ready(value)
-        self.assertFalse(value["activationReady"])
+        self.assertEqual(MODULE.POLICY.assert_activation_ready(value), value)
+        self.assertTrue(value["activationReady"])
 
     def test_exact_approved_successor_can_pass_the_future_gate_without_runner_code_changes(self):
         value = ready_policy()
@@ -3219,14 +3240,14 @@ class ExecutorTests(unittest.TestCase):
         def response(request_origin, method, path, headers, body, timeout):
             self.assertEqual(request_origin, origin); self.assertEqual(timeout, 10)
             if method == "GET" and path == prefix + "/status": return {"status": 200, "headers": cors | {"content-type": "application/json; charset=utf-8"}, "body": json.dumps(status_body)}
-            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES:
+            if method == "OPTIONS" and path in MODULE.POLICY.LEGACY_ROUTES:
                 preflight = cors | {"access-control-allow-methods": "GET" if path.endswith("/status") else "POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
                 return {"status": 204, "headers": preflight, "body": ""}
-            if method == "POST" and path in MODULE.POLICY.POST_ROUTES:
+            if method == "POST" and path in MODULE.POLICY.LEGACY_POST_ROUTES:
                 if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
                 status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
                 return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
-            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.LEGACY_POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
                 denied = copy.deepcopy(method_denied)
                 if method == "HEAD": denied["body"] = ""
                 return denied
@@ -3234,7 +3255,7 @@ class ExecutorTests(unittest.TestCase):
             return copy.deepcopy(not_found)
         with patch.object(MODULE, "_route_request_v4", side_effect=response) as request:
             receipt = MODULE.route_matrix_v4(Fake(), value)
-        expected_count = len(MODULE.POLICY.ROUTE_EXPECTATIONS)
+        expected_count = len(MODULE.POLICY.LEGACY_ROUTE_EXPECTATIONS)
         self.assertEqual(len(receipt), expected_count); self.assertEqual(request.call_count, expected_count)
         for path in (
             prefix + "/promote-source-post",
@@ -3280,14 +3301,14 @@ class ExecutorTests(unittest.TestCase):
                 if status_attempts == 1:
                     return {"status": 404, "headers": {"content-type": "text/html"}, "body": "not found"}
                 return {"status": 200, "headers": cors | {"content-type": "application/json"}, "body": json.dumps(status_body)}
-            if method == "OPTIONS" and path in MODULE.POLICY.ROUTES:
+            if method == "OPTIONS" and path in MODULE.POLICY.LEGACY_ROUTES:
                 preflight = cors | {"access-control-allow-methods": "GET" if path.endswith("/status") else "POST", "access-control-allow-headers": "content-type", "access-control-max-age": "600"}
                 return {"status": 204, "headers": preflight, "body": ""}
-            if method == "POST" and path in MODULE.POLICY.POST_ROUTES:
+            if method == "POST" and path in MODULE.POLICY.LEGACY_POST_ROUTES:
                 if headers.get("Origin") == "https://attacker.invalid": return {"status": 403, "headers": {"content-type": "application/json"}, "body": '{"error":"origin_forbidden"}'}
                 status, error = ((401, "admission_invalid") if path.endswith("/challenge") else (401, "challenge_invalid") if path.endswith("/session") else (401, "session_required"))
                 return {"status": status, "headers": cors | {"content-type": "application/json"}, "body": json.dumps({"error": error})}
-            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
+            if (method, path) in [("POST", prefix + "/status"), *[("GET", item) for item in MODULE.POLICY.LEGACY_POST_ROUTES], ("HEAD", prefix + "/status"), ("DELETE", prefix + "/status")]:
                 denied = copy.deepcopy(method_denied)
                 if method == "HEAD": denied["body"] = ""
                 return denied
@@ -3298,7 +3319,7 @@ class ExecutorTests(unittest.TestCase):
             receipt = MODULE.route_matrix_v4(Fake(), value)
         self.assertEqual(receipt, value["httpBoundary"]["expectations"])
         self.assertEqual(status_attempts, 2)
-        self.assertEqual(request.call_count, len(MODULE.POLICY.ROUTE_EXPECTATIONS) + 1)
+        self.assertEqual(request.call_count, len(MODULE.POLICY.LEGACY_ROUTE_EXPECTATIONS) + 1)
         sleep.assert_called_once_with(MODULE.PUBLIC_ROUTE_PROPAGATION_POLL_SECONDS)
 
     def test_v4_route_matrix_temporary_status_404_is_bounded_and_reports_only_safe_evidence(self):
@@ -3554,6 +3575,271 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(db_backed.call_count, 1)
         self.assertEqual(db_free.call_count, 2)
         self.assertEqual(db_free.call_args_list[1].kwargs, {"retry_timeout": False})
+
+    @patch.object(MODULE, "participant_http_status_preflight_v4", return_value={"status": "ready"})
+    def test_v5_internal_status_v3_binds_both_citizen_adoption_database_pins(self, participant_preflight):
+        value = ready_policy(); pins = value["productPins"]
+        expected = MODULE.expected_database_status_v5(value)
+        self.assertEqual(
+            set(expected),
+            {
+                "schemaVersion", "status", "municipalityId",
+                "sourceConversationTopic", "topicPolicyVersion",
+                "sourceRevision", "manifestDigest", "migrationSha256",
+                "databaseSchemaSha256", "topicTracerMigrationSha256",
+                "topicTracerDatabaseSchemaSha256",
+                "citizenAdoptionMigrationSha256",
+                "citizenAdoptionDatabaseSchemaSha256",
+            },
+        )
+        self.assertEqual(expected["schemaVersion"], "roebel_staging_participant_gateway_status_v3")
+        self.assertEqual(
+            expected["citizenAdoptionMigrationSha256"],
+            pins["citizenAdoptionMigration"]["sha256"],
+        )
+        self.assertEqual(
+            expected["citizenAdoptionDatabaseSchemaSha256"],
+            pins["citizenAdoptionDatabaseSchemaSha256"],
+        )
+        selected = {
+            "name": "gateway-pod-a", "uid": "pod-uid",
+            "resourceVersion": "10",
+            "imageId": "docker-pullable://image@" + pins["imageManifestDigest"],
+        }
+        runtime = {"readyPodCount": value["runtime"]["replicas"], "pods": [selected]}
+        exact_image = pins["imageRepository"] + "@" + pins["imageManifestDigest"]
+        current = {
+            "metadata": {"uid": "pod-uid", "resourceVersion": "11"},
+            "spec": {"containers": [{"image": exact_image}]},
+            "status": {"containerStatuses": [{"imageID": selected["imageId"], "ready": True}]},
+        }
+        probe = {
+            "transport": "authenticated-kubernetes-pod-port-forward",
+            "pod": selected["name"], "loopbackOnly": True,
+            "publicIngressUsed": False, "serviceProxyUsed": False,
+            "redirectsAllowed": False, "path": "/status",
+            "remotePort": MODULE.POLICY.GATEWAY_PORT,
+        }
+        with patch.object(MODULE, "checked", return_value="") as authorization, patch.object(
+            MODULE, "_pod_port_forward_get_v4", return_value=(json.dumps(expected), probe),
+        ), patch.object(MODULE, "live_obj", return_value=current):
+            result = MODULE.database_status_v5(Fake(), "/tmp/kube", value, runtime)
+        self.assertEqual(result, valid_database_status_v5(value, image_id=selected["imageId"]))
+        self.assertFalse(result["probe"]["publicIngressUsed"])
+        self.assertEqual(len(authorization.call_args_list), 3)
+        participant_preflight.assert_called_once()
+        for key in ("citizenAdoptionMigrationSha256", "citizenAdoptionDatabaseSchemaSha256"):
+            drifted = copy.deepcopy(result); drifted[key] = sha("f")
+            with self.subTest(key=key), self.assertRaisesRegex(
+                MODULE.ActivationError, "product/database contract drift",
+            ):
+                MODULE.validate_database_status_receipt_v5(drifted, value)
+            missing = copy.deepcopy(result); missing.pop(key)
+            with self.subTest(missing=key), self.assertRaisesRegex(
+                MODULE.ActivationError, "field set drift",
+            ):
+                MODULE.validate_database_status_receipt_v5(missing, value)
+
+    def test_v5_eligibility_issuer_projection_is_value_free_and_continuity_bound(self):
+        value = ready_policy()
+        uid = "12345678-1234-4123-8123-123456789abc"
+        nonce = "d" * 64
+        issuer_policy = json.loads(
+            (MODULE.ROOT / MODULE.ELIGIBILITY_ISSUER_POLICY_PATH).read_text()
+        )
+        issuer_policy_raw = (
+            MODULE.ROOT / MODULE.ELIGIBILITY_ISSUER_POLICY_PATH
+        ).read_bytes()
+        with patch.object(MODULE, "git_blob", return_value=issuer_policy_raw):
+            validated_policy = MODULE.eligibility_issuer_policy_v5(REV, value)
+        self.assertEqual(
+            validated_policy["materialization"]["metadataOnlyRead"],
+            {
+                "representation": "PartialObjectMetadata",
+                "accept": MODULE.ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT,
+                "apiPath": MODULE.ELIGIBILITY_ISSUER_SECRET_API_PATH,
+            },
+        )
+        self.assertFalse(validated_policy["materialization"]["readSecretValues"])
+        self.assertEqual(
+            MODULE.eligibility_issuer_content_contract_commitment_v5(),
+            "sha256:dbe214ca486b5f7d5ecc5a1ec5373e2515b10c3ad1951689fa575add77e59658",
+        )
+        self.assertEqual(
+            MODULE.eligibility_issuer_keyset_commitment_v5(),
+            "sha256:f57b34b0df221a8644814d1d2a2216f0422c1ce76e32586d2602ec4092410a35",
+        )
+        annotations = MODULE.eligibility_issuer_exact_annotations_v5(nonce)
+        document = {
+            "apiVersion": "meta.k8s.io/v1",
+            "kind": "PartialObjectMetadata",
+            "metadata": {
+                "name": MODULE.ELIGIBILITY_ISSUER_SECRET_NAME,
+                "namespace": MODULE.NAMESPACE,
+                "uid": uid,
+                "resourceVersion": "47",
+                "labels": copy.deepcopy(MODULE.ELIGIBILITY_ISSUER_LABELS),
+                "annotations": annotations,
+                "creationTimestamp": "2026-09-01T00:00:00Z",
+            },
+        }
+        sent = []
+
+        class Transport:
+            def sendall(self, raw): sent.append(raw)
+            def close(self): pass
+
+        class Context:
+            def wrap_socket(self, raw, *, server_hostname):
+                self.server_hostname = server_hostname
+                return raw
+
+        class Response:
+            status = 200
+            def __init__(self, payload): self.body = MODULE.canonical(payload).encode("ascii")
+            def begin(self): pass
+            def getheader(self, name, default=None):
+                return {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(self.body)),
+                }.get(name, default)
+            def read(self, _limit): return self.body
+
+        snapshot = Mock(
+            ca_pem=b"test-ca", client_certificate_path=None,
+            client_key_path=None, tls_server_name="10.255.240.11",
+            hostname="10.255.240.11", port=6443, bearer_token="test-token",
+        )
+        transport = Transport()
+        with patch.object(
+            MODULE, "eligibility_issuer_policy_v5", return_value=issuer_policy,
+        ), patch.object(
+            MODULE.ssl, "create_default_context", return_value=Context(),
+        ), patch.object(
+            MODULE, "_api_tcp_transport_v4", return_value=transport,
+        ), patch.object(
+            MODULE.http.client, "HTTPResponse", return_value=Response(document),
+        ):
+            observed = MODULE.eligibility_issuer_secret_projection_v5(snapshot, value, REV)
+        self.assertEqual(observed["uid"], uid)
+        self.assertEqual(observed["resourceVersion"], "47")
+        self.assertEqual(observed["keySet"], [MODULE.ELIGIBILITY_ISSUER_SECRET_KEY])
+        self.assertEqual(observed["annotations"][MODULE.ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION], MODULE.ELIGIBILITY_ISSUER_KEY_ID)
+        self.assertFalse(observed["valuesRead"])
+        request = sent[0].decode("ascii")
+        self.assertIn(
+            f"GET {MODULE.ELIGIBILITY_ISSUER_SECRET_API_PATH} HTTP/1.1\r\n",
+            request,
+        )
+        self.assertIn(
+            f"Accept: {MODULE.ELIGIBILITY_ISSUER_PARTIAL_METADATA_ACCEPT}\r\n",
+            request,
+        )
+        self.assertNotIn("kubectl", request)
+        self.assertNotIn(MODULE.ELIGIBILITY_ISSUER_SECRET_KEY, request)
+        self.assertNotIn("application/vnd.kubernetes", request.lower())
+        self.assertNotIn(".data", inspect.getsource(MODULE.eligibility_issuer_secret_projection_v5))
+        MODULE.require_same_eligibility_issuer_secret_projection_v5(observed, copy.deepcopy(observed))
+        for label, mutate in (
+            ("UID", lambda item: item.__setitem__("uid", "22345678-1234-4123-8123-123456789abc")),
+            ("resourceVersion", lambda item: item.__setitem__("resourceVersion", "48")),
+            ("keyset", lambda item: item.__setitem__("keySet", [])),
+            ("public metadata", lambda item: item["annotations"].__setitem__(MODULE.ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION, "f" * 64)),
+        ):
+            drifted = copy.deepcopy(observed); mutate(drifted)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                MODULE.ActivationError, "issuer Secret",
+            ):
+                MODULE.require_same_eligibility_issuer_secret_projection_v5(observed, drifted)
+
+        full_secret = copy.deepcopy(document)
+        full_secret["data"] = {
+            MODULE.ELIGIBILITY_ISSUER_SECRET_KEY: "forbidden-value",
+        }
+        with patch.object(
+            MODULE, "eligibility_issuer_policy_v5", return_value=issuer_policy,
+        ), patch.object(
+            MODULE.ssl, "create_default_context", return_value=Context(),
+        ), patch.object(
+            MODULE, "_api_tcp_transport_v4", return_value=Transport(),
+        ), patch.object(
+            MODULE.http.client, "HTTPResponse", return_value=Response(full_secret),
+        ), self.assertRaisesRegex(
+            MODULE.ActivationError, "PartialObjectMetadata projection mismatch",
+        ):
+            MODULE.eligibility_issuer_secret_projection_v5(snapshot, value, REV)
+
+    def test_v5_active_runtime_path_never_recreates_already_active_objects(self):
+        value = ready_policy()
+        issuer = {
+            "target": {"apiVersion": "v1", "kind": "Secret", "namespace": MODULE.NAMESPACE, "name": MODULE.ELIGIBILITY_ISSUER_SECRET_NAME},
+            "uid": "12345678-1234-4123-8123-123456789abc",
+            "resourceVersion": "47", "type": "Opaque", "immutable": True,
+            "keySet": [MODULE.ELIGIBILITY_ISSUER_SECRET_KEY],
+            "labels": copy.deepcopy(MODULE.ELIGIBILITY_ISSUER_LABELS),
+            "annotations": {
+                MODULE.ELIGIBILITY_ISSUER_NONCE_ANNOTATION: "d" * 64,
+                MODULE.ELIGIBILITY_ISSUER_KEY_ID_ANNOTATION: MODULE.ELIGIBILITY_ISSUER_KEY_ID,
+                MODULE.ELIGIBILITY_ISSUER_PUBLIC_KEY_ANNOTATION: MODULE.ELIGIBILITY_ISSUER_PUBLIC_KEY,
+                MODULE.ELIGIBILITY_ISSUER_CONTENT_CONTRACT_ANNOTATION: MODULE.eligibility_issuer_content_contract_commitment_v5(),
+                MODULE.ELIGIBILITY_ISSUER_KEYSET_ANNOTATION: MODULE.eligibility_issuer_keyset_commitment_v5(),
+            },
+            "valuesRead": False,
+        }
+        cluster = {"cluster": "same"}
+        snapshot = Mock(path=Path("/snapshot/kubeconfig")); snapshot.close = Mock()
+        sink = Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            kube = Path(directory) / "kubeconfig"; kube.write_text("fixture")
+            with contextlib.ExitStack() as stack:
+                returns = {
+                    "render_v4": {},
+                    "snapshot_kubeconfig_v4": snapshot,
+                    "cluster_binding_v4": cluster,
+                    "anonymous_publication_v5": {"publication": True},
+                    "endpoint_facts_v4": {"endpoints": True},
+                    "preservation_v4": {},
+                    "policy_union_v4": {"status": "no-additive-participant-allow-conflicts"},
+                    "secret_materialization_v4": {"secrets": True},
+                    "health_v4": ({"deployment": True}, {"haproxy": True}),
+                    "runtime_image_v4": {"runtime": True},
+                    "database_status_v5": {"database": True},
+                    "route_matrix_v5": copy.deepcopy(value["httpBoundary"]["expectations"]),
+                    "active_flux_success_proof_v5": {"flux": True},
+                    "verify_preservation_v4": {},
+                    "deployment_health_fact_v4": {"deployment": True},
+                }
+                for name, returned in returns.items():
+                    stack.enter_context(patch.object(MODULE, name, return_value=returned))
+                for name in (
+                    "require_same_cluster_identity_v4",
+                    "require_same_secret_materialization_v4",
+                    "validate_active_runtime_facts_v5",
+                ):
+                    stack.enter_context(patch.object(MODULE, name))
+                semantic = stack.enter_context(patch.object(
+                    MODULE, "active_semantic_objects_v5", return_value=({}, []),
+                ))
+                issuer_read = stack.enter_context(patch.object(
+                    MODULE, "eligibility_issuer_secret_projection_v5", return_value=issuer,
+                ))
+                issuer_continuity = stack.enter_context(patch.object(
+                    MODULE, "require_same_eligibility_issuer_secret_projection_v5",
+                ))
+                create = stack.enter_context(patch.object(MODULE, "create_v4"))
+                unsuspend = stack.enter_context(patch.object(MODULE, "unsuspend_both_v4"))
+                rollback = stack.enter_context(patch.object(MODULE, "rollback_v4"))
+                result = MODULE.verify_active_runtime_v5(
+                    value, REV, str(kube), Fake(), sink, {"runner": sha()},
+                )
+        self.assertEqual(result["status"], "active-runtime-verified")
+        self.assertFalse(result["effects"]["clusterMutation"])
+        self.assertEqual(semantic.call_count, 2)
+        self.assertEqual(issuer_read.call_count, 2)
+        issuer_continuity.assert_called_once_with(issuer, issuer)
+        create.assert_not_called(); unsuspend.assert_not_called(); rollback.assert_not_called()
+        sink.commit.assert_called_once()
+        snapshot.close.assert_called_once()
 
     def test_v4_database_status_failure_classifies_when_db_free_route_also_fails(self):
         value = ready_policy()
@@ -4273,7 +4559,7 @@ class ExecutorTests(unittest.TestCase):
         self.assertEqual(MODULE.validate_recovery_incident_binding_v4(bound), bound)
 
     def test_v4_run29_recovery_target_preflight_binds_all_six_uids_with_only_exact_flux_tracking_labels(self):
-        value = ready_policy(); incident = run29_recovery_incident_ownership()
+        value = policy(); incident = run29_recovery_incident_ownership()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
             resources = MODULE.POLICY.expected_gateway_resources(value)
         desired_by_logical = {
@@ -4333,7 +4619,7 @@ class ExecutorTests(unittest.TestCase):
         )
 
     def test_v4_run29_recovery_delete_rechecks_exact_uid_and_exact_flux_tracking_semantics(self):
-        value = ready_policy()
+        value = policy()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
             desired = MODULE.POLICY.expected_gateway_resources(value)["ingress"]
         record = copy.deepcopy(run29_recovery_incident_ownership()["objects"]["gateway.ingress"])
@@ -4738,22 +5024,24 @@ class ExecutorTests(unittest.TestCase):
             MODULE.bind_recovery_receipt_v4(drifted, value, REV, runner_hashes)
 
     def test_v4_success_receipt_rejects_incomplete_object_set(self):
-        value = ready_policy(); facts = valid_success_facts(value)
-        facts["objectCreateResults"] = facts["objectCreateResults"][:5]
+        value = ready_policy()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            facts = valid_success_facts(value)
+            facts["objectCreateResults"] = facts["objectCreateResults"][:5]
             with self.assertRaisesRegex(MODULE.ActivationError, "object receipt set incomplete"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
 
     def test_v4_complete_receipt_binds_flux_source_before_and_after(self):
-        value = ready_policy(); facts = valid_success_facts(value)
+        value = ready_policy()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            facts = valid_success_facts(value)
             MODULE.validate_success_facts_v4(facts, value, REV)
             facts["fluxTransaction"]["sourceAfterReady"]["artifactRevision"] = "main@sha1:" + "c" * 40
             with self.assertRaisesRegex(MODULE.ActivationError, "source proof"):
                 MODULE.validate_success_facts_v4(facts, value, REV)
 
     def test_v4_success_receipt_rejects_forged_or_stale_flux_transaction_proofs(self):
-        value = ready_policy(); exact = valid_success_facts(value)
+        value = ready_policy()
         drifts = (
             ("CAS receipt", lambda facts: facts["fluxTransaction"].__setitem__("casUnsuspended", {})),
             ("Ready proof", lambda facts: facts["fluxTransaction"]["ready"].__setitem__("gateway", {})),
@@ -4766,6 +5054,7 @@ class ExecutorTests(unittest.TestCase):
             ("source proof", lambda facts: facts["fluxTransaction"]["sourceBeforeSuccess"].__setitem__("uid", "replacement-source")),
         )
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            exact = valid_success_facts(value)
             MODULE.validate_success_facts_v4(exact, value, REV)
             for message, mutate in drifts:
                 drifted = copy.deepcopy(exact); mutate(drifted)
@@ -4775,7 +5064,7 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.validate_success_facts_v4(drifted, value, REV)
 
     def test_v4_success_receipt_deep_validates_haproxy_secrets_and_preservation(self):
-        value = ready_policy(); exact = valid_success_facts(value)
+        value = ready_policy()
         drifts = (
             ("HAProxy readiness", lambda facts: facts["haproxy"].__setitem__("generation", True)),
             ("HAProxy readiness", lambda facts: facts["postFluxApplication"]["haproxy"].__setitem__("numberReady", "3")),
@@ -4788,6 +5077,7 @@ class ExecutorTests(unittest.TestCase):
             ("preservation receipt", lambda facts: facts["preservation"]["webIngress"].__setitem__("afterCanonicalSha256", sha("f"))),
         )
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            exact = valid_success_facts(value)
             MODULE.validate_success_facts_v4(exact, value, REV)
             for message, mutate in drifts:
                 drifted = copy.deepcopy(exact); mutate(drifted)
@@ -4797,8 +5087,9 @@ class ExecutorTests(unittest.TestCase):
                     MODULE.validate_success_facts_v4(drifted, value, REV)
 
     def test_v4_success_receipt_binds_post_flux_health_routes_and_same_deployment_uid(self):
-        value = ready_policy(); facts = valid_success_facts(value)
+        value = ready_policy()
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            facts = valid_success_facts(value)
             MODULE.validate_success_facts_v4(facts, value, REV)
             uid_drift = copy.deepcopy(facts)
             uid_drift["postFluxApplication"]["deployment"]["uid"] = "replacement-deployment-uid"
@@ -4817,17 +5108,17 @@ class ExecutorTests(unittest.TestCase):
 
     def test_v4_durable_success_receipt_verifier_binds_checksum_files_policy_and_facts(self):
         value = ready_policy(); runner_hashes = {"scripts/runner.py": sha("1")}
-        unsigned = {
-            "schemaVersion": MODULE.RECEIPT_SCHEMA,
-            "status": "activated",
-            "protectedRevision": REV,
-            "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
-            "protectedRunnerFileSha256": runner_hashes,
-            "trustedLiveFacts": valid_success_facts(value),
-            "civicAuthorityEffects": False,
-        }
-        receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
         with patch.object(MODULE.POLICY, "STATIC_ACTIVATION_POLICY", value):
+            unsigned = {
+                "schemaVersion": MODULE.RECEIPT_SCHEMA,
+                "status": "activated",
+                "protectedRevision": REV,
+                "activationPolicySha256": MODULE.POLICY.activation_policy_sha256(value),
+                "protectedRunnerFileSha256": runner_hashes,
+                "trustedLiveFacts": valid_success_facts(value),
+                "civicAuthorityEffects": False,
+            }
+            receipt = unsigned | {"canonicalSha256": MODULE.digest(unsigned)}
             bound = MODULE.bind_success_receipt_v4(receipt, value, REV, runner_hashes)
         self.assertEqual(bound["status"], "activated")
         self.assertEqual(bound["receiptSha256"], receipt["canonicalSha256"])

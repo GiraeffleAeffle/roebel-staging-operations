@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-POLICY_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v4"
+POLICY_SCHEMA = "roebel_staging_participant_gateway_activation_policy_v5"
 TRUSTED_LIVE_FACTS_SCHEMA = "roebel_staging_participant_gateway_trusted_live_facts_v2"
 POLICY_PATH = "policy/staging-participant-gateway-activation-policy.json"
 GATEWAY_ROOT = "reviewed-render/roebel-staging/staging-participant-gateway"
@@ -78,6 +78,8 @@ SECRET_MATERIALIZER_RUNNER = "scripts/materialize-staging-participant-gateway-se
 SECRET_MATERIALIZATION_RECEIPT_SCHEMA = "roebel_staging_participant_secret_materialization_receipt_v1"
 SECRET_TEARDOWN_RECEIPT_SCHEMA = "roebel_staging_participant_secret_teardown_receipt_v1"
 PARTICIPANT_POSTGREST_SECRET = "roebel-staging-participant-gateway-postgrest"
+ELIGIBILITY_ISSUER_SECRET = "roebel-staging-participant-gateway-eligibility-issuer"
+ELIGIBILITY_ISSUER_SECRET_KEY = "private-key-hex"
 DORMANT_BOOTSTRAP_OBJECT_ORDER = (
     "gateway.serviceAccount",
     "workbenchIngress.serviceAccount",
@@ -131,17 +133,41 @@ ROUTES = (
     "/api/staging-participant/v1/nostr-post",
     "/api/staging-participant/v1/promote-source-post",
     "/api/staging-participant/v1/sign-topic-suggestion",
+    "/api/staging-participant/v1/citizen-adoption/challenge",
+    "/api/staging-participant/v1/citizen-adoption/eligibility",
+    "/api/staging-participant/v1/citizen-adoption/adoptions",
 )
+LEGACY_ROUTES = ROUTES[:8]
 POST_ROUTES = ROUTES[1:]
+LEGACY_POST_ROUTES = LEGACY_ROUTES[1:]
 HTTP_PREFIX = "/api/staging-participant/v1"
+CITIZEN_ADOPTION_PUBLIC_READ_PREFIX = (
+    "/api/staging-participant/v1/citizen-adoption/by-suggestion/"
+)
+CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE = (
+    CITIZEN_ADOPTION_PUBLIC_READ_PREFIX
+    + "0" * 64
+    + "/adopter/"
+    + "1" * 64
+)
+CITIZEN_ELIGIBILITY_STATUS_PREFIX = "/api/civic/v1/eligibility/status/"
+CITIZEN_ELIGIBILITY_STATUS_SAMPLE = CITIZEN_ELIGIBILITY_STATUS_PREFIX + "2" * 64
+DYNAMIC_GET_PREFIXES = (
+    CITIZEN_ADOPTION_PUBLIC_READ_PREFIX,
+    CITIZEN_ELIGIBILITY_STATUS_PREFIX,
+)
+PUBLIC_GET_ROUTES = (
+    CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE,
+    CITIZEN_ELIGIBILITY_STATUS_SAMPLE,
+)
+ALL_HTTP_ROUTES = ROUTES + PUBLIC_GET_ROUTES
 ROUTE_EXPECTATIONS = (
     {"case": "status", "method": "GET", "path": ROUTES[0], "status": 200},
     *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in ROUTES),
-    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[1], "status": 401},
-    {"case": "unauthenticated-post", "method": "POST", "path": ROUTES[2], "status": 401},
-    *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in ROUTES[3:]),
+    *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in POST_ROUTES),
     {"case": "method-denied", "method": "POST", "path": ROUTES[0], "status": 405},
     *({"case": "method-denied", "method": "GET", "path": path, "status": 405} for path in POST_ROUTES),
+    *({"case": "method-denied", "method": "POST", "path": path, "status": 405} for path in PUBLIC_GET_ROUTES),
     {"case": "method-denied", "method": "HEAD", "path": ROUTES[0], "status": 405},
     {"case": "method-denied", "method": "DELETE", "path": ROUTES[0], "status": 405},
     {"case": "unknown", "method": "GET", "path": HTTP_PREFIX + "/unknown", "status": 404},
@@ -149,10 +175,31 @@ ROUTE_EXPECTATIONS = (
     {"case": "query", "method": "GET", "path": ROUTES[0] + "?unexpected=1", "status": 404},
     {"case": "unknown-preflight", "method": "OPTIONS", "path": HTTP_PREFIX + "/unknown", "status": 404},
     {"case": "wrong-origin", "method": "POST", "path": ROUTES[1], "status": 403},
+    {"case": "wrong-origin", "method": "POST", "path": ROUTES[-3], "status": 403},
+    {"case": "public-adoption-absent", "method": "GET", "path": CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE, "status": 404},
+    {"case": "public-adoption-malformed", "method": "GET", "path": CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid", "status": 404},
+    {"case": "eligibility-status-reserved", "method": "GET", "path": CITIZEN_ELIGIBILITY_STATUS_SAMPLE, "status": 503},
+)
+LEGACY_ROUTE_EXPECTATIONS = (
+    {"case": "status", "method": "GET", "path": LEGACY_ROUTES[0], "status": 200},
+    *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in LEGACY_ROUTES),
+    *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in LEGACY_POST_ROUTES),
+    {"case": "method-denied", "method": "POST", "path": LEGACY_ROUTES[0], "status": 405},
+    *({"case": "method-denied", "method": "GET", "path": path, "status": 405} for path in LEGACY_POST_ROUTES),
+    {"case": "method-denied", "method": "HEAD", "path": LEGACY_ROUTES[0], "status": 405},
+    {"case": "method-denied", "method": "DELETE", "path": LEGACY_ROUTES[0], "status": 405},
+    {"case": "unknown", "method": "GET", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "trailing-slash", "method": "GET", "path": LEGACY_ROUTES[0] + "/", "status": 404},
+    {"case": "query", "method": "GET", "path": LEGACY_ROUTES[0] + "?unexpected=1", "status": 404},
+    {"case": "unknown-preflight", "method": "OPTIONS", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "wrong-origin", "method": "POST", "path": LEGACY_ROUTES[1], "status": 403},
 )
 
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+EVM_ADDRESS = re.compile(r"^0x[0-9a-f]{40}$")
+EVM_CODE_HASH = re.compile(r"^0x[0-9a-f]{64}$")
 RFC3339_UTC = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 NONCE = re.compile(r"^[0-9a-f]{64}$")
@@ -251,17 +298,18 @@ def _static_descriptor() -> dict[str, Any]:
             },
         },
         "productPins": {
-            "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
-            "sourceTreeSha256": "sha256:c5a80f3485991f4f4aa284efd088e4cb59b61a96a147c7ac49033bf19fe29dd3",
+            "sourceRevision": "4c44ae3df1e37161156098899ccf192cd0bbe370",
+            "sourceTreeSha256": "sha256:39d864578c107d2ddc45fa9db988b402af7bae55f8c43627130782b6a18ec81f",
             "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
             "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-            "imageManifestDigest": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
+            "imageManifestDigest": "sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d",
             "workflowIdentity": (
                 "https://github.com/GiraeffleAeffle/Roebel-App/"
                 ".github/workflows/staging-participant-gateway-publish.yml@refs/heads/main"
             ),
-            "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+            "workflowSha256": "sha256:62a116189567ab5fe44ddab19ff88b9358ebb7de97fb6e419dea7c68a9bff134",
             "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
+            "publicationReceiptSchemaVersion": "roebel_staging_publication_receipt_v3",
             "migration": {
                 "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
                 "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
@@ -272,6 +320,11 @@ def _static_descriptor() -> dict[str, Any]:
                 "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e",
             },
             "topicTracerDatabaseSchemaSha256": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb",
+            "citizenAdoptionMigration": {
+                "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
+                "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d",
+            },
+            "citizenAdoptionDatabaseSchemaSha256": "sha256:79fea3feb09029e6138c7675fa0b877c3367390bec012b07e052c55103de7c9c",
             "deactivation": {
                 "path": "supabase/staging_participant_gateway_deactivate.sql",
                 "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
@@ -307,6 +360,9 @@ def _static_descriptor() -> dict[str, Any]:
         "httpBoundary": {
             "host": "roebel-web.staging.agentcart.eu",
             "prefix": HTTP_PREFIX,
+            "additionalIngressPrefixes": [CITIZEN_ELIGIBILITY_STATUS_PREFIX.rstrip("/")],
+            "dynamicGetPrefixes": list(DYNAMIC_GET_PREFIXES),
+            "routeProbeSamples": list(PUBLIC_GET_ROUTES),
             "routes": [
                 {"path": ROUTES[0], "methods": ["GET", "OPTIONS"]},
                 *[{"path": path, "methods": ["POST", "OPTIONS"]} for path in POST_ROUTES],
@@ -340,6 +396,34 @@ def _static_descriptor() -> dict[str, Any]:
                 "municipalityId": "roebel-mueritz",
                 "sourceConversationTopic": "roebel-app-conversation",
                 "policyVersion": "staging-participant-topic-v1",
+            },
+            "citizenAdoption": {
+                "municipalityId": "roebel-mueritz",
+                "policyVersion": "roebel-citizen-nft-v2-staging-2026-09",
+                "issuer": "roebel-staging-citizen-verifier",
+                "authorityBinding": "civic_eligibility_only",
+                "entryState": "case_steward_review_required",
+                "submittedToCivicWorkflow": False,
+                "administrativeEndorsement": False,
+                "bindingVote": False,
+                "councilDecision": False,
+                "treasuryEffect": False,
+                "paymentEffect": False,
+                "eligibilityIssuer": {
+                    "keyId": "roebel-staging-citizen-eligibility-2026-09",
+                    "publicKey": "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8",
+                    "privateKeySha256Commitment": "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc",
+                    "secret": {
+                        "name": ELIGIBILITY_ISSUER_SECRET,
+                        "namespace": GATEWAY_NAMESPACE,
+                        "key": ELIGIBILITY_ISSUER_SECRET_KEY,
+                    },
+                },
+                "citizenNft": {
+                    "chainId": 100,
+                    "address": "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5",
+                    "runtimeCodeHash": "0x952276d2d6da4bfe3ed3dbc39f6745f2421b01ad476c286cb7a6fa166c7e4218",
+                },
             },
             "secretReferences": {
                 "config": {
@@ -563,13 +647,6 @@ def _static_descriptor() -> dict[str, Any]:
     }
 
 
-STATIC_ACTIVATION_POLICY = _static_descriptor()
-
-# This protected base approves exactly one future policy-data transition.  The
-# five facts were collected independently of the pull request that will carry
-# them.  Keeping the approved successor here means admission and the local
-# runner can validate candidate JSON without importing or executing candidate
-# policy code.
 APPROVED_ACTIVATION_FACTS = {
     "clusterIdentity": {
         "apiOrigin": "https://10.255.240.11:6443",
@@ -578,17 +655,51 @@ APPROVED_ACTIVATION_FACTS = {
         "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420",
     },
 }
-APPROVED_ACTIVATION_TRANSITION_PATHS = (
-    "activationReady",
-    "clusterIdentity.apiOrigin",
-    "clusterIdentity.caCertificateSha256",
-    "clusterIdentity.apiServerSpkiSha256",
-    "clusterIdentity.kubeSystemNamespaceUid",
-)
+
+
+def _legacy_current_activation_policy() -> dict[str, Any]:
+    """Reconstruct the exact protected v4 predecessor during v5 admission."""
+    value = _static_descriptor()
+    value["schemaVersion"] = "roebel_staging_participant_gateway_activation_policy_v4"
+    value["activationReady"] = True
+    value["clusterIdentity"] = copy.deepcopy(APPROVED_ACTIVATION_FACTS["clusterIdentity"])
+    pins = value["productPins"]
+    pins.update({
+        "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
+        "sourceTreeSha256": "sha256:c5a80f3485991f4f4aa284efd088e4cb59b61a96a147c7ac49033bf19fe29dd3",
+        "imageManifestDigest": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
+        "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+    })
+    pins.pop("publicationReceiptSchemaVersion")
+    pins.pop("citizenAdoptionMigration")
+    pins.pop("citizenAdoptionDatabaseSchemaSha256")
+    boundary = value["httpBoundary"]
+    boundary.pop("additionalIngressPrefixes")
+    boundary.pop("dynamicGetPrefixes")
+    boundary.pop("routeProbeSamples")
+    boundary["routes"] = [
+        {"path": LEGACY_ROUTES[0], "methods": ["GET", "OPTIONS"]},
+        *[
+            {"path": path, "methods": ["POST", "OPTIONS"]}
+            for path in LEGACY_POST_ROUTES
+        ],
+    ]
+    boundary["expectations"] = [
+        copy.deepcopy(item) for item in LEGACY_ROUTE_EXPECTATIONS
+    ]
+    value["runtime"].pop("citizenAdoption")
+    return value
+
+
+# During the admission-only save point the committed policy/render remains the
+# exact v4 predecessor.  Protected admission can nevertheless validate exactly
+# one v5 successor without executing candidate code.
+STATIC_ACTIVATION_POLICY = _legacy_current_activation_policy()
+SUCCESSOR_INERT_ACTIVATION_POLICY = _static_descriptor()
 
 
 def _approved_next_activation_policy() -> dict[str, Any]:
-    value = copy.deepcopy(STATIC_ACTIVATION_POLICY)
+    value = copy.deepcopy(SUCCESSOR_INERT_ACTIVATION_POLICY)
     value["clusterIdentity"] = copy.deepcopy(APPROVED_ACTIVATION_FACTS["clusterIdentity"])
     value["activationReady"] = True
     return value
@@ -598,7 +709,7 @@ APPROVED_NEXT_ACTIVATION_POLICY = _approved_next_activation_policy()
 
 
 def activation_policy_descriptor() -> dict[str, Any]:
-    """Return the immutable inert predecessor for transition validation."""
+    """Return the exact protected v4 predecessor for transition validation."""
     return copy.deepcopy(STATIC_ACTIVATION_POLICY)
 
 
@@ -626,6 +737,11 @@ def activation_blockers(policy: dict[str, Any] | None = None) -> tuple[str, ...]
         "productPins.topicTracerDatabaseSchemaSha256": pins["topicTracerDatabaseSchemaSha256"],
         "productPins.deactivation.sha256": pins["deactivation"]["sha256"],
     }
+    if "citizenAdoptionMigration" in pins:
+        slots.update({
+            "productPins.citizenAdoptionMigration.sha256": pins["citizenAdoptionMigration"]["sha256"],
+            "productPins.citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
+        })
     blockers = [name for name, slot in slots.items() if slot is None]
     for name in ("apiOrigin", "caCertificateSha256", "apiServerSpkiSha256", "kubeSystemNamespaceUid"):
         slot = value["clusterIdentity"][name]
@@ -640,7 +756,7 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
     """Return the deterministic render pin; it never carries live evidence."""
     value = assert_activation_ready(policy)
     pins = value["productPins"]
-    return {
+    result = {
         "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
         "component": "staging-participant-gateway",
         "sourceRevision": pins["sourceRevision"],
@@ -661,6 +777,15 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
         "deactivationSha256": pins["deactivation"]["sha256"],
         "activationPolicySha256": activation_policy_sha256(value),
     }
+    if value == APPROVED_NEXT_ACTIVATION_POLICY:
+        result.update({
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v4",
+            "publicationReceiptSchemaVersion": pins["publicationReceiptSchemaVersion"],
+            "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
+            "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
+            "citizenAdoption": copy.deepcopy(value["runtime"]["citizenAdoption"]),
+        })
+    return result
 
 
 def validate_activation_policy(value: Any) -> dict[str, Any]:
@@ -679,45 +804,18 @@ def validate_activation_policy(value: Any) -> dict[str, Any]:
 
 
 def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict[str, Any]:
-    """Validate the one approved inert-to-ready policy-data transition.
-
-    Equality against both protected descriptors rejects partial pinning,
-    reordered endpoint lists, additional fields, widening, reverse movement,
-    and any caller-selected evidence.  ``activationReady`` is derived from the
-    exact blocker set and is not an independent candidate choice.
-    """
+    """Validate the one approved exact v4-to-v5 policy-data transition."""
     _require(previous == STATIC_ACTIVATION_POLICY, "participant activation transition base drift")
     _require(candidate == APPROVED_NEXT_ACTIVATION_POLICY, "participant activation transition candidate drift")
     _require(previous != candidate, "participant activation transition must be one-way and non-empty")
     validate_activation_policy(previous)
     ready = validate_activation_policy(candidate)
-    changed_paths = []
-    if previous["activationReady"] != ready["activationReady"]:
-        changed_paths.append("activationReady")
-    for key in (
-        "apiOrigin",
-        "caCertificateSha256",
-        "apiServerSpkiSha256",
-        "kubeSystemNamespaceUid",
-    ):
-        if previous["clusterIdentity"][key] != ready["clusterIdentity"][key]:
-            changed_paths.append(f"clusterIdentity.{key}")
-    _require(
-        tuple(changed_paths) == APPROVED_ACTIVATION_TRANSITION_PATHS,
-        "participant activation transition changed field set drift",
-    )
-    _require(
-        activation_blockers(previous)
-        == (
-            "clusterIdentity.apiOrigin",
-            "clusterIdentity.caCertificateSha256",
-            "clusterIdentity.apiServerSpkiSha256",
-            "clusterIdentity.kubeSystemNamespaceUid",
-        ),
-        "participant activation transition base blocker set drift",
-    )
+    _require(not activation_blockers(previous), "participant activation transition base blocker set drift")
     _require(not activation_blockers(ready), "participant activation transition remains blocked")
-    _require(previous["activationReady"] is False and ready["activationReady"] is True, "participant activation transition direction invalid")
+    _require(
+        previous["activationReady"] is True and ready["activationReady"] is True,
+        "participant activation transition readiness invalid",
+    )
     return ready
 
 
@@ -729,6 +827,11 @@ def assert_activation_ready(policy: dict[str, Any] | None = None) -> dict[str, A
 
 
 def _validate_static_semantics(value: dict[str, Any]) -> None:
+    # Exact equality with the embedded v4 predecessor is sufficient while the
+    # admission-only save point remains on protected main.  All detailed
+    # semantic checks below describe the sole admitted v5 successor.
+    if value == STATIC_ACTIVATION_POLICY:
+        return
     pins = value["productPins"]
     _require(
         value["authority"] == {
@@ -797,6 +900,10 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         == "supabase/migrations/20260825_staging_participant_gateway.sql"
         and pins["topicTracerMigration"]["path"]
         == "supabase/migrations/20260825_staging_participant_topic_tracer.sql"
+        and pins["citizenAdoptionMigration"]["path"]
+        == "supabase/migrations/20260901_staging_citizen_adoption.sql"
+        and pins["publicationReceiptSchemaVersion"]
+        == "roebel_staging_publication_receipt_v3"
         and pins["deactivation"]["path"]
         == "supabase/staging_participant_gateway_deactivate.sql",
         "participant product publication/database identity drift",
@@ -807,19 +914,30 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
         "workflowSha256",
         "databaseSchemaSha256",
         "topicTracerDatabaseSchemaSha256",
+        "citizenAdoptionDatabaseSchemaSha256",
     ):
         slot = pins[key]
         _require(slot is None or bool(SHA256.fullmatch(slot)), f"participant {key} invalid")
     _require(pins["sourceRevision"] is None or bool(REVISION.fullmatch(pins["sourceRevision"])), "participant sourceRevision invalid")
-    for nested in (pins["migration"], pins["topicTracerMigration"], pins["deactivation"]):
+    for nested in (
+        pins["migration"],
+        pins["topicTracerMigration"],
+        pins["citizenAdoptionMigration"],
+        pins["deactivation"],
+    ):
         _require(nested["sha256"] is None or bool(SHA256.fullmatch(nested["sha256"])), "participant SQL hash invalid")
-    _require([route["path"] for route in value["httpBoundary"]["routes"]] == list(ROUTES), "participant route order drift")
-    _require(len(value["httpBoundary"]["routes"]) == 8, "participant gateway must expose exactly eight routes")
+    boundary = value["httpBoundary"]
+    _require([route["path"] for route in boundary["routes"]] == list(ROUTES), "participant route order drift")
+    _require(len(boundary["routes"]) == 11, "participant gateway must expose exactly eleven static routes")
     _require(
-        value["httpBoundary"]["host"] == "roebel-web.staging.agentcart.eu"
-        and value["httpBoundary"]["prefix"] == "/api/staging-participant/v1"
-        and value["httpBoundary"]["routes"][0]["methods"] == ["GET", "OPTIONS"]
-        and all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]),
+        boundary["host"] == "roebel-web.staging.agentcart.eu"
+        and boundary["prefix"] == HTTP_PREFIX
+        and boundary["additionalIngressPrefixes"]
+        == [CITIZEN_ELIGIBILITY_STATUS_PREFIX.rstrip("/")]
+        and boundary["dynamicGetPrefixes"] == list(DYNAMIC_GET_PREFIXES)
+        and boundary["routeProbeSamples"] == list(PUBLIC_GET_ROUTES)
+        and boundary["routes"][0]["methods"] == ["GET", "OPTIONS"]
+        and all(route["methods"] == ["POST", "OPTIONS"] for route in boundary["routes"][1:]),
         "participant method/path boundary drift",
     )
     rate = value["httpBoundary"]["haproxyRateLimit"]
@@ -900,6 +1018,38 @@ def _validate_static_semantics(value: dict[str, Any]) -> None:
             "policyVersion": "staging-participant-topic-v1",
         },
         "participant topic tracer policy drift",
+    )
+    citizen = value["runtime"]["citizenAdoption"]
+    issuer = citizen["eligibilityIssuer"]
+    nft = citizen["citizenNft"]
+    _require(
+        citizen == {
+            "municipalityId": "roebel-mueritz",
+            "policyVersion": "roebel-citizen-nft-v2-staging-2026-09",
+            "issuer": "roebel-staging-citizen-verifier",
+            "authorityBinding": "civic_eligibility_only",
+            "entryState": "case_steward_review_required",
+            "submittedToCivicWorkflow": False,
+            "administrativeEndorsement": False,
+            "bindingVote": False,
+            "councilDecision": False,
+            "treasuryEffect": False,
+            "paymentEffect": False,
+            "eligibilityIssuer": issuer,
+            "citizenNft": nft,
+        }
+        and issuer["keyId"] == "roebel-staging-citizen-eligibility-2026-09"
+        and bool(HEX64.fullmatch(issuer["publicKey"]))
+        and bool(SHA256.fullmatch(issuer["privateKeySha256Commitment"]))
+        and issuer["secret"] == {
+            "name": ELIGIBILITY_ISSUER_SECRET,
+            "namespace": GATEWAY_NAMESPACE,
+            "key": ELIGIBILITY_ISSUER_SECRET_KEY,
+        }
+        and nft["chainId"] == 100
+        and bool(EVM_ADDRESS.fullmatch(nft["address"]))
+        and bool(EVM_CODE_HASH.fullmatch(nft["runtimeCodeHash"])),
+        "participant citizen-adoption boundary drift",
     )
     _require(
         tuple(value["render"]["gateway"]["files"]) == GATEWAY_RENDER_FILES
@@ -1176,20 +1326,32 @@ def _secret_env(name: str, reference: dict[str, Any], key: str) -> dict[str, Any
 def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, Any]:
     value = assert_activation_ready(policy)
     boundary = value["httpBoundary"]
-    paths = [route["path"] for route in boundary["routes"]]
+    exact_paths = list(
+        LEGACY_ROUTES if value == STATIC_ACTIVATION_POLICY else ROUTES
+    )
+    dynamic_get_prefixes = boundary.get("dynamicGetPrefixes", [])
     post_paths = [route["path"] for route in boundary["routes"] if "POST" in route["methods"]]
     early = "\n".join([
         # Reject unknown/trailing/query-normalized paths before evaluating the
         # method matrix.  Otherwise an unknown GET/OPTIONS would be mislabeled
         # 405 and the protected 404 route contract could never pass.
         "http-request deny deny_status 404 if "
-        + " ".join(f"!{{ path {path} }}" for path in paths),
+        + " ".join(
+            [
+                *(f"!{{ path {path} }}" for path in exact_paths),
+                *(f"!{{ path_beg {prefix} }}" for prefix in dynamic_get_prefixes),
+            ],
+        ),
         "http-request deny deny_status 405 if { method POST } "
         + " ".join(f"!{{ path {path} }}" for path in post_paths),
         "http-request deny deny_status 405 if { method OPTIONS } "
-        + " ".join(f"!{{ path {path} }}" for path in paths),
+        + " ".join(f"!{{ path {path} }}" for path in exact_paths),
         "http-request deny deny_status 405 if { method HEAD }",
-        f"http-request deny deny_status 405 if {{ method GET }} !{{ path {paths[0]} }}",
+        "http-request deny deny_status 405 if { method GET } "
+        + " ".join([
+            f"!{{ path {exact_paths[0]} }}",
+            *(f"!{{ path_beg {prefix} }}" for prefix in dynamic_get_prefixes),
+        ]),
         "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }",
         "stick-table type ip size 10k expire 60s store http_req_rate(1m)",
         "http-request track-sc0 src",
@@ -1208,11 +1370,21 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
             "ingressClassName": "haproxy",
             "rules": [{
                 "host": boundary["host"],
-                "http": {"paths": [{
-                    "backend": {"service": {"name": GATEWAY_NAME, "port": {"name": "http"}}},
-                    "path": boundary["prefix"],
-                    "pathType": "Prefix",
-                }]},
+                "http": {"paths": [
+                    {
+                        "backend": {"service": {"name": GATEWAY_NAME, "port": {"name": "http"}}},
+                        "path": boundary["prefix"],
+                        "pathType": "Prefix",
+                    },
+                    *[
+                        {
+                            "backend": {"service": {"name": GATEWAY_NAME, "port": {"name": "http"}}},
+                            "path": prefix,
+                            "pathType": "Prefix",
+                        }
+                        for prefix in boundary.get("additionalIngressPrefixes", [])
+                    ],
+                ]},
             }],
             "tls": [{
                 "hosts": [boundary["host"]],
@@ -1255,6 +1427,15 @@ def expected_gateway_resources(
             "periodSeconds": period,
             "successThreshold": 1,
             "tcpSocket": {"port": "http"},
+            "timeoutSeconds": 3,
+        }
+
+    def http_readiness_probe() -> dict[str, Any]:
+        return {
+            "failureThreshold": 3,
+            "httpGet": {"path": "/status", "port": "http", "scheme": "HTTP"},
+            "periodSeconds": 10,
+            "successThreshold": 1,
             "timeoutSeconds": 3,
         }
 
@@ -1328,6 +1509,41 @@ def expected_gateway_resources(
             "value": value["runtime"]["topicPolicy"]["policyVersion"],
         },
     ]
+    if value == APPROVED_NEXT_ACTIVATION_POLICY:
+        environment.extend([{
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_POLICY_VERSION",
+            "value": value["runtime"]["citizenAdoption"]["policyVersion"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_KEY_ID",
+            "value": value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["keyId"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PUBLIC_KEY",
+            "value": value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["publicKey"],
+        },
+        _secret_env(
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PRIVATE_KEY_HEX",
+            value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["secret"],
+            value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["secret"]["key"],
+        ),
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_ADDRESS",
+            "value": value["runtime"]["citizenAdoption"]["citizenNft"]["address"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_RUNTIME_CODE_HASH",
+            "value": value["runtime"]["citizenAdoption"]["citizenNft"]["runtimeCodeHash"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_MIGRATION_SHA256",
+            "value": value["productPins"]["citizenAdoptionMigration"]["sha256"],
+        },
+        {
+            "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
+            "value": value["productPins"]["citizenAdoptionDatabaseSchemaSha256"],
+        },
+        ])
     deployment = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -1350,7 +1566,11 @@ def expected_gateway_resources(
                         "imagePullPolicy": "IfNotPresent",
                         "name": "staging-participant-gateway",
                         "ports": [{"containerPort": GATEWAY_PORT, "name": "http", "protocol": "TCP"}],
-                        "readinessProbe": tcp_probe(3, 10),
+                        "readinessProbe": (
+                            http_readiness_probe()
+                            if value == APPROVED_NEXT_ACTIVATION_POLICY
+                            else tcp_probe(3, 10)
+                        ),
                         "livenessProbe": tcp_probe(3, 20),
                         "startupProbe": tcp_probe(30, 2),
                         "resources": {

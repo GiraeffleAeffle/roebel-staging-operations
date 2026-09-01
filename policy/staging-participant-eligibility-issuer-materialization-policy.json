@@ -1,0 +1,110 @@
+{
+  "schemaVersion": "roebel_staging_participant_eligibility_issuer_materialization_policy_v2",
+  "authority": {
+    "environment": "staging",
+    "civicAuthority": "none",
+    "citizenVerification": false,
+    "municipalPublication": false,
+    "proposalMutation": false,
+    "voteMutation": false,
+    "treasuryMutation": false
+  },
+  "algorithm": "Ed25519",
+  "keyId": "roebel-staging-citizen-eligibility-2026-09",
+  "clusterIdentity": {
+    "apiOrigin": "https://10.255.240.11:6443",
+    "caCertificateSha256": "sha256:42fd39869882e3c25a1f37c090542d215ceb0f60a7d68f5603fb9a0583afee28",
+    "apiServerSpkiSha256": "sha256:1507430795ee7c9cbeea9133dd3b1a809a500de5bcc4dd8e400163ac9471186a",
+    "kubeSystemNamespaceUid": "7bc769bc-e860-4d54-a0d5-d426f3a52420"
+  },
+  "httpBoundary": {
+    "timeoutsSeconds": {
+      "routeRequest": 15
+    }
+  },
+  "target": {
+    "apiVersion": "v1",
+    "kind": "Secret",
+    "namespace": "stadtstack-roebel-web-preview",
+    "name": "roebel-staging-participant-gateway-eligibility-issuer",
+    "type": "Opaque",
+    "key": "private-key-hex",
+    "immutable": true
+  },
+  "input": {
+    "transport": "owned-private-inherited-descriptor-only",
+    "encoding": "exact-lowercase-64-hex-no-newline",
+    "decodedBytes": 32,
+    "sha256Commitment": "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc"
+  },
+  "publicKey": {
+    "derivation": "RFC8032-Ed25519-private-seed-to-public-key",
+    "encoding": "lowercase-64-hex",
+    "expected": "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8"
+  },
+  "materialization": {
+    "operation": "create-only",
+    "initialState": "exact-target-absent",
+    "existingObject": "reject-no-adopt-no-recreate",
+    "operationNonceAnnotation": "stadtstack.io/eligibility-issuer-materialization-nonce",
+    "dryRun": "server-before-create",
+    "readSecretValues": false,
+    "metadataOnlyRead": {
+      "representation": "PartialObjectMetadata",
+      "accept": "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1",
+      "apiPath": "/api/v1/namespaces/stadtstack-roebel-web-preview/secrets/roebel-staging-participant-gateway-eligibility-issuer"
+    },
+    "metadataCommitments": {
+      "contentContractAnnotation": "stadtstack.io/eligibility-issuer-content-contract-sha256",
+      "contentContractFields": [
+        "target",
+        "input.sha256Commitment",
+        "keyId",
+        "publicKey.expected"
+      ],
+      "keySetAnnotation": "stadtstack.io/eligibility-issuer-keyset-sha256",
+      "keySet": [
+        "private-key-hex"
+      ]
+    },
+    "delete": false,
+    "patch": false,
+    "replace": false,
+    "durableJournal": {
+      "schemaVersion": "roebel_staging_participant_eligibility_issuer_materialization_journal_v1",
+      "reservation": "durable-before-create",
+      "recovery": "same-protected-journal-and-operation-nonce-only",
+      "postSendUncertain": "exact-live-projection-same-operation-nonce-only",
+      "genericAdoption": false
+    }
+  },
+  "receipt": {
+    "schemaVersion": "roebel_staging_participant_eligibility_issuer_materialization_receipt_v1",
+    "status": "materialized",
+    "requiredFields": [
+      "schemaVersion",
+      "status",
+      "protectedRevision",
+      "protectedFileSha256",
+      "policy",
+      "clusterBinding",
+      "target",
+      "uid",
+      "resourceVersion",
+      "operationNonce",
+      "keyId",
+      "publicKey",
+      "privateKeyCommitmentSha256",
+      "keySet",
+      "labels",
+      "annotations",
+      "createOutcome",
+      "valuesRead",
+      "receiptContainsValues",
+      "authority"
+    ],
+    "verifyMode": "owned-private-inherited-descriptor",
+    "containsPrivateKey": false,
+    "containsSecretValue": false
+  }
+}
