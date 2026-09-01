@@ -181,6 +181,41 @@
         }
       },
       "upstreamUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
+    },
+    "publicMeckyReviewedWebSource": {
+      "authority": "none",
+      "destinationNamespace": "stadtstack-roebel-web-preview",
+      "destinationPodLabels": {
+        "app.kubernetes.io/name": "roebel-web-presentation"
+      },
+      "dns": {
+        "destinationNamespace": "kube-system",
+        "destinationPodLabels": {
+          "k8s-app": "kube-dns"
+        },
+        "ports": [
+          {
+            "port": 53,
+            "protocol": "UDP"
+          },
+          {
+            "port": 53,
+            "protocol": "TCP"
+          }
+        ]
+      },
+      "knowledgeOrigin": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080",
+      "port": 8080,
+      "protocol": "TCP",
+      "publicIndexOrigin": null,
+      "source": {
+        "namespace": "stadtstack-roebel-staging-lab",
+        "podSelector": {
+          "app.kubernetes.io/component": "public-mecky",
+          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+        }
+      },
+      "sourceKinds": "local_news,ratsinformation"
     }
   },
   "effects": {
@@ -194,7 +229,7 @@
       "kind": "NetworkPolicy",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:c7416ec6deffc6c7df4a7b4ffcdae7c413ca850dae8f5429ae8916cd34883a89"
+      "sha256": "sha256:adbb94870ff1be33806ec8636cbe0c1bb6ba895fa894a4f5702c510a35a8a953"
     },
     {
       "kind": "Ingress",
@@ -237,6 +272,12 @@
       "name": "roebel-staging-participant-workbench-ingress",
       "namespace": "stadtstack-roebel-staging-lab",
       "sha256": "sha256:7c203757a2745ff6375cb1ec8d4f2c923e7d7dad5118aef8e64cf6f9abf61444"
+    },
+    {
+      "kind": "NetworkPolicy",
+      "name": "public-mecky-chat-from-web",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "sha256": "sha256:55191c8c635c8fcce66b3cfe2b7dc8ad37c5db75e1f96a809ca51660cb4f346d"
     }
   ],
   "rbacBootstrap": {

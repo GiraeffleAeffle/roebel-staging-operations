@@ -151,6 +151,10 @@
               {
                 "name": "MECKY_REVIEWED_SOURCE_KINDS",
                 "value": "local_news,ratsinformation"
+              },
+              {
+                "name": "MECKY_REVIEWED_KNOWLEDGE_BASE_URL",
+                "value": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080"
               }
             ],
             "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:aa66c9b8bb75989e1c47b628845523fa345a944b0a1a82bd17863f96c1f128e4",
