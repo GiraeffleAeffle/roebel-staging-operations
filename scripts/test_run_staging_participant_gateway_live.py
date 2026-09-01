@@ -1640,8 +1640,8 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
 
     def test_eligibility_issuer_source_is_normalized_to_distinct_exact_64_byte_descriptor(self):
         raw = b"1" * 64
-        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
-            root = Path(directory); os.chmod(root, 0o700)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve(); os.chmod(root, 0o700)
             source = root / "issuer.hex"; source.write_bytes(raw + b"\n"); source.chmod(0o600)
             destination = root / "issuer.bound"
             with patch.object(MODULE, "ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT", MODULE.bytes_sha256(raw)):
