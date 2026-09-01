@@ -2522,9 +2522,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "workflowSha256": predecessor["workflowSha256"],
             },
             {
-                "sourceRevision": "722c75a0ae2303edcaa8c8281af7d6fe3c53089b",
-                "sourceTreeSha256": "sha256:06955333455bc805645ed1f956aa79dfea1b556be970da2182bb2e76b29b4a68",
-                "manifestDigest": "sha256:2b77d59eed440df844c86c4adf0ae5f3577f7526d4b09160c2f1e5e731dc7f2b",
+                "sourceRevision": "f2e5c93c8fb0127d3aacc33d4be1a1a63f707dc1",
+                "sourceTreeSha256": "sha256:0325e742e595de75a694d6662ffe6d84cd38818239c3f334d4ce802ed48ca819",
+                "manifestDigest": "sha256:ba12dea1ebffa2cb85b58f135882085c66c1675f4461f27af116b63737a95a57",
                 "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
             },
         )
@@ -2536,9 +2536,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "workflowSha256": successor["workflowSha256"],
             },
             {
-                "sourceRevision": "f2e5c93c8fb0127d3aacc33d4be1a1a63f707dc1",
-                "sourceTreeSha256": "sha256:0325e742e595de75a694d6662ffe6d84cd38818239c3f334d4ce802ed48ca819",
-                "manifestDigest": "sha256:ba12dea1ebffa2cb85b58f135882085c66c1675f4461f27af116b63737a95a57",
+                "sourceRevision": "b81f273c8de5e825b60468df302f0e2057f51e2e",
+                "sourceTreeSha256": "sha256:3b49a62498d560da36d0cb67121a1622260fb5690a51123e74c3c88712720974",
+                "manifestDigest": "sha256:e8ba5a0dfce7340575abcd7e06e10f8153343571776b29f6ab3f54467ec80391",
                 "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
             },
         )
