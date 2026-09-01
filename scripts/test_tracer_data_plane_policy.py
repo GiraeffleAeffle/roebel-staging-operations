@@ -37,6 +37,39 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertFalse(result["persistentVolumeClaim"])
         self.assertFalse(result["secretValuesCommitted"])
 
+    def test_application_object_default_tracks_the_exact_render_variant(self) -> None:
+        temporary, root = self.candidate()
+        self.addCleanup(temporary.cleanup)
+        bootstrap = root / POLICY.RENDER_ROOT / "bootstrap"
+        citizen = bootstrap / POLICY.PRODUCT_ARTIFACTS[-1][0]
+        selected = (
+            POLICY.PRODUCT_ARTIFACTS
+            if citizen.is_file()
+            else POLICY.LEGACY_PRODUCT_ARTIFACTS
+        )
+        objects = POLICY.expected_application_objects(root)
+        self.assertEqual(
+            objects,
+            POLICY.expected_application_objects(root, selected),
+        )
+        self.assertEqual(
+            POLICY.PRODUCT_ARTIFACTS[-1][0]
+            in objects["bootstrapConfigMap"]["data"],
+            citizen.is_file(),
+        )
+        expected_digest = POLICY.canonical_sha256(
+            [
+                {"path": path, "sha256": digest}
+                for _filename, path, digest in selected
+            ]
+        )
+        self.assertEqual(
+            objects["postgresDeployment"]["metadata"]["annotations"][
+                "stadtstack.io/bootstrap-artifacts-sha256"
+            ],
+            expected_digest,
+        )
+
     def test_postgrest_is_cluster_ip_only_and_all_ingress_is_pod_selected(self) -> None:
         service = POLICY.expected_postgrest_service()
         network = POLICY.expected_postgrest_network_policy()
@@ -88,6 +121,24 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertEqual(
             deployment["metadata"]["annotations"]["stadtstack.io/storage-truth"],
             "ephemeral-emptydir-recreated-baseline",
+        )
+        bootstrap_digest = POLICY.canonical_sha256(
+            [
+                {"path": path, "sha256": digest}
+                for _filename, path, digest in POLICY.PRODUCT_ARTIFACTS
+            ]
+        )
+        self.assertEqual(
+            deployment["metadata"]["annotations"][
+                "stadtstack.io/bootstrap-artifacts-sha256"
+            ],
+            bootstrap_digest,
+        )
+        self.assertEqual(
+            deployment["spec"]["template"]["metadata"]["annotations"][
+                "stadtstack.io/bootstrap-artifacts-sha256"
+            ],
+            bootstrap_digest,
         )
         self.assertNotIn("PersistentVolumeClaim", json.dumps(deployment))
         container = deployment["spec"]["template"]["spec"]["containers"][0]
@@ -141,6 +192,7 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
             "72-provision-roebel-vault.sh",
             "73-staging-participant-gateway.sql",
             "74-staging-participant-topic-tracer.sql",
+            "75-staging-citizen-adoption.sql",
         ]
         for item in order:
             self.assertIn(item, kustomization)
@@ -161,13 +213,14 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         for filename in (
             "73-staging-participant-gateway.sql",
             "74-staging-participant-topic-tracer.sql",
+            "75-staging-citizen-adoption.sql",
         ):
             migration_line = next(
                 line for line in lines
                 if f"--file=/roebel-tracer-bootstrap/{filename}" in line
             )
             self.assertTrue(migration_line.startswith(expected_migration_prefix))
-        self.assertEqual(verify.count(expected_migration_prefix), 2)
+        self.assertEqual(verify.count(expected_migration_prefix), 3)
         self.assertLess(
             verify.rindex("71-roebel-tracer-baseline.sql"),
             verify.rindex("72-provision-roebel-vault.sh"),
@@ -175,6 +228,10 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertLess(
             verify.rindex("72-provision-roebel-vault.sh"),
             verify.rindex("73-staging-participant-gateway.sql"),
+        )
+        self.assertLess(
+            verify.rindex("74-staging-participant-topic-tracer.sql"),
+            verify.rindex("75-staging-citizen-adoption.sql"),
         )
         for _filename, _path, digest in POLICY.PRODUCT_ARTIFACTS:
             self.assertIn(digest.removeprefix("sha256:"), verify)
@@ -230,7 +287,7 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         pin = POLICY.runtime_pin()
         self.assertEqual(
             pin["productSource"]["sourceRevision"],
-            "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
+            "4c44ae3df1e37161156098899ccf192cd0bbe370",
         )
         self.assertTrue(pin["activationReady"])
         self.assertEqual(
@@ -240,6 +297,14 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.assertEqual(
             pin["productSource"]["artifacts"][0]["sha256"],
             "sha256:f8f9745c1783043334ef24b3cde801d19a609867d12d0c23612bda7c5206ca5a",
+        )
+        self.assertEqual(
+            pin["productSource"]["artifacts"][-1],
+            {
+                "configMapFilename": "75-staging-citizen-adoption.sql",
+                "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
+                "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d",
+            },
         )
 
     def test_repository_contract_marks_the_bounded_tracer_ready_but_not_routine(self) -> None:

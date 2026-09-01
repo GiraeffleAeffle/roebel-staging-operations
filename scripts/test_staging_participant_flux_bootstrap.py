@@ -1198,73 +1198,83 @@ class ParticipantFluxBootstrapTests(unittest.TestCase):
             self.assertEqual(verified["receiptSha256"], close_receipt(success)["canonicalSha256"])
 
     def test_inert_dry_run_writes_plan_without_constructing_kubernetes_adapter(self) -> None:
-        inert_plan = BOOTSTRAP.build_plan(
+        with mock.patch.object(
             POLICY,
-            POLICY.activation_policy_descriptor(),
-            REVISION,
-            {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
-        )
-        context = {
-            "revision": REVISION,
-            "hashes": inert_plan["protectedFileSha256"],
-            "policy": POLICY.activation_policy_descriptor(),
-            "policyModule": POLICY,
-            "bootstrapModule": BOOTSTRAP,
-            "plan": inert_plan,
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            receipt = Path(directory) / "dry-run.json"
-            with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
-                CLI,
-                "KubernetesAdapter",
-                side_effect=AssertionError("dry-run contacted Kubernetes"),
-            ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                result = CLI.main(
-                    [
-                        "--dry-run",
-                        "--expected-protected-revision",
-                        REVISION,
-                        "--receipt",
-                        str(receipt),
-                    ],
-                )
+            "STATIC_ACTIVATION_POLICY",
+            POLICY.SUCCESSOR_INERT_ACTIVATION_POLICY,
+        ):
+            inert_plan = BOOTSTRAP.build_plan(
+                POLICY,
+                POLICY.activation_policy_descriptor(),
+                REVISION,
+                {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
+            )
+            context = {
+                "revision": REVISION,
+                "hashes": inert_plan["protectedFileSha256"],
+                "policy": POLICY.activation_policy_descriptor(),
+                "policyModule": POLICY,
+                "bootstrapModule": BOOTSTRAP,
+                "plan": inert_plan,
+            }
+            with tempfile.TemporaryDirectory() as directory:
+                receipt = Path(directory) / "dry-run.json"
+                with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
+                    CLI,
+                    "KubernetesAdapter",
+                    side_effect=AssertionError("dry-run contacted Kubernetes"),
+                ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    result = CLI.main(
+                        [
+                            "--dry-run",
+                            "--expected-protected-revision",
+                            REVISION,
+                            "--receipt",
+                            str(receipt),
+                        ],
+                    )
         self.assertEqual(result, 0)
         self.assertEqual(inert_plan["status"], "blocked-policy-incomplete")
 
     def test_inert_live_gate_fails_before_receipt_or_kubernetes_adapter(self) -> None:
-        inert_plan = BOOTSTRAP.build_plan(
+        with mock.patch.object(
             POLICY,
-            POLICY.activation_policy_descriptor(),
-            REVISION,
-            {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
-        )
-        context = {
-            "revision": REVISION,
-            "hashes": inert_plan["protectedFileSha256"],
-            "policy": POLICY.activation_policy_descriptor(),
-            "policyModule": POLICY,
-            "bootstrapModule": BOOTSTRAP,
-            "plan": inert_plan,
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            receipt = Path(directory) / "must-not-exist.json"
-            with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
-                CLI,
-                "KubernetesAdapter",
-                side_effect=AssertionError("blocked live mode contacted Kubernetes"),
-            ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                result = CLI.main(
-                    [
-                        "--live",
-                        "--expected-protected-revision",
-                        REVISION,
-                        "--kubeconfig",
-                        "/must/not/be/read",
-                        "--receipt",
-                        str(receipt),
-                    ],
-                )
-            self.assertFalse(receipt.exists())
+            "STATIC_ACTIVATION_POLICY",
+            POLICY.SUCCESSOR_INERT_ACTIVATION_POLICY,
+        ):
+            inert_plan = BOOTSTRAP.build_plan(
+                POLICY,
+                POLICY.activation_policy_descriptor(),
+                REVISION,
+                {"scripts/bootstrap-staging-participant-flux.py": "sha256:" + "a" * 64},
+            )
+            context = {
+                "revision": REVISION,
+                "hashes": inert_plan["protectedFileSha256"],
+                "policy": POLICY.activation_policy_descriptor(),
+                "policyModule": POLICY,
+                "bootstrapModule": BOOTSTRAP,
+                "plan": inert_plan,
+            }
+            with tempfile.TemporaryDirectory() as directory:
+                receipt = Path(directory) / "must-not-exist.json"
+                with mock.patch.object(CLI, "load_context", return_value=context), mock.patch.object(
+                    CLI,
+                    "KubernetesAdapter",
+                    side_effect=AssertionError("blocked live mode contacted Kubernetes"),
+                ), mock.patch.object(CLI.sys, "flags", mock.Mock(isolated=1, safe_path=True)), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                    result = CLI.main(
+                        [
+                            "--live",
+                            "--expected-protected-revision",
+                            REVISION,
+                            "--kubeconfig",
+                            "/must/not/be/read",
+                            "--receipt",
+                            str(receipt),
+                        ],
+                    )
+                self.assertFalse(receipt.exists())
         self.assertEqual(result, 2)
 
     def test_protected_cli_and_workflow_accept_no_manifest_evidence_or_cluster_credentials(self) -> None:

@@ -626,8 +626,9 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         }
         self.assertEqual(set(MODULE.PROTECTED_PATHS), expected)
         source = inspect.getsource(MODULE.main)
-        self.assertLess(source.index("cancellation.install()"), source.index("bind_protected_checkout(revision)"))
-        self.assertLess(source.index("bind_protected_checkout(revision)"), source.index("bind_bytes_to_fd("))
+        checkout = source.index("protected_hashes, protected_blobs = bind_protected_checkout(")
+        self.assertLess(source.index("cancellation.install()"), checkout)
+        self.assertLess(checkout, source.index("bind_bytes_to_fd("))
         self.assertLess(source.index("bind_handover_git_closure("), source.index("snapshot_binary("))
         self.assertLess(source.index("bind_bytes_to_fd("), source.index("snapshot_binary("))
         self.assertLess(source.index("snapshot_binary("), source.index("decrypt("))
@@ -972,7 +973,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("handover_blob_fds", ordinary_bindings)
 
         closure_start = source.index("for (blob_revision, blob_path), blob in sorted(handover_prebound.items()):")
-        closure_end = source.index("        if tracer_mode is not None:", closure_start)
+        closure_end = source.index('        if citizen_mode == "verify-active-runtime":', closure_start)
         closure = source[closure_start:closure_end]
         self.assertIn("blob_path in HANDOVER_NESTED_PREBOUND_CURRENT_PATHS", closure)
         self.assertIn("blob_path in HANDOVER_PREBOUND_ARCHIVE_PATHS", closure)
@@ -1590,6 +1591,155 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
                 "--tracer-data-plane-activate", *common,
                 "--handover-dormant-receipt", "/private/dormant.json",
             ])
+
+    def test_citizen_adoption_cli_modes_are_closed_and_mutually_exclusive(self):
+        common = [
+            "--live", "--expected-protected-revision", "a" * 40,
+            "--age-bin", "/bin/true", "--age-identity", "/private/id",
+            "--bootstrap-bundle", "/private/bundle", "--wireproxy-bin", "/bin/true",
+            "--talosctl-bin", "/bin/true", "--kubectl-bin", "/bin/true",
+            "--receipt-directory", "/private/attempt",
+        ]
+        active = MODULE.parse_args(["--participant-gateway-verify-active-runtime", *common])
+        self.assertTrue(active.participant_gateway_verify_active_runtime)
+        materialize = MODULE.parse_args([
+            "--eligibility-issuer-materialize", *common,
+            "--eligibility-issuer-private-key", "/private/issuer.hex",
+            "--eligibility-issuer-receipt", "/private/issuer.json",
+            "--eligibility-issuer-journal", "/private/issuer.journal.json",
+        ])
+        self.assertTrue(materialize.eligibility_issuer_materialize)
+        recover = MODULE.parse_args([
+            "--eligibility-issuer-recover", *common,
+            "--eligibility-issuer-receipt", "/private/issuer.json",
+            "--eligibility-issuer-journal", "/private/issuer.journal.json",
+        ])
+        self.assertTrue(recover.eligibility_issuer_recover)
+        verify = MODULE.parse_args([
+            "--eligibility-issuer-verify", *common,
+            "--eligibility-issuer-receipt", "/private/issuer.json",
+        ])
+        self.assertTrue(verify.eligibility_issuer_verify)
+        with self.assertRaises(SystemExit):
+            MODULE.parse_args([
+                "--participant-gateway-verify-active-runtime",
+                "--eligibility-issuer-verify", *common,
+            ])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "private key, receipt, and journal"):
+            MODULE.parse_args(["--eligibility-issuer-materialize", *common])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "accepts no issuer inputs"):
+            MODULE.parse_args([
+                "--participant-gateway-verify-active-runtime", *common,
+                "--eligibility-issuer-receipt", "/private/issuer.json",
+            ])
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "explicit citizen-adoption"):
+            MODULE.parse_args([
+                "--participant-gateway", *common,
+                "--eligibility-issuer-receipt", "/private/issuer.json",
+            ])
+
+    def test_eligibility_issuer_source_is_normalized_to_distinct_exact_64_byte_descriptor(self):
+        raw = b"1" * 64
+        with tempfile.TemporaryDirectory(dir="/private/tmp") as directory:
+            root = Path(directory); os.chmod(root, 0o700)
+            source = root / "issuer.hex"; source.write_bytes(raw + b"\n"); source.chmod(0o600)
+            destination = root / "issuer.bound"
+            with patch.object(MODULE, "ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT", MODULE.bytes_sha256(raw)):
+                bound = MODULE.bind_eligibility_issuer_private_key(source, destination)
+            try:
+                self.assertEqual(bound.size, 64)
+                self.assertEqual(os.pread(bound.fd, 65, 0), raw)
+                self.assertEqual(source.read_bytes(), raw + b"\n")
+                self.assertFalse(destination.exists())
+                self.assertNotEqual(os.fstat(bound.fd).st_ino, os.lstat(source).st_ino)
+                self.assertFalse(os.get_inheritable(bound.fd))
+            finally:
+                bound.close()
+            source.write_bytes(raw); source.chmod(0o600)
+            with patch.object(MODULE, "ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT", MODULE.bytes_sha256(raw)), self.assertRaisesRegex(
+                MODULE.LiveTransportError, "exactly 65 bytes",
+            ):
+                MODULE.bind_eligibility_issuer_private_key(source, root / "missing.bound")
+
+    def test_citizen_adoption_closure_and_child_modes_bind_only_reviewed_paths(self):
+        self.assertTrue(set(MODULE.PROTECTED_PATHS) < set(MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS))
+        self.assertIn(MODULE.ELIGIBILITY_ISSUER_RUNNER, MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS)
+        self.assertIn(MODULE.ELIGIBILITY_ISSUER_POLICY, MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS)
+        self.assertEqual(
+            MODULE.bytes_sha256((ROOT / MODULE.ELIGIBILITY_ISSUER_POLICY).read_bytes()),
+            "sha256:eaa18b49203c97daf1eb7c31725a747986f9d954f12811e7abf6e3bdd4aa939c",
+        )
+        self.assertEqual(
+            MODULE.bytes_sha256((ROOT / MODULE.ELIGIBILITY_ISSUER_RUNNER).read_bytes()),
+            "sha256:2f0f147d169b11ecbc2b288416d83531c9de45907ff32460d1615e2d43d70ee1",
+        )
+        self.assertIn(
+            "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/75-staging-citizen-adoption.sql",
+            MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS,
+        )
+        source = inspect.getsource(MODULE.main)
+        active = source[
+            source.index('if citizen_mode == "verify-active-runtime":'):
+            source.index('elif citizen_mode in {"issuer-materialize", "issuer-recover"}:')
+        ]
+        self.assertIn('"--verify-active-runtime"', active)
+        self.assertIn('"--verify-active-runtime-receipt-fd"', active)
+        self.assertNotIn('"--live"', active)
+        self.assertNotIn("bootstrap_runner.command", active)
+        self.assertNotIn("secret_runner.command", active)
+        issuer_start = source.index('elif citizen_mode in {"issuer-materialize", "issuer-recover"}:')
+        issuer = source[
+            issuer_start:
+            source.index('elif citizen_mode == "issuer-verify":', issuer_start)
+        ]
+        self.assertIn('"--materialize"', issuer)
+        self.assertIn('"--recover-journal"', issuer)
+        self.assertIn('"--private-key-fd"', issuer)
+        self.assertIn("verify_eligibility_issuer_receipt_with_protected_cli", issuer)
+        self.assertEqual(issuer.count("issuer_private_key_bound.fd"), 2)
+        self.assertNotIn("os.pread(issuer_private_key_bound.fd", issuer)
+
+    def test_eligibility_issuer_receipt_verifier_accepts_only_value_free_public_projection(self):
+        revision = "a" * 40
+        projection = {
+            "schemaVersion": MODULE.ELIGIBILITY_ISSUER_RECEIPT_SCHEMA,
+            "status": "materialized", "protectedRevision": revision,
+            "protectedFileSha256": {"runner": "sha256:" + "1" * 64},
+            "policy": {"schemaVersion": "v2"}, "clusterBinding": {"uid": "cluster"},
+            "target": {"kind": "Secret"}, "uid": "uid", "resourceVersion": "10",
+            "operationNonce": "2" * 64, "keyId": MODULE.ELIGIBILITY_ISSUER_KEY_ID,
+            "publicKey": MODULE.ELIGIBILITY_ISSUER_PUBLIC_KEY,
+            "privateKeyCommitmentSha256": MODULE.ELIGIBILITY_ISSUER_PRIVATE_KEY_COMMITMENT,
+            "valuesRead": False, "receiptContainsValues": False,
+            "authority": {
+                "environment": "staging", "civicAuthority": "none",
+                "citizenVerification": False, "municipalPublication": False,
+                "proposalMutation": False, "voteMutation": False,
+                "treasuryMutation": False,
+            },
+            "canonicalReceiptSha256": "sha256:" + "3" * 64,
+        }
+        cancellation = Mock()
+        cancellation.run.return_value = MODULE.subprocess.CompletedProcess(
+            [], 0, stdout=MODULE.canonical(projection) + "\n", stderr="",
+        )
+        runner = MODULE.BoundRunner(MODULE.ELIGIBILITY_ISSUER_RUNNER, Mock(fd=11))
+        receipt = MODULE.BoundBlob(12, 10, "sha256:" + "4" * 64, "issuer receipt")
+        result = MODULE.verify_eligibility_issuer_receipt_with_protected_cli(
+            cancellation, runner, receipt, revision, {}, allow_cancelled=False,
+        )
+        self.assertEqual(result, projection)
+        argv = cancellation.run.call_args.args[0]
+        self.assertIn("--verify-receipt-fd", argv)
+        self.assertNotIn("--kubeconfig", argv)
+        drifted = copy.deepcopy(projection); drifted["valuesRead"] = True
+        cancellation.run.return_value = MODULE.subprocess.CompletedProcess(
+            [], 0, stdout=MODULE.canonical(drifted), stderr="",
+        )
+        with self.assertRaisesRegex(MODULE.LiveTransportError, "public projection drift"):
+            MODULE.verify_eligibility_issuer_receipt_with_protected_cli(
+                cancellation, runner, receipt, revision, {}, allow_cancelled=False,
+            )
 
     def test_tracer_activation_projection_keeps_same_revision_behavior(self):
         revision = "c" * 40

@@ -72,6 +72,19 @@ def load_tracer_data_plane_module():
 
 TRACER_DATA_PLANE = load_tracer_data_plane_module()
 
+ELIGIBILITY_ISSUER_POLICY_PATH = (
+    "policy/staging-participant-eligibility-issuer-materialization-policy.json"
+)
+ELIGIBILITY_ISSUER_MATERIALIZER_PATH = (
+    "scripts/materialize-staging-participant-eligibility-issuer.py"
+)
+ELIGIBILITY_ISSUER_MATERIALIZER_TEST_PATH = (
+    "scripts/test_materialize_staging_participant_eligibility_issuer.py"
+)
+CITIZEN_ADOPTION_SQL_PATH = str(
+    TRACER_DATA_PLANE.RENDER_ROOT / "bootstrap/75-staging-citizen-adoption.sql"
+)
+
 HEAD_SCHEMA = "roebel_staging_release_set_head_v1"
 RENDER_SCHEMA = "roebel_staging_reviewed_render_v1"
 RENDER_ROOT = "reviewed-render/roebel-staging"
@@ -195,6 +208,7 @@ EXPECTED_FILES = {
     "contracts/stadtstack-case-runtime-contract.json",
     "policy/repository-contract.json",
     "policy/staging-participant-gateway-activation-policy.json",
+    ELIGIBILITY_ISSUER_POLICY_PATH,
     "scripts/render-release-set-promotion.py",
     "scripts/activate-staging-participant-gateway.py",
     "scripts/bootstrap-staging-participant-flux.py",
@@ -202,6 +216,7 @@ EXPECTED_FILES = {
     "scripts/workbench_baseline_recovery.py",
     "scripts/run-staging-participant-gateway-live.py",
     "scripts/materialize-staging-participant-gateway-secrets.py",
+    ELIGIBILITY_ISSUER_MATERIALIZER_PATH,
     "scripts/handover-staging-participant-dormant-receipt.py",
     "scripts/staging_participant_dormant_receipt_handover.py",
     "scripts/promote-staging-workbench-image.py",
@@ -215,6 +230,7 @@ EXPECTED_FILES = {
     "scripts/test_activate_staging_participant_gateway.py",
     "scripts/test_run_staging_participant_gateway_live.py",
     "scripts/test_materialize_staging_participant_gateway_secrets.py",
+    ELIGIBILITY_ISSUER_MATERIALIZER_TEST_PATH,
     "scripts/test_staging_participant_dormant_receipt_handover.py",
     "scripts/test_promote_staging_workbench_image.py",
     "scripts/test_reset_staging_relay_fixtures.py",
@@ -262,7 +278,7 @@ EXPECTED_FILES = {
     f"{RENDER_ROOT}/web/networkpolicy.json",
     WORKBENCH_BASELINE.NETWORK_POLICY_PATH,
     WORKBENCH_BASELINE.KUSTOMIZATION_PATH,
-    *TRACER_DATA_PLANE.expected_files(),
+    *TRACER_DATA_PLANE.expected_files(TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS),
 }
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
@@ -335,6 +351,31 @@ CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES = {
     f"{RENDER_ROOT}/web/deployment.json",
     f"{RENDER_ROOT}/web/networkpolicy.json",
 }
+CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES = {
+    "policy/repository-contract.json",
+    CITIZEN_ADOPTION_SQL_PATH,
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/runtime-pin.json",
+}
+CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES = {
+    "policy/repository-contract.json",
+    PARTICIPANT_POLICY.POLICY_PATH,
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/ingress.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+}
+CITIZEN_ADOPTION_GATEWAY_PRESERVED_RENDER_FILES = (
+    PARTICIPANT_GATEWAY_FILES
+    - {
+        f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+        f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+        f"{PARTICIPANT_GATEWAY_ROOT}/ingress.json",
+    }
+)
 
 # Phase A admits only the inert in-cluster tracer capability.  In particular,
 # none of the currently reconciled Web/Public-Mecky release inputs may change
@@ -509,6 +550,19 @@ SIGNED_NOSTR_FILES = (
 )
 SIGNED_NOSTR_EXPECTED_FILES = FUTURE_EXPECTED_FILES | SIGNED_NOSTR_FILES
 SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES = SIGNED_NOSTR_EXPECTED_FILES | PARTICIPANT_GATEWAY_FILES
+CITIZEN_ADOPTION_EXPECTED_FILES = EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+CITIZEN_ADOPTION_FUTURE_EXPECTED_FILES = (
+    FUTURE_EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+)
+CITIZEN_ADOPTION_PARTICIPANT_GATEWAY_EXPECTED_FILES = (
+    PARTICIPANT_GATEWAY_EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+)
+CITIZEN_ADOPTION_SIGNED_NOSTR_EXPECTED_FILES = (
+    SIGNED_NOSTR_EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+)
+CITIZEN_ADOPTION_SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES = (
+    SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+)
 SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
     f"{RENDER_ROOT}/integrity.json",
     f"{RENDER_ROOT}/web/ingress.json",
@@ -757,6 +811,16 @@ def verify_repository_file_set(root: Path) -> str:
         return "signed-nostr"
     if actual == SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES:
         return "signed-nostr-participant-gateway"
+    if actual == CITIZEN_ADOPTION_EXPECTED_FILES:
+        return "current"
+    if actual == CITIZEN_ADOPTION_FUTURE_EXPECTED_FILES:
+        return "reviewed-public-knowledge"
+    if actual == CITIZEN_ADOPTION_PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "reviewed-public-knowledge-participant-gateway"
+    if actual == CITIZEN_ADOPTION_SIGNED_NOSTR_EXPECTED_FILES:
+        return "signed-nostr"
+    if actual == CITIZEN_ADOPTION_SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES:
+        return "signed-nostr-participant-gateway"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -817,6 +881,203 @@ def verify_case_image_resource_inventory_contract_with_protected_policy(root: Pa
     require(errors == [], f"Case image/resource inventory contract verification failed: {errors!r}")
 
 
+def expected_eligibility_issuer_materialization_policy() -> dict[str, Any]:
+    """Return the sole value-free issuer materialization boundary."""
+    successor = PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY
+    issuer = successor["runtime"]["citizenAdoption"]["eligibilityIssuer"]
+    cluster = successor["clusterIdentity"]
+    secret = issuer["secret"]
+    return {
+        "schemaVersion": (
+            "roebel_staging_participant_eligibility_issuer_"
+            "materialization_policy_v2"
+        ),
+        "authority": {
+            "environment": "staging",
+            "civicAuthority": "none",
+            "citizenVerification": False,
+            "municipalPublication": False,
+            "proposalMutation": False,
+            "voteMutation": False,
+            "treasuryMutation": False,
+        },
+        "algorithm": "Ed25519",
+        "keyId": issuer["keyId"],
+        "clusterIdentity": copy.deepcopy(cluster),
+        "httpBoundary": {"timeoutsSeconds": {"routeRequest": 15}},
+        "target": {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "namespace": secret["namespace"],
+            "name": secret["name"],
+            "type": "Opaque",
+            "key": secret["key"],
+            "immutable": True,
+        },
+        "input": {
+            "transport": "owned-private-inherited-descriptor-only",
+            "encoding": "exact-lowercase-64-hex-no-newline",
+            "decodedBytes": 32,
+            "sha256Commitment": issuer["privateKeySha256Commitment"],
+        },
+        "publicKey": {
+            "derivation": "RFC8032-Ed25519-private-seed-to-public-key",
+            "encoding": "lowercase-64-hex",
+            "expected": issuer["publicKey"],
+        },
+        "materialization": {
+            "operation": "create-only",
+            "initialState": "exact-target-absent",
+            "existingObject": "reject-no-adopt-no-recreate",
+            "operationNonceAnnotation": (
+                "stadtstack.io/eligibility-issuer-materialization-nonce"
+            ),
+            "dryRun": "server-before-create",
+            "readSecretValues": False,
+            "metadataOnlyRead": {
+                "representation": "PartialObjectMetadata",
+                "accept": (
+                    "application/json;as=PartialObjectMetadata;"
+                    "g=meta.k8s.io;v=v1"
+                ),
+                "apiPath": (
+                    "/api/v1/namespaces/stadtstack-roebel-web-preview/"
+                    "secrets/roebel-staging-participant-gateway-"
+                    "eligibility-issuer"
+                ),
+            },
+            "metadataCommitments": {
+                "contentContractAnnotation": (
+                    "stadtstack.io/eligibility-issuer-"
+                    "content-contract-sha256"
+                ),
+                "contentContractFields": [
+                    "target",
+                    "input.sha256Commitment",
+                    "keyId",
+                    "publicKey.expected",
+                ],
+                "keySetAnnotation": (
+                    "stadtstack.io/eligibility-issuer-keyset-sha256"
+                ),
+                "keySet": ["private-key-hex"],
+            },
+            "delete": False,
+            "patch": False,
+            "replace": False,
+            "durableJournal": {
+                "schemaVersion": (
+                    "roebel_staging_participant_eligibility_issuer_"
+                    "materialization_journal_v1"
+                ),
+                "reservation": "durable-before-create",
+                "recovery": (
+                    "same-protected-journal-and-operation-nonce-only"
+                ),
+                "postSendUncertain": (
+                    "exact-live-projection-same-operation-nonce-only"
+                ),
+                "genericAdoption": False,
+            },
+        },
+        "receipt": {
+            "schemaVersion": (
+                "roebel_staging_participant_eligibility_issuer_"
+                "materialization_receipt_v1"
+            ),
+            "status": "materialized",
+            "requiredFields": [
+                "schemaVersion",
+                "status",
+                "protectedRevision",
+                "protectedFileSha256",
+                "policy",
+                "clusterBinding",
+                "target",
+                "uid",
+                "resourceVersion",
+                "operationNonce",
+                "keyId",
+                "publicKey",
+                "privateKeyCommitmentSha256",
+                "keySet",
+                "labels",
+                "annotations",
+                "createOutcome",
+                "valuesRead",
+                "receiptContainsValues",
+                "authority",
+            ],
+            "verifyMode": "owned-private-inherited-descriptor",
+            "containsPrivateKey": False,
+            "containsSecretValue": False,
+        },
+    }
+
+
+def verify_eligibility_issuer_materialization_policy(root: Path) -> dict[str, Any]:
+    value = load_json(root / ELIGIBILITY_ISSUER_POLICY_PATH)
+    require(
+        value == expected_eligibility_issuer_materialization_policy(),
+        "eligibility issuer materialization policy drift",
+    )
+    return copy.deepcopy(value)
+
+
+def eligibility_issuer_contract_projection(
+    issuer_policy: dict[str, Any],
+) -> dict[str, Any]:
+    """Project the exact value-free issuer boundary into the repository contract."""
+    return {
+        "policy": ELIGIBILITY_ISSUER_POLICY_PATH,
+        "runner": ELIGIBILITY_ISSUER_MATERIALIZER_PATH,
+        "schemaVersion": issuer_policy["schemaVersion"],
+        "keyId": issuer_policy["keyId"],
+        "publicKey": issuer_policy["publicKey"]["expected"],
+        "privateKeySha256Commitment": issuer_policy["input"]["sha256Commitment"],
+        "target": copy.deepcopy(issuer_policy["target"]),
+        "materialization": copy.deepcopy(issuer_policy["materialization"]),
+        "receipt": copy.deepcopy(issuer_policy["receipt"]),
+        "authority": copy.deepcopy(issuer_policy["authority"]),
+    }
+
+
+def participant_gateway_http_contract(
+    participant_policy: dict[str, Any],
+) -> dict[str, Any]:
+    successor = participant_policy == PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY
+    routes = list(
+        PARTICIPANT_POLICY.ROUTES
+        if successor
+        else PARTICIPANT_POLICY.LEGACY_ROUTES
+    )
+    post_routes = list(
+        PARTICIPANT_POLICY.POST_ROUTES
+        if successor
+        else PARTICIPANT_POLICY.LEGACY_POST_ROUTES
+    )
+    result = {
+        "exactGatewayPaths": routes,
+        "methodPathMatrix": {
+            "GET": [routes[0]],
+            "OPTIONS": routes,
+            "POST": post_routes,
+        },
+        "schemaVersion": (
+            "roebel_staging_participant_gateway_runtime_pin_v4"
+            if successor
+            else "roebel_staging_participant_gateway_runtime_pin_v3"
+        ),
+    }
+    if successor:
+        result["dynamicGetPrefixes"] = list(PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES)
+        result["routeProbeSamples"] = list(PARTICIPANT_POLICY.PUBLIC_GET_ROUTES)
+        result["methodPathMatrix"]["GET"].extend(
+            PARTICIPANT_POLICY.PUBLIC_GET_ROUTES
+        )
+    return result
+
+
 def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -> dict[str, Any]:
     """Treat candidate JSON as data under the protected sibling module."""
     try:
@@ -850,6 +1111,13 @@ def verify_tracer_data_plane(root: Path) -> dict[str, Any]:
 
 
 def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
+    issuer_policy = verify_eligibility_issuer_materialization_policy(root)
+    tracer_artifacts = (
+        TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+        if (root / CITIZEN_ADOPTION_SQL_PATH).is_file()
+        else TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
+    )
+    gateway_http = participant_gateway_http_contract(participant_policy)
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -890,7 +1158,9 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "runtimePin": SIGNED_NOSTR_RUNTIME_PIN,
             "schemaVersion": "roebel_signed_nostr_activation_render_pin_v1",
         },
-        "ephemeralTracerDataPlaneBoundary": TRACER_DATA_PLANE.contract_boundary(),
+        "ephemeralTracerDataPlaneBoundary": TRACER_DATA_PLANE.contract_boundary(
+            tracer_artifacts,
+        ),
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
             "activationReady": participant_policy["activationReady"],
@@ -943,12 +1213,21 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
                 "preservationBoundary": "current-policy-boundaries-only",
                 "automaticRetry": False,
             },
-            "exactGatewayPaths": list(PARTICIPANT_POLICY.ROUTES),
-            "methodPathMatrix": {
-                "GET": [PARTICIPANT_POLICY.ROUTES[0]],
-                "OPTIONS": list(PARTICIPANT_POLICY.ROUTES),
-                "POST": list(PARTICIPANT_POLICY.POST_ROUTES),
-            },
+            "eligibilityIssuerMaterialization": (
+                eligibility_issuer_contract_projection(issuer_policy)
+            ),
+            "exactGatewayPaths": gateway_http["exactGatewayPaths"],
+            **(
+                {"dynamicGetPrefixes": gateway_http["dynamicGetPrefixes"]}
+                if "dynamicGetPrefixes" in gateway_http
+                else {}
+            ),
+            "methodPathMatrix": gateway_http["methodPathMatrix"],
+            **(
+                {"routeProbeSamples": gateway_http["routeProbeSamples"]}
+                if "routeProbeSamples" in gateway_http
+                else {}
+            ),
             "normalReleaseSetPromotionMayChange": False,
             "secretMaterialization": {
                 "runner": PARTICIPANT_POLICY.SECRET_MATERIALIZER_RUNNER,
@@ -972,7 +1251,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             },
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
-            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
+            "schemaVersion": gateway_http["schemaVersion"],
             "singleReplicaRequired": True,
             "trustedLiveFacts": "protected-local-runner-out-of-band-only",
             "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
@@ -4230,8 +4509,17 @@ def participant_gateway_runtime_release_pins(
     participant_policy: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Return the exact append-only runtime release lineage."""
+    effective_policy = (
+        PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY
+        if participant_policy is None
+        else participant_policy
+    )
+    if effective_policy == PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY:
+        # The v4 runtime pin is a new product/schema lineage. Historical v3
+        # releases may not overwrite it through the generic release lane.
+        return ()
     try:
-        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
+        activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(effective_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     predecessor = activation_pin
@@ -4263,6 +4551,7 @@ def expected_participant_gateway_runtime_release_predecessor_pin(
     except PARTICIPANT_POLICY.PolicyError as error:
         raise VerificationError(str(error)) from error
     lineage = participant_gateway_runtime_release_pins(participant_policy)
+    require(lineage, "participant gateway runtime release lineage unavailable")
     return copy.deepcopy(lineage[-2] if len(lineage) > 1 else activation_pin)
 
 
@@ -4270,7 +4559,9 @@ def expected_participant_gateway_runtime_release_pin(
     participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the newest exact post-activation gateway runtime successor."""
-    return copy.deepcopy(participant_gateway_runtime_release_pins(participant_policy)[-1])
+    lineage = participant_gateway_runtime_release_pins(participant_policy)
+    require(lineage, "participant gateway runtime release lineage unavailable")
+    return copy.deepcopy(lineage[-1])
 
 
 def participant_gateway_ingress_sources() -> list[dict[str, Any]]:
@@ -4669,11 +4960,15 @@ def verify_network_boundary_migration(
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
     reviewed_web_source: bool = False,
+    participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     migration = load_json(root / RENDER_ROOT / "network-boundary-migration.json")
     if participant_gateway:
         require(participant_gateway_objects is not None, "participant gateway boundary objects unavailable")
-        ingress_paths = list(PARTICIPANT_POLICY.ROUTES)
+        require(participant_policy is not None, "participant gateway policy unavailable")
+        gateway_http = participant_gateway_http_contract(participant_policy)
+        ingress_paths = gateway_http["exactGatewayPaths"]
+        post_paths = gateway_http["methodPathMatrix"]["POST"]
         gateway_flux = expected_participant_gateway_flux_objects()
         workbench_flux = expected_participant_workbench_ingress_flux_objects()
         objects = [
@@ -4692,12 +4987,18 @@ def verify_network_boundary_migration(
                 "ingress": {
                     "allowedMethods": ["GET", "POST", "OPTIONS"],
                     "exactGatewayPaths": ingress_paths,
-                    "exactPostPaths": ingress_paths[1:],
-                    "gatewayMethodPathMatrix": {
-                        "GET": [ingress_paths[0]],
-                        "OPTIONS": ingress_paths,
-                        "POST": ingress_paths[1:],
-                    },
+                    "exactPostPaths": post_paths,
+                    **(
+                        {"dynamicGetPrefixes": gateway_http["dynamicGetPrefixes"]}
+                        if "dynamicGetPrefixes" in gateway_http
+                        else {}
+                    ),
+                    "gatewayMethodPathMatrix": gateway_http["methodPathMatrix"],
+                    **(
+                        {"routeProbeSamples": gateway_http["routeProbeSamples"]}
+                        if "routeProbeSamples" in gateway_http
+                        else {}
+                    ),
                     "rateLimit": {
                         "aggregateClaimAllowed": False,
                         "requestsPerMinutePerSourceIp": 30,
@@ -5155,7 +5456,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     migration = verify_network_boundary_migration(
         root, web_network_policy, web_ingress, network_policy, signed_nostr,
         participant_gateway, participant_gateway_objects, civic_projection_route,
-        tracer_feed_route, reviewed_web_source,
+        tracer_feed_route, reviewed_web_source, participant_policy,
     )
     objects = [
         deployments["public-mecky"],
@@ -5476,6 +5777,194 @@ def verify_participant_gateway_runtime_release_transition(
     )
 
 
+def tracer_citizen_adoption_enabled(snapshot: dict[str, Any]) -> bool:
+    tracer = snapshot["tracerDataPlane"]
+    expected_legacy = [
+        {"path": path, "sha256": digest}
+        for _filename, path, digest in TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
+    ]
+    expected_successor = [
+        {"path": path, "sha256": digest}
+        for _filename, path, digest in TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+    ]
+    state = (
+        tracer.get("productSourceRevision"),
+        tracer.get("productArtifacts"),
+    )
+    if state == (
+        TRACER_DATA_PLANE.LEGACY_PRODUCT_SOURCE_REVISION,
+        expected_legacy,
+    ):
+        return False
+    if state == (
+        TRACER_DATA_PLANE.PRODUCT_SOURCE_REVISION,
+        expected_successor,
+    ):
+        return True
+    raise VerificationError("tracer citizen-adoption state drift")
+
+
+def verify_citizen_adoption_data_plane_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    """Admit the sole standalone C1 six-file database successor."""
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(
+        not tracer_citizen_adoption_enabled(base)
+        and tracer_citizen_adoption_enabled(candidate),
+        "citizen-adoption data-plane transition direction drift",
+    )
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"]
+        == "reviewed-public-knowledge-participant-gateway",
+        "citizen-adoption data-plane transition render shape drift",
+    )
+    require(
+        candidate["head"] == base["head"],
+        "citizen-adoption data-plane transition changed the Release Set head",
+    )
+    require(
+        candidate["stagingParticipantGatewayPolicy"]
+        == base["stagingParticipantGatewayPolicy"]
+        == PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        "citizen-adoption data-plane transition changed participant policy",
+    )
+    try:
+        TRACER_DATA_PLANE.validate_citizen_adoption_transition(
+            load_json(
+                base_root / TRACER_DATA_PLANE.RENDER_ROOT / "runtime-pin.json"
+            ),
+            load_json(
+                candidate_root
+                / TRACER_DATA_PLANE.RENDER_ROOT
+                / "runtime-pin.json"
+            ),
+        )
+    except TRACER_DATA_PLANE.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    expected_gateway_pin = expected_participant_gateway_runtime_release_pin(
+        PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+    )
+    require(
+        base["stagingParticipantGateway"] is not None
+        and candidate["stagingParticipantGateway"] is not None
+        and base["stagingParticipantGateway"]["runtimePin"]
+        == candidate["stagingParticipantGateway"]["runtimePin"]
+        == expected_gateway_pin,
+        "citizen-adoption data-plane transition changed gateway runtime",
+    )
+    for field, label in (
+        ("publicMeckyReviewedEgress", "Public Mecky egress"),
+        ("publicMeckyReviewedWebSource", "Public Mecky Web source"),
+        ("webTracerFeed", "Web tracer feed"),
+        ("signedNostr", "signed-Nostr render"),
+    ):
+        require(
+            candidate[field] == base[field],
+            f"citizen-adoption data-plane transition changed {label}",
+        )
+    require(
+        candidate["stagingParticipantGateway"]["civicProjectionRoute"]
+        == base["stagingParticipantGateway"]["civicProjectionRoute"],
+        "citizen-adoption data-plane transition changed civic projection route",
+    )
+    changed = changed_repository_files(candidate_root, base_root)
+    require(
+        changed == CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES,
+        "citizen-adoption data-plane transition changed file set drift "
+        f"(missing={sorted(CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES - changed)!r}, "
+        f"unexpected={sorted(changed - CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES)!r})",
+    )
+    require(
+        repository_files(candidate_root) - repository_files(base_root)
+        == {CITIZEN_ADOPTION_SQL_PATH},
+        "citizen-adoption data-plane transition added file set drift",
+    )
+
+
+def verify_citizen_adoption_gateway_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    """Admit the sole standalone C2 seven-file gateway/policy successor."""
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(
+        tracer_citizen_adoption_enabled(base)
+        and tracer_citizen_adoption_enabled(candidate),
+        "citizen-adoption gateway transition requires the admitted C1 data plane",
+    )
+    try:
+        PARTICIPANT_POLICY.validate_activation_policy_transition(
+            base["stagingParticipantGatewayPolicy"],
+            candidate["stagingParticipantGatewayPolicy"],
+        )
+    except PARTICIPANT_POLICY.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"]
+        == "reviewed-public-knowledge-participant-gateway",
+        "citizen-adoption gateway transition render shape drift",
+    )
+    require(
+        candidate["head"] == base["head"],
+        "citizen-adoption gateway transition changed the Release Set head",
+    )
+    require(
+        base["stagingParticipantGateway"] is not None
+        and candidate["stagingParticipantGateway"] is not None,
+        "citizen-adoption gateway transition requires the gateway render",
+    )
+    require(
+        base["stagingParticipantGateway"]["runtimePin"]
+        == expected_participant_gateway_runtime_release_pin(
+            base["stagingParticipantGatewayPolicy"],
+        ),
+        "citizen-adoption gateway transition predecessor runtime drift",
+    )
+    require(
+        candidate["stagingParticipantGateway"]["runtimePin"]
+        == PARTICIPANT_POLICY.expected_runtime_pin(
+            candidate["stagingParticipantGatewayPolicy"],
+        ),
+        "citizen-adoption gateway transition successor runtime drift",
+    )
+    for field, label in (
+        ("publicMeckyReviewedEgress", "Public Mecky egress"),
+        ("publicMeckyReviewedWebSource", "Public Mecky Web source"),
+        ("webTracerFeed", "Web tracer feed"),
+        ("signedNostr", "signed-Nostr render"),
+    ):
+        require(
+            candidate[field] == base[field],
+            f"citizen-adoption gateway transition changed {label}",
+        )
+    require(
+        candidate["stagingParticipantGateway"]["civicProjectionRoute"]
+        == base["stagingParticipantGateway"]["civicProjectionRoute"],
+        "citizen-adoption gateway transition changed civic projection route",
+    )
+    changed = changed_repository_files(candidate_root, base_root)
+    require(
+        changed == CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES,
+        "citizen-adoption gateway transition changed file set drift "
+        f"(missing={sorted(CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES - changed)!r}, "
+        f"unexpected={sorted(changed - CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES)!r})",
+    )
+    require(
+        repository_files(candidate_root) == repository_files(base_root),
+        "citizen-adoption gateway transition file set drift",
+    )
+    for relative in sorted(CITIZEN_ADOPTION_GATEWAY_PRESERVED_RENDER_FILES):
+        require(
+            (candidate_root / relative).read_bytes()
+            == (base_root / relative).read_bytes(),
+            f"citizen-adoption gateway transition changed preserved render: {relative}",
+        )
+
+
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
@@ -5495,6 +5984,23 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     )
     base_reviewed_web_source = base["publicMeckyReviewedWebSource"]
     candidate_reviewed_web_source = candidate["publicMeckyReviewedWebSource"]
+    base_citizen_adoption = tracer_citizen_adoption_enabled(base)
+    candidate_citizen_adoption = tracer_citizen_adoption_enabled(candidate)
+
+    require(
+        not (base_citizen_adoption and not candidate_citizen_adoption),
+        "citizen-adoption data-plane transition cannot regress",
+    )
+    if candidate_citizen_adoption and not base_citizen_adoption:
+        verify_citizen_adoption_data_plane_transition(candidate, base)
+        return
+
+    if (
+        candidate["stagingParticipantGatewayPolicy"]
+        != base["stagingParticipantGatewayPolicy"]
+    ):
+        verify_citizen_adoption_gateway_transition(candidate, base)
+        return
 
     require(
         not (base_reviewed_web_source and not candidate_reviewed_web_source),

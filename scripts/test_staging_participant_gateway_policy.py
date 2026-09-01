@@ -39,23 +39,9 @@ class StaticPolicyTests(unittest.TestCase):
         inert = POLICY.activation_policy_descriptor()
         ready = ready_policy()
         self.assertIn(committed, (inert, ready))
-        if committed == ready:
-            self.assertTrue(committed["activationReady"])
-            self.assertEqual(POLICY.activation_blockers(committed), ())
-            self.assertEqual(POLICY.assert_activation_ready(committed), committed)
-        else:
-            self.assertFalse(committed["activationReady"])
-            self.assertEqual(
-                POLICY.activation_blockers(committed),
-                (
-                    "clusterIdentity.apiOrigin",
-                    "clusterIdentity.caCertificateSha256",
-                    "clusterIdentity.apiServerSpkiSha256",
-                    "clusterIdentity.kubeSystemNamespaceUid",
-                ),
-            )
-            with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
-                POLICY.assert_activation_ready(committed)
+        self.assertTrue(committed["activationReady"])
+        self.assertEqual(POLICY.activation_blockers(committed), ())
+        self.assertEqual(POLICY.assert_activation_ready(committed), committed)
 
     def test_only_exact_one_way_ready_transition_is_approved(self):
         current = POLICY.activation_policy_descriptor()
@@ -65,7 +51,17 @@ class StaticPolicyTests(unittest.TestCase):
             approved,
         )
         self.assertTrue(approved["activationReady"])
+        self.assertTrue(current["activationReady"])
         self.assertEqual(POLICY.activation_blockers(approved), ())
+        self.assertEqual(POLICY.activation_blockers(current), ())
+        self.assertEqual(
+            current["schemaVersion"],
+            "roebel_staging_participant_gateway_activation_policy_v4",
+        )
+        self.assertEqual(
+            approved["schemaVersion"],
+            "roebel_staging_participant_gateway_activation_policy_v5",
+        )
         self.assertEqual(
             approved["clusterIdentity"],
             {
@@ -161,27 +157,50 @@ class StaticPolicyTests(unittest.TestCase):
             contract["schemaVersion"],
             "roebel_staging_participant_gateway_trusted_live_facts_v2",
         )
-        with self.assertRaisesRegex(POLICY.PolicyError, "activation blocked"):
-            POLICY.trusted_live_facts_contract(current)
+        current_contract = POLICY.trusted_live_facts_contract(current)
+        self.assertEqual(
+            current_contract["policyBinding"],
+            POLICY.activation_policy_sha256(current),
+        )
+        self.assertNotEqual(current_contract["policyBinding"], contract["policyBinding"])
 
     def test_route_and_rate_limit_boundary_is_exact(self):
-        value = POLICY.activation_policy_descriptor()
-        self.assertEqual(tuple(route["path"] for route in value["httpBoundary"]["routes"]), POLICY.ROUTES)
-        self.assertEqual(len(POLICY.ROUTES), 8)
+        value = ready_policy()
         self.assertEqual(
-            POLICY.POST_ROUTES[-2:],
+            tuple(route["path"] for route in value["httpBoundary"]["routes"]),
+            POLICY.ROUTES,
+        )
+        self.assertEqual(len(POLICY.ROUTES), 11)
+        self.assertEqual(
+            POLICY.POST_ROUTES[-3:],
             (
-                "/api/staging-participant/v1/promote-source-post",
-                "/api/staging-participant/v1/sign-topic-suggestion",
+                "/api/staging-participant/v1/citizen-adoption/challenge",
+                "/api/staging-participant/v1/citizen-adoption/eligibility",
+                "/api/staging-participant/v1/citizen-adoption/adoptions",
             ),
         )
         self.assertEqual(value["httpBoundary"]["routes"][0]["methods"], ["GET", "OPTIONS"])
-        self.assertTrue(all(route["methods"] == ["POST", "OPTIONS"] for route in value["httpBoundary"]["routes"][1:]))
+        self.assertTrue(all(
+            route["methods"] == ["POST", "OPTIONS"]
+            for route in value["httpBoundary"]["routes"][1:]
+        ))
+        self.assertEqual(
+            value["httpBoundary"]["dynamicGetPrefixes"],
+            list(POLICY.DYNAMIC_GET_PREFIXES),
+        )
+        self.assertEqual(
+            value["httpBoundary"]["routeProbeSamples"],
+            list(POLICY.PUBLIC_GET_ROUTES),
+        )
+        self.assertEqual(
+            value["httpBoundary"]["additionalIngressPrefixes"],
+            ["/api/civic/v1/eligibility/status"],
+        )
         self.assertEqual(value["httpBoundary"]["expectations"], list(POLICY.ROUTE_EXPECTATIONS))
         self.assertEqual(value["httpBoundary"]["timeoutsSeconds"]["kubernetesRequest"], 30)
         self.assertEqual(value["httpBoundary"]["timeoutsSeconds"]["routeRequest"], 10)
-        self.assertEqual(len(value["httpBoundary"]["expectations"]), 31)
-        for path in POLICY.POST_ROUTES[-2:]:
+        self.assertEqual(len(value["httpBoundary"]["expectations"]), 46)
+        for path in POLICY.POST_ROUTES[-3:]:
             self.assertIn(
                 {"case": "preflight", "method": "OPTIONS", "path": path, "status": 204},
                 value["httpBoundary"]["expectations"],
@@ -194,6 +213,24 @@ class StaticPolicyTests(unittest.TestCase):
                 {"case": "method-denied", "method": "GET", "path": path, "status": 405},
                 value["httpBoundary"]["expectations"],
             )
+        self.assertIn(
+            {
+                "case": "public-adoption-absent",
+                "method": "GET",
+                "path": POLICY.CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE,
+                "status": 404,
+            },
+            value["httpBoundary"]["expectations"],
+        )
+        self.assertIn(
+            {
+                "case": "eligibility-status-reserved",
+                "method": "GET",
+                "path": POLICY.CITIZEN_ELIGIBILITY_STATUS_SAMPLE,
+                "status": 503,
+            },
+            value["httpBoundary"]["expectations"],
+        )
         self.assertEqual(
             value["httpBoundary"]["haproxyRateLimit"],
             {
@@ -502,10 +539,41 @@ class StaticPolicyTests(unittest.TestCase):
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MUNICIPALITY_ID": value["runtime"]["topicPolicy"]["municipalityId"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_CONVERSATION_TOPIC": value["runtime"]["topicPolicy"]["sourceConversationTopic"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION": value["runtime"]["topicPolicy"]["policyVersion"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_POLICY_VERSION": value["runtime"]["citizenAdoption"]["policyVersion"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_KEY_ID": value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["keyId"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PUBLIC_KEY": value["runtime"]["citizenAdoption"]["eligibilityIssuer"]["publicKey"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_ADDRESS": value["runtime"]["citizenAdoption"]["citizenNft"]["address"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_RUNTIME_CODE_HASH": value["runtime"]["citizenAdoption"]["citizenNft"]["runtimeCodeHash"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_MIGRATION_SHA256": value["productPins"]["citizenAdoptionMigration"]["sha256"],
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256": value["productPins"]["citizenAdoptionDatabaseSchemaSha256"],
         }
         for name, expected in literal_pins.items():
             self.assertEqual(env[name], {"name": name, "value": expected})
             self.assertNotIn("valueFrom", env[name])
+        issuer_secret = env[
+            "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PRIVATE_KEY_HEX"
+        ]["valueFrom"]["secretKeyRef"]
+        self.assertEqual(
+            issuer_secret,
+            {
+                "key": "private-key-hex",
+                "name": "roebel-staging-participant-gateway-eligibility-issuer",
+                "optional": False,
+            },
+        )
+        container = resources["deployment"]["spec"]["template"]["spec"]["containers"][0]
+        self.assertEqual(
+            container["readinessProbe"],
+            {
+                "failureThreshold": 3,
+                "httpGet": {"path": "/status", "port": "http", "scheme": "HTTP"},
+                "periodSeconds": 10,
+                "successThreshold": 1,
+                "timeoutSeconds": 3,
+            },
+        )
+        self.assertIn("tcpSocket", container["livenessProbe"])
+        self.assertIn("tcpSocket", container["startupProbe"])
         self.assertNotIn("activationEvidence", resources["runtimePin"])
         self.assertEqual(
             resources["runtimePin"],
@@ -513,7 +581,11 @@ class StaticPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             resources["runtimePin"]["schemaVersion"],
-            "roebel_staging_participant_gateway_runtime_pin_v3",
+            "roebel_staging_participant_gateway_runtime_pin_v4",
+        )
+        self.assertEqual(
+            resources["runtimePin"]["citizenAdoption"],
+            value["runtime"]["citizenAdoption"],
         )
 
 

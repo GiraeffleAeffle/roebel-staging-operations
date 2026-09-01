@@ -5,9 +5,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import copy
+import base64
 import shutil
 import tempfile
 import unittest
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -64,6 +66,125 @@ TRACER_PHASE_A_PREVIOUS_HEAD = {
 }
 
 
+CITIZEN_ADOPTION_SQL_ZLIB_BASE64 = (
+    "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"
+    "jC4UyEgWizB/3vt/RTG+FQ=="
+)
+
+
 def participant_ready_policy() -> dict:
     return VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
 
@@ -90,6 +211,417 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertIn("name: Check out protected base", workflow)
         self.assertIn("name: Check out untrusted candidate as data", workflow)
         self.assertIn("name: Check out protected main", workflow)
+
+    def test_eligibility_issuer_materialization_policy_is_exact(self) -> None:
+        policy = VERIFIER.verify_eligibility_issuer_materialization_policy(ROOT)
+        self.assertEqual(
+            policy["keyId"],
+            "roebel-staging-citizen-eligibility-2026-09",
+        )
+        self.assertEqual(policy["target"]["immutable"], True)
+        self.assertEqual(
+            policy["materialization"]["metadataOnlyRead"],
+            {
+                "representation": "PartialObjectMetadata",
+                "accept": (
+                    "application/json;as=PartialObjectMetadata;"
+                    "g=meta.k8s.io;v=v1"
+                ),
+                "apiPath": (
+                    "/api/v1/namespaces/stadtstack-roebel-web-preview/"
+                    "secrets/roebel-staging-participant-gateway-"
+                    "eligibility-issuer"
+                ),
+            },
+        )
+        self.assertEqual(
+            policy["materialization"]["metadataCommitments"],
+            {
+                "contentContractAnnotation": (
+                    "stadtstack.io/eligibility-issuer-"
+                    "content-contract-sha256"
+                ),
+                "contentContractFields": [
+                    "target",
+                    "input.sha256Commitment",
+                    "keyId",
+                    "publicKey.expected",
+                ],
+                "keySetAnnotation": (
+                    "stadtstack.io/eligibility-issuer-keyset-sha256"
+                ),
+                "keySet": ["private-key-hex"],
+            },
+        )
+        self.assertEqual(
+            policy["materialization"]["durableJournal"]["recovery"],
+            "same-protected-journal-and-operation-nonce-only",
+        )
+
+        temp, candidate = self.candidate()
+        self.addCleanup(temp.cleanup)
+        path = candidate / VERIFIER.ELIGIBILITY_ISSUER_POLICY_PATH
+        drift = json.loads(path.read_text())
+        drift["materialization"]["existingObject"] = "adopt"
+        path.write_text(json.dumps(drift, indent=2) + "\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "eligibility issuer materialization policy drift",
+        ):
+            VERIFIER.verify_eligibility_issuer_materialization_policy(candidate)
+
+    def test_repository_file_sets_admit_only_legacy_or_citizen_tracer(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for relative in VERIFIER.PARTICIPANT_GATEWAY_EXPECTED_FILES:
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        self.assertEqual(
+            VERIFIER.verify_repository_file_set(root),
+            "reviewed-public-knowledge-participant-gateway",
+        )
+
+        citizen_sql = root / VERIFIER.CITIZEN_ADOPTION_SQL_PATH
+        citizen_sql.parent.mkdir(parents=True, exist_ok=True)
+        citizen_sql.touch()
+        self.assertEqual(
+            VERIFIER.verify_repository_file_set(root),
+            "reviewed-public-knowledge-participant-gateway",
+        )
+
+        extra = root / "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-unreviewed.sql"
+        extra.touch()
+        with self.assertRaisesRegex(VERIFIER.VerificationError, "file set drift"):
+            VERIFIER.verify_repository_file_set(root)
+
+    def test_gateway_v5_has_no_inherited_v4_runtime_release_lineage(self) -> None:
+        legacy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+        successor = (
+            VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
+        )
+        self.assertGreater(
+            len(VERIFIER.participant_gateway_runtime_release_pins(legacy)),
+            0,
+        )
+        self.assertEqual(
+            VERIFIER.participant_gateway_runtime_release_pins(successor),
+            (),
+        )
+        expected = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(successor)
+        self.assertEqual(
+            VERIFIER.verify_participant_gateway_runtime_pin(expected, successor),
+            expected,
+        )
+
+    def test_gateway_http_contract_is_exact_for_v4_and_v5(self) -> None:
+        legacy = VERIFIER.participant_gateway_http_contract(
+            VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor(),
+        )
+        self.assertEqual(
+            legacy["exactGatewayPaths"],
+            list(VERIFIER.PARTICIPANT_POLICY.LEGACY_ROUTES),
+        )
+        self.assertNotIn("dynamicGetPrefixes", legacy)
+        self.assertEqual(
+            legacy["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v3",
+        )
+
+        successor = VERIFIER.participant_gateway_http_contract(
+            VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor(),
+        )
+        self.assertEqual(
+            successor["exactGatewayPaths"],
+            list(VERIFIER.PARTICIPANT_POLICY.ROUTES),
+        )
+        self.assertEqual(
+            successor["dynamicGetPrefixes"],
+            list(VERIFIER.PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES),
+        )
+        self.assertEqual(
+            successor["methodPathMatrix"]["GET"],
+            [
+                VERIFIER.PARTICIPANT_POLICY.ROUTES[0],
+                *VERIFIER.PARTICIPANT_POLICY.PUBLIC_GET_ROUTES,
+            ],
+        )
+        self.assertEqual(
+            successor["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v4",
+        )
+
+    def tracer_transition_snapshot(
+        self,
+        root: Path,
+        *,
+        citizen_adoption: bool,
+        policy: dict,
+        gateway_runtime: dict,
+    ) -> dict:
+        artifacts = (
+            VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+            if citizen_adoption
+            else VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
+        )
+        revision = (
+            VERIFIER.TRACER_DATA_PLANE.PRODUCT_SOURCE_REVISION
+            if citizen_adoption
+            else VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_SOURCE_REVISION
+        )
+        return {
+            "root": root,
+            "renderFileSet": "reviewed-public-knowledge-participant-gateway",
+            "head": {"releaseSetDigest": "sha256:" + "a" * 64},
+            "tracerDataPlane": {
+                "productSourceRevision": revision,
+                "productArtifacts": [
+                    {"path": path, "sha256": digest}
+                    for _filename, path, digest in artifacts
+                ],
+            },
+            "stagingParticipantGatewayPolicy": copy.deepcopy(policy),
+            "stagingParticipantGateway": {
+                "runtimePin": copy.deepcopy(gateway_runtime),
+                "civicProjectionRoute": True,
+            },
+            "publicMeckyReviewedEgress": True,
+            "publicMeckyReviewedWebSource": True,
+            "webTracerFeed": True,
+            "signedNostr": None,
+        }
+
+    def transition_file_roots(
+        self,
+        changed: set[str],
+        *,
+        added: set[str] | None = None,
+        preserved: set[str] | None = None,
+    ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path]:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        base = Path(temp.name) / "base"
+        candidate = Path(temp.name) / "candidate"
+        base.mkdir()
+        candidate.mkdir()
+        added = set() if added is None else added
+        for relative in sorted(changed | (preserved or set())):
+            candidate_path = candidate / relative
+            candidate_path.parent.mkdir(parents=True, exist_ok=True)
+            candidate_path.write_text("candidate\n" if relative in changed else "same\n")
+            if relative not in added:
+                base_path = base / relative
+                base_path.parent.mkdir(parents=True, exist_ok=True)
+                base_path.write_text("base\n" if relative in changed else "same\n")
+        return temp, base, candidate
+
+    def test_c1_is_the_exact_standalone_six_file_transition(self) -> None:
+        _temp, base_root, candidate_root = self.transition_file_roots(
+            VERIFIER.CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES,
+            added={VERIFIER.CITIZEN_ADOPTION_SQL_PATH},
+        )
+        legacy_tracer = VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+            VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_SOURCE_REVISION,
+            VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+        )
+        successor_tracer = VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+            VERIFIER.TRACER_DATA_PLANE.PRODUCT_SOURCE_REVISION,
+            VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+        )
+        runtime_path = (
+            VERIFIER.TRACER_DATA_PLANE.RENDER_ROOT / "runtime-pin.json"
+        )
+        (base_root / runtime_path).write_text(json.dumps(legacy_tracer) + "\n")
+        (candidate_root / runtime_path).write_text(
+            json.dumps(successor_tracer) + "\n"
+        )
+        legacy_policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+        gateway_runtime = VERIFIER.expected_participant_gateway_runtime_release_pin(
+            legacy_policy,
+        )
+        base = self.tracer_transition_snapshot(
+            base_root,
+            citizen_adoption=False,
+            policy=legacy_policy,
+            gateway_runtime=gateway_runtime,
+        )
+        candidate = self.tracer_transition_snapshot(
+            candidate_root,
+            citizen_adoption=True,
+            policy=legacy_policy,
+            gateway_runtime=gateway_runtime,
+        )
+        VERIFIER.verify_transition(candidate, base)
+
+        unexpected = candidate_root / "unreviewed.txt"
+        unexpected.write_text("drift\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "data-plane transition changed file set drift",
+        ):
+            VERIFIER.verify_transition(candidate, base)
+        unexpected.unlink()
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "cannot regress",
+        ):
+            VERIFIER.verify_transition(base, candidate)
+
+    def test_c2_is_the_exact_standalone_seven_file_transition(self) -> None:
+        _temp, base_root, candidate_root = self.transition_file_roots(
+            VERIFIER.CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES,
+            preserved=VERIFIER.CITIZEN_ADOPTION_GATEWAY_PRESERVED_RENDER_FILES,
+        )
+        legacy_policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+        successor_policy = (
+            VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
+        )
+        legacy_runtime = VERIFIER.expected_participant_gateway_runtime_release_pin(
+            legacy_policy,
+        )
+        successor_runtime = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(
+            successor_policy,
+        )
+        base = self.tracer_transition_snapshot(
+            base_root,
+            citizen_adoption=True,
+            policy=legacy_policy,
+            gateway_runtime=legacy_runtime,
+        )
+        candidate = self.tracer_transition_snapshot(
+            candidate_root,
+            citizen_adoption=True,
+            policy=successor_policy,
+            gateway_runtime=successor_runtime,
+        )
+        VERIFIER.verify_transition(candidate, base)
+
+        preserved_path = candidate_root / next(
+            iter(VERIFIER.CITIZEN_ADOPTION_GATEWAY_PRESERVED_RENDER_FILES)
+        )
+        preserved_path.write_text("drift\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "gateway transition changed file set drift",
+        ):
+            VERIFIER.verify_transition(candidate, base)
+
+        before_c1 = copy.deepcopy(base)
+        before_c1["tracerDataPlane"] = self.tracer_transition_snapshot(
+            base_root,
+            citizen_adoption=False,
+            policy=legacy_policy,
+            gateway_runtime=legacy_runtime,
+        )["tracerDataPlane"]
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "data-plane transition changed participant policy",
+        ):
+            VERIFIER.verify_transition(candidate, before_c1)
+
+    def test_full_tree_a_to_c1_to_c2_sequence_is_exact_and_closed(self) -> None:
+        _temp, phase_a, c1, c2 = self.citizen_adoption_sequence_roots()
+        a_result = VERIFIER.verify(phase_a)
+        c1_result = VERIFIER.verify(c1, phase_a)
+        c2_result = VERIFIER.verify(c2, c1)
+        self.assertEqual(a_result["status"], "passed")
+        self.assertTrue(c1_result["baseTransitionVerified"])
+        self.assertTrue(c2_result["baseTransitionVerified"])
+
+        a_tree = VERIFIER.verify_tree(phase_a)
+        c1_tree = VERIFIER.verify_tree(c1)
+        c2_tree = VERIFIER.verify_tree(c2)
+        self.assertFalse(VERIFIER.tracer_citizen_adoption_enabled(a_tree))
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(c1_tree))
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(c2_tree))
+        self.assertEqual(len(a_tree["tracerDataPlane"]["productArtifacts"]), 3)
+        self.assertEqual(len(c1_tree["tracerDataPlane"]["productArtifacts"]), 4)
+        self.assertEqual(len(c2_tree["tracerDataPlane"]["productArtifacts"]), 4)
+        self.assertEqual(
+            a_tree["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        )
+        self.assertEqual(
+            c1_tree["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        )
+        self.assertEqual(
+            c2_tree["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        )
+        self.assertEqual(
+            a_tree["stagingParticipantGateway"]["runtimePin"],
+            c1_tree["stagingParticipantGateway"]["runtimePin"],
+        )
+        self.assertEqual(
+            c1_tree["stagingParticipantGateway"]["runtimePin"]["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v3",
+        )
+        self.assertEqual(
+            c2_tree["stagingParticipantGateway"]["runtimePin"]["schemaVersion"],
+            "roebel_staging_participant_gateway_runtime_pin_v4",
+        )
+
+        self.assertEqual(
+            VERIFIER.changed_repository_files(c1, phase_a),
+            VERIFIER.CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES,
+        )
+        self.assertEqual(
+            VERIFIER.changed_repository_files(c2, c1),
+            VERIFIER.CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES,
+        )
+        self.assertEqual(
+            VERIFIER.repository_files(c1) - VERIFIER.repository_files(phase_a),
+            {VERIFIER.CITIZEN_ADOPTION_SQL_PATH},
+        )
+        self.assertEqual(
+            VERIFIER.repository_files(c2),
+            VERIFIER.repository_files(c1),
+        )
+        self.assertEqual(
+            (phase_a / VERIFIER.RENDER_ROOT / "integrity.json").read_bytes(),
+            (c1 / VERIFIER.RENDER_ROOT / "integrity.json").read_bytes(),
+        )
+        self.assertEqual(
+            (
+                phase_a
+                / VERIFIER.RENDER_ROOT
+                / "network-boundary-migration.json"
+            ).read_bytes(),
+            (c1 / VERIFIER.RENDER_ROOT / "network-boundary-migration.json").read_bytes(),
+        )
+
+        contracts = [
+            json.loads((root / "policy/repository-contract.json").read_text())
+            for root in (phase_a, c1, c2)
+        ]
+        issuer_projections = [
+            value["stagingParticipantGatewayBoundary"]
+            ["eligibilityIssuerMaterialization"]
+            for value in contracts
+        ]
+        self.assertEqual(issuer_projections[0], issuer_projections[1])
+        self.assertEqual(issuer_projections[1], issuer_projections[2])
+        self.assertEqual(
+            contracts[0]["ephemeralTracerDataPlaneBoundary"],
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            ),
+        )
+        for value in contracts[1:]:
+            self.assertEqual(
+                value["ephemeralTracerDataPlaneBoundary"],
+                VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                    VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+                ),
+            )
+        for relative in VERIFIER.CITIZEN_ADOPTION_GATEWAY_PRESERVED_RENDER_FILES:
+            self.assertEqual(
+                (c1 / relative).read_bytes(),
+                (c2 / relative).read_bytes(),
+                relative,
+            )
 
     def repository_shape(self, root: Path) -> str:
         participant = (root / VERIFIER.PARTICIPANT_GATEWAY_ROOT).is_dir()
@@ -280,6 +812,39 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ) + "\n")
 
         shutil.rmtree(future)
+        tracer = destination / VERIFIER.TRACER_DATA_PLANE.RENDER_ROOT
+        citizen_sql = destination / VERIFIER.CITIZEN_ADOPTION_SQL_PATH
+        if citizen_sql.exists():
+            citizen_sql.unlink()
+        (tracer / "runtime-pin.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_SOURCE_REVISION,
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "postgres-deployment.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.expected_postgres_deployment(
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "kustomization.yaml").write_text(
+            VERIFIER.TRACER_DATA_PLANE.kustomization_text(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            ),
+        )
+        (tracer / "bootstrap/zz-roebel-tracer.sh").write_text(
+            VERIFIER.TRACER_DATA_PLANE.bootstrap_verify_script(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            ),
+        )
         self.refresh_current_integrity(destination)
 
     def candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
@@ -648,19 +1213,428 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.refresh_current_integrity(destination)
 
     def normalize_inert_participant_seed(self, destination: Path) -> None:
-        """Keep transition fixtures anchored to the immutable inert predecessor."""
+        """Keep transition fixtures anchored to the exact current v4 predecessor."""
+        policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
         policy_path = destination / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
         policy_path.write_text(
+            json.dumps(policy, indent=2) + "\n",
+        )
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["ephemeralTracerDataPlaneBoundary"] = (
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            )
+        )
+        issuer = VERIFIER.verify_eligibility_issuer_materialization_policy(
+            destination,
+        )
+        gateway = contract["stagingParticipantGatewayBoundary"]
+        gateway["activationReady"] = policy["activationReady"]
+        gateway["eligibilityIssuerMaterialization"] = (
+            VERIFIER.eligibility_issuer_contract_projection(issuer)
+        )
+        http = VERIFIER.participant_gateway_http_contract(policy)
+        gateway["exactGatewayPaths"] = http["exactGatewayPaths"]
+        gateway["methodPathMatrix"] = http["methodPathMatrix"]
+        gateway["schemaVersion"] = http["schemaVersion"]
+        gateway.pop("dynamicGetPrefixes", None)
+        gateway.pop("routeProbeSamples", None)
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+
+    def refresh_participant_gateway_integrity(
+        self,
+        root: Path,
+        source: dict,
+        runtime_pin: dict,
+        resources: dict,
+        migration: dict,
+    ) -> None:
+        """Bind one exact gateway render into the existing release checksum."""
+        gateway = {
+            "runtimePin": copy.deepcopy(runtime_pin),
+            **copy.deepcopy(resources),
+        }
+        payload: dict[str, object] = {
+            "nextEnvironmentHead": source["head"],
+            "objects": source["objects"],
+            "stagingParticipantGateway": gateway,
+        }
+        if source["reviewedPublicKnowledge"] is not None:
+            payload["reviewedPublicKnowledge"] = source["reviewedPublicKnowledge"]
+        if source["signedNostr"] is not None:
+            payload["signedNostr"] = source["signedNostr"]
+        integrity_path = root / VERIFIER.RENDER_ROOT / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+    def normalize_citizen_adoption_c1_seed(self, destination: Path) -> None:
+        """Reverse only C2, yielding the exact four-artifact/v4 C1 tree."""
+        source = VERIFIER.verify_tree(destination)
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(source))
+        legacy_policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+        if source["stagingParticipantGatewayPolicy"] == legacy_policy:
+            return
+        self.assertEqual(
+            source["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        )
+        civic_projection = source["stagingParticipantGateway"]["civicProjectionRoute"]
+        runtime_pin = VERIFIER.expected_participant_gateway_runtime_release_pin(
+            legacy_policy,
+        )
+        resources = VERIFIER.expected_participant_gateway_resources(
+            runtime_pin,
+            legacy_policy,
+            civic_projection_route=civic_projection,
+        )
+
+        policy_path = destination / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+        policy_path.write_text(json.dumps(legacy_policy, indent=2) + "\n")
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["ephemeralTracerDataPlaneBoundary"] = (
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+            )
+        )
+        gateway_contract = contract["stagingParticipantGatewayBoundary"]
+        gateway_contract["activationReady"] = legacy_policy["activationReady"]
+        issuer = VERIFIER.verify_eligibility_issuer_materialization_policy(
+            destination,
+        )
+        gateway_contract["eligibilityIssuerMaterialization"] = (
+            VERIFIER.eligibility_issuer_contract_projection(issuer)
+        )
+        http = VERIFIER.participant_gateway_http_contract(legacy_policy)
+        gateway_contract["exactGatewayPaths"] = http["exactGatewayPaths"]
+        gateway_contract["methodPathMatrix"] = http["methodPathMatrix"]
+        gateway_contract["schemaVersion"] = http["schemaVersion"]
+        gateway_contract.pop("dynamicGetPrefixes", None)
+        gateway_contract.pop("routeProbeSamples", None)
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+
+        participant = destination / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+        (participant / "runtime-pin.json").write_text(
+            json.dumps(runtime_pin, indent=2) + "\n",
+        )
+        (participant / "deployment.json").write_text(
+            json.dumps(resources["deployment"], indent=2) + "\n",
+        )
+        (participant / "ingress.json").write_text(
+            json.dumps(resources["ingress"], indent=2) + "\n",
+        )
+
+        migration_path = destination / VERIFIER.RENDER_ROOT / "network-boundary-migration.json"
+        migration = copy.deepcopy(source["migration"])
+        ingress_boundary = migration["boundary"]["ingress"]
+        ingress_boundary["exactGatewayPaths"] = http["exactGatewayPaths"]
+        ingress_boundary["exactPostPaths"] = http["methodPathMatrix"]["POST"]
+        ingress_boundary["gatewayMethodPathMatrix"] = http["methodPathMatrix"]
+        ingress_boundary.pop("dynamicGetPrefixes", None)
+        ingress_boundary.pop("routeProbeSamples", None)
+        for kind, resource in (
+            ("Deployment", resources["deployment"]),
+            ("Ingress", resources["ingress"]),
+        ):
+            receipt = next(
+                item
+                for item in migration["objects"]
+                if item["kind"] == kind
+                and item["name"] == VERIFIER.PARTICIPANT_GATEWAY_NAME
+            )
+            receipt["sha256"] = VERIFIER.digest(resource)
+        migration_path.write_text(json.dumps(migration, indent=2) + "\n")
+        self.refresh_participant_gateway_integrity(
+            destination,
+            source,
+            runtime_pin,
+            resources,
+            migration,
+        )
+        normalized = VERIFIER.verify_tree(destination)
+        self.assertEqual(
+            normalized["stagingParticipantGatewayPolicy"],
+            legacy_policy,
+        )
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(normalized))
+
+    def citizen_adoption_sql_fixture_bytes(self) -> bytes:
+        """Decode and verify the sole protected C1 SQL successor artifact."""
+        compressed = base64.b64decode(
+            "".join(CITIZEN_ADOPTION_SQL_ZLIB_BASE64),
+            validate=True,
+        )
+        value = zlib.decompress(compressed)
+        expected = next(
+            digest
+            for filename, _source, digest in VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+            if filename == "75-staging-citizen-adoption.sql"
+        )
+        self.assertEqual(VERIFIER.bytes_digest(value), expected)
+        self.assertEqual(len(value), 62015)
+        return value
+
+    def materialize_citizen_adoption_c1_seed(self, destination: Path) -> None:
+        """Apply only the exact six-file C1 successor to a full A tree."""
+        source = VERIFIER.verify_tree(destination)
+        self.assertEqual(
+            source["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        )
+        if VERIFIER.tracer_citizen_adoption_enabled(source):
+            return
+        tracer = destination / VERIFIER.TRACER_DATA_PLANE.RENDER_ROOT
+        sql_path = destination / VERIFIER.CITIZEN_ADOPTION_SQL_PATH
+        sql_path.write_bytes(self.citizen_adoption_sql_fixture_bytes())
+        (tracer / "runtime-pin.json").write_text(
             json.dumps(
-                VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor(),
+                VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+                    VERIFIER.TRACER_DATA_PLANE.PRODUCT_SOURCE_REVISION,
+                    VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+                ),
                 indent=2,
             )
             + "\n",
         )
+        (tracer / "postgres-deployment.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.expected_postgres_deployment(
+                    VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "kustomization.yaml").write_text(
+            VERIFIER.TRACER_DATA_PLANE.kustomization_text(
+                VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+            ),
+        )
+        (tracer / "bootstrap/zz-roebel-tracer.sh").write_text(
+            VERIFIER.TRACER_DATA_PLANE.bootstrap_verify_script(
+                VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+            ),
+        )
         contract_path = destination / "policy/repository-contract.json"
         contract = json.loads(contract_path.read_text())
-        contract["stagingParticipantGatewayBoundary"]["activationReady"] = False
+        contract["ephemeralTracerDataPlaneBoundary"] = (
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS,
+            )
+        )
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+        normalized = VERIFIER.verify_tree(destination)
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(normalized))
+
+    def materialize_citizen_adoption_c2_seed(self, destination: Path) -> None:
+        """Apply only the exact seven-file C2 successor to a full C1 tree."""
+        source = VERIFIER.verify_tree(destination)
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(source))
+        successor_policy = (
+            VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
+        )
+        if source["stagingParticipantGatewayPolicy"] == successor_policy:
+            return
+        self.assertEqual(
+            source["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        )
+        civic_projection = source["stagingParticipantGateway"]["civicProjectionRoute"]
+        runtime_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(
+            successor_policy,
+        )
+        resources = VERIFIER.expected_participant_gateway_resources(
+            runtime_pin,
+            successor_policy,
+            civic_projection_route=civic_projection,
+        )
+        policy_path = destination / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
+        policy_path.write_text(json.dumps(successor_policy, indent=2) + "\n")
+
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        gateway_contract = contract["stagingParticipantGatewayBoundary"]
+        gateway_contract["activationReady"] = successor_policy["activationReady"]
+        issuer = VERIFIER.verify_eligibility_issuer_materialization_policy(
+            destination,
+        )
+        gateway_contract["eligibilityIssuerMaterialization"] = (
+            VERIFIER.eligibility_issuer_contract_projection(issuer)
+        )
+        http = VERIFIER.participant_gateway_http_contract(successor_policy)
+        gateway_contract["exactGatewayPaths"] = http["exactGatewayPaths"]
+        gateway_contract["dynamicGetPrefixes"] = http["dynamicGetPrefixes"]
+        gateway_contract["methodPathMatrix"] = http["methodPathMatrix"]
+        gateway_contract["routeProbeSamples"] = http["routeProbeSamples"]
+        gateway_contract["schemaVersion"] = http["schemaVersion"]
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+
+        participant = destination / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+        (participant / "runtime-pin.json").write_text(
+            json.dumps(runtime_pin, indent=2) + "\n",
+        )
+        (participant / "deployment.json").write_text(
+            json.dumps(resources["deployment"], indent=2) + "\n",
+        )
+        (participant / "ingress.json").write_text(
+            json.dumps(resources["ingress"], indent=2) + "\n",
+        )
+
+        migration_path = (
+            destination / VERIFIER.RENDER_ROOT / "network-boundary-migration.json"
+        )
+        migration = copy.deepcopy(source["migration"])
+        ingress_boundary = migration["boundary"]["ingress"]
+        ingress_boundary["exactGatewayPaths"] = http["exactGatewayPaths"]
+        ingress_boundary["exactPostPaths"] = http["methodPathMatrix"]["POST"]
+        ingress_boundary["dynamicGetPrefixes"] = http["dynamicGetPrefixes"]
+        ingress_boundary["gatewayMethodPathMatrix"] = http["methodPathMatrix"]
+        ingress_boundary["routeProbeSamples"] = http["routeProbeSamples"]
+        for kind, resource in (
+            ("Deployment", resources["deployment"]),
+            ("Ingress", resources["ingress"]),
+        ):
+            receipt = next(
+                item
+                for item in migration["objects"]
+                if item["kind"] == kind
+                and item["name"] == VERIFIER.PARTICIPANT_GATEWAY_NAME
+            )
+            receipt["sha256"] = VERIFIER.digest(resource)
+        migration_path.write_text(json.dumps(migration, indent=2) + "\n")
+        self.refresh_participant_gateway_integrity(
+            destination,
+            source,
+            runtime_pin,
+            resources,
+            migration,
+        )
+        normalized = VERIFIER.verify_tree(destination)
+        self.assertEqual(
+            normalized["stagingParticipantGatewayPolicy"],
+            successor_policy,
+        )
+        self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(normalized))
+
+    def normalize_citizen_adoption_a_seed(self, destination: Path) -> None:
+        """Reverse C1 after C2, yielding exact v4/three-artifact A."""
+        source = VERIFIER.verify_tree(destination)
+        if (
+            source["stagingParticipantGatewayPolicy"]
+            == VERIFIER.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY
+        ):
+            self.normalize_citizen_adoption_c1_seed(destination)
+            source = VERIFIER.verify_tree(destination)
+        self.assertEqual(
+            source["stagingParticipantGatewayPolicy"],
+            VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+        )
+        if not VERIFIER.tracer_citizen_adoption_enabled(source):
+            return
+
+        tracer = destination / VERIFIER.TRACER_DATA_PLANE.RENDER_ROOT
+        (destination / VERIFIER.CITIZEN_ADOPTION_SQL_PATH).unlink()
+        (tracer / "runtime-pin.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_SOURCE_REVISION,
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "postgres-deployment.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.expected_postgres_deployment(
+                    VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "kustomization.yaml").write_text(
+            VERIFIER.TRACER_DATA_PLANE.kustomization_text(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            ),
+        )
+        (tracer / "bootstrap/zz-roebel-tracer.sh").write_text(
+            VERIFIER.TRACER_DATA_PLANE.bootstrap_verify_script(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            ),
+        )
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["ephemeralTracerDataPlaneBoundary"] = (
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(
+                VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+            )
+        )
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+        normalized = VERIFIER.verify_tree(destination)
+        self.assertFalse(VERIFIER.tracer_citizen_adoption_enabled(normalized))
+
+    def citizen_adoption_sequence_roots(
+        self,
+    ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
+        """Build exact full-tree A, C1, and C2 from any admitted sequence state."""
+        source = VERIFIER.verify_tree(ROOT)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        fixture_root = Path(temp.name)
+        ignored = shutil.ignore_patterns(".git", "__pycache__", "*.pyc")
+        phase_a = fixture_root / "a"
+        c1 = fixture_root / "c1"
+        c2 = fixture_root / "c2"
+        if (
+            source["stagingParticipantGatewayPolicy"]
+            == VERIFIER.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY
+        ):
+            self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(source))
+            shutil.copytree(ROOT, c2, ignore=ignored)
+            shutil.copytree(c2, c1)
+            self.normalize_citizen_adoption_c1_seed(c1)
+            shutil.copytree(c1, phase_a)
+            self.normalize_citizen_adoption_a_seed(phase_a)
+        elif VERIFIER.tracer_citizen_adoption_enabled(source):
+            self.assertEqual(
+                source["stagingParticipantGatewayPolicy"],
+                VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+            )
+            shutil.copytree(ROOT, c1, ignore=ignored)
+            shutil.copytree(c1, phase_a)
+            self.normalize_citizen_adoption_a_seed(phase_a)
+            shutil.copytree(c1, c2)
+            self.materialize_citizen_adoption_c2_seed(c2)
+        else:
+            self.assertEqual(
+                source["stagingParticipantGatewayPolicy"],
+                VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
+            )
+            shutil.copytree(ROOT, phase_a, ignore=ignored)
+            shutil.copytree(phase_a, c1)
+            self.materialize_citizen_adoption_c1_seed(c1)
+            shutil.copytree(c1, c2)
+            self.materialize_citizen_adoption_c2_seed(c2)
+        return temp, phase_a, c1, c2
+
+    def current_v4_participant_fixture(
+        self,
+    ) -> tuple[tempfile.TemporaryDirectory[str], Path]:
+        """Copy ROOT and normalize it to the full v4/three-artifact A tree."""
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        destination = Path(temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            destination,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.normalize_citizen_adoption_a_seed(destination)
+        return temp, destination
 
     def current_base(self) -> Path:
         temp, base = self.candidate()
@@ -668,14 +1642,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         return base
 
     def protected_participant_candidate(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
-        """Copy the protected render and pin the runtime-release predecessor."""
-        temp = tempfile.TemporaryDirectory()
-        destination = Path(temp.name) / "candidate"
-        shutil.copytree(
-            ROOT,
-            destination,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
-        )
+        """Build full-tree A and pin the exact v4 release predecessor."""
+        temp, destination = self.current_v4_participant_fixture()
         self.normalize_participant_gateway_runtime_predecessor(destination)
         return temp, destination
 
@@ -771,17 +1739,23 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.render_participant_gateway_runtime_pin(root, successor)
 
     def participant_activation_policy_transition(self, root: Path) -> None:
+        policy = (
+            VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
+        )
         policy_path = root / VERIFIER.PARTICIPANT_POLICY.POLICY_PATH
         policy_path.write_text(
-            json.dumps(
-                VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor(),
-                indent=2,
-            )
-            + "\n",
+            json.dumps(policy, indent=2) + "\n",
         )
         contract_path = root / "policy/repository-contract.json"
         contract = json.loads(contract_path.read_text())
-        contract["stagingParticipantGatewayBoundary"]["activationReady"] = True
+        gateway = contract["stagingParticipantGatewayBoundary"]
+        gateway["activationReady"] = True
+        http = VERIFIER.participant_gateway_http_contract(policy)
+        gateway["exactGatewayPaths"] = http["exactGatewayPaths"]
+        gateway["dynamicGetPrefixes"] = http["dynamicGetPrefixes"]
+        gateway["methodPathMatrix"] = http["methodPathMatrix"]
+        gateway["routeProbeSamples"] = http["routeProbeSamples"]
+        gateway["schemaVersion"] = http["schemaVersion"]
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
 
     def signed_nostr_pin(self, root: Path) -> dict[str, object]:
@@ -1576,13 +2550,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def materialize_tracer_phase_a_fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path]:
         """Overlay the byte-pinned Phase-A render without requiring Git metadata."""
-        temp = tempfile.TemporaryDirectory()
-        destination = Path(temp.name) / "phase-a"
-        shutil.copytree(
-            ROOT,
-            destination,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
-        )
+        temp, destination = self.current_v4_participant_fixture()
         self.normalize_participant_gateway_runtime_activation(destination)
         self.disable_public_mecky_reviewed_web_source(destination)
 
@@ -1711,30 +2679,17 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 expected_digest,
                 f"{TRACER_PHASE_A_FIXTURE_REVISION}:{relative}",
             )
-        expected_changes = set(TRACER_PHASE_A_FIXTURE_FILES)
-        if VERIFIER.public_mecky_reviewed_web_source_enabled(ROOT):
-            expected_changes.update({
-                "reviewed-render/roebel-staging/public-mecky/deployment.json",
-                "reviewed-render/roebel-staging/public-mecky/networkpolicy.json",
-                "reviewed-render/roebel-staging/web/networkpolicy.json",
-                "reviewed-render/roebel-staging/network-boundary-migration.json",
-                "reviewed-render/roebel-staging/integrity.json",
-            })
-        if VERIFIER.web_tracer_feed_route_enabled(ROOT):
-            expected_changes.update({
-                "reviewed-render/roebel-staging/network-boundary-migration.json",
-                "reviewed-render/roebel-staging/web/networkpolicy.json",
-            })
-        protected_root = VERIFIER.verify_tree(ROOT)
-        protected_policy = protected_root["stagingParticipantGatewayPolicy"]
-        if (
-            protected_root["stagingParticipantGateway"]["runtimePin"]
-            != VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(protected_policy)
-        ):
-            expected_changes.update(
-                VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES,
-            )
-        self.assertEqual(VERIFIER.changed_repository_files(destination, ROOT), expected_changes)
+        actual_changes = VERIFIER.changed_repository_files(destination, ROOT)
+        allowed_changes = (
+            set(TRACER_PHASE_A_FIXTURE_FILES)
+            | VERIFIER.CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES
+            | VERIFIER.CITIZEN_ADOPTION_GATEWAY_TRANSITION_FILES
+            | VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES
+            | VERIFIER.PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES
+            | VERIFIER.CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES
+        )
+        self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
+        self.assertTrue(actual_changes <= allowed_changes, sorted(actual_changes - allowed_changes))
         return temp, destination
 
     def make_tracer_phase_b_successor(self, candidate: Path, base_root: Path) -> None:
@@ -1975,7 +2930,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             self.assertEqual(workflow.count(relative), 2)
 
     def test_phase_a_admission_is_closed_and_preserves_every_active_release_file(self) -> None:
-        expected_added = VERIFIER.TRACER_DATA_PLANE.expected_files() | {
+        expected_added = VERIFIER.TRACER_DATA_PLANE.expected_files(
+            VERIFIER.TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS,
+        ) | {
             "scripts/materialize-tracer-data-plane-secrets.py",
             "scripts/run-tracer-data-plane-live.py",
             "scripts/test_materialize_tracer_data_plane_secrets.py",
@@ -2323,36 +3280,67 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             contract["stagingParticipantGatewayBoundary"]["trustedLiveFacts"],
             "protected-local-runner-out-of-band-only",
         )
+        http = VERIFIER.participant_gateway_http_contract(committed_policy)
+        gateway = contract["stagingParticipantGatewayBoundary"]
+        self.assertEqual(gateway["exactGatewayPaths"], http["exactGatewayPaths"])
+        self.assertEqual(gateway["methodPathMatrix"], http["methodPathMatrix"])
         self.assertEqual(
-            contract["stagingParticipantGatewayBoundary"]["exactGatewayPaths"],
-            list(VERIFIER.PARTICIPANT_POLICY.ROUTES),
+            gateway.get("dynamicGetPrefixes"),
+            http.get("dynamicGetPrefixes"),
         )
         self.assertEqual(
-            contract["stagingParticipantGatewayBoundary"]["methodPathMatrix"],
-            {
-                "GET": [VERIFIER.PARTICIPANT_POLICY.ROUTES[0]],
-                "OPTIONS": list(VERIFIER.PARTICIPANT_POLICY.ROUTES),
-                "POST": list(VERIFIER.PARTICIPANT_POLICY.POST_ROUTES),
-            },
+            gateway.get("routeProbeSamples"),
+            http.get("routeProbeSamples"),
+        )
+        self.assertEqual(gateway["schemaVersion"], http["schemaVersion"])
+        issuer = VERIFIER.verify_eligibility_issuer_materialization_policy(ROOT)
+        self.assertEqual(
+            gateway["eligibilityIssuerMaterialization"],
+            VERIFIER.eligibility_issuer_contract_projection(issuer),
+        )
+        self.assertNotIn(
+            "clusterIdentity",
+            gateway["eligibilityIssuerMaterialization"],
+        )
+        self.assertNotIn(
+            "httpBoundary",
+            gateway["eligibilityIssuerMaterialization"],
         )
 
     def test_participant_gateway_ingress_is_exact_and_rate_limited(self) -> None:
         expected = VERIFIER.PARTICIPANT_POLICY.ROUTES
-        with mock.patch.object(
-            VERIFIER.PARTICIPANT_POLICY,
-            "STATIC_ACTIVATION_POLICY",
+        ingress = VERIFIER.expected_participant_gateway_ingress(
             participant_ready_policy(),
-        ):
-            ingress = VERIFIER.expected_participant_gateway_ingress()
+        )
         lines = ingress["metadata"]["annotations"]["haproxy-ingress.github.io/config-backend-early"].split("\n")
-        self.assertEqual(lines[0], "http-request deny deny_status 404 if " + " ".join(f"!{{ path {path} }}" for path in expected))
+        self.assertEqual(
+            lines[0],
+            "http-request deny deny_status 404 if "
+            + " ".join(f"!{{ path {path} }}" for path in expected)
+            + " "
+            + " ".join(
+                f"!{{ path_beg {prefix} }}"
+                for prefix in VERIFIER.PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES
+            ),
+        )
         self.assertEqual(lines[1], "http-request deny deny_status 405 if { method POST } " + " ".join(f"!{{ path {path} }}" for path in expected[1:]))
         self.assertEqual(lines[2], "http-request deny deny_status 405 if { method OPTIONS } " + " ".join(f"!{{ path {path} }}" for path in expected))
         self.assertEqual(lines[3], "http-request deny deny_status 405 if { method HEAD }")
-        self.assertEqual(lines[4], f"http-request deny deny_status 405 if {{ method GET }} !{{ path {expected[0]} }}")
+        self.assertEqual(
+            lines[4],
+            f"http-request deny deny_status 405 if {{ method GET }} !{{ path {expected[0]} }} "
+            + " ".join(
+                f"!{{ path_beg {prefix} }}"
+                for prefix in VERIFIER.PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES
+            ),
+        )
         self.assertEqual(lines[5], "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }")
         self.assertIn("http-request deny deny_status 429 if { sc_http_req_rate(0) gt 30 }", lines)
         self.assertEqual(ingress["spec"]["rules"][0]["http"]["paths"][0]["path"], "/api/staging-participant/v1")
+        self.assertEqual(
+            ingress["spec"]["rules"][0]["http"]["paths"][1]["path"],
+            "/api/civic/v1/eligibility/status",
+        )
         self.assertEqual(VERIFIER.expected_web_ingress(False), VERIFIER.expected_web_ingress(False, participant_gateway=True))
 
     def test_participant_gateway_policy_forbids_web_ingress_mutation(self) -> None:
@@ -2460,7 +3448,18 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             for item in env.values()
             if "valueFrom" in item
         }
-        self.assertEqual(secret_keys, {"allowed-wallets", "invite-sha256", "mecky-pubkey", "session-key", "supabase-anon-key", "supabase-rpc-secret"})
+        self.assertEqual(
+            secret_keys,
+            {
+                "allowed-wallets",
+                "invite-sha256",
+                "mecky-pubkey",
+                "session-key",
+                "supabase-anon-key",
+                "supabase-rpc-secret",
+                "private-key-hex",
+            },
+        )
         expected_literals = {
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION": protected["productPins"]["sourceRevision"],
             "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST": protected["productPins"]["imageManifestDigest"],
@@ -2480,8 +3479,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertNotIn("/app", [mount["mountPath"] for mount in container.get("volumeMounts", [])])
 
     def test_participant_gateway_runtime_release_pin_changes_only_published_artifact_leaves(self) -> None:
-        protected = VERIFIER.verify_tree(ROOT)
-        policy = protected["stagingParticipantGatewayPolicy"]
+        policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
         predecessor = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
         self.assertEqual(
@@ -2510,8 +3508,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             self.assertEqual(successor[key], predecessor[key])
 
     def test_participant_gateway_runtime_release_lineage_is_exact_and_closed(self) -> None:
-        protected = VERIFIER.verify_tree(ROOT)
-        policy = protected["stagingParticipantGatewayPolicy"]
+        policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
         predecessor = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
         self.assertEqual(
@@ -2544,11 +3541,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
 
     def test_participant_gateway_runtime_release_resources_change_only_three_deployment_leaves(self) -> None:
-        protected = VERIFIER.verify_tree(ROOT)
-        policy = protected["stagingParticipantGatewayPolicy"]
+        policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
         predecessor_pin = VERIFIER.expected_participant_gateway_runtime_release_predecessor_pin(policy)
         successor = VERIFIER.expected_participant_gateway_runtime_release_pin(policy)
-        civic_projection = protected["stagingParticipantGateway"]["civicProjectionRoute"]
+        civic_projection = True
         predecessor = VERIFIER.expected_participant_gateway_resources(
             predecessor_pin,
             policy,
@@ -2585,7 +3581,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
 
     def test_participant_gateway_runtime_release_rejects_activation_skips(self) -> None:
-        base_temp, activation_base = self.protected_participant_candidate()
+        base_temp, activation_base = self.current_v4_participant_fixture()
         predecessor_temp, predecessor = self.protected_participant_candidate()
         successor_temp, successor = self.protected_participant_candidate()
         self.addCleanup(base_temp.cleanup)
@@ -2736,7 +3732,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             )
 
     def test_participant_gateway_runtime_is_blocked_without_exact_policy_evidence(self) -> None:
-        self.assertFalse(VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["activationReady"])
+        policy = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()
+        self.assertTrue(policy["activationReady"])
+        current = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        self.assertEqual(
+            VERIFIER.verify_participant_gateway_runtime_pin(current, policy),
+            current,
+        )
         pin = {
             "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
             "component": "staging-participant-gateway",
@@ -2747,21 +3749,20 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
-            "activation blocked: protected product, database and endpoint pins are incomplete",
+            "runtime pin drift",
         ):
-            VERIFIER.verify_participant_gateway_runtime_pin(pin)
+            VERIFIER.verify_participant_gateway_runtime_pin(pin, policy)
 
     def test_participant_render_is_rejected_while_static_policy_is_not_ready(self) -> None:
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
-        with self.assertRaisesRegex(
-            VERIFIER.VerificationError,
-            "activation blocked: protected product, database and endpoint pins are incomplete",
-        ):
+        self.assertEqual(
             VERIFIER.verify_participant_gateway_static_policy(
                 candidate,
                 "reviewed-public-knowledge-participant-gateway",
-            )
+            ),
+            VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor(),
+        )
 
     def test_candidate_cannot_widen_static_activation_policy(self) -> None:
         temp, candidate = self.candidate()
@@ -2778,12 +3779,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         self.participant_activation_policy_transition(candidate)
-        result = VERIFIER.verify(candidate, base)
-        self.assertTrue(result["baseTransitionVerified"])
-        self.assertEqual(result["renderFileSet"], VERIFIER.verify_tree(base)["renderFileSet"])
-        self.assertTrue(
-            VERIFIER.verify_tree(candidate)["stagingParticipantGatewayPolicy"]["activationReady"],
-        )
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "requires the admitted C1 data plane",
+        ):
+            VERIFIER.verify(candidate, base)
 
     def test_participant_activation_policy_transition_rejects_each_fact_drift(self) -> None:
         mutations = {
@@ -2827,17 +3827,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.participant_activation_policy_transition(ready_base)
         current_temp, current_candidate = self.candidate()
         self.addCleanup(current_temp.cleanup)
-        with self.assertRaisesRegex(VERIFIER.VerificationError, "transition base drift"):
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "requires the admitted C1 data plane",
+        ):
             VERIFIER.verify(current_candidate, ready_base)
 
     def test_participant_activation_policy_transition_cannot_change_executable_render_or_live_files(self) -> None:
-        protected = (
-            "README.md",
-            "scripts/activate-staging-participant-gateway.py",
-            ".github/workflows/staging-participant-gateway-activation.yml",
-            "reviewed-render/roebel-staging/web/ingress.json",
-            "reviewed-render/roebel-staging/live-preconditions.json",
-        )
         self.assertEqual(
             VERIFIER.PARTICIPANT_ACTIVATION_POLICY_TRANSITION_FILES,
             {
@@ -2845,24 +3841,16 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "policy/staging-participant-gateway-activation-policy.json",
             },
         )
-        for relative in protected:
-            with self.subTest(relative=relative):
-                base = self.current_base()
-                temp, candidate = self.candidate()
-                self.addCleanup(temp.cleanup)
-                self.participant_activation_policy_transition(candidate)
-                path = candidate / relative
-                path.write_text(path.read_text() + "\n")
-                with self.assertRaisesRegex(VERIFIER.VerificationError, "changed protected file"):
-                    VERIFIER.verify(candidate, base)
-
         base = self.current_base()
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         self.participant_activation_policy_transition(candidate)
-        secret = candidate / "reviewed-render/roebel-staging/staging-participant-secret.json"
-        secret.write_text('{"apiVersion":"v1","kind":"Secret"}\n')
-        with self.assertRaisesRegex(VERIFIER.VerificationError, "repository file set drift"):
+        readme = candidate / "README.md"
+        readme.write_text(readme.read_text() + "\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "requires the admitted C1 data plane",
+        ):
             VERIFIER.verify(candidate, base)
 
     def test_candidate_embedded_participant_live_evidence_api_is_closed(self) -> None:

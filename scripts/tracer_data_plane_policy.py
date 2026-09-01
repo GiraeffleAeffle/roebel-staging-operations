@@ -50,8 +50,9 @@ POSTGREST_IMAGE = (
 PRODUCT_REPOSITORY = "https://github.com/GiraeffleAeffle/Roebel-App.git"
 PRODUCT_PROTECTED_REF = "refs/heads/main"
 INERT_PRODUCT_SOURCE_REVISION: str | None = None
-PRODUCT_SOURCE_REVISION = "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
-PRODUCT_ARTIFACTS = (
+LEGACY_PRODUCT_SOURCE_REVISION = "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
+PRODUCT_SOURCE_REVISION = "4c44ae3df1e37161156098899ccf192cd0bbe370"
+LEGACY_PRODUCT_ARTIFACTS = (
     (
         "71-roebel-tracer-baseline.sql",
         "supabase/staging_incluster_tracer_baseline_v1.sql",
@@ -66,6 +67,14 @@ PRODUCT_ARTIFACTS = (
         "74-staging-participant-topic-tracer.sql",
         "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
         "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e",
+    ),
+)
+PRODUCT_ARTIFACTS = (
+    *LEGACY_PRODUCT_ARTIFACTS,
+    (
+        "75-staging-citizen-adoption.sql",
+        "supabase/migrations/20260901_staging_citizen_adoption.sql",
+        "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d",
     ),
 )
 
@@ -170,11 +179,19 @@ def secret_env(name: str, key: str) -> dict[str, Any]:
     }
 
 
-def bootstrap_verify_script() -> str:
+def bootstrap_verify_script(
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> str:
     checks = "\n".join(
         f"printf '%s  %s\\n' '{digest.removeprefix('sha256:')}' "
         f"'/roebel-tracer-bootstrap/{filename}'"
-        for filename, _source, digest in PRODUCT_ARTIFACTS
+        for filename, _source, digest in product_artifacts
+    )
+    migrations = "".join(
+        f"PGOPTIONS='{PARTICIPANT_MIGRATION_PGOPTIONS}' psql \"${{psql_args[@]}}\" "
+        f"--file=/roebel-tracer-bootstrap/{filename}\n"
+        for filename, _source, _digest in product_artifacts
+        if filename not in {"71-roebel-tracer-baseline.sql"}
     )
     return (
         "#!/usr/bin/env bash\n"
@@ -189,10 +206,7 @@ def bootstrap_verify_script() -> str:
         "--username=supabase_admin --dbname=postgres)\n"
         "psql \"${psql_args[@]}\" --file=/roebel-tracer-bootstrap/71-roebel-tracer-baseline.sql\n"
         "bash /roebel-tracer-bootstrap/72-provision-roebel-vault.sh\n"
-        f"PGOPTIONS='{PARTICIPANT_MIGRATION_PGOPTIONS}' psql \"${{psql_args[@]}}\" "
-        "--file=/roebel-tracer-bootstrap/73-staging-participant-gateway.sql\n"
-        f"PGOPTIONS='{PARTICIPANT_MIGRATION_PGOPTIONS}' psql \"${{psql_args[@]}}\" "
-        "--file=/roebel-tracer-bootstrap/74-staging-participant-topic-tracer.sql\n"
+        f"{migrations}"
     )
 
 
@@ -244,14 +258,19 @@ SQL
 
 def runtime_pin(
     source_revision: str | None = PRODUCT_SOURCE_REVISION,
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
     require(
-        source_revision in {INERT_PRODUCT_SOURCE_REVISION, PRODUCT_SOURCE_REVISION},
+        source_revision in {
+            INERT_PRODUCT_SOURCE_REVISION,
+            LEGACY_PRODUCT_SOURCE_REVISION,
+            PRODUCT_SOURCE_REVISION,
+        },
         "tracer product source revision is not the approved predecessor or successor",
     )
     artifacts = [
         {"configMapFilename": filename, "path": path, "sha256": digest}
-        for filename, path, digest in PRODUCT_ARTIFACTS
+        for filename, path, digest in product_artifacts
     ]
     return {
         "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
@@ -562,8 +581,8 @@ def dormant_flux_contract() -> dict[str, Any]:
 
 def validate_activation_transition(previous: Any, candidate: Any) -> dict[str, Any]:
     """Admit only the exact null-to-protected-main source binding."""
-    inert = runtime_pin(INERT_PRODUCT_SOURCE_REVISION)
-    ready = runtime_pin(PRODUCT_SOURCE_REVISION)
+    inert = runtime_pin(INERT_PRODUCT_SOURCE_REVISION, LEGACY_PRODUCT_ARTIFACTS)
+    ready = runtime_pin(LEGACY_PRODUCT_SOURCE_REVISION, LEGACY_PRODUCT_ARTIFACTS)
     require(previous == inert, "tracer activation transition base drift")
     require(candidate == ready, "tracer activation transition candidate drift")
     require(previous["activationReady"] is False, "tracer activation predecessor ready")
@@ -580,7 +599,20 @@ def validate_activation_transition(previous: Any, candidate: Any) -> dict[str, A
     return ready
 
 
-def contract_boundary() -> dict[str, Any]:
+def validate_citizen_adoption_transition(previous: Any, candidate: Any) -> dict[str, Any]:
+    """Admit only the exact current-to-citizen-adoption bootstrap successor."""
+    legacy = runtime_pin(LEGACY_PRODUCT_SOURCE_REVISION, LEGACY_PRODUCT_ARTIFACTS)
+    successor = runtime_pin(PRODUCT_SOURCE_REVISION, PRODUCT_ARTIFACTS)
+    require(previous == legacy, "tracer citizen-adoption transition base drift")
+    require(candidate == successor, "tracer citizen-adoption transition candidate drift")
+    require(previous["activationReady"] is True and successor["activationReady"] is True,
+            "tracer citizen-adoption transition readiness drift")
+    return successor
+
+
+def contract_boundary(
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> dict[str, Any]:
     """Return the public repository contract for this dormant render."""
     return {
         "activationReady": True,
@@ -590,7 +622,7 @@ def contract_boundary() -> dict[str, Any]:
             "hashVerificationBeforeSql": True,
             "productArtifacts": [
                 {"path": path, "sha256": digest}
-                for _filename, path, digest in PRODUCT_ARTIFACTS
+                for _filename, path, digest in product_artifacts
             ],
             "vaultBeforeParticipantMigrations": True,
         },
@@ -666,7 +698,22 @@ def exec_probe(command: list[str], failure: int, period: int, timeout: int = 3) 
     }
 
 
-def expected_postgres_deployment() -> dict[str, Any]:
+def expected_postgres_deployment(
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> dict[str, Any]:
+    bootstrap_artifacts_sha256 = canonical_sha256(
+        [
+            {"path": path, "sha256": digest}
+            for _filename, path, digest in product_artifacts
+        ]
+    )
+    template_annotations = {
+        "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline",
+    }
+    if product_artifacts == PRODUCT_ARTIFACTS:
+        template_annotations["stadtstack.io/bootstrap-artifacts-sha256"] = (
+            bootstrap_artifacts_sha256
+        )
     mounts = [
         {"mountPath": "/var/lib/postgresql/data", "name": "postgres-data"},
         {
@@ -734,9 +781,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
         "kind": "Deployment",
         "metadata": {
             "annotations": {
-                "stadtstack.io/bootstrap-artifacts-sha256": canonical_sha256(
-                    [{"path": path, "sha256": digest} for _filename, path, digest in PRODUCT_ARTIFACTS]
-                ),
+                "stadtstack.io/bootstrap-artifacts-sha256": bootstrap_artifacts_sha256,
                 "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline",
             },
             "labels": POSTGRES_LABELS,
@@ -751,9 +796,7 @@ def expected_postgres_deployment() -> dict[str, Any]:
             "strategy": {"type": "Recreate"},
             "template": {
                 "metadata": {
-                    "annotations": {
-                        "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
-                    },
+                    "annotations": template_annotations,
                     "labels": POSTGRES_LABELS,
                 },
                 "spec": {
@@ -946,15 +989,17 @@ def expected_postgrest_network_policy() -> dict[str, Any]:
     }
 
 
-def expected_bootstrap_config_map(root: Path) -> dict[str, Any]:
+def expected_bootstrap_config_map(
+    root: Path,
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> dict[str, Any]:
     """Return the stable ConfigMap generated by the checked-in Kustomization."""
     bootstrap = root / RENDER_ROOT / "bootstrap"
     filenames = (
         "zz-roebel-tracer.sh",
-        "71-roebel-tracer-baseline.sql",
+        product_artifacts[0][0],
         "72-provision-roebel-vault.sh",
-        "73-staging-participant-gateway.sql",
-        "74-staging-participant-topic-tracer.sql",
+        *(filename for filename, _path, _digest in product_artifacts[1:]),
     )
     for filename in filenames:
         require((bootstrap / filename).is_file(), f"tracer bootstrap file missing: {filename}")
@@ -1011,23 +1056,48 @@ def application_object_targets() -> list[dict[str, str]]:
     ]
 
 
-def expected_application_objects(root: Path) -> dict[str, dict[str, Any]]:
+def expected_application_objects(
+    root: Path,
+    product_artifacts: tuple[tuple[str, str, str], ...] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if product_artifacts is None:
+        citizen_migration = (
+            root / RENDER_ROOT / "bootstrap" / PRODUCT_ARTIFACTS[-1][0]
+        )
+        require(
+            not citizen_migration.is_symlink(),
+            "tracer citizen-adoption bootstrap must not be a symlink",
+        )
+        if citizen_migration.exists():
+            require(
+                citizen_migration.is_file(),
+                "tracer citizen-adoption bootstrap must be a regular file",
+            )
+            product_artifacts = PRODUCT_ARTIFACTS
+        else:
+            product_artifacts = LEGACY_PRODUCT_ARTIFACTS
     objects = {
         "postgresNetworkPolicy": expected_postgres_network_policy(),
         "postgrestNetworkPolicy": expected_postgrest_network_policy(),
         "serviceAccount": expected_service_account(),
-        "bootstrapConfigMap": expected_bootstrap_config_map(root),
+        "bootstrapConfigMap": expected_bootstrap_config_map(root, product_artifacts),
         "postgresService": expected_postgres_service(),
         "postgrestService": expected_postgrest_service(),
-        "postgresDeployment": expected_postgres_deployment(),
+        "postgresDeployment": expected_postgres_deployment(product_artifacts),
         "postgrestDeployment": expected_postgrest_deployment(),
     }
     require(tuple(objects) == application_object_order(), "tracer application object order drift")
     return objects
 
 
-def kustomization_text() -> str:
-    return """apiVersion: kustomize.config.k8s.io/v1beta1
+def kustomization_text(
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> str:
+    migration_lines = "\n".join(
+        f"      - {filename}=bootstrap/{filename}"
+        for filename, _path, _digest in product_artifacts[1:]
+    )
+    return f"""apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: stadtstack-roebel-staging-lab
 resources:
@@ -1042,10 +1112,9 @@ configMapGenerator:
   - name: roebel-tracer-data-plane-bootstrap-v1
     files:
       - zz-roebel-tracer.sh=bootstrap/zz-roebel-tracer.sh
-      - 71-roebel-tracer-baseline.sql=bootstrap/71-roebel-tracer-baseline.sql
+      - {product_artifacts[0][0]}=bootstrap/{product_artifacts[0][0]}
       - 72-provision-roebel-vault.sh=bootstrap/72-provision-roebel-vault.sh
-      - 73-staging-participant-gateway.sql=bootstrap/73-staging-participant-gateway.sql
-      - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
+{migration_lines}
 generatorOptions:
   disableNameSuffixHash: true
   labels:
@@ -1070,42 +1139,55 @@ JSON_FILES = {
 }
 
 
-def expected_files() -> set[str]:
+def expected_files(
+    product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
+) -> set[str]:
     return {
         *(str(RENDER_ROOT / filename) for filename in JSON_FILES),
         str(RENDER_ROOT / "kustomization.yaml"),
         str(RENDER_ROOT / "bootstrap/zz-roebel-tracer.sh"),
-        str(RENDER_ROOT / "bootstrap/71-roebel-tracer-baseline.sql"),
         str(RENDER_ROOT / "bootstrap/72-provision-roebel-vault.sh"),
-        str(RENDER_ROOT / "bootstrap/73-staging-participant-gateway.sql"),
-        str(RENDER_ROOT / "bootstrap/74-staging-participant-topic-tracer.sql"),
+        *(
+            str(RENDER_ROOT / "bootstrap" / filename)
+            for filename, _path, _digest in product_artifacts
+        ),
     }
 
 
 def verify_render(root: Path) -> dict[str, Any]:
     render = root / RENDER_ROOT
     require(render.is_dir(), "tracer data-plane render root missing")
+    successor = (render / "bootstrap/75-staging-citizen-adoption.sql").is_file()
+    product_artifacts = PRODUCT_ARTIFACTS if successor else LEGACY_PRODUCT_ARTIFACTS
+    source_revision = (
+        PRODUCT_SOURCE_REVISION if successor else LEGACY_PRODUCT_SOURCE_REVISION
+    )
     actual_files = {
         str(path.relative_to(root))
         for path in render.rglob("*")
         if path.is_file()
     }
-    require(actual_files == expected_files(), "tracer data-plane file set drift")
+    require(actual_files == expected_files(product_artifacts), "tracer data-plane file set drift")
 
     objects: dict[str, Any] = {}
     for filename, factory in JSON_FILES.items():
         actual = json.loads((render / filename).read_text())
-        expected = factory()
+        if filename == "runtime-pin.json":
+            expected = runtime_pin(source_revision, product_artifacts)
+        elif filename == "postgres-deployment.json":
+            expected = expected_postgres_deployment(product_artifacts)
+        else:
+            expected = factory()
         require(actual == expected, f"tracer data-plane {filename} drift")
         objects[filename] = actual
 
     require(
-        (render / "kustomization.yaml").read_text() == kustomization_text(),
+        (render / "kustomization.yaml").read_text() == kustomization_text(product_artifacts),
         "tracer data-plane Kustomization drift",
     )
     require(
         (render / "bootstrap/zz-roebel-tracer.sh").read_text()
-        == bootstrap_verify_script(),
+        == bootstrap_verify_script(product_artifacts),
         "tracer bootstrap verifier drift",
     )
     require(
@@ -1113,7 +1195,7 @@ def verify_render(root: Path) -> dict[str, Any]:
         == vault_bootstrap_script(),
         "tracer Vault bootstrap drift",
     )
-    for filename, _source, digest in PRODUCT_ARTIFACTS:
+    for filename, _source, digest in product_artifacts:
         observed = bytes_sha256((render / "bootstrap" / filename).read_bytes())
         require(observed == digest, f"tracer SQL artifact hash drift: {filename}")
 
@@ -1132,7 +1214,12 @@ def verify_render(root: Path) -> dict[str, Any]:
     return {
         "schemaVersion": "roebel_ephemeral_tracer_data_plane_verification_v1",
         "status": "passed",
-        "activationReady": runtime_pin()["activationReady"],
+        "activationReady": runtime_pin(source_revision, product_artifacts)["activationReady"],
+        "productSourceRevision": source_revision,
+        "productArtifacts": [
+            {"path": path, "sha256": digest}
+            for _filename, path, digest in product_artifacts
+        ],
         "renderCanonicalSha256": canonical_sha256(objects),
         "externalIngress": False,
         "persistentVolumeClaim": False,
