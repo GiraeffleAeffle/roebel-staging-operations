@@ -77,6 +77,15 @@ PRODUCT_ARTIFACTS = (
         "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d",
     ),
 )
+SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT = (
+    "76-staging-synthetic-citizen-adoption.sql",
+    "supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql",
+    "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282",
+)
+SYNTHETIC_PRODUCT_ARTIFACTS = (
+    *PRODUCT_ARTIFACTS,
+    SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT,
+)
 
 RUNTIME_SECRET_KEYS = (
     "anon-jwt",
@@ -260,14 +269,20 @@ def runtime_pin(
     source_revision: str | None = PRODUCT_SOURCE_REVISION,
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
-    require(
-        source_revision in {
-            INERT_PRODUCT_SOURCE_REVISION,
-            LEGACY_PRODUCT_SOURCE_REVISION,
-            PRODUCT_SOURCE_REVISION,
-        },
-        "tracer product source revision is not the approved predecessor or successor",
-    )
+    if product_artifacts == SYNTHETIC_PRODUCT_ARTIFACTS:
+        require(
+            isinstance(source_revision, str) and REVISION.fullmatch(source_revision),
+            "synthetic tracer product source revision invalid",
+        )
+    else:
+        require(
+            source_revision in {
+                INERT_PRODUCT_SOURCE_REVISION,
+                LEGACY_PRODUCT_SOURCE_REVISION,
+                PRODUCT_SOURCE_REVISION,
+            },
+            "tracer product source revision is not the approved predecessor or successor",
+        )
     artifacts = [
         {"configMapFilename": filename, "path": path, "sha256": digest}
         for filename, path, digest in product_artifacts
@@ -610,6 +625,27 @@ def validate_citizen_adoption_transition(previous: Any, candidate: Any) -> dict[
     return successor
 
 
+def validate_synthetic_citizen_adoption_transition(
+    previous: Any,
+    candidate: Any,
+    source_revision: str,
+) -> dict[str, Any]:
+    """Admit the exact additive test-only migration at one product revision."""
+    predecessor = runtime_pin(PRODUCT_SOURCE_REVISION, PRODUCT_ARTIFACTS)
+    successor = runtime_pin(source_revision, SYNTHETIC_PRODUCT_ARTIFACTS)
+    require(previous == predecessor, "synthetic tracer transition base drift")
+    require(candidate == successor, "synthetic tracer transition candidate drift")
+    require(
+        previous["authority"] == successor["authority"]
+        and previous["database"] == successor["database"]
+        and previous["images"] == successor["images"]
+        and previous["network"] == successor["network"]
+        and previous["secretReference"] == successor["secretReference"],
+        "synthetic tracer transition widened a protected boundary",
+    )
+    return successor
+
+
 def contract_boundary(
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
@@ -710,7 +746,7 @@ def expected_postgres_deployment(
     template_annotations = {
         "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline",
     }
-    if product_artifacts == PRODUCT_ARTIFACTS:
+    if product_artifacts in {PRODUCT_ARTIFACTS, SYNTHETIC_PRODUCT_ARTIFACTS}:
         template_annotations["stadtstack.io/bootstrap-artifacts-sha256"] = (
             bootstrap_artifacts_sha256
         )
@@ -1061,14 +1097,27 @@ def expected_application_objects(
     product_artifacts: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[str, dict[str, Any]]:
     if product_artifacts is None:
+        synthetic_migration = (
+            root / RENDER_ROOT / "bootstrap" / SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT[0]
+        )
         citizen_migration = (
             root / RENDER_ROOT / "bootstrap" / PRODUCT_ARTIFACTS[-1][0]
+        )
+        require(
+            not synthetic_migration.is_symlink(),
+            "tracer synthetic-adoption bootstrap must not be a symlink",
         )
         require(
             not citizen_migration.is_symlink(),
             "tracer citizen-adoption bootstrap must not be a symlink",
         )
-        if citizen_migration.exists():
+        if synthetic_migration.exists():
+            require(
+                synthetic_migration.is_file() and citizen_migration.is_file(),
+                "tracer synthetic-adoption bootstrap requires the real-adoption predecessor",
+            )
+            product_artifacts = SYNTHETIC_PRODUCT_ARTIFACTS
+        elif citizen_migration.exists():
             require(
                 citizen_migration.is_file(),
                 "tracer citizen-adoption bootstrap must be a regular file",
@@ -1157,11 +1206,22 @@ def expected_files(
 def verify_render(root: Path) -> dict[str, Any]:
     render = root / RENDER_ROOT
     require(render.is_dir(), "tracer data-plane render root missing")
+    synthetic = (render / "bootstrap/76-staging-synthetic-citizen-adoption.sql").is_file()
     successor = (render / "bootstrap/75-staging-citizen-adoption.sql").is_file()
-    product_artifacts = PRODUCT_ARTIFACTS if successor else LEGACY_PRODUCT_ARTIFACTS
-    source_revision = (
-        PRODUCT_SOURCE_REVISION if successor else LEGACY_PRODUCT_SOURCE_REVISION
-    )
+    require(not synthetic or successor, "synthetic tracer migration lacks real-adoption predecessor")
+    if synthetic:
+        product_artifacts = SYNTHETIC_PRODUCT_ARTIFACTS
+        runtime_value = json.loads((render / "runtime-pin.json").read_text())
+        source_revision = runtime_value.get("productSource", {}).get("sourceRevision")
+        require(
+            isinstance(source_revision, str) and REVISION.fullmatch(source_revision),
+            "synthetic tracer runtime source revision invalid",
+        )
+    else:
+        product_artifacts = PRODUCT_ARTIFACTS if successor else LEGACY_PRODUCT_ARTIFACTS
+        source_revision = (
+            PRODUCT_SOURCE_REVISION if successor else LEGACY_PRODUCT_SOURCE_REVISION
+        )
     actual_files = {
         str(path.relative_to(root))
         for path in render.rglob("*")
