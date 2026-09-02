@@ -416,6 +416,140 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 base_path.write_text("base\n" if relative in changed else "same\n")
         return temp, base, candidate
 
+    def test_issuer_dry_run_projection_admission_is_exact_and_effect_free(self) -> None:
+        expected = {
+            "scripts/materialize-staging-participant-eligibility-issuer.py": {
+                "predecessorSha256": "sha256:2f0f147d169b11ecbc2b288416d83531c9de45907ff32460d1615e2d43d70ee1",
+                "successorSha256": "sha256:042f7ca54367cd1c92cd9ab4685fc2f20ef0af48ae8f7eec795f5fdf473bab44",
+            },
+            "scripts/test_materialize_staging_participant_eligibility_issuer.py": {
+                "predecessorSha256": "sha256:471b834e8e7cbea2d04df3e07caec4b2508ae7b919d2a1defbea7059d3af046f",
+                "successorSha256": "sha256:09052236fc3d9d2419ef3141461e5743f7e89b274899a1a9d2ebdb13ffab2b7b",
+            },
+            "scripts/test_run_staging_participant_gateway_live.py": {
+                "predecessorSha256": "sha256:c27d8688f01fe0cb9e2c2407d2e1ddcd20f54494f7103c7d2737121e8a65887e",
+                "successorSha256": "sha256:fbba0df00287771040272ecc960dc4a43130d5cd7b49caeb3d53b6b3290225da",
+            },
+        }
+        self.assertEqual(
+            VERIFIER.ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION,
+            expected,
+        )
+
+        _temp, base_root, candidate_root = self.transition_file_roots(
+            set(expected)
+        )
+        synthetic = {
+            relative: {
+                "predecessorSha256": VERIFIER.bytes_digest(
+                    (base_root / relative).read_bytes()
+                ),
+                "successorSha256": VERIFIER.bytes_digest(
+                    (candidate_root / relative).read_bytes()
+                ),
+            }
+            for relative in expected
+        }
+        base = VERIFIER.verify_tree(ROOT)
+        candidate = copy.deepcopy(base)
+        base = copy.deepcopy(base)
+        candidate["root"] = candidate_root
+        base["root"] = base_root
+
+        def verify_synthetic(
+            candidate_snapshot: dict | None = None,
+        ) -> dict:
+            with (
+                mock.patch.object(
+                    VERIFIER,
+                    "ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION",
+                    synthetic,
+                ),
+                mock.patch.object(
+                    VERIFIER,
+                    "verify_tree",
+                    side_effect=[candidate_snapshot or candidate, base],
+                ),
+            ):
+                return VERIFIER.verify(candidate_root, base_root)
+
+        result = verify_synthetic()
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(
+            result["effects"],
+            {
+                "secretRead": False,
+                "secretWrite": False,
+                "clusterMutation": False,
+                "civicMutation": False,
+            },
+        )
+
+        for relative in sorted(expected):
+            candidate_target = candidate_root / relative
+            candidate_exact = candidate_target.read_bytes()
+            candidate_target.write_bytes(
+                candidate_exact + b"# successor byte-range drift\n"
+            )
+            with self.assertRaisesRegex(
+                VERIFIER.VerificationError,
+                "successor byte drift",
+            ):
+                verify_synthetic()
+            candidate_target.write_bytes(candidate_exact)
+
+            base_target = base_root / relative
+            base_exact = base_target.read_bytes()
+            base_target.write_bytes(base_exact + b"# predecessor byte-range drift\n")
+            with self.assertRaisesRegex(
+                VERIFIER.VerificationError,
+                "predecessor byte drift",
+            ):
+                verify_synthetic()
+            base_target.write_bytes(base_exact)
+
+            candidate_target.write_bytes(base_exact)
+            with self.assertRaisesRegex(
+                VERIFIER.VerificationError,
+                "changed file set drift",
+            ):
+                verify_synthetic()
+            candidate_target.write_bytes(candidate_exact)
+
+        with (
+            mock.patch.object(
+                VERIFIER,
+                "ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION",
+                synthetic,
+            ),
+            mock.patch.object(
+                VERIFIER,
+                "verify_tree",
+                side_effect=[base, candidate],
+            ),
+        ):
+            with self.assertRaisesRegex(
+                VERIFIER.VerificationError,
+                "predecessor byte drift",
+            ):
+                VERIFIER.verify(base_root, candidate_root)
+
+        (candidate_root / "README.md").write_text("extra changed file\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "changed file set drift",
+        ):
+            verify_synthetic()
+        (candidate_root / "README.md").unlink()
+
+        changed_snapshot = copy.deepcopy(candidate)
+        changed_snapshot["head"]["promotionRevision"] = "f" * 40
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "render snapshot drift",
+        ):
+            verify_synthetic(changed_snapshot)
+
     def test_c1_is_the_exact_standalone_six_file_transition(self) -> None:
         _temp, base_root, candidate_root = self.transition_file_roots(
             VERIFIER.CITIZEN_ADOPTION_DATA_PLANE_TRANSITION_FILES,
