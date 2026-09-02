@@ -11,6 +11,7 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
   packages: read
@@ -30,6 +31,15 @@ jobs:
       ROEBEL_REPOSITORY: GiraeffleAeffle/Roebel-App
       RELEASE_SET_REPOSITORY: ghcr.io/giraeffleaeffle/roebel-web-staging
       SIGNER_IDENTITY: https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/roebel-staging-publish.yml@refs/heads/main
+      GATEWAY_IMAGE: ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway
+      GATEWAY_SIGNER_IDENTITY: https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main
+      SYNTHETIC_SOURCE_REVISION: 1b004dc0a1b156baf639fcdd54ab5a1b5501a575
+      SYNTHETIC_GATEWAY_RUN_ID: "33659908416"
+      SYNTHETIC_GATEWAY_MANIFEST: sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2
+      SYNTHETIC_SOURCE_TREE_SHA256: sha256:827fea9741a90f9d2eede3bea2074687cd464ad496de33dac441dce7c2f84f15
+      SYNTHETIC_GATEWAY_WORKFLOW_SHA256: sha256:6c4c09517f53e18a301630cecb341f9996ba74eaa1dc1126ef735eb1c6460ac3
+      SYNTHETIC_MIGRATION_SHA256: sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282
+      SYNTHETIC_SCHEMA_SHA256: sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66
       AUTOMATION_BRANCH: automation/roebel-staging-latest
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
@@ -61,6 +71,23 @@ jobs:
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           fi
           echo "revision=$observed" >> "$GITHUB_OUTPUT"
+
+      - name: Select the closed handoff schema
+        if: steps.source.outputs.changed == 'true'
+        id: schema
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          transition=reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json
+          if test -e "$transition"; then
+            test -f "$transition" && test ! -L "$transition"
+            echo 'version=v1' >> "$GITHUB_OUTPUT"
+          else
+            test "$SOURCE_REVISION" = "$SYNTHETIC_SOURCE_REVISION"
+            echo 'version=v2' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up pinned ORAS
         if: steps.source.outputs.changed == 'true'
@@ -133,6 +160,115 @@ jobs:
           echo 'available=true' >> "$GITHUB_OUTPUT"
           echo "artifact_digest=$artifact_digest" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the exact synthetic handoff source
+        if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true' && steps.schema.outputs.version == 'v2'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: GiraeffleAeffle/Roebel-App
+          ref: ${{ steps.source.outputs.revision }}
+          path: synthetic-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assemble the exact synthetic CitizenNFT v2 handoff
+        if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true' && steps.schema.outputs.version == 'v2'
+        shell: bash
+        env:
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_REVISION" = "$SYNTHETIC_SOURCE_REVISION"
+          run="$RUNNER_TEMP/gateway-run.json"
+          gh api "repos/$ROEBEL_REPOSITORY/actions/runs/$SYNTHETIC_GATEWAY_RUN_ID" > "$run"
+          jq -e \
+            --arg source "$SOURCE_REVISION" \
+            --arg workflow '.github/workflows/staging-participant-gateway-publish.yml' \
+            '.head_sha == $source and .head_branch == "main" and .event == "push" and
+             .status == "completed" and .conclusion == "success" and .path == $workflow and
+             .head_repository.full_name == "GiraeffleAeffle/Roebel-App"' \
+            "$run" >/dev/null
+
+          publication="$RUNNER_TEMP/gateway-publication"
+          mkdir "$publication"
+          gh run download "$SYNTHETIC_GATEWAY_RUN_ID" \
+            --repo "$ROEBEL_REPOSITORY" \
+            --name "staging-participant-gateway-publication-$SOURCE_REVISION" \
+            --dir "$publication"
+          find "$publication" -type f -print | sed "s#^$publication/##" | LC_ALL=C sort > "$RUNNER_TEMP/gateway-files.actual"
+          cat > "$RUNNER_TEMP/gateway-files.expected" <<'EOF'
+          publication-input/staging-participant-gateway.release-pins.json
+          publication-input/staging-participant-gateway.source-receipt.json
+          publication-output/staging-participant-gateway.publication-receipt.json
+          publication-output/staging-participant-gateway.spdx.json
+          EOF
+          diff -u "$RUNNER_TEMP/gateway-files.expected" "$RUNNER_TEMP/gateway-files.actual"
+          test "$(find "$publication" -type l | wc -l | tr -d ' ')" = 0
+          source_receipt="$publication/publication-input/staging-participant-gateway.source-receipt.json"
+          release_pins="$publication/publication-input/staging-participant-gateway.release-pins.json"
+          publication_receipt="$publication/publication-output/staging-participant-gateway.publication-receipt.json"
+          sbom="$publication/publication-output/staging-participant-gateway.spdx.json"
+          test "sha256:$(sha256sum "$source_receipt" | cut -d' ' -f1)" = sha256:ab6a46795950551ba89409c533e263b1719e985995b0a404535c8d39fa6b36ea
+          test "sha256:$(sha256sum "$release_pins" | cut -d' ' -f1)" = sha256:0a67871be71addc5c650f3b674b3e5e6bbe1b2e9d0785119c31cb0ed1ef04653
+          test "sha256:$(sha256sum "$publication_receipt" | cut -d' ' -f1)" = sha256:aaa4d4dbbec0129326e2ffd6dee1756d245c86ebbbc81494fb31bf2189cf4f97
+          test "sha256:$(sha256sum "$sbom" | cut -d' ' -f1)" = sha256:8256bdaf67cc55468d67a39733932397fce9d7b3ece2bf9a65bcad01c345e700
+
+          test "$(git -C synthetic-source rev-parse HEAD)" = "$SOURCE_REVISION"
+          source_tree_sha256="sha256:$(git -C synthetic-source ls-tree -r -z --full-tree "$SOURCE_REVISION" | sha256sum | cut -d' ' -f1)"
+          workflow_sha256="sha256:$(git -C synthetic-source show "$SOURCE_REVISION:.github/workflows/staging-participant-gateway-publish.yml" | sha256sum | cut -d' ' -f1)"
+          test "$source_tree_sha256" = "$SYNTHETIC_SOURCE_TREE_SHA256"
+          test "$workflow_sha256" = "$SYNTHETIC_GATEWAY_WORKFLOW_SHA256"
+          migration=synthetic-source/supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql
+          schema=synthetic-source/supabase/staging-synthetic-citizen-adoption-schema-contract-v1.json
+          test "sha256:$(sha256sum "$migration" | cut -d' ' -f1)" = "$SYNTHETIC_MIGRATION_SHA256"
+          test "sha256:$(sha256sum "$schema" | cut -d' ' -f1)" = "$SYNTHETIC_SCHEMA_SHA256"
+          test "$(jq -cS . "$schema")" = "$(tr -d '\n' < "$schema")"
+          mkdir incoming/release-set/artifacts
+          cp "$migration" incoming/release-set/artifacts/76-staging-synthetic-citizen-adoption.sql
+
+          printf '%s' "$GH_TOKEN" | oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          test "$(oras resolve "$GATEWAY_IMAGE@$SYNTHETIC_GATEWAY_MANIFEST")" = "$SYNTHETIC_GATEWAY_MANIFEST"
+          bundle_name="sha256-${SYNTHETIC_GATEWAY_MANIFEST#sha256:}.jsonl"
+          provenance_directory="incoming/release-set/bundles/provenance/staging-participant-gateway"
+          sbom_directory="incoming/release-set/bundles/sbom/staging-participant-gateway"
+          mkdir -p "$provenance_directory" "$sbom_directory"
+          (
+            cd "$provenance_directory"
+            gh attestation download "oci://$GATEWAY_IMAGE@$SYNTHETIC_GATEWAY_MANIFEST" \
+              --repo "$ROEBEL_REPOSITORY" --predicate-type https://slsa.dev/provenance/v1
+            test -s "${SYNTHETIC_GATEWAY_MANIFEST}.jsonl"
+            mv -- "${SYNTHETIC_GATEWAY_MANIFEST}.jsonl" "$bundle_name"
+          )
+          (
+            cd "$sbom_directory"
+            gh attestation download "oci://$GATEWAY_IMAGE@$SYNTHETIC_GATEWAY_MANIFEST" \
+              --repo "$ROEBEL_REPOSITORY" --predicate-type https://spdx.dev/Document/v2.3
+            test -s "${SYNTHETIC_GATEWAY_MANIFEST}.jsonl"
+            mv -- "${SYNTHETIC_GATEWAY_MANIFEST}.jsonl" "$bundle_name"
+          )
+          gh attestation verify "oci://$GATEWAY_IMAGE@$SYNTHETIC_GATEWAY_MANIFEST" \
+            --bundle "$provenance_directory/$bundle_name" \
+            --repo "$ROEBEL_REPOSITORY" --cert-identity "$GATEWAY_SIGNER_IDENTITY" \
+            --source-digest "$SOURCE_REVISION" --source-ref refs/heads/main \
+            --predicate-type https://slsa.dev/provenance/v1 --deny-self-hosted-runners \
+            --format json --jq 'length == 1' | grep -Fx true
+          gh attestation verify "oci://$GATEWAY_IMAGE@$SYNTHETIC_GATEWAY_MANIFEST" \
+            --bundle "$sbom_directory/$bundle_name" \
+            --repo "$ROEBEL_REPOSITORY" --cert-identity "$GATEWAY_SIGNER_IDENTITY" \
+            --source-digest "$SOURCE_REVISION" --source-ref refs/heads/main \
+            --predicate-type https://spdx.dev/Document/v2.3 --deny-self-hosted-runners \
+            --format json --jq 'length == 1' | grep -Fx true
+
+          python3 scripts/assemble-synthetic-citizen-pass-handoff.py \
+            --handoff-root incoming/release-set \
+            --source-receipt "$source_receipt" \
+            --publication-receipt "$publication_receipt" \
+            --release-pins "$release_pins" \
+            --sbom "$sbom" \
+            --source-tree-sha256 "$source_tree_sha256" \
+            --workflow-sha256 "$workflow_sha256" \
+            > "$RUNNER_TEMP/synthetic-handoff.json"
+          rm -rf -- synthetic-source
+
       - name: Verify component attestations independently
         if: steps.source.outputs.changed == 'true' && steps.handoff.outputs.available == 'true'
         shell: bash
@@ -185,7 +321,7 @@ jobs:
           git archive HEAD | tar -x -C "$RUNNER_TEMP/protected-base"
           (
             cd "$RUNNER_TEMP/protected-base"
-            python3 -m unittest -v scripts/test_verify_reviewed_render.py scripts/test_render_release_set_promotion.py
+            python3 -m unittest -v scripts/test_verify_reviewed_render.py scripts/test_render_release_set_promotion.py scripts/test_assemble_synthetic_citizen_pass_handoff.py scripts/test_automatic_promotion_workflow.py
           )
           python3 scripts/render-release-set-promotion.py \
             --root . \
@@ -197,13 +333,34 @@ jobs:
           python3 scripts/verify-reviewed-render.py --root . --base-root "$RUNNER_TEMP/protected-base"
           git diff --check
           git diff --name-only | LC_ALL=C sort > "$RUNNER_TEMP/changed.actual"
-          cat > "$RUNNER_TEMP/changed.expected" <<'EOF'
+          if test '${{ steps.schema.outputs.version }}' = v2; then
+            cat > "$RUNNER_TEMP/changed.expected" <<'EOF'
+          policy/repository-contract.json
+          reviewed-render/roebel-staging/head.json
+          reviewed-render/roebel-staging/integrity.json
+          reviewed-render/roebel-staging/live-preconditions.json
+          reviewed-render/roebel-staging/network-boundary-migration.json
+          reviewed-render/roebel-staging/public-mecky/deployment.json
+          reviewed-render/roebel-staging/staging-participant-gateway/deployment.json
+          reviewed-render/roebel-staging/staging-participant-gateway/ingress.json
+          reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json
+          reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json
+          reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql
+          reviewed-render/roebel-staging/tracer-data-plane/bootstrap/zz-roebel-tracer.sh
+          reviewed-render/roebel-staging/tracer-data-plane/kustomization.yaml
+          reviewed-render/roebel-staging/tracer-data-plane/postgres-deployment.json
+          reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json
+          reviewed-render/roebel-staging/web/deployment.json
+          EOF
+          else
+            cat > "$RUNNER_TEMP/changed.expected" <<'EOF'
           reviewed-render/roebel-staging/head.json
           reviewed-render/roebel-staging/integrity.json
           reviewed-render/roebel-staging/live-preconditions.json
           reviewed-render/roebel-staging/public-mecky/deployment.json
           reviewed-render/roebel-staging/web/deployment.json
           EOF
+          fi
           diff -u "$RUNNER_TEMP/changed.expected" "$RUNNER_TEMP/changed.actual"
 
       - name: Open or replace the single latest promotion pull request
@@ -221,6 +378,9 @@ jobs:
           git config user.email 'stadtstack-release-bot@users.noreply.github.com'
           git switch -c "$AUTOMATION_BRANCH"
           git add reviewed-render/roebel-staging
+          if test '${{ steps.schema.outputs.version }}' = v2; then
+            git add policy/repository-contract.json
+          fi
           git commit -m "chore: promote Röbel staging $SOURCE_REVISION"
           remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | cut -f1)"
           if test -n "$remote_sha"; then
