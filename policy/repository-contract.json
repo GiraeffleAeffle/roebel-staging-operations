@@ -86,6 +86,10 @@
         {
           "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
           "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+        },
+        {
+          "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
+          "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d"
         }
       ],
       "vaultBeforeParticipantMigrations": true

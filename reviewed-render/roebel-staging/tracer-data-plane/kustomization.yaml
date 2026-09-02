@@ -17,6 +17,7 @@ configMapGenerator:
       - 72-provision-roebel-vault.sh=bootstrap/72-provision-roebel-vault.sh
       - 73-staging-participant-gateway.sql=bootstrap/73-staging-participant-gateway.sql
       - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
+      - 75-staging-citizen-adoption.sql=bootstrap/75-staging-citizen-adoption.sql
 generatorOptions:
   disableNameSuffixHash: true
   labels:

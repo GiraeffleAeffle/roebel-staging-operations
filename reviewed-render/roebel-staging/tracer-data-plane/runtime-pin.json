@@ -54,11 +54,16 @@
         "configMapFilename": "74-staging-participant-topic-tracer.sql",
         "path": "supabase/migrations/20260825_staging_participant_topic_tracer.sql",
         "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
+      },
+      {
+        "configMapFilename": "75-staging-citizen-adoption.sql",
+        "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
+        "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d"
       }
     ],
     "protectedRef": "refs/heads/main",
     "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
-    "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840"
+    "sourceRevision": "4c44ae3df1e37161156098899ccf192cd0bbe370"
   },
   "secretReference": {
     "keys": [
