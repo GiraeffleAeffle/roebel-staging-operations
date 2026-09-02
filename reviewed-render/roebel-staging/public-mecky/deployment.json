@@ -3,7 +3,7 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:08922f9e6c97a16f52ab3361f54c8657a2a76d89ad110401867b46cda8d8e8cd",
+      "stadtstack.io/release-set-sha256": "sha256:c6c0d40c4dcfbba92488f8c1bf48131bc1fa72664960d5dcd6a932530e5eb392",
       "stadtstack.io/source-revision": "4c44ae3df1e37161156098899ccf192cd0bbe370"
     },
     "labels": {
