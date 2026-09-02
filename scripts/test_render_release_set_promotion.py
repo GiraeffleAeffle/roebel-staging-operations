@@ -103,6 +103,23 @@ class AutomaticPromotionTests(unittest.TestCase):
         result = MODULE.render(root, candidate, incoming)
         self.assertEqual(result["status"], "rendered_effect_free")
         self.assertEqual(result["changedComponents"], list(MODULE.COMPONENT_ORDER))
+        web = json.loads(
+            (root / "reviewed-render/roebel-staging/web/deployment.json").read_text(),
+        )
+        environment = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        by_name = {item["name"]: item for item in environment}
+        self.assertEqual(
+            [by_name[item["name"]] for item in MODULE.WEB_IDENTITY_CONTRACT_SET_ENV],
+            MODULE.WEB_IDENTITY_CONTRACT_SET_ENV,
+        )
+        annotations = web["spec"]["template"]["metadata"]["annotations"]
+        self.assertEqual(
+            {
+                name: annotations[name]
+                for name in MODULE.WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
+            },
+            MODULE.WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS,
+        )
 
         verification = MODULE.Path(ROOT / "scripts/verify-reviewed-render.py")
         import subprocess
@@ -113,6 +130,27 @@ class AutomaticPromotionTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_renderer_rejects_partial_or_mixed_identity_predecessor(self) -> None:
+        mixed = copy.deepcopy(MODULE.WEB_IDENTITY_CONTRACT_SET_ENV)
+        mixed[1]["value"] = "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5"
+        for items, expected in (
+            ([MODULE.WEB_IDENTITY_CONTRACT_SET_ENV[0]], "predecessor is partial"),
+            (mixed, "predecessor address binding drift"),
+        ):
+            with self.subTest(expected=expected):
+                temporary, root, incoming, candidate = self.fixture()
+                self.addCleanup(temporary.cleanup)
+                path = root / "reviewed-render/roebel-staging/web/deployment.json"
+                deployment = json.loads(path.read_text())
+                environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+                environment.extend(copy.deepcopy(items))
+                path.write_text(json.dumps(deployment, indent=2) + "\n")
+                with self.assertRaisesRegex(
+                    MODULE.PromotionError,
+                    expected,
+                ):
+                    MODULE.render(root, candidate, incoming)
 
     def test_renders_mixed_source_reuse_from_exact_expected_previous_head(self) -> None:
         temporary, root, incoming, candidate_path = self.fixture()

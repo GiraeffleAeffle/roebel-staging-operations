@@ -42,6 +42,36 @@ POLICY = {
 SIGNER = "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/roebel-staging-publish.yml@refs/heads/main"
 ISSUER = "https://token.actions.githubusercontent.com"
 RENDER_ROOT = Path("reviewed-render/roebel-staging")
+WEB_IDENTITY_CONTRACT_SET_ENV = [
+    {
+        "name": "ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET",
+        "value": "gnosis-staging-test-v1",
+    },
+    {
+        "name": "ROEBEL_PUBLIC_ATTESTER_NFT_ADDRESS",
+        "value": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3",
+    },
+    {
+        "name": "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS",
+        "value": "0x0Be374808A567c9088aC8208B90a4239432B3220",
+    },
+]
+WEB_IDENTITY_CONTRACT_SET_ENV_NAMES = {
+    item["name"] for item in WEB_IDENTITY_CONTRACT_SET_ENV
+}
+WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS = {
+    "stadtstack.io/identity-contract-set": "gnosis-staging-test-v1",
+    "stadtstack.io/identity-contract-authority": "none",
+    "stadtstack.io/identity-contract-set-sha256": (
+        "sha256:af51165b7854caf2058ca7c645d74d8c8717d738ec879e806ecb860da1cae131"
+    ),
+    "stadtstack.io/identity-attester-runtime-code-keccak256": (
+        "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51"
+    ),
+    "stadtstack.io/identity-citizen-runtime-code-keccak256": (
+        "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+    ),
+}
 
 
 class PromotionError(RuntimeError):
@@ -206,6 +236,49 @@ def primary_container(deployment: dict[str, Any], component: str) -> dict[str, A
     return found[0]
 
 
+def activate_web_identity_contract_set(deployment: dict[str, Any]) -> None:
+    """Add the exact selector on its first Web promotion; preserve it thereafter."""
+    template = deployment["spec"]["template"]
+    container = primary_container(deployment, "roebel-web-staging")
+    environment = container["env"]
+    by_name = {item.get("name"): item for item in environment}
+    require(
+        len(by_name) == len(environment),
+        "Web identity contract set environment names invalid or repeated",
+    )
+    present_names = WEB_IDENTITY_CONTRACT_SET_ENV_NAMES & set(by_name)
+    annotations = template.setdefault("metadata", {}).setdefault("annotations", {})
+    present_annotations = (
+        set(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS) & set(annotations)
+    )
+    if present_names or present_annotations:
+        require(
+            present_names == WEB_IDENTITY_CONTRACT_SET_ENV_NAMES,
+            "Web identity contract set predecessor is partial",
+        )
+        require(
+            [by_name[item["name"]] for item in WEB_IDENTITY_CONTRACT_SET_ENV]
+            == WEB_IDENTITY_CONTRACT_SET_ENV,
+            "Web identity contract set predecessor address binding drift",
+        )
+        require(
+            {
+                name: annotations[name]
+                for name in WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
+                if name in annotations
+            }
+            == WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS,
+            "Web identity contract set predecessor evidence drift",
+        )
+        return
+    names = [item["name"] for item in environment]
+    insertion = names.index("ROEBEL_PUBLIC_GNOSIS_BUNDLER_URL")
+    environment[insertion:insertion] = copy.deepcopy(
+        WEB_IDENTITY_CONTRACT_SET_ENV,
+    )
+    annotations.update(copy.deepcopy(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS))
+
+
 def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, Any]:
     render_root = root / RENDER_ROOT
     current_head = validate_head(load(render_root / "head.json"), "current head")
@@ -242,6 +315,8 @@ def render(root: Path, candidate_path: Path, evidence_root: Path) -> dict[str, A
         container = primary_container(deployment, name)
         container["image"] = f"{policy['repository']}@{record['manifestDigest']}"
         container["imagePullPolicy"] = "IfNotPresent"
+        if name == "roebel-web-staging":
+            activate_web_identity_contract_set(deployment)
         desired_deployments.append(deployment)
         precondition = copy.deepcopy(previous_preconditions[index])
         require(precondition["component"] == name, "base precondition order invalid")

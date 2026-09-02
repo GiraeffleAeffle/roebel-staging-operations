@@ -990,6 +990,55 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.normalize_no_participant_gateway_seed(destination)
         return temp, destination
 
+    def activate_web_identity_contract_set(
+        self,
+        root: Path,
+        *,
+        promote: bool = True,
+    ) -> None:
+        """Render the selector with one immutable Web promotion, never alone."""
+        protected = VERIFIER.verify_tree(root)
+        self.assertIsNone(protected["webIdentityContractSet"])
+        if promote:
+            self.make_valid_transition(root)
+        render = root / VERIFIER.RENDER_ROOT
+        head = json.loads((render / "head.json").read_text())
+        deployment = VERIFIER.expected_web_identity_contract_set_deployment(
+            protected["deployments"]["roebel-web-staging"],
+            head,
+        )
+        (render / "web/deployment.json").write_text(
+            json.dumps(deployment, indent=2) + "\n",
+        )
+        objects = copy.deepcopy(protected["objects"])
+        objects[0] = json.loads(
+            (render / "public-mecky/deployment.json").read_text(),
+        )
+        objects[3] = deployment
+        payload: dict[str, object] = {
+            "nextEnvironmentHead": head,
+            "objects": objects,
+        }
+        if protected["reviewedPublicKnowledge"] is not None:
+            payload["reviewedPublicKnowledge"] = protected["reviewedPublicKnowledge"]
+        if protected["signedNostr"] is not None:
+            payload["signedNostr"] = protected["signedNostr"]
+        if protected["stagingParticipantGateway"] is not None:
+            payload["stagingParticipantGateway"] = {
+                key: value
+                for key, value in protected["stagingParticipantGateway"].items()
+                if key != "civicProjectionRoute"
+            }
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["releaseSetDigest"] = head["releaseSetDigest"]
+        integrity["desiredRenderSha256"] = VERIFIER.digest(payload)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+        self.assertEqual(
+            VERIFIER.verify_tree(root)["webIdentityContractSet"],
+            VERIFIER.WEB_IDENTITY_CONTRACT_SET,
+        )
+
     def set_current_tracer_feed_route(self, root: Path, enabled: bool) -> None:
         """Normalize one current-head fixture to the exact private feed route state."""
         source = VERIFIER.verify_tree(ROOT)
@@ -2750,6 +2799,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             f"{VERIFIER.COMPONENTS['roebel-web-staging']['repository']}@"
             f"{web_component['manifestDigest']}"
         )
+        for name in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS:
+            template["metadata"]["annotations"].pop(name, None)
         web_environment = template["spec"]["containers"][0]["env"]
         web_environment[:] = [
             item
@@ -2758,6 +2809,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.TRACER_FEED_URL_ENV["name"],
                 VERIFIER.TRACER_FEED_ANON_ENV["name"],
             }
+            | VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES
         ]
         web_path.write_text(json.dumps(web, indent=2) + "\n")
 
@@ -2917,12 +2969,222 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
         self.assertEqual(result["renderFileSet"], self.repository_shape(ROOT))
+        self.assertIsNone(VERIFIER.verify_tree(ROOT)["webIdentityContractSet"])
 
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
         fixture = VERIFIER.verify(candidate)
         self.assertEqual(fixture["status"], "passed")
         self.assertEqual(fixture["renderFileSet"], "current")
+
+    def test_web_identity_contract_set_policy_is_exact_and_non_authoritative(self) -> None:
+        tree = VERIFIER.verify_tree(ROOT)
+        contract_set = VERIFIER.WEB_IDENTITY_CONTRACT_SET
+        self.assertIsNone(tree["webIdentityContractSet"])
+        self.assertEqual(contract_set["chainId"], 100)
+        self.assertEqual(contract_set["authority"], "none")
+        self.assertEqual(
+            contract_set["contracts"]["attesterNft"],
+            {
+                "address": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3",
+                "runtimeCodeKeccak256": (
+                    "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51"
+                ),
+            },
+        )
+        self.assertEqual(
+            contract_set["contracts"]["citizenNft"],
+            {
+                "address": "0x0Be374808A567c9088aC8208B90a4239432B3220",
+                "runtimeCodeKeccak256": (
+                    "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+                ),
+            },
+        )
+        web = tree["deployments"]["roebel-web-staging"]
+        env = web["spec"]["template"]["spec"]["containers"][0]["env"]
+        by_name = {item["name"]: item for item in env}
+        self.assertTrue(
+            VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES.isdisjoint(by_name),
+            "the policy prerequisite must not roll the old Web image",
+        )
+        self.assertFalse(
+            any("RUNTIME_CODE" in item["name"] for item in env),
+            "runtime code hashes are reviewed evidence, not browser input",
+        )
+
+        # The real ADR-0023 gateway remains bound to its original production
+        # CitizenNFT and issuer; the burner-mintable test set cannot issue a
+        # real-shaped eligibility receipt.
+        adoption = tree["stagingParticipantGateway"]["runtimePin"]["citizenAdoption"]
+        self.assertEqual(
+            adoption["citizenNft"],
+            {
+                "chainId": 100,
+                "address": "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5",
+                "runtimeCodeHash": (
+                    "0x952276d2d6da4bfe3ed3dbc39f6745f2421b01ad476c286cb7a6fa166c7e4218"
+                ),
+            },
+        )
+        self.assertEqual(
+            adoption["eligibilityIssuer"]["keyId"],
+            "roebel-staging-citizen-eligibility-2026-09",
+        )
+
+    def test_exact_web_identity_contract_set_transition_is_accepted(self) -> None:
+        base_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        shutil.copytree(
+            ROOT,
+            base,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(candidate_temp.cleanup)
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.activate_web_identity_contract_set(candidate)
+        result = VERIFIER.verify(candidate, base)
+        self.assertTrue(result["baseTransitionVerified"])
+        for relative in sorted(VERIFIER.PARTICIPANT_GATEWAY_FILES):
+            self.assertEqual(
+                (candidate / relative).read_bytes(),
+                (base / relative).read_bytes(),
+                relative,
+            )
+        self.assertEqual(
+            (candidate / VERIFIER.RENDER_ROOT / "web/networkpolicy.json").read_bytes(),
+            (base / VERIFIER.RENDER_ROOT / "web/networkpolicy.json").read_bytes(),
+        )
+
+    def test_web_identity_contract_set_cannot_roll_the_old_image(self) -> None:
+        base_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        shutil.copytree(
+            ROOT,
+            base,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(candidate_temp.cleanup)
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.activate_web_identity_contract_set(candidate, promote=False)
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "requires a new Web release",
+        ):
+            VERIFIER.verify(candidate, base)
+
+    def test_web_identity_contract_set_rejects_partial_or_mixed_config(self) -> None:
+        for mutate, expected in (
+            (
+                lambda env: env.__setitem__(
+                    slice(None),
+                    [
+                        item for item in env
+                        if item["name"] != "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS"
+                    ],
+                ),
+                "must configure profile and both addresses atomically",
+            ),
+            (
+                lambda env: next(
+                    item for item in env
+                    if item["name"] == "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS"
+                ).__setitem__(
+                    "value",
+                    "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5",
+                ),
+                "profile/address binding invalid",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                temp = tempfile.TemporaryDirectory()
+                self.addCleanup(temp.cleanup)
+                candidate = Path(temp.name) / "candidate"
+                shutil.copytree(
+                    ROOT,
+                    candidate,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+                )
+                self.activate_web_identity_contract_set(candidate)
+                path = candidate / VERIFIER.RENDER_ROOT / "web/deployment.json"
+                deployment = json.loads(path.read_text())
+                environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+                mutate(environment)
+                path.write_text(json.dumps(deployment, indent=2) + "\n")
+                with self.assertRaisesRegex(VERIFIER.VerificationError, expected):
+                    VERIFIER.verify(candidate)
+
+    def test_web_identity_contract_set_rejects_authority_or_code_hash_drift(self) -> None:
+        for annotation, value in (
+            ("stadtstack.io/identity-contract-authority", "municipal"),
+            (
+                "stadtstack.io/identity-citizen-runtime-code-keccak256",
+                "0x" + "0" * 64,
+            ),
+        ):
+            with self.subTest(annotation=annotation):
+                temp = tempfile.TemporaryDirectory()
+                self.addCleanup(temp.cleanup)
+                candidate = Path(temp.name) / "candidate"
+                shutil.copytree(
+                    ROOT,
+                    candidate,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+                )
+                self.activate_web_identity_contract_set(candidate)
+                path = candidate / VERIFIER.RENDER_ROOT / "web/deployment.json"
+                deployment = json.loads(path.read_text())
+                deployment["spec"]["template"]["metadata"]["annotations"][annotation] = value
+                path.write_text(json.dumps(deployment, indent=2) + "\n")
+                with self.assertRaisesRegex(
+                    VERIFIER.VerificationError,
+                    "authority/code evidence invalid",
+                ):
+                    VERIFIER.verify(candidate)
+
+    def test_web_identity_transition_rejects_any_gateway_byte_change(self) -> None:
+        base_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(base_temp.cleanup)
+        base = Path(base_temp.name) / "base"
+        shutil.copytree(
+            ROOT,
+            base,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        candidate_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(candidate_temp.cleanup)
+        candidate = Path(candidate_temp.name) / "candidate"
+        shutil.copytree(
+            ROOT,
+            candidate,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+        self.activate_web_identity_contract_set(candidate)
+        runtime_pin = (
+            candidate
+            / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+            / "runtime-pin.json"
+        )
+        runtime_pin.write_text(runtime_pin.read_text() + "\n")
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "changed participant gateway bytes",
+        ):
+            VERIFIER.verify(candidate, base)
 
     def test_exact_public_mecky_reviewed_web_source_transition_is_accepted(self) -> None:
         base_temp = tempfile.TemporaryDirectory()

@@ -515,6 +515,69 @@ TRACER_FEED_ANON_ENV = {
         },
     },
 }
+
+# The browser-facing test identity contract set is deliberately separate from
+# the participant gateway's real ADR-0023 eligibility verifier.  Only the
+# three values below are application configuration.  Chain, authority, and
+# runtime-code identities are reviewed invariants and must never be supplied
+# by an untrusted runtime caller.
+WEB_IDENTITY_CONTRACT_SET = {
+    "schemaVersion": "roebel_web_staging_identity_contract_set_v1",
+    "profile": "gnosis-staging-test-v1",
+    "chainId": 100,
+    "authority": "none",
+    "contracts": {
+        "attesterNft": {
+            "address": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3",
+            "runtimeCodeKeccak256": (
+                "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51"
+            ),
+        },
+        "citizenNft": {
+            "address": "0x0Be374808A567c9088aC8208B90a4239432B3220",
+            "runtimeCodeKeccak256": (
+                "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+            ),
+        },
+    },
+}
+WEB_IDENTITY_CONTRACT_SET_ENV = [
+    {
+        "name": "ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET",
+        "value": WEB_IDENTITY_CONTRACT_SET["profile"],
+    },
+    {
+        "name": "ROEBEL_PUBLIC_ATTESTER_NFT_ADDRESS",
+        "value": WEB_IDENTITY_CONTRACT_SET["contracts"]["attesterNft"]["address"],
+    },
+    {
+        "name": "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS",
+        "value": WEB_IDENTITY_CONTRACT_SET["contracts"]["citizenNft"]["address"],
+    },
+]
+WEB_IDENTITY_CONTRACT_SET_ENV_NAMES = {
+    item["name"] for item in WEB_IDENTITY_CONTRACT_SET_ENV
+}
+WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS = {
+    "stadtstack.io/identity-contract-set": WEB_IDENTITY_CONTRACT_SET["profile"],
+    "stadtstack.io/identity-contract-authority": WEB_IDENTITY_CONTRACT_SET["authority"],
+    "stadtstack.io/identity-contract-set-sha256": (
+        "sha256:af51165b7854caf2058ca7c645d74d8c8717d738ec879e806ecb860da1cae131"
+    ),
+    "stadtstack.io/identity-attester-runtime-code-keccak256": (
+        WEB_IDENTITY_CONTRACT_SET["contracts"]["attesterNft"]["runtimeCodeKeccak256"]
+    ),
+    "stadtstack.io/identity-citizen-runtime-code-keccak256": (
+        WEB_IDENTITY_CONTRACT_SET["contracts"]["citizenNft"]["runtimeCodeKeccak256"]
+    ),
+}
+WEB_IDENTITY_CONTRACT_SET_TRANSITION_FILES = {
+    f"{RENDER_ROOT}/head.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+}
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
 PARTICIPANT_GATEWAY_FLUX_NAMESPACE = PARTICIPANT_POLICY.FLUX_NAMESPACE
@@ -1821,6 +1884,7 @@ def verify_deployment(
     reviewed_web_source: bool = False,
     civic_projection_route: bool = False,
     tracer_feed_route: bool = False,
+    identity_contract_set: bool = False,
 ) -> dict[str, Any]:
     policy = COMPONENTS[component]
     path = root / RENDER_ROOT / policy["directory"] / "deployment.json"
@@ -1927,6 +1991,11 @@ def verify_deployment(
         require(primary[0].get("livenessProbe") == {**expected_probe, "periodSeconds": 20}, "public-mecky liveness probe invalid")
         require(primary[0].get("startupProbe") == {**expected_probe, "failureThreshold": 30, "periodSeconds": 2}, "public-mecky startup probe invalid")
     else:
+        verify_web_identity_contract_set(
+            deployment,
+            by_name,
+            identity_contract_set,
+        )
         require(by_name.get("PUBLIC_MECKY_CHAT_URL") == {
             "name": "PUBLIC_MECKY_CHAT_URL",
             "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084",
@@ -1990,6 +2059,75 @@ def web_tracer_feed_route_enabled(root: Path) -> bool:
     return bool(
         names & {TRACER_FEED_URL_ENV["name"], TRACER_FEED_ANON_ENV["name"]}
     )
+
+
+def web_identity_contract_set_enabled(root: Path) -> bool:
+    """Detect the reviewed test-contract capability, including partial drift."""
+    deployment = load_json(root / RENDER_ROOT / "web/deployment.json")
+    try:
+        environment = deployment["spec"]["template"]["spec"]["containers"][0]["env"]
+        annotations = deployment["spec"]["template"]["metadata"]["annotations"]
+    except (KeyError, IndexError, TypeError):
+        return False
+    names = {
+        item.get("name")
+        for item in environment
+        if isinstance(item, dict)
+    }
+    return bool(
+        names & WEB_IDENTITY_CONTRACT_SET_ENV_NAMES
+        or set(annotations) & set(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS)
+    )
+
+
+def verify_web_identity_contract_set(
+    deployment: dict[str, Any],
+    by_name: dict[str, dict[str, Any]],
+    enabled: bool,
+) -> dict[str, Any] | None:
+    """Require the profile and address pair atomically under no authority."""
+    pod_annotations = deployment["spec"]["template"]["metadata"]["annotations"]
+    present_names = WEB_IDENTITY_CONTRACT_SET_ENV_NAMES & set(by_name)
+    present_annotations = (
+        set(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS) & set(pod_annotations)
+    )
+    if not enabled:
+        require(
+            not present_names and not present_annotations,
+            "Web identity contract set is not admitted",
+        )
+        return None
+    require(
+        present_names == WEB_IDENTITY_CONTRACT_SET_ENV_NAMES,
+        "Web identity contract set must configure profile and both addresses atomically",
+    )
+    require(
+        [by_name[item["name"]] for item in WEB_IDENTITY_CONTRACT_SET_ENV]
+        == WEB_IDENTITY_CONTRACT_SET_ENV,
+        "Web identity contract set profile/address binding invalid",
+    )
+    require(
+        {
+            name: pod_annotations[name]
+            for name in WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
+            if name in pod_annotations
+        }
+        == WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS,
+        "Web identity contract set authority/code evidence invalid",
+    )
+    require(
+        WEB_IDENTITY_CONTRACT_SET["chainId"] == 100
+        and WEB_IDENTITY_CONTRACT_SET["authority"] == "none",
+        "Web identity contract set reviewed invariant invalid",
+    )
+    require(
+        WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS[
+            "stadtstack.io/identity-contract-set-sha256"
+        ]
+        == digest(WEB_IDENTITY_CONTRACT_SET),
+        "Web identity contract set evidence checksum invalid",
+    )
+    return copy.deepcopy(WEB_IDENTITY_CONTRACT_SET)
 
 
 def public_mecky_reviewed_web_source_enabled(root: Path) -> bool:
@@ -5417,6 +5555,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     }
     civic_projection_route = web_civic_projection_route_enabled(root)
     tracer_feed_route = web_tracer_feed_route_enabled(root)
+    identity_contract_set = web_identity_contract_set_enabled(root)
     reviewed_web_source = public_mecky_reviewed_web_source_enabled(root)
     deployments = {
         component: verify_deployment(
@@ -5427,6 +5566,9 @@ def verify_tree(root: Path) -> dict[str, Any]:
             reviewed_web_source=reviewed_web_source and component == "public-mecky",
             civic_projection_route=civic_projection_route and component == "roebel-web-staging",
             tracer_feed_route=tracer_feed_route and component == "roebel-web-staging",
+            identity_contract_set=(
+                identity_contract_set and component == "roebel-web-staging"
+            ),
         )
         for component in COMPONENT_ORDER
     }
@@ -5520,6 +5662,10 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "workbenchBaselineEnabled": True,
         "tracerDataPlane": tracer_data_plane,
         "webTracerFeed": tracer_feed_route,
+        "webIdentityContractSet": (
+            copy.deepcopy(WEB_IDENTITY_CONTRACT_SET)
+            if identity_contract_set else None
+        ),
     }
 
 
@@ -5979,6 +6125,172 @@ def verify_citizen_adoption_gateway_transition(
         )
 
 
+def expected_web_identity_contract_set_deployment(
+    base_deployment: dict[str, Any],
+    successor_head: dict[str, Any],
+) -> dict[str, Any]:
+    """Add the selector only while advancing the immutable Web release."""
+    value = copy.deepcopy(base_deployment)
+    environment = value["spec"]["template"]["spec"]["containers"][0]["env"]
+    names = [item["name"] for item in environment]
+    require(
+        not (set(names) & WEB_IDENTITY_CONTRACT_SET_ENV_NAMES),
+        "Web identity contract set predecessor already contains identity environment",
+    )
+    insertion = names.index("ROEBEL_PUBLIC_GNOSIS_BUNDLER_URL")
+    environment[insertion:insertion] = copy.deepcopy(WEB_IDENTITY_CONTRACT_SET_ENV)
+    annotations = value["spec"]["template"]["metadata"]["annotations"]
+    require(
+        not (set(annotations) & set(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS)),
+        "Web identity contract set predecessor already contains identity evidence",
+    )
+    annotations.update(copy.deepcopy(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS))
+    record = component_map(successor_head)["roebel-web-staging"]
+    value["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+        record["sourceRevision"]
+    )
+    value["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+        successor_head["releaseSetDigest"]
+    )
+    value["spec"]["template"]["metadata"]["annotations"][
+        "stadtstack.io/source-revision"
+    ] = record["sourceRevision"]
+    container = value["spec"]["template"]["spec"]["containers"][0]
+    container["image"] = (
+        f"{COMPONENTS['roebel-web-staging']['repository']}@{record['manifestDigest']}"
+    )
+    container["imagePullPolicy"] = "IfNotPresent"
+    return value
+
+
+def verify_web_identity_contract_set_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    """Admit only the standalone, no-authority Web test-contract selector."""
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(
+        base["webIdentityContractSet"] is None,
+        "Web identity contract set predecessor already active",
+    )
+    require(
+        candidate["webIdentityContractSet"] == WEB_IDENTITY_CONTRACT_SET,
+        "Web identity contract set successor drift",
+    )
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"],
+        "Web identity contract set changed render shape",
+    )
+    require(candidate["head"] != base["head"], "Web identity contract set requires a new Web release")
+    base_components = component_map(base["head"])
+    candidate_components = component_map(candidate["head"])
+    if candidate_components["public-mecky"] != base_components["public-mecky"]:
+        require(
+            candidate_components["public-mecky"]["sourceRevision"]
+            == candidate["head"]["promotionRevision"],
+            "Web identity contract set Public Mecky release provenance drift",
+        )
+    require(
+        candidate_components["roebel-web-staging"]
+        != base_components["roebel-web-staging"]
+        and candidate_components["roebel-web-staging"]["sourceRevision"]
+        == candidate["head"]["promotionRevision"],
+        "Web identity contract set requires the exact promoted Web component",
+    )
+    expected_public = copy.deepcopy(base["deployments"]["public-mecky"])
+    public_record = candidate_components["public-mecky"]
+    expected_public["metadata"]["annotations"]["stadtstack.io/source-revision"] = (
+        public_record["sourceRevision"]
+    )
+    expected_public["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+        candidate["head"]["releaseSetDigest"]
+    )
+    expected_public["spec"]["template"]["metadata"]["annotations"][
+        "stadtstack.io/source-revision"
+    ] = public_record["sourceRevision"]
+    public_container = expected_public["spec"]["template"]["spec"]["containers"][0]
+    public_container["image"] = (
+        f"{COMPONENTS['public-mecky']['repository']}@{public_record['manifestDigest']}"
+    )
+    public_container["imagePullPolicy"] = "IfNotPresent"
+    require(
+        candidate["deployments"]["public-mecky"] == expected_public,
+        "Web identity contract set Public Mecky release annotation drift",
+    )
+    require(
+        candidate["deployments"]["roebel-web-staging"]
+        == expected_web_identity_contract_set_deployment(
+            base["deployments"]["roebel-web-staging"],
+            candidate["head"],
+        ),
+        "Web identity contract set Deployment transformation drift",
+    )
+    for field, label in (
+        ("publicMeckyReviewedEgress", "Public Mecky egress"),
+        ("publicMeckyReviewedWebSource", "Public Mecky Web source"),
+        ("webTracerFeed", "Web tracer feed"),
+        ("signedNostr", "signed-Nostr render"),
+        ("stagingParticipantGatewayPolicy", "participant gateway policy"),
+    ):
+        require(
+            candidate[field] == base[field],
+            f"Web identity contract set changed {label}",
+        )
+    require(
+        candidate["stagingParticipantGateway"]
+        == base["stagingParticipantGateway"],
+        "Web identity contract set changed participant gateway projection",
+    )
+    require(
+        candidate["live"]["previous"] == base["head"],
+        "Web identity contract set previous-head CAS drift",
+    )
+    for index, component in enumerate(COMPONENT_ORDER):
+        base_container = next(
+            item
+            for item in base["deployments"][component]["spec"]["template"]["spec"]["containers"]
+            if item.get("name") == COMPONENTS[component]["container"]
+        )
+        require(
+            candidate["live"]["preconditions"][index]["currentImage"]
+            == base_container["image"],
+            f"Web identity contract set {component} live image CAS drift",
+        )
+    require(
+        (candidate_root / f"{RENDER_ROOT}/web/networkpolicy.json").read_bytes()
+        == (base_root / f"{RENDER_ROOT}/web/networkpolicy.json").read_bytes(),
+        "Web identity contract set changed Web NetworkPolicy bytes",
+    )
+    for relative in sorted(PARTICIPANT_GATEWAY_FILES):
+        require(
+            (candidate_root / relative).read_bytes()
+            == (base_root / relative).read_bytes(),
+            f"Web identity contract set changed participant gateway bytes: {relative}",
+        )
+    for relative in (
+        PARTICIPANT_POLICY.POLICY_PATH,
+        ELIGIBILITY_ISSUER_POLICY_PATH,
+        "scripts/staging_participant_gateway_policy.py",
+    ):
+        require(
+            (candidate_root / relative).read_bytes()
+            == (base_root / relative).read_bytes(),
+            f"Web identity contract set changed real eligibility policy bytes: {relative}",
+        )
+    changed = changed_repository_files(candidate_root, base_root)
+    require(
+        changed == WEB_IDENTITY_CONTRACT_SET_TRANSITION_FILES,
+        "Web identity contract set changed file set drift "
+        f"(missing={sorted(WEB_IDENTITY_CONTRACT_SET_TRANSITION_FILES - changed)!r}, "
+        f"unexpected={sorted(changed - WEB_IDENTITY_CONTRACT_SET_TRANSITION_FILES)!r})",
+    )
+    require(
+        repository_files(candidate_root) == repository_files(base_root),
+        "Web identity contract set repository file set drift",
+    )
+
+
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
@@ -6039,6 +6351,25 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_reviewed_web_source = candidate["publicMeckyReviewedWebSource"]
     base_citizen_adoption = tracer_citizen_adoption_enabled(base)
     candidate_citizen_adoption = tracer_citizen_adoption_enabled(candidate)
+    # A few focused transition-unit snapshots intentionally contain only the
+    # fields relevant to their own historical transition. Treat the new field
+    # as absent for those closed synthetic snapshots.
+    base_identity_contract_set = base.get("webIdentityContractSet")
+    candidate_identity_contract_set = candidate.get("webIdentityContractSet")
+
+    require(
+        not (
+            base_identity_contract_set is not None
+            and candidate_identity_contract_set is None
+        ),
+        "Web identity contract set cannot regress",
+    )
+    if (
+        candidate_identity_contract_set is not None
+        and base_identity_contract_set is None
+    ):
+        verify_web_identity_contract_set_transition(candidate, base)
+        return
 
     require(
         not (base_citizen_adoption and not candidate_citizen_adoption),
