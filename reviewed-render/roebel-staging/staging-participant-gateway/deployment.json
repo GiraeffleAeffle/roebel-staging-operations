@@ -157,11 +157,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "b81f273c8de5e825b60468df302f0e2057f51e2e"
+                "value": "4c44ae3df1e37161156098899ccf192cd0bbe370"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:e8ba5a0dfce7340575abcd7e06e10f8153343571776b29f6ab3f54467ec80391"
+                "value": "sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -190,9 +190,47 @@
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TOPIC_POLICY_VERSION",
                 "value": "staging-participant-topic-v1"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_POLICY_VERSION",
+                "value": "roebel-citizen-nft-v2-staging-2026-09"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_KEY_ID",
+                "value": "roebel-staging-citizen-eligibility-2026-09"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PUBLIC_KEY",
+                "value": "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_ELIGIBILITY_ISSUER_PRIVATE_KEY_HEX",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "private-key-hex",
+                    "name": "roebel-staging-participant-gateway-eligibility-issuer",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_ADDRESS",
+                "value": "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_NFT_RUNTIME_CODE_HASH",
+                "value": "0x952276d2d6da4bfe3ed3dbc39f6745f2421b01ad476c286cb7a6fa166c7e4218"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_MIGRATION_SHA256",
+                "value": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
+                "value": "sha256:79fea3feb09029e6138c7675fa0b877c3367390bec012b07e052c55103de7c9c"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:e8ba5a0dfce7340575abcd7e06e10f8153343571776b29f6ab3f54467ec80391",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d",
             "imagePullPolicy": "IfNotPresent",
             "name": "staging-participant-gateway",
             "ports": [
@@ -204,11 +242,13 @@
             ],
             "readinessProbe": {
               "failureThreshold": 3,
+              "httpGet": {
+                "path": "/status",
+                "port": "http",
+                "scheme": "HTTP"
+              },
               "periodSeconds": 10,
               "successThreshold": 1,
-              "tcpSocket": {
-                "port": "http"
-              },
               "timeoutSeconds": 3
             },
             "livenessProbe": {
