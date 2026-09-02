@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "roebel_staging_participant_gateway_activation_policy_v4",
+  "schemaVersion": "roebel_staging_participant_gateway_activation_policy_v5",
   "activationReady": true,
   "authority": {
     "environment": "staging",
@@ -33,14 +33,15 @@
     }
   },
   "productPins": {
-    "sourceRevision": "9a1bda15a67d36ef87ec674958a1b2b7ce3ea840",
-    "sourceTreeSha256": "sha256:c5a80f3485991f4f4aa284efd088e4cb59b61a96a147c7ac49033bf19fe29dd3",
+    "sourceRevision": "4c44ae3df1e37161156098899ccf192cd0bbe370",
+    "sourceTreeSha256": "sha256:39d864578c107d2ddc45fa9db988b402af7bae55f8c43627130782b6a18ec81f",
     "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
     "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-    "imageManifestDigest": "sha256:6b346472d4c64f0a577257f9585416c2bcbbc722750a8efcab4137ee4e1fc21e",
+    "imageManifestDigest": "sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d",
     "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
-    "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+    "workflowSha256": "sha256:62a116189567ab5fe44ddab19ff88b9358ebb7de97fb6e419dea7c68a9bff134",
     "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
+    "publicationReceiptSchemaVersion": "roebel_staging_publication_receipt_v3",
     "migration": {
       "path": "supabase/migrations/20260825_staging_participant_gateway.sql",
       "sha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab"
@@ -51,6 +52,11 @@
       "sha256": "sha256:739cbcb189e3b12913ebf28dae74c931eab3cfae514e476bea4071092aef242e"
     },
     "topicTracerDatabaseSchemaSha256": "sha256:298ef4a02f5f299afd157210a1074f179b08478c683bad3ed36430eb013854eb",
+    "citizenAdoptionMigration": {
+      "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
+      "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d"
+    },
+    "citizenAdoptionDatabaseSchemaSha256": "sha256:79fea3feb09029e6138c7675fa0b877c3367390bec012b07e052c55103de7c9c",
     "deactivation": {
       "path": "supabase/staging_participant_gateway_deactivate.sql",
       "sha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5"
@@ -96,6 +102,17 @@
   "httpBoundary": {
     "host": "roebel-web.staging.agentcart.eu",
     "prefix": "/api/staging-participant/v1",
+    "additionalIngressPrefixes": [
+      "/api/civic/v1/eligibility/status"
+    ],
+    "dynamicGetPrefixes": [
+      "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
+      "/api/civic/v1/eligibility/status/"
+    ],
+    "routeProbeSamples": [
+      "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+      "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
+    ],
     "routes": [
       {
         "path": "/api/staging-participant/v1/status",
@@ -148,6 +165,27 @@
       },
       {
         "path": "/api/staging-participant/v1/sign-topic-suggestion",
+        "methods": [
+          "POST",
+          "OPTIONS"
+        ]
+      },
+      {
+        "path": "/api/staging-participant/v1/citizen-adoption/challenge",
+        "methods": [
+          "POST",
+          "OPTIONS"
+        ]
+      },
+      {
+        "path": "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "methods": [
+          "POST",
+          "OPTIONS"
+        ]
+      },
+      {
+        "path": "/api/staging-participant/v1/citizen-adoption/adoptions",
         "methods": [
           "POST",
           "OPTIONS"
@@ -210,6 +248,24 @@
         "status": 204
       },
       {
+        "case": "preflight",
+        "method": "OPTIONS",
+        "path": "/api/staging-participant/v1/citizen-adoption/challenge",
+        "status": 204
+      },
+      {
+        "case": "preflight",
+        "method": "OPTIONS",
+        "path": "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "status": 204
+      },
+      {
+        "case": "preflight",
+        "method": "OPTIONS",
+        "path": "/api/staging-participant/v1/citizen-adoption/adoptions",
+        "status": 204
+      },
+      {
         "case": "unauthenticated-post",
         "method": "POST",
         "path": "/api/staging-participant/v1/challenge",
@@ -249,6 +305,24 @@
         "case": "unauthenticated-post",
         "method": "POST",
         "path": "/api/staging-participant/v1/sign-topic-suggestion",
+        "status": 401
+      },
+      {
+        "case": "unauthenticated-post",
+        "method": "POST",
+        "path": "/api/staging-participant/v1/citizen-adoption/challenge",
+        "status": 401
+      },
+      {
+        "case": "unauthenticated-post",
+        "method": "POST",
+        "path": "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "status": 401
+      },
+      {
+        "case": "unauthenticated-post",
+        "method": "POST",
+        "path": "/api/staging-participant/v1/citizen-adoption/adoptions",
         "status": 401
       },
       {
@@ -297,6 +371,36 @@
         "case": "method-denied",
         "method": "GET",
         "path": "/api/staging-participant/v1/sign-topic-suggestion",
+        "status": 405
+      },
+      {
+        "case": "method-denied",
+        "method": "GET",
+        "path": "/api/staging-participant/v1/citizen-adoption/challenge",
+        "status": 405
+      },
+      {
+        "case": "method-denied",
+        "method": "GET",
+        "path": "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "status": 405
+      },
+      {
+        "case": "method-denied",
+        "method": "GET",
+        "path": "/api/staging-participant/v1/citizen-adoption/adoptions",
+        "status": 405
+      },
+      {
+        "case": "method-denied",
+        "method": "POST",
+        "path": "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+        "status": 405
+      },
+      {
+        "case": "method-denied",
+        "method": "POST",
+        "path": "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222",
         "status": 405
       },
       {
@@ -340,6 +444,30 @@
         "method": "POST",
         "path": "/api/staging-participant/v1/challenge",
         "status": 403
+      },
+      {
+        "case": "wrong-origin",
+        "method": "POST",
+        "path": "/api/staging-participant/v1/citizen-adoption/challenge",
+        "status": 403
+      },
+      {
+        "case": "public-adoption-absent",
+        "method": "GET",
+        "path": "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+        "status": 404
+      },
+      {
+        "case": "public-adoption-malformed",
+        "method": "GET",
+        "path": "/api/staging-participant/v1/citizen-adoption/by-suggestion/invalid",
+        "status": 404
+      },
+      {
+        "case": "eligibility-status-reserved",
+        "method": "GET",
+        "path": "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222",
+        "status": 503
       }
     ],
     "haproxyRateLimit": {
@@ -370,6 +498,34 @@
       "municipalityId": "roebel-mueritz",
       "sourceConversationTopic": "roebel-app-conversation",
       "policyVersion": "staging-participant-topic-v1"
+    },
+    "citizenAdoption": {
+      "municipalityId": "roebel-mueritz",
+      "policyVersion": "roebel-citizen-nft-v2-staging-2026-09",
+      "issuer": "roebel-staging-citizen-verifier",
+      "authorityBinding": "civic_eligibility_only",
+      "entryState": "case_steward_review_required",
+      "submittedToCivicWorkflow": false,
+      "administrativeEndorsement": false,
+      "bindingVote": false,
+      "councilDecision": false,
+      "treasuryEffect": false,
+      "paymentEffect": false,
+      "eligibilityIssuer": {
+        "keyId": "roebel-staging-citizen-eligibility-2026-09",
+        "publicKey": "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8",
+        "privateKeySha256Commitment": "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc",
+        "secret": {
+          "name": "roebel-staging-participant-gateway-eligibility-issuer",
+          "namespace": "stadtstack-roebel-web-preview",
+          "key": "private-key-hex"
+        }
+      },
+      "citizenNft": {
+        "chainId": 100,
+        "address": "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5",
+        "runtimeCodeHash": "0x952276d2d6da4bfe3ed3dbc39f6745f2421b01ad476c286cb7a6fa166c7e4218"
+      }
     },
     "secretReferences": {
       "config": {

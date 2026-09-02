@@ -532,11 +532,16 @@
       "/api/staging-participant/v1/comments",
       "/api/staging-participant/v1/nostr-post",
       "/api/staging-participant/v1/promote-source-post",
-      "/api/staging-participant/v1/sign-topic-suggestion"
+      "/api/staging-participant/v1/sign-topic-suggestion",
+      "/api/staging-participant/v1/citizen-adoption/challenge",
+      "/api/staging-participant/v1/citizen-adoption/eligibility",
+      "/api/staging-participant/v1/citizen-adoption/adoptions"
     ],
     "methodPathMatrix": {
       "GET": [
-        "/api/staging-participant/v1/status"
+        "/api/staging-participant/v1/status",
+        "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+        "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
       ],
       "OPTIONS": [
         "/api/staging-participant/v1/status",
@@ -546,7 +551,10 @@
         "/api/staging-participant/v1/comments",
         "/api/staging-participant/v1/nostr-post",
         "/api/staging-participant/v1/promote-source-post",
-        "/api/staging-participant/v1/sign-topic-suggestion"
+        "/api/staging-participant/v1/sign-topic-suggestion",
+        "/api/staging-participant/v1/citizen-adoption/challenge",
+        "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "/api/staging-participant/v1/citizen-adoption/adoptions"
       ],
       "POST": [
         "/api/staging-participant/v1/challenge",
@@ -555,7 +563,10 @@
         "/api/staging-participant/v1/comments",
         "/api/staging-participant/v1/nostr-post",
         "/api/staging-participant/v1/promote-source-post",
-        "/api/staging-participant/v1/sign-topic-suggestion"
+        "/api/staging-participant/v1/sign-topic-suggestion",
+        "/api/staging-participant/v1/citizen-adoption/challenge",
+        "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "/api/staging-participant/v1/citizen-adoption/adoptions"
       ]
     },
     "normalReleaseSetPromotionMayChange": false,
@@ -587,10 +598,18 @@
     },
     "renderRoot": "reviewed-render/roebel-staging/staging-participant-gateway",
     "runtimePin": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
-    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v4",
     "singleReplicaRequired": true,
     "trustedLiveFacts": "protected-local-runner-out-of-band-only",
-    "workbenchIngressRenderRoot": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress"
+    "workbenchIngressRenderRoot": "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress",
+    "dynamicGetPrefixes": [
+      "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
+      "/api/civic/v1/eligibility/status/"
+    ],
+    "routeProbeSamples": [
+      "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+      "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
+    ]
   },
   "workbenchBaselineBoundary": {
     "adoption": "one-time-existing-uid-and-exact-digest-only",

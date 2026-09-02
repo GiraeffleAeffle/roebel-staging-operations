@@ -15,7 +15,10 @@
         "/api/staging-participant/v1/comments",
         "/api/staging-participant/v1/nostr-post",
         "/api/staging-participant/v1/promote-source-post",
-        "/api/staging-participant/v1/sign-topic-suggestion"
+        "/api/staging-participant/v1/sign-topic-suggestion",
+        "/api/staging-participant/v1/citizen-adoption/challenge",
+        "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "/api/staging-participant/v1/citizen-adoption/adoptions"
       ],
       "exactPostPaths": [
         "/api/staging-participant/v1/challenge",
@@ -24,11 +27,16 @@
         "/api/staging-participant/v1/comments",
         "/api/staging-participant/v1/nostr-post",
         "/api/staging-participant/v1/promote-source-post",
-        "/api/staging-participant/v1/sign-topic-suggestion"
+        "/api/staging-participant/v1/sign-topic-suggestion",
+        "/api/staging-participant/v1/citizen-adoption/challenge",
+        "/api/staging-participant/v1/citizen-adoption/eligibility",
+        "/api/staging-participant/v1/citizen-adoption/adoptions"
       ],
       "gatewayMethodPathMatrix": {
         "GET": [
-          "/api/staging-participant/v1/status"
+          "/api/staging-participant/v1/status",
+          "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+          "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
         ],
         "OPTIONS": [
           "/api/staging-participant/v1/status",
@@ -38,7 +46,10 @@
           "/api/staging-participant/v1/comments",
           "/api/staging-participant/v1/nostr-post",
           "/api/staging-participant/v1/promote-source-post",
-          "/api/staging-participant/v1/sign-topic-suggestion"
+          "/api/staging-participant/v1/sign-topic-suggestion",
+          "/api/staging-participant/v1/citizen-adoption/challenge",
+          "/api/staging-participant/v1/citizen-adoption/eligibility",
+          "/api/staging-participant/v1/citizen-adoption/adoptions"
         ],
         "POST": [
           "/api/staging-participant/v1/challenge",
@@ -47,7 +58,10 @@
           "/api/staging-participant/v1/comments",
           "/api/staging-participant/v1/nostr-post",
           "/api/staging-participant/v1/promote-source-post",
-          "/api/staging-participant/v1/sign-topic-suggestion"
+          "/api/staging-participant/v1/sign-topic-suggestion",
+          "/api/staging-participant/v1/citizen-adoption/challenge",
+          "/api/staging-participant/v1/citizen-adoption/eligibility",
+          "/api/staging-participant/v1/citizen-adoption/adoptions"
         ]
       },
       "rateLimit": {
@@ -59,7 +73,15 @@
         "kind": "Ingress",
         "name": "roebel-staging-participant-gateway",
         "namespace": "stadtstack-roebel-web-preview"
-      }
+      },
+      "dynamicGetPrefixes": [
+        "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
+        "/api/civic/v1/eligibility/status/"
+      ],
+      "routeProbeSamples": [
+        "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
+        "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
+      ]
     },
     "participantGateway": {
       "namespace": "stadtstack-roebel-web-preview",
@@ -247,7 +269,7 @@
       "kind": "Deployment",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:77ed638dc8b3157f9ac32787345bb6c0e0e331b190ede2c5f8ba7b199393f79f"
+      "sha256": "sha256:f6ab4b24797c11627cd0de10b083cb122c37dc4591fad4a34e52c905fb78dade"
     },
     {
       "kind": "Service",
@@ -265,7 +287,7 @@
       "kind": "Ingress",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:a44b3b121b1cfe2d56ccac7a6fdc1791654ca1e4c0a3a0b5a854ab7dd52f31ab"
+      "sha256": "sha256:f29280c163845c77fadc65387873dcfecd75ebb6b5bdff5f3d5c4a9d8622038e"
     },
     {
       "kind": "NetworkPolicy",

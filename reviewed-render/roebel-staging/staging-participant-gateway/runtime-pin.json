@@ -1,13 +1,13 @@
 {
-  "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v3",
+  "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v4",
   "component": "staging-participant-gateway",
-  "sourceRevision": "b81f273c8de5e825b60468df302f0e2057f51e2e",
-  "sourceTreeSha256": "sha256:3b49a62498d560da36d0cb67121a1622260fb5690a51123e74c3c88712720974",
+  "sourceRevision": "4c44ae3df1e37161156098899ccf192cd0bbe370",
+  "sourceTreeSha256": "sha256:39d864578c107d2ddc45fa9db988b402af7bae55f8c43627130782b6a18ec81f",
   "sourceTreeHashSemantics": "sha256-of-git-ls-tree-rz-full-tree-raw-bytes",
   "imageRepository": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway",
-  "manifestDigest": "sha256:e8ba5a0dfce7340575abcd7e06e10f8153343571776b29f6ab3f54467ec80391",
+  "manifestDigest": "sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d",
   "workflowIdentity": "https://github.com/GiraeffleAeffle/Roebel-App/.github/workflows/staging-participant-gateway-publish.yml@refs/heads/main",
-  "workflowSha256": "sha256:a0c55933682bd94cb29630c83d6f7168ea19e9eba66a40d8132e8a91823c96c5",
+  "workflowSha256": "sha256:62a116189567ab5fe44ddab19ff88b9358ebb7de97fb6e419dea7c68a9bff134",
   "workflowHashSemantics": "sha256-of-raw-git-blob-bytes-at-source-revision",
   "migrationSha256": "sha256:ad050047a71bf2cc82361c16169627dc0a0a66a7982db804b1612624f0f97eab",
   "databaseSchemaSha256": "sha256:a540591c718d4b2c74f56fe7310baf5b522ac6541384223a5263079e207f3d5d",
@@ -17,5 +17,36 @@
   "sourceConversationTopic": "roebel-app-conversation",
   "topicPolicyVersion": "staging-participant-topic-v1",
   "deactivationSha256": "sha256:777926a55e3f3b57f515d774d03999a646ddca07a06ec98d0202733276f6fdd5",
-  "activationPolicySha256": "sha256:088e661c2c2e847d310cab42daf09e3ee3c7755db38a11fdb6726d695255c567"
+  "activationPolicySha256": "sha256:22b31fe18ed01b49b9652322b449d49376e4c295509fe83239bd5f2db733e967",
+  "publicationReceiptSchemaVersion": "roebel_staging_publication_receipt_v3",
+  "citizenAdoptionMigrationSha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d",
+  "citizenAdoptionDatabaseSchemaSha256": "sha256:79fea3feb09029e6138c7675fa0b877c3367390bec012b07e052c55103de7c9c",
+  "citizenAdoption": {
+    "municipalityId": "roebel-mueritz",
+    "policyVersion": "roebel-citizen-nft-v2-staging-2026-09",
+    "issuer": "roebel-staging-citizen-verifier",
+    "authorityBinding": "civic_eligibility_only",
+    "entryState": "case_steward_review_required",
+    "submittedToCivicWorkflow": false,
+    "administrativeEndorsement": false,
+    "bindingVote": false,
+    "councilDecision": false,
+    "treasuryEffect": false,
+    "paymentEffect": false,
+    "eligibilityIssuer": {
+      "keyId": "roebel-staging-citizen-eligibility-2026-09",
+      "publicKey": "376c539caae987f6b764aa1c74ba52869058fab421495459a8e6e8274d6270a8",
+      "privateKeySha256Commitment": "sha256:416aa283ad44c8b58915f0a855f33af3289ffc844baf32b89dd1d94e2c917dbc",
+      "secret": {
+        "name": "roebel-staging-participant-gateway-eligibility-issuer",
+        "namespace": "stadtstack-roebel-web-preview",
+        "key": "private-key-hex"
+      }
+    },
+    "citizenNft": {
+      "chainId": 100,
+      "address": "0x59aa26f499d7c2b3ec2c8524ed06f54fc4e85de5",
+      "runtimeCodeHash": "0x952276d2d6da4bfe3ed3dbc39f6745f2421b01ad476c286cb7a6fa166c7e4218"
+    }
+  }
 }
