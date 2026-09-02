@@ -3032,7 +3032,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             "roebel-staging-citizen-eligibility-2026-09",
         )
 
-    def test_exact_web_identity_contract_set_transition_is_accepted(self) -> None:
+    def test_web_identity_contract_set_cannot_transition_without_gateway_and_migration(self) -> None:
         base_temp = tempfile.TemporaryDirectory()
         self.addCleanup(base_temp.cleanup)
         base = Path(base_temp.name) / "base"
@@ -3050,18 +3050,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
         self.activate_web_identity_contract_set(candidate)
-        result = VERIFIER.verify(candidate, base)
-        self.assertTrue(result["baseTransitionVerified"])
-        for relative in sorted(VERIFIER.PARTICIPANT_GATEWAY_FILES):
-            self.assertEqual(
-                (candidate / relative).read_bytes(),
-                (base / relative).read_bytes(),
-                relative,
-            )
-        self.assertEqual(
-            (candidate / VERIFIER.RENDER_ROOT / "web/networkpolicy.json").read_bytes(),
-            (base / VERIFIER.RENDER_ROOT / "web/networkpolicy.json").read_bytes(),
-        )
+        with self.assertRaisesRegex(
+            VERIFIER.VerificationError,
+            "must transition Web, gateway, and migration atomically",
+        ):
+            VERIFIER.verify(candidate, base)
 
     def test_web_identity_contract_set_cannot_roll_the_old_image(self) -> None:
         base_temp = tempfile.TemporaryDirectory()
@@ -3083,7 +3076,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.activate_web_identity_contract_set(candidate, promote=False)
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
-            "requires a new Web release",
+            "must transition Web, gateway, and migration atomically",
         ):
             VERIFIER.verify(candidate, base)
 
@@ -3182,7 +3175,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         runtime_pin.write_text(runtime_pin.read_text() + "\n")
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
-            "changed participant gateway bytes",
+            "must transition Web, gateway, and migration atomically",
         ):
             VERIFIER.verify(candidate, base)
 

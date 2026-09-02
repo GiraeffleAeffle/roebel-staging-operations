@@ -578,6 +578,88 @@ WEB_IDENTITY_CONTRACT_SET_TRANSITION_FILES = {
     f"{RENDER_ROOT}/public-mecky/deployment.json",
     f"{RENDER_ROOT}/web/deployment.json",
 }
+SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH = str(
+    TRACER_DATA_PLANE.RENDER_ROOT
+    / "bootstrap/76-staging-synthetic-citizen-adoption.sql"
+)
+SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH = (
+    f"{RENDER_ROOT}/synthetic-citizen-pass-transition.json"
+)
+SYNTHETIC_CITIZEN_PASS_POLICY_VERSION = (
+    "roebel-test-citizen-nft-v2-staging-2026-09"
+)
+SYNTHETIC_CITIZEN_PASS_SOURCE_REVISION = (
+    "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
+)
+SYNTHETIC_CITIZEN_PASS_GATEWAY_SOURCE_TREE_SHA256 = (
+    "sha256:827fea9741a90f9d2eede3bea2074687cd464ad496de33dac441dce7c2f84f15"
+)
+SYNTHETIC_CITIZEN_PASS_GATEWAY_MANIFEST_DIGEST = (
+    "sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2"
+)
+SYNTHETIC_CITIZEN_PASS_GATEWAY_WORKFLOW_SHA256 = (
+    "sha256:6c4c09517f53e18a301630cecb341f9996ba74eaa1dc1126ef735eb1c6460ac3"
+)
+SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256 = (
+    "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+)
+SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256 = (
+    "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66"
+)
+SYNTHETIC_CITIZEN_PASS_ENV = [
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION",
+        "value": "enabled",
+    },
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_POLICY_VERSION",
+        "value": SYNTHETIC_CITIZEN_PASS_POLICY_VERSION,
+    },
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_ADDRESS",
+        "value": "0x0be374808a567c9088ac8208b90a4239432b3220",
+    },
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_RUNTIME_CODE_KECCAK256",
+        "value": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb",
+    },
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256",
+        "value": SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256,
+    },
+    {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
+        "value": SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256,
+    },
+]
+SYNTHETIC_CITIZEN_PASS_ENV_NAMES = {
+    item["name"] for item in SYNTHETIC_CITIZEN_PASS_ENV
+}
+SYNTHETIC_CITIZEN_PASS_POST_ROUTES = (
+    "/api/staging-participant/v1/synthetic-citizen-adoption/challenge",
+    "/api/staging-participant/v1/synthetic-citizen-adoption/tracers",
+)
+SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX = (
+    "/api/staging-participant/v1/synthetic-citizen-adoption/by-suggestion/"
+)
+SYNTHETIC_CITIZEN_PASS_TRANSITION_FILES = {
+    "policy/repository-contract.json",
+    f"{RENDER_ROOT}/head.json",
+    f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/live-preconditions.json",
+    f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{RENDER_ROOT}/web/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/ingress.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+    SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+}
 PARTICIPANT_GATEWAY_CONFIG_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["config"]["name"]
 PARTICIPANT_GATEWAY_RUNTIME_SECRET = PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY["runtime"]["secretReferences"]["runtime"]["name"]
 PARTICIPANT_GATEWAY_FLUX_NAMESPACE = PARTICIPANT_POLICY.FLUX_NAMESPACE
@@ -639,6 +721,20 @@ CITIZEN_ADOPTION_SIGNED_NOSTR_EXPECTED_FILES = (
 )
 CITIZEN_ADOPTION_SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES = (
     SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES | {CITIZEN_ADOPTION_SQL_PATH}
+)
+SYNTHETIC_CITIZEN_PASS_EXPECTED_FILES = (
+    CITIZEN_ADOPTION_PARTICIPANT_GATEWAY_EXPECTED_FILES
+    | {
+        SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+        SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+    }
+)
+SYNTHETIC_CITIZEN_PASS_SIGNED_NOSTR_EXPECTED_FILES = (
+    CITIZEN_ADOPTION_SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES
+    | {
+        SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+        SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+    }
 )
 SIGNED_NOSTR_MUTABLE_EXISTING_FILES = {
     f"{RENDER_ROOT}/integrity.json",
@@ -898,6 +994,10 @@ def verify_repository_file_set(root: Path) -> str:
         return "signed-nostr"
     if actual == CITIZEN_ADOPTION_SIGNED_NOSTR_PARTICIPANT_GATEWAY_EXPECTED_FILES:
         return "signed-nostr-participant-gateway"
+    if actual == SYNTHETIC_CITIZEN_PASS_EXPECTED_FILES:
+        return "reviewed-public-knowledge-participant-gateway"
+    if actual == SYNTHETIC_CITIZEN_PASS_SIGNED_NOSTR_EXPECTED_FILES:
+        return "signed-nostr-participant-gateway"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -1137,7 +1237,7 @@ def participant_gateway_http_contract(
         "exactGatewayPaths": routes,
         "methodPathMatrix": {
             "GET": [routes[0]],
-            "OPTIONS": routes,
+            "OPTIONS": list(routes),
             "POST": post_routes,
         },
         "schemaVersion": (
@@ -1153,6 +1253,35 @@ def participant_gateway_http_contract(
             PARTICIPANT_POLICY.PUBLIC_GET_ROUTES
         )
     return result
+
+
+def synthetic_citizen_pass_boundary() -> dict[str, Any]:
+    """Return the closed, staging-only capability that cannot enter ADR-0023."""
+    return {
+        "schemaVersion": "roebel_staging_synthetic_citizen_pass_boundary_v1",
+        "environment": "staging",
+        "testOnly": True,
+        "authorityBinding": "none",
+        "policyVersion": SYNTHETIC_CITIZEN_PASS_POLICY_VERSION,
+        "testCitizenNft": {
+            "chainId": 100,
+            "address": "0x0be374808a567c9088ac8208b90a4239432b3220",
+            "runtimeCodeKeccak256": (
+                "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+            ),
+        },
+        "migrationSha256": SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256,
+        "databaseSchemaSha256": (
+            SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256
+        ),
+        "realCitizenEligibility": False,
+        "civicCaseCreated": False,
+        "administrativeEndorsement": False,
+        "bindingVote": False,
+        "treasuryEffect": False,
+        "paymentEffect": False,
+        "rollback": "restore-exact-predecessor-bytes-and-remove-76-artifact",
+    }
 
 
 def verify_participant_gateway_static_policy(root: Path, render_file_set: str) -> dict[str, Any]:
@@ -1189,12 +1318,33 @@ def verify_tracer_data_plane(root: Path) -> dict[str, Any]:
 
 def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str, Any]:
     issuer_policy = verify_eligibility_issuer_materialization_policy(root)
+    synthetic_citizen_pass = (root / SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH).is_file()
     tracer_artifacts = (
-        TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
-        if (root / CITIZEN_ADOPTION_SQL_PATH).is_file()
-        else TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
+        TRACER_DATA_PLANE.SYNTHETIC_PRODUCT_ARTIFACTS
+        if synthetic_citizen_pass
+        else (
+            TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+            if (root / CITIZEN_ADOPTION_SQL_PATH).is_file()
+            else TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
+        )
     )
     gateway_http = participant_gateway_http_contract(participant_policy)
+    if synthetic_citizen_pass:
+        gateway_http["schemaVersion"] = (
+            "roebel_staging_participant_gateway_runtime_pin_v5"
+        )
+        gateway_http["exactGatewayPaths"].extend(
+            SYNTHETIC_CITIZEN_PASS_POST_ROUTES
+        )
+        gateway_http["methodPathMatrix"]["OPTIONS"].extend(
+            SYNTHETIC_CITIZEN_PASS_POST_ROUTES
+        )
+        gateway_http["methodPathMatrix"]["POST"].extend(
+            SYNTHETIC_CITIZEN_PASS_POST_ROUTES
+        )
+        gateway_http.setdefault("dynamicGetPrefixes", []).append(
+            SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX
+        )
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -1329,6 +1479,11 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
             "schemaVersion": gateway_http["schemaVersion"],
+            **(
+                {"syntheticCitizenAdoption": synthetic_citizen_pass_boundary()}
+                if synthetic_citizen_pass
+                else {}
+            ),
             "singleReplicaRequired": True,
             "trustedLiveFacts": "protected-local-runner-out-of-band-only",
             "workbenchIngressRenderRoot": PARTICIPANT_POLICY.WORKBENCH_INGRESS_ROOT,
@@ -4644,6 +4799,15 @@ def verify_participant_gateway_runtime_pin(
     value: Any,
     participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if (
+        isinstance(value, dict)
+        and value.get("schemaVersion")
+        == "roebel_staging_participant_gateway_runtime_pin_v5"
+    ):
+        return validate_synthetic_citizen_pass_gateway_runtime_pin(
+            value,
+            participant_policy,
+        )
     try:
         activation_pin = PARTICIPANT_POLICY.expected_runtime_pin(participant_policy)
     except PARTICIPANT_POLICY.PolicyError as error:
@@ -4654,6 +4818,84 @@ def verify_participant_gateway_runtime_pin(
         "staging participant gateway runtime pin drift",
     )
     require("activationEvidence" not in value, "participant runtime pin may not carry live activation evidence")
+    return copy.deepcopy(value)
+
+
+def expected_synthetic_citizen_pass_gateway_runtime_pin(
+    release: dict[str, Any],
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Deepen the v4 real verifier with one incompatible synthetic capability."""
+    effective_policy = (
+        PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY
+        if participant_policy is None
+        else participant_policy
+    )
+    require(
+        effective_policy == PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        "synthetic citizen pass requires the protected v4 gateway predecessor",
+    )
+    release = closed(
+        release,
+        {"sourceRevision", "sourceTreeSha256", "workflowSha256", "manifestDigest"},
+        "synthetic participant gateway release",
+    )
+    require(
+        isinstance(release["sourceRevision"], str)
+        and REVISION.fullmatch(release["sourceRevision"]),
+        "synthetic participant gateway source revision invalid",
+    )
+    for field in ("sourceTreeSha256", "workflowSha256", "manifestDigest"):
+        require(
+            isinstance(release[field], str) and SHA256.fullmatch(release[field]),
+            f"synthetic participant gateway {field} invalid",
+        )
+    require(
+        release
+        == {
+            "sourceRevision": SYNTHETIC_CITIZEN_PASS_SOURCE_REVISION,
+            "sourceTreeSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_SOURCE_TREE_SHA256,
+            "workflowSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_WORKFLOW_SHA256,
+            "manifestDigest": SYNTHETIC_CITIZEN_PASS_GATEWAY_MANIFEST_DIGEST,
+        },
+        "synthetic participant gateway protected publication binding invalid",
+    )
+    value = copy.deepcopy(PARTICIPANT_POLICY.expected_runtime_pin(effective_policy))
+    value["schemaVersion"] = "roebel_staging_participant_gateway_runtime_pin_v5"
+    value["sourceRevision"] = release["sourceRevision"]
+    value["sourceTreeSha256"] = release["sourceTreeSha256"]
+    value["workflowSha256"] = release["workflowSha256"]
+    value["manifestDigest"] = release["manifestDigest"]
+    value["syntheticCitizenAdoptionMigrationSha256"] = (
+        SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256
+    )
+    value["syntheticCitizenAdoptionDatabaseSchemaSha256"] = (
+        SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256
+    )
+    value["syntheticCitizenAdoption"] = synthetic_citizen_pass_boundary()
+    return value
+
+
+def validate_synthetic_citizen_pass_gateway_runtime_pin(
+    value: Any,
+    participant_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Reject every v5 byte not derived from the exact v4 predecessor."""
+    require(isinstance(value, dict), "synthetic participant gateway pin invalid")
+    release = {
+        field: value.get(field)
+        for field in (
+            "sourceRevision",
+            "sourceTreeSha256",
+            "workflowSha256",
+            "manifestDigest",
+        )
+    }
+    expected = expected_synthetic_citizen_pass_gateway_runtime_pin(
+        release,
+        participant_policy,
+    )
+    require(value == expected, "synthetic participant gateway runtime pin drift")
     return copy.deepcopy(value)
 
 
@@ -4736,6 +4978,52 @@ def expected_participant_gateway_ingress(
         raise VerificationError(str(error)) from error
 
 
+def synthetic_gateway_early_allowlist() -> str:
+    exact_paths = [
+        *PARTICIPANT_POLICY.ROUTES,
+        *SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+    ]
+    post_paths = [
+        *PARTICIPANT_POLICY.POST_ROUTES,
+        *SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+    ]
+    dynamic_get_prefixes = [
+        *PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES,
+        SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX,
+    ]
+    return "\n".join([
+        "http-request deny deny_status 404 if "
+        + " ".join([
+            *(f"!{{ path {path} }}" for path in exact_paths),
+            *(f"!{{ path_beg {prefix} }}" for prefix in dynamic_get_prefixes),
+        ]),
+        "http-request deny deny_status 405 if { method POST } "
+        + " ".join(f"!{{ path {path} }}" for path in post_paths),
+        "http-request deny deny_status 405 if { method OPTIONS } "
+        + " ".join(f"!{{ path {path} }}" for path in exact_paths),
+        "http-request deny deny_status 405 if { method HEAD }",
+        "http-request deny deny_status 405 if { method GET } "
+        + " ".join([
+            f"!{{ path {exact_paths[0]} }}",
+            *(f"!{{ path_beg {prefix} }}" for prefix in dynamic_get_prefixes),
+        ]),
+        "http-request deny deny_status 405 unless { method GET HEAD POST OPTIONS }",
+        "stick-table type ip size 10k expire 60s store http_req_rate(1m)",
+        "http-request track-sc0 src",
+        "http-request deny deny_status 429 if { sc_http_req_rate(0) gt 30 }",
+    ])
+
+
+def expected_synthetic_citizen_pass_gateway_ingress() -> dict[str, Any]:
+    value = expected_participant_gateway_ingress(
+        PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+    )
+    value["metadata"]["annotations"][
+        "haproxy-ingress.github.io/config-backend-early"
+    ] = synthetic_gateway_early_allowlist()
+    return value
+
+
 def expected_participant_gateway_resources(
     runtime_pin: dict[str, Any],
     participant_policy: dict[str, Any] | None = None,
@@ -4752,8 +5040,17 @@ def expected_participant_gateway_resources(
         raise VerificationError(str(error)) from error
     activation_pin = expected["runtimePin"]
     release_pins = participant_gateway_runtime_release_pins(participant_policy)
+    synthetic_pin = (
+        runtime_pin.get("schemaVersion")
+        == "roebel_staging_participant_gateway_runtime_pin_v5"
+    )
+    if synthetic_pin:
+        validate_synthetic_citizen_pass_gateway_runtime_pin(
+            runtime_pin,
+            participant_policy,
+        )
     require(
-        runtime_pin in (activation_pin, *release_pins),
+        runtime_pin in (activation_pin, *release_pins) or synthetic_pin,
         "participant runtime pin differs from protected policy or approved runtime release",
     )
     if runtime_pin != activation_pin:
@@ -4768,6 +5065,14 @@ def expected_participant_gateway_resources(
         environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION"]["value"] = runtime_pin["sourceRevision"]
         environment["ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST"]["value"] = runtime_pin["manifestDigest"]
         container["image"] = runtime_pin["imageRepository"] + "@" + runtime_pin["manifestDigest"]
+        if synthetic_pin:
+            present = SYNTHETIC_CITIZEN_PASS_ENV_NAMES & set(environment)
+            require(
+                not present,
+                "synthetic participant gateway predecessor environment is partial",
+            )
+            container["env"].extend(copy.deepcopy(SYNTHETIC_CITIZEN_PASS_ENV))
+            expected["ingress"] = expected_synthetic_citizen_pass_gateway_ingress()
     return {
         "deployment": expected["deployment"],
         "service": expected["service"],
@@ -5947,6 +6252,10 @@ def tracer_citizen_adoption_enabled(snapshot: dict[str, Any]) -> bool:
         {"path": path, "sha256": digest}
         for _filename, path, digest in TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
     ]
+    expected_synthetic = [
+        {"path": path, "sha256": digest}
+        for _filename, path, digest in TRACER_DATA_PLANE.SYNTHETIC_PRODUCT_ARTIFACTS
+    ]
     state = (
         tracer.get("productSourceRevision"),
         tracer.get("productArtifacts"),
@@ -5961,7 +6270,35 @@ def tracer_citizen_adoption_enabled(snapshot: dict[str, Any]) -> bool:
         expected_successor,
     ):
         return True
+    if (
+        isinstance(state[0], str)
+        and REVISION.fullmatch(state[0])
+        and state[1] == expected_synthetic
+    ):
+        return True
     raise VerificationError("tracer citizen-adoption state drift")
+
+
+def tracer_synthetic_citizen_pass_enabled(snapshot: dict[str, Any]) -> bool:
+    tracer = snapshot["tracerDataPlane"]
+    expected = [
+        {"path": path, "sha256": digest}
+        for _filename, path, digest in TRACER_DATA_PLANE.SYNTHETIC_PRODUCT_ARTIFACTS
+    ]
+    return (
+        isinstance(tracer.get("productSourceRevision"), str)
+        and REVISION.fullmatch(tracer["productSourceRevision"]) is not None
+        and tracer.get("productArtifacts") == expected
+    )
+
+
+def gateway_synthetic_citizen_pass_enabled(snapshot: dict[str, Any]) -> bool:
+    gateway = snapshot.get("stagingParticipantGateway")
+    return bool(
+        gateway
+        and gateway["runtimePin"].get("schemaVersion")
+        == "roebel_staging_participant_gateway_runtime_pin_v5"
+    )
 
 
 def verify_citizen_adoption_data_plane_transition(
@@ -6163,6 +6500,207 @@ def expected_web_identity_contract_set_deployment(
     return value
 
 
+def expected_synthetic_citizen_pass_transition_record(
+    candidate_root: Path,
+    base_root: Path,
+    source_revision: str,
+) -> dict[str, Any]:
+    added = {
+        SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+        SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+    }
+    existing = sorted(SYNTHETIC_CITIZEN_PASS_TRANSITION_FILES - added)
+    return {
+        "schemaVersion": "roebel_staging_synthetic_citizen_pass_transition_v1",
+        "environment": "staging",
+        "testOnly": True,
+        "authorityBinding": "none",
+        "sourceRevision": source_revision,
+        "capability": synthetic_citizen_pass_boundary(),
+        "forward": {
+            "atomicComponents": [
+                "roebel-web-staging",
+                "staging-participant-gateway",
+                "ephemeral-tracer-data-plane",
+            ],
+            "migrationPath": SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+        },
+        "rollback": {
+            "strategy": "restore-exact-predecessor-bytes-and-remove-added-files",
+            "restoreFiles": [
+                {
+                    "path": path,
+                    "predecessorSha256": bytes_digest((base_root / path).read_bytes()),
+                    "successorSha256": bytes_digest((candidate_root / path).read_bytes()),
+                }
+                for path in existing
+            ],
+            "removeFiles": [
+                SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+                SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+            ],
+        },
+    }
+
+
+def expected_release_deployment(
+    base_deployment: dict[str, Any],
+    successor_head: dict[str, Any],
+    component: str,
+) -> dict[str, Any]:
+    value = copy.deepcopy(base_deployment)
+    record = component_map(successor_head)[component]
+    value["metadata"]["annotations"]["stadtstack.io/source-revision"] = record[
+        "sourceRevision"
+    ]
+    value["metadata"]["annotations"]["stadtstack.io/release-set-sha256"] = (
+        successor_head["releaseSetDigest"]
+    )
+    value["spec"]["template"]["metadata"]["annotations"][
+        "stadtstack.io/source-revision"
+    ] = record["sourceRevision"]
+    container = value["spec"]["template"]["spec"]["containers"][0]
+    container["image"] = f"{COMPONENTS[component]['repository']}@{record['manifestDigest']}"
+    container["imagePullPolicy"] = "IfNotPresent"
+    return value
+
+
+def verify_synthetic_citizen_pass_transition(
+    candidate: dict[str, Any],
+    base: dict[str, Any],
+) -> None:
+    candidate_root: Path = candidate["root"]
+    base_root: Path = base["root"]
+    require(
+        candidate["renderFileSet"] == base["renderFileSet"]
+        and candidate["renderFileSet"]
+        in {
+            "reviewed-public-knowledge-participant-gateway",
+            "signed-nostr-participant-gateway",
+        },
+        "synthetic citizen pass render shape drift",
+    )
+    require(
+        base["webIdentityContractSet"] is None
+        and candidate["webIdentityContractSet"] == WEB_IDENTITY_CONTRACT_SET,
+        "synthetic citizen pass Web selector drift",
+    )
+    require(candidate["head"] != base["head"], "synthetic citizen pass requires a release")
+    base_components = component_map(base["head"])
+    candidate_components = component_map(candidate["head"])
+    require(
+        candidate_components["roebel-web-staging"]
+        != base_components["roebel-web-staging"]
+        and candidate_components["roebel-web-staging"]["sourceRevision"]
+        == candidate["head"]["promotionRevision"],
+        "synthetic citizen pass requires the promoted Web component",
+    )
+    expected_public = expected_release_deployment(
+        base["deployments"]["public-mecky"],
+        candidate["head"],
+        "public-mecky",
+    )
+    require(
+        candidate["deployments"]["public-mecky"] == expected_public,
+        "synthetic citizen pass Public Mecky release drift",
+    )
+    require(
+        candidate["deployments"]["roebel-web-staging"]
+        == expected_web_identity_contract_set_deployment(
+            base["deployments"]["roebel-web-staging"],
+            candidate["head"],
+        ),
+        "synthetic citizen pass Web release drift",
+    )
+    require(
+        candidate["stagingParticipantGatewayPolicy"]
+        == base["stagingParticipantGatewayPolicy"]
+        == PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        "synthetic citizen pass changed the real gateway policy",
+    )
+    base_gateway = base["stagingParticipantGateway"]
+    candidate_gateway = candidate["stagingParticipantGateway"]
+    require(base_gateway is not None and candidate_gateway is not None, "synthetic citizen pass gateway missing")
+    require(
+        base_gateway["runtimePin"]
+        == PARTICIPANT_POLICY.expected_runtime_pin(
+            PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        ),
+        "synthetic citizen pass gateway predecessor drift",
+    )
+    release = {
+        "sourceRevision": candidate_gateway["runtimePin"]["sourceRevision"],
+        "sourceTreeSha256": candidate_gateway["runtimePin"]["sourceTreeSha256"],
+        "workflowSha256": candidate_gateway["runtimePin"]["workflowSha256"],
+        "manifestDigest": candidate_gateway["runtimePin"]["manifestDigest"],
+    }
+    require(
+        release["sourceRevision"] == candidate["head"]["promotionRevision"],
+        "synthetic citizen pass gateway source/release binding invalid",
+    )
+    require(
+        candidate_gateway["runtimePin"]
+        == expected_synthetic_citizen_pass_gateway_runtime_pin(
+            release,
+            candidate["stagingParticipantGatewayPolicy"],
+        ),
+        "synthetic citizen pass gateway pin drift",
+    )
+    try:
+        TRACER_DATA_PLANE.validate_synthetic_citizen_adoption_transition(
+            load_json(base_root / TRACER_DATA_PLANE.RENDER_ROOT / "runtime-pin.json"),
+            load_json(candidate_root / TRACER_DATA_PLANE.RENDER_ROOT / "runtime-pin.json"),
+            candidate["head"]["promotionRevision"],
+        )
+    except TRACER_DATA_PLANE.PolicyError as error:
+        raise VerificationError(str(error)) from error
+    for field, label in (
+        ("publicMeckyReviewedEgress", "Public Mecky egress"),
+        ("publicMeckyReviewedWebSource", "Public Mecky Web source"),
+        ("webTracerFeed", "Web tracer feed"),
+        ("signedNostr", "signed-Nostr render"),
+    ):
+        require(candidate[field] == base[field], f"synthetic citizen pass changed {label}")
+    require(
+        candidate_gateway["civicProjectionRoute"] == base_gateway["civicProjectionRoute"],
+        "synthetic citizen pass changed civic projection routing",
+    )
+    require(
+        changed_repository_files(candidate_root, base_root)
+        == SYNTHETIC_CITIZEN_PASS_TRANSITION_FILES,
+        "synthetic citizen pass changed file set drift",
+    )
+    require(
+        repository_files(candidate_root) - repository_files(base_root)
+        == {
+            SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+            SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+        },
+        "synthetic citizen pass added file set drift",
+    )
+    require(
+        load_json(candidate_root / SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH)
+        == expected_synthetic_citizen_pass_transition_record(
+            candidate_root,
+            base_root,
+            candidate["head"]["promotionRevision"],
+        ),
+        "synthetic citizen pass rollback record drift",
+    )
+    require(candidate["live"]["previous"] == base["head"], "synthetic citizen pass live CAS drift")
+    for index, component in enumerate(COMPONENT_ORDER):
+        base_container = next(
+            item
+            for item in base["deployments"][component]["spec"]["template"]["spec"]["containers"]
+            if item.get("name") == COMPONENTS[component]["container"]
+        )
+        require(
+            candidate["live"]["preconditions"][index]["currentImage"]
+            == base_container["image"],
+            f"synthetic citizen pass {component} live image CAS drift",
+        )
+
+
 def verify_web_identity_contract_set_transition(
     candidate: dict[str, Any],
     base: dict[str, Any],
@@ -6356,6 +6894,38 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     # as absent for those closed synthetic snapshots.
     base_identity_contract_set = base.get("webIdentityContractSet")
     candidate_identity_contract_set = candidate.get("webIdentityContractSet")
+    base_synthetic_state = (
+        base_identity_contract_set is not None,
+        tracer_synthetic_citizen_pass_enabled(base),
+        gateway_synthetic_citizen_pass_enabled(base),
+    )
+    candidate_synthetic_state = (
+        candidate_identity_contract_set is not None,
+        tracer_synthetic_citizen_pass_enabled(candidate),
+        gateway_synthetic_citizen_pass_enabled(candidate),
+    )
+    admitted_synthetic_states = {
+        (False, False, False),
+        (True, True, True),
+    }
+    require(
+        base_synthetic_state in admitted_synthetic_states
+        and candidate_synthetic_state in admitted_synthetic_states,
+        "synthetic citizen pass must transition Web, gateway, and migration atomically",
+    )
+    require(
+        not (
+            base_synthetic_state == (True, True, True)
+            and candidate_synthetic_state == (False, False, False)
+        ),
+        "synthetic citizen pass cannot regress without exact rollback admission",
+    )
+    if (
+        base_synthetic_state == (False, False, False)
+        and candidate_synthetic_state == (True, True, True)
+    ):
+        verify_synthetic_citizen_pass_transition(candidate, base)
+        return
 
     require(
         not (
