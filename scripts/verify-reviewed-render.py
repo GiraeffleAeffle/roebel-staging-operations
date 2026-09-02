@@ -81,6 +81,20 @@ ELIGIBILITY_ISSUER_MATERIALIZER_PATH = (
 ELIGIBILITY_ISSUER_MATERIALIZER_TEST_PATH = (
     "scripts/test_materialize_staging_participant_eligibility_issuer.py"
 )
+ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION = {
+    ELIGIBILITY_ISSUER_MATERIALIZER_PATH: {
+        "predecessorSha256": "sha256:2f0f147d169b11ecbc2b288416d83531c9de45907ff32460d1615e2d43d70ee1",
+        "successorSha256": "sha256:042f7ca54367cd1c92cd9ab4685fc2f20ef0af48ae8f7eec795f5fdf473bab44",
+    },
+    ELIGIBILITY_ISSUER_MATERIALIZER_TEST_PATH: {
+        "predecessorSha256": "sha256:471b834e8e7cbea2d04df3e07caec4b2508ae7b919d2a1defbea7059d3af046f",
+        "successorSha256": "sha256:09052236fc3d9d2419ef3141461e5743f7e89b274899a1a9d2ebdb13ffab2b7b",
+    },
+    "scripts/test_run_staging_participant_gateway_live.py": {
+        "predecessorSha256": "sha256:c27d8688f01fe0cb9e2c2407d2e1ddcd20f54494f7103c7d2737121e8a65887e",
+        "successorSha256": "sha256:fbba0df00287771040272ecc960dc4a43130d5cd7b49caeb3d53b6b3290225da",
+    },
+}
 CITIZEN_ADOPTION_SQL_PATH = str(
     TRACER_DATA_PLANE.RENDER_ROOT / "bootstrap/75-staging-citizen-adoption.sql"
 )
@@ -5968,6 +5982,45 @@ def verify_citizen_adoption_gateway_transition(
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
+    changed_files = changed_repository_files(candidate_root, base_root)
+    issuer_projection_files = set(
+        ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION
+    )
+    if changed_files & issuer_projection_files:
+        require(
+            changed_files == issuer_projection_files,
+            "eligibility issuer dry-run projection changed file set drift "
+            f"(missing={sorted(issuer_projection_files - changed_files)!r}, "
+            f"unexpected={sorted(changed_files - issuer_projection_files)!r})",
+        )
+        require(
+            repository_files(candidate_root) == repository_files(base_root),
+            "eligibility issuer dry-run projection repository file set drift",
+        )
+        candidate_snapshot = {
+            key: value for key, value in candidate.items() if key != "root"
+        }
+        base_snapshot = {
+            key: value for key, value in base.items() if key != "root"
+        }
+        require(
+            candidate_snapshot == base_snapshot,
+            "eligibility issuer dry-run projection render snapshot drift",
+        )
+        for relative, transition in sorted(
+            ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION.items()
+        ):
+            require(
+                bytes_digest((base_root / relative).read_bytes())
+                == transition["predecessorSha256"],
+                f"eligibility issuer dry-run projection predecessor byte drift: {relative}",
+            )
+            require(
+                bytes_digest((candidate_root / relative).read_bytes())
+                == transition["successorSha256"],
+                f"eligibility issuer dry-run projection successor byte drift: {relative}",
+            )
+        return
     base_participant_gateway = base["renderFileSet"] in {
         "reviewed-public-knowledge-participant-gateway", "signed-nostr-participant-gateway",
     }
