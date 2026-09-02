@@ -467,7 +467,13 @@ def exact_secret_annotations(
     }
 
 
-def _projection_template() -> str:
+def _projection_template(*, include_identity: bool) -> str:
+    identity = (
+        '{{.metadata.uid}}{{"\\n"}}'
+        '{{.metadata.resourceVersion}}{{"\\n"}}'
+        if include_identity
+        else '{{"\\n"}}{{"\\n"}}'
+    )
     labels = "".join(
         '{{index .metadata.labels "' + key + '"}}{{"\\n"}}'
         for key in sorted(SECRET_LABELS)
@@ -489,9 +495,8 @@ def _projection_template() -> str:
         '{{range $k,$v := .metadata.annotations}}{{$k}}{{"\\n"}}{{end}}'
     )
     return (
-        '{{.metadata.uid}}{{"\\n"}}'
-        '{{.metadata.resourceVersion}}{{"\\n"}}'
-        '{{.metadata.namespace}}{{"\\n"}}'
+        identity
+        + '{{.metadata.namespace}}{{"\\n"}}'
         '{{.metadata.name}}{{"\\n"}}'
         + labels
         + label_keys
@@ -807,7 +812,7 @@ def server_dry_run(
             "-",
             "--dry-run=server",
             "-o",
-            f"go-template={_projection_template()}",
+            f"go-template={_projection_template(include_identity=False)}",
         ],
         input_text=manifest,
         timeout=30,
@@ -845,7 +850,7 @@ def create_and_observe(
             "-f",
             "-",
             "-o",
-            f"go-template={_projection_template()}",
+            f"go-template={_projection_template(include_identity=True)}",
         ],
         input_text=manifest,
         timeout=30,

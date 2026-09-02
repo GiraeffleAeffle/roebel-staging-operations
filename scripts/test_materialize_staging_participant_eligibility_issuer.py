@@ -425,6 +425,48 @@ class EligibilityIssuerMaterializerTests(unittest.TestCase):
                 require_identity=True,
             )
 
+    def test_server_dry_run_renders_missing_identity_as_empty_fields(self) -> None:
+        """Match kubectl's Go-template behavior for server-generated metadata."""
+
+        class KubectlGoTemplateRunner(CreateRunner):
+            def run(self, command, *, input_text=None, timeout=10):
+                result = super().run(
+                    command, input_text=input_text, timeout=timeout
+                )
+                if "--dry-run=server" not in command:
+                    return result
+                template = next(
+                    value.removeprefix("go-template=")
+                    for value in command
+                    if value.startswith("go-template=")
+                )
+                if template.startswith('{{"\\n"}}{{"\\n"}}'):
+                    return result
+                lines = result.out.splitlines()
+                lines[:2] = [UID, "<no value>"]
+                return Result(out="\n".join(lines) + "\n")
+
+        seed = bytes.fromhex("11" * 32)
+        public_key = MODULE.ed25519_public_key(seed).hex()
+        runner = KubectlGoTemplateRunner()
+        MODULE.server_dry_run(
+            seed, public_key, NONCE, runner, str(Snapshot.path)
+        )
+
+        # Keep the parser strict: only the template may normalize missing fields.
+        with self.assertRaisesRegex(
+            MODULE.MaterializationError, "exact target projection mismatch"
+        ):
+            MODULE._parse_projection(
+                projection(live=False).replace(
+                    "\n\n", f"{UID}\n<no value>\n", 1
+                ),
+                public_key,
+                NONCE,
+                "server dry-run",
+                require_identity=False,
+            )
+
     def test_live_read_uses_exact_partial_object_metadata_http_only(self) -> None:
         policy = self.policy()
         sent: list[bytes] = []
@@ -498,7 +540,11 @@ class EligibilityIssuerMaterializerTests(unittest.TestCase):
         self.assertTrue(request.endswith("\r\n\r\n"))
         self.assertNotIn(MODULE.SECRET_KEY, request)
         self.assertNotIn("application/vnd.kubernetes", request.lower())
-        self.assertNotIn(".data", MODULE._projection_template())
+        for include_identity in (False, True):
+            self.assertNotIn(
+                ".data",
+                MODULE._projection_template(include_identity=include_identity),
+            )
 
         full_secret = partial_metadata()
         full_secret["data"] = {MODULE.SECRET_KEY: "forbidden-value"}
