@@ -1671,7 +1671,7 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         )
         self.assertEqual(
             MODULE.bytes_sha256((ROOT / MODULE.ELIGIBILITY_ISSUER_RUNNER).read_bytes()),
-            "sha256:2f0f147d169b11ecbc2b288416d83531c9de45907ff32460d1615e2d43d70ee1",
+            "sha256:042f7ca54367cd1c92cd9ab4685fc2f20ef0af48ae8f7eec795f5fdf473bab44",
         )
         self.assertIn(
             "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/75-staging-citizen-adoption.sql",
