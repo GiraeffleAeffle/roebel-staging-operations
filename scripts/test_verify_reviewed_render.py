@@ -892,12 +892,155 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(boundary)
         integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
 
+    def normalize_synthetic_citizen_pass_seed(self, destination: Path) -> None:
+        """Restore an ordinary v4 fixture from the admitted synthetic steady state."""
+        source = VERIFIER.verify_tree(destination)
+        synthetic_state = (
+            source["webIdentityContractSet"] is not None,
+            VERIFIER.tracer_synthetic_citizen_pass_enabled(source),
+            VERIFIER.gateway_synthetic_citizen_pass_enabled(source),
+        )
+        if synthetic_state == (False, False, False):
+            return
+        self.assertEqual(synthetic_state, (True, True, True))
+
+        render = destination / VERIFIER.RENDER_ROOT
+        for relative in (
+            VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+            VERIFIER.SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+        ):
+            (destination / relative).unlink()
+
+        tracer = destination / VERIFIER.TRACER_DATA_PLANE.RENDER_ROOT
+        tracer_artifacts = VERIFIER.TRACER_DATA_PLANE.PRODUCT_ARTIFACTS
+        (tracer / "runtime-pin.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.runtime_pin(
+                    VERIFIER.TRACER_DATA_PLANE.PRODUCT_SOURCE_REVISION,
+                    tracer_artifacts,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "postgres-deployment.json").write_text(
+            json.dumps(
+                VERIFIER.TRACER_DATA_PLANE.expected_postgres_deployment(
+                    tracer_artifacts,
+                ),
+                indent=2,
+            )
+            + "\n",
+        )
+        (tracer / "kustomization.yaml").write_text(
+            VERIFIER.TRACER_DATA_PLANE.kustomization_text(tracer_artifacts),
+        )
+        (tracer / "bootstrap/zz-roebel-tracer.sh").write_text(
+            VERIFIER.TRACER_DATA_PLANE.bootstrap_verify_script(tracer_artifacts),
+        )
+
+        policy = source["stagingParticipantGatewayPolicy"]
+        runtime_pin = VERIFIER.PARTICIPANT_POLICY.expected_runtime_pin(policy)
+        resources = VERIFIER.expected_participant_gateway_resources(
+            runtime_pin,
+            policy,
+            civic_projection_route=(
+                source["stagingParticipantGateway"]["civicProjectionRoute"]
+            ),
+        )
+        participant = destination / VERIFIER.PARTICIPANT_GATEWAY_ROOT
+        for name in ("deployment", "ingress", "runtime-pin"):
+            value = runtime_pin if name == "runtime-pin" else resources[name]
+            (participant / f"{name}.json").write_text(
+                json.dumps(value, indent=2) + "\n",
+            )
+
+        web_path = render / "web/deployment.json"
+        web = json.loads(web_path.read_text())
+        web_template = web["spec"]["template"]
+        for name in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS:
+            web_template["metadata"]["annotations"].pop(name)
+        environment = web_template["spec"]["containers"][0]["env"]
+        environment[:] = [
+            item
+            for item in environment
+            if item["name"] not in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES
+        ]
+        web_path.write_text(json.dumps(web, indent=2) + "\n")
+
+        http = VERIFIER.participant_gateway_http_contract(policy)
+        contract_path = destination / "policy/repository-contract.json"
+        contract = json.loads(contract_path.read_text())
+        contract["ephemeralTracerDataPlaneBoundary"] = (
+            VERIFIER.TRACER_DATA_PLANE.contract_boundary(tracer_artifacts)
+        )
+        gateway_contract = contract["stagingParticipantGatewayBoundary"]
+        gateway_contract["exactGatewayPaths"] = http["exactGatewayPaths"]
+        gateway_contract["dynamicGetPrefixes"] = http["dynamicGetPrefixes"]
+        gateway_contract["methodPathMatrix"] = http["methodPathMatrix"]
+        gateway_contract["routeProbeSamples"] = http["routeProbeSamples"]
+        gateway_contract["schemaVersion"] = http["schemaVersion"]
+        gateway_contract.pop("syntheticCitizenAdoption")
+        contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+
+        migration_path = render / "network-boundary-migration.json"
+        migration = copy.deepcopy(source["migration"])
+        ingress_boundary = migration["boundary"]["ingress"]
+        ingress_boundary["exactGatewayPaths"] = http["exactGatewayPaths"]
+        ingress_boundary["exactPostPaths"] = http["methodPathMatrix"]["POST"]
+        ingress_boundary["dynamicGetPrefixes"] = http["dynamicGetPrefixes"]
+        ingress_boundary["gatewayMethodPathMatrix"] = http["methodPathMatrix"]
+        ingress_boundary["routeProbeSamples"] = http["routeProbeSamples"]
+        for kind, resource in (
+            ("Deployment", resources["deployment"]),
+            ("Ingress", resources["ingress"]),
+        ):
+            next(
+                item
+                for item in migration["objects"]
+                if item["kind"] == kind
+                and item["name"] == VERIFIER.PARTICIPANT_GATEWAY_NAME
+            )["sha256"] = VERIFIER.digest(resource)
+        migration_path.write_text(json.dumps(migration, indent=2) + "\n")
+
+        objects = copy.deepcopy(source["objects"])
+        objects[3] = web
+        checksum_payload: dict[str, object] = {
+            "nextEnvironmentHead": source["head"],
+            "objects": objects,
+            "stagingParticipantGateway": {
+                "runtimePin": runtime_pin,
+                **resources,
+            },
+        }
+        if source["reviewedPublicKnowledge"] is not None:
+            checksum_payload["reviewedPublicKnowledge"] = source[
+                "reviewedPublicKnowledge"
+            ]
+        if source["signedNostr"] is not None:
+            checksum_payload["signedNostr"] = source["signedNostr"]
+        integrity_path = render / "integrity.json"
+        integrity = json.loads(integrity_path.read_text())
+        integrity["desiredRenderSha256"] = VERIFIER.digest(checksum_payload)
+        integrity["networkBoundaryMigrationSha256"] = VERIFIER.digest(migration)
+        integrity_path.write_text(json.dumps(integrity, indent=2) + "\n")
+
+        normalized = VERIFIER.verify_tree(destination)
+        self.assertIsNone(normalized["webIdentityContractSet"])
+        self.assertFalse(
+            VERIFIER.tracer_synthetic_citizen_pass_enabled(normalized),
+        )
+        self.assertFalse(
+            VERIFIER.gateway_synthetic_citizen_pass_enabled(normalized),
+        )
+
     def normalize_current_seed(self, destination: Path) -> None:
         """Make mutation fixtures current-shaped even when ROOT is future-shaped."""
         render = destination / "reviewed-render/roebel-staging"
         future = render / "reviewed-public-knowledge"
         if not future.is_dir():
             return
+        self.normalize_synthetic_citizen_pass_seed(destination)
 
         public_path = render / "public-mecky/deployment.json"
         public = json.loads(public_path.read_text())
@@ -998,6 +1141,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     ) -> None:
         """Render the selector with one immutable Web promotion, never alone."""
         protected = VERIFIER.verify_tree(root)
+        if protected["webIdentityContractSet"] is not None:
+            self.normalize_synthetic_citizen_pass_seed(root)
+            protected = VERIFIER.verify_tree(root)
         self.assertIsNone(protected["webIdentityContractSet"])
         if promote:
             self.make_valid_transition(root)
@@ -1423,6 +1569,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         gateway["schemaVersion"] = http["schemaVersion"]
         gateway.pop("dynamicGetPrefixes", None)
         gateway.pop("routeProbeSamples", None)
+        gateway.pop("syntheticCitizenAdoption", None)
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
 
     def refresh_participant_gateway_integrity(
@@ -1778,6 +1925,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ):
             self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(source))
             shutil.copytree(ROOT, c2, ignore=ignored)
+            self.normalize_synthetic_citizen_pass_seed(c2)
             shutil.copytree(c2, c1)
             self.normalize_citizen_adoption_c1_seed(c1)
             shutil.copytree(c1, phase_a)
@@ -1816,6 +1964,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_synthetic_citizen_pass_seed(destination)
         self.normalize_citizen_adoption_a_seed(destination)
         return temp, destination
 
@@ -2873,6 +3022,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             | VERIFIER.PARTICIPANT_GATEWAY_RUNTIME_RELEASE_TRANSITION_FILES
             | VERIFIER.PUBLIC_MECKY_REVIEWED_WEB_SOURCE_TRANSITION_FILES
             | VERIFIER.CURRENT_TRACER_FEED_ROUTE_TRANSITION_FILES
+            | {
+                VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+                VERIFIER.SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+            }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
         self.assertTrue(actual_changes <= allowed_changes, sorted(actual_changes - allowed_changes))
@@ -2969,7 +3122,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["baseTransitionVerified"])
         self.assertEqual(result["renderFileSet"], self.repository_shape(ROOT))
-        self.assertIsNone(VERIFIER.verify_tree(ROOT)["webIdentityContractSet"])
+        tree = VERIFIER.verify_tree(ROOT)
+        self.assertEqual(
+            tree["webIdentityContractSet"],
+            VERIFIER.WEB_IDENTITY_CONTRACT_SET,
+        )
+        self.assertTrue(VERIFIER.tracer_synthetic_citizen_pass_enabled(tree))
+        self.assertTrue(VERIFIER.gateway_synthetic_citizen_pass_enabled(tree))
 
         temp, candidate = self.candidate()
         self.addCleanup(temp.cleanup)
@@ -2980,7 +3139,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_web_identity_contract_set_policy_is_exact_and_non_authoritative(self) -> None:
         tree = VERIFIER.verify_tree(ROOT)
         contract_set = VERIFIER.WEB_IDENTITY_CONTRACT_SET
-        self.assertIsNone(tree["webIdentityContractSet"])
+        self.assertEqual(tree["webIdentityContractSet"], contract_set)
         self.assertEqual(contract_set["chainId"], 100)
         self.assertEqual(contract_set["authority"], "none")
         self.assertEqual(
@@ -3004,9 +3163,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         web = tree["deployments"]["roebel-web-staging"]
         env = web["spec"]["template"]["spec"]["containers"][0]["env"]
         by_name = {item["name"]: item for item in env}
-        self.assertTrue(
-            VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES.isdisjoint(by_name),
-            "the policy prerequisite must not roll the old Web image",
+        self.assertEqual(
+            {
+                name: by_name[name]["value"]
+                for name in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES
+            },
+            {
+                item["name"]: item["value"]
+                for item in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV
+            },
         )
         self.assertFalse(
             any("RUNTIME_CODE" in item["name"] for item in env),
@@ -3041,6 +3206,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
         candidate = Path(candidate_temp.name) / "candidate"
@@ -3065,6 +3231,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
         candidate = Path(candidate_temp.name) / "candidate"
@@ -3158,6 +3325,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
         candidate = Path(candidate_temp.name) / "candidate"
@@ -3671,6 +3839,26 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
         http = VERIFIER.participant_gateway_http_contract(committed_policy)
         gateway = contract["stagingParticipantGatewayBoundary"]
+        if "syntheticCitizenAdoption" in gateway:
+            http["schemaVersion"] = (
+                "roebel_staging_participant_gateway_runtime_pin_v5"
+            )
+            http["exactGatewayPaths"].extend(
+                VERIFIER.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+            )
+            http["methodPathMatrix"]["OPTIONS"].extend(
+                VERIFIER.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+            )
+            http["methodPathMatrix"]["POST"].extend(
+                VERIFIER.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+            )
+            http["dynamicGetPrefixes"].append(
+                VERIFIER.SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX,
+            )
+            self.assertEqual(
+                gateway["syntheticCitizenAdoption"],
+                VERIFIER.synthetic_citizen_pass_boundary(),
+            )
         self.assertEqual(gateway["exactGatewayPaths"], http["exactGatewayPaths"])
         self.assertEqual(gateway["methodPathMatrix"], http["methodPathMatrix"])
         self.assertEqual(

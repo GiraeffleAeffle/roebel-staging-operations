@@ -42,11 +42,13 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         bootstrap = root / POLICY.RENDER_ROOT / "bootstrap"
         citizen = bootstrap / POLICY.PRODUCT_ARTIFACTS[-1][0]
-        selected = (
-            POLICY.PRODUCT_ARTIFACTS
-            if citizen.is_file()
-            else POLICY.LEGACY_PRODUCT_ARTIFACTS
-        )
+        synthetic = bootstrap / POLICY.SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT[0]
+        if synthetic.is_file():
+            selected = POLICY.SYNTHETIC_PRODUCT_ARTIFACTS
+        elif citizen.is_file():
+            selected = POLICY.PRODUCT_ARTIFACTS
+        else:
+            selected = POLICY.LEGACY_PRODUCT_ARTIFACTS
         objects = POLICY.expected_application_objects(root)
         self.assertEqual(
             objects,
@@ -56,6 +58,11 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
             POLICY.PRODUCT_ARTIFACTS[-1][0]
             in objects["bootstrapConfigMap"]["data"],
             citizen.is_file(),
+        )
+        self.assertEqual(
+            POLICY.SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT[0]
+            in objects["bootstrapConfigMap"]["data"],
+            synthetic.is_file(),
         )
         expected_digest = POLICY.canonical_sha256(
             [
