@@ -3920,6 +3920,28 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
         self.assertEqual(VERIFIER.expected_web_ingress(False), VERIFIER.expected_web_ingress(False, participant_gateway=True))
 
+    def test_synthetic_gateway_ingress_allowlist_fits_haproxy_parser_word_limit(self) -> None:
+        exact_paths = [
+            *VERIFIER.PARTICIPANT_POLICY.ROUTES,
+            *VERIFIER.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+        ]
+        dynamic_get_prefixes = [
+            *VERIFIER.PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES,
+            VERIFIER.SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX,
+        ]
+        ingress = VERIFIER.expected_synthetic_citizen_pass_gateway_ingress()
+        lines = ingress["metadata"]["annotations"][
+            "haproxy-ingress.github.io/config-backend-early"
+        ].splitlines()
+
+        self.assertLessEqual(max(len(line.split()) for line in lines), 64)
+        self.assertEqual(
+            lines[0],
+            "http-request deny deny_status 404 if "
+            f"!{{ path {' '.join(exact_paths)} }} "
+            f"!{{ path_beg {' '.join(dynamic_get_prefixes)} }}",
+        )
+
     def test_participant_gateway_policy_forbids_web_ingress_mutation(self) -> None:
         preserved = VERIFIER.PARTICIPANT_POLICY.activation_policy_descriptor()["preservation"]["webIngress"]
         self.assertEqual(preserved["mutation"], "forbidden")

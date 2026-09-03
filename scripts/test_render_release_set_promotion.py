@@ -110,6 +110,36 @@ SYNTHETIC_CITIZEN_ADOPTION_SQL_ZLIB_BASE64 = (
 
 
 class AutomaticPromotionTests(unittest.TestCase):
+    def test_synthetic_gateway_allowlist_fits_haproxy_parser_word_limit(self) -> None:
+        exact_paths = [
+            *VERIFIER.PARTICIPANT_POLICY.ROUTES,
+            *MODULE.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+        ]
+        post_paths = [
+            *VERIFIER.PARTICIPANT_POLICY.POST_ROUTES,
+            *MODULE.SYNTHETIC_CITIZEN_PASS_POST_ROUTES,
+        ]
+        dynamic_get_prefixes = [
+            *VERIFIER.PARTICIPANT_POLICY.DYNAMIC_GET_PREFIXES,
+            MODULE.SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX,
+        ]
+
+        annotation = MODULE.gateway_early_allowlist(
+            exact_paths,
+            post_paths,
+            dynamic_get_prefixes,
+        )
+        lines = annotation.splitlines()
+
+        self.assertTrue(lines)
+        self.assertLessEqual(max(len(line.split()) for line in lines), 64)
+        self.assertEqual(
+            lines[0],
+            "http-request deny deny_status 404 if "
+            f"!{{ path {' '.join(exact_paths)} }} "
+            f"!{{ path_beg {' '.join(dynamic_get_prefixes)} }}",
+        )
+
     def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name) / "repo"
