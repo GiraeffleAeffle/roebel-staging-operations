@@ -168,6 +168,16 @@ class AutomaticPromotionWorkflowTests(unittest.TestCase):
         ):
             self.assertIn(boundary, v2_changed)
         self.assertIn("git add policy/repository-contract.json", source)
+        self.assertIn(
+            "if test '${{ steps.schema.outputs.version }}' = v2; then\n"
+            "            git add --intent-to-add -- \\\n"
+            "              reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json \\\n"
+            "              reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql\n"
+            "          fi\n"
+            "          git diff --check\n"
+            "          git diff --name-only",
+            source,
+        )
 
     def test_v1_path_remains_the_post_transition_default(self) -> None:
         source = WORKFLOW.read_text()
