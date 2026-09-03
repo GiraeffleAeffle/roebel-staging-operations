@@ -1677,6 +1677,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
             "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/75-staging-citizen-adoption.sql",
             MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS,
         )
+        self.assertIn(
+            "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql",
+            MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS,
+        )
+        self.assertIn(
+            "reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json",
+            MODULE.CITIZEN_ADOPTION_PROTECTED_PATHS,
+        )
         source = inspect.getsource(MODULE.main)
         active = source[
             source.index('if citizen_mode == "verify-active-runtime":'):
@@ -1687,6 +1695,14 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn('"--live"', active)
         self.assertNotIn("bootstrap_runner.command", active)
         self.assertNotIn("secret_runner.command", active)
+        self.assertLess(
+            active.index("best_effort_print_child(active)"),
+            active.index("reject_failed_activation_without_durable_receipt("),
+        )
+        self.assertLess(
+            active.index("reject_failed_activation_without_durable_receipt("),
+            active.index("snapshot_owned_receipt("),
+        )
         issuer_start = source.index('elif citizen_mode in {"issuer-materialize", "issuer-recover"}:')
         issuer = source[
             issuer_start:

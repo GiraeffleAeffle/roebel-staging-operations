@@ -629,7 +629,13 @@ def valid_database_status(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid",
 def valid_database_status_v5(value, *, pod_name="gateway-pod-a", pod_uid="pod-uid", before="10", after="11", image_id=None):
     """The closed status-v3 receipt, including both citizen-adoption pins."""
     image = value["productPins"]["imageRepository"] + "@" + value["productPins"]["imageManifestDigest"]
-    return MODULE.expected_database_status_v5(value) | {
+    status = MODULE.expected_database_status_v5(value)
+    if value == MODULE.POLICY.SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        status |= {
+            "syntheticCitizenNftFinalizedBlockNumber": "123456",
+            "syntheticCitizenNftFinalizedBlockHash": "0x" + "a" * 64,
+        }
+    return status | {
         "probe": {
             "transport": "authenticated-kubernetes-pod-port-forward",
             "pod": pod_name,
@@ -3640,6 +3646,30 @@ class ExecutorTests(unittest.TestCase):
             ):
                 MODULE.validate_database_status_receipt_v5(missing, value)
 
+    def test_v5_internal_status_v3_binds_migration_76_and_finalized_test_nft(self):
+        value = MODULE.POLICY.synthetic_active_runtime_policy_descriptor(ready_policy())
+        result = MODULE.validate_database_status_receipt_v5(
+            valid_database_status_v5(value), value,
+        )
+        self.assertEqual(result["syntheticCitizenAdoptionMigrationSha256"],
+                         value["productPins"]["syntheticCitizenAdoptionMigration"]["sha256"])
+        self.assertEqual(result["syntheticCitizenNftFinalizedBlockNumber"], "123456")
+        self.assertEqual(result["syntheticCitizenAdoptionAuthorityBinding"], "none")
+
+        for key, invalid in (
+            ("syntheticCitizenNftFinalizedBlockNumber", "01"),
+            ("syntheticCitizenNftFinalizedBlockNumber", "-1"),
+            ("syntheticCitizenNftFinalizedBlockHash", "0x" + "A" * 64),
+            ("syntheticCitizenAdoptionAuthorityBinding", "civic_eligibility_only"),
+        ):
+            drifted = copy.deepcopy(result)
+            drifted[key] = invalid
+            with self.subTest(key=key, invalid=invalid), self.assertRaisesRegex(
+                MODULE.ActivationError,
+                "synthetic citizen readiness",
+            ):
+                MODULE.validate_database_status_receipt_v5(drifted, value)
+
     def test_v5_eligibility_issuer_projection_is_value_free_and_continuity_bound(self):
         value = ready_policy()
         uid = "12345678-1234-4123-8123-123456789abc"
@@ -3769,8 +3799,91 @@ class ExecutorTests(unittest.TestCase):
         ):
             MODULE.eligibility_issuer_secret_projection_v5(snapshot, value, REV)
 
+    def test_v5_active_runtime_policy_binds_the_reviewed_synthetic_transition_and_migration_76(self):
+        real_policy = ready_policy()
+
+        def protected_blob(_revision, path):
+            return (MODULE.ROOT / path).read_bytes()
+
+        with patch.object(MODULE, "git_blob", side_effect=protected_blob):
+            active = MODULE.synthetic_active_runtime_policy_v5(REV, real_policy)
+
+        self.assertEqual(
+            active,
+            MODULE.POLICY.synthetic_active_runtime_policy_descriptor(real_policy),
+        )
+        self.assertEqual(
+            active["productPins"]["syntheticCitizenAdoptionMigration"]["sha256"],
+            "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282",
+        )
+        self.assertEqual(active["runtime"]["syntheticCitizenAdoption"]["authorityBinding"], "none")
+        self.assertFalse(active["runtime"]["syntheticCitizenAdoption"]["realCitizenEligibility"])
+
+    def test_v5_route_matrix_proves_the_exact_synthetic_no_authority_routes(self):
+        value = MODULE.POLICY.synthetic_active_runtime_policy_descriptor(ready_policy())
+        origin = value["endpoints"]["browserOrigin"]
+        cors = {
+            "access-control-allow-origin": origin,
+            "access-control-allow-credentials": "true",
+            "vary": "Origin",
+        }
+        errors = {
+            "public-adoption-absent": "citizen_adoption_not_found",
+            "public-adoption-malformed": "not_found",
+            "eligibility-status-reserved": "citizen_eligibility_status_not_activated",
+            "synthetic-adoption-absent": "synthetic_citizen_adoption_not_found",
+            "synthetic-adoption-malformed": "not_found",
+        }
+
+        def observation(item):
+            case, method, path, status = (item[key] for key in ("case", "method", "path", "status"))
+            if case == "status":
+                body = MODULE.expected_participant_http_status_v4(); headers = cors
+            elif case == "preflight":
+                return {"status": 204, "headers": cors | {
+                    "access-control-allow-methods": "GET" if path.endswith("/status") else "POST",
+                    "access-control-allow-headers": "content-type", "access-control-max-age": "600",
+                }, "body": ""}
+            elif case == "unauthenticated-post":
+                body = {"error": "admission_invalid" if path == MODULE.POLICY.ROUTES[1]
+                        else "challenge_invalid" if path == MODULE.POLICY.ROUTES[2]
+                        else "session_required"}; headers = cors
+            elif case == "method-denied":
+                return {"status": status, "headers": {
+                    "cache-control": "no-cache", "connection": "close",
+                    "content-length": "147", "content-type": "text/html",
+                }, "body": "" if method == "HEAD" else MODULE.HAPROXY_METHOD_DENIED_BODY}
+            elif case in {"unknown", "trailing-slash", "unknown-preflight"}:
+                return {"status": status, "headers": {
+                    "cache-control": "no-cache", "connection": "close",
+                    "content-length": "83", "content-type": "text/html",
+                }, "body": MODULE.HAPROXY_NOT_FOUND_BODY}
+            elif case == "query":
+                body = {"error": "not_found"}; headers = {}
+            elif case == "wrong-origin":
+                body = {"error": "origin_forbidden"}; headers = {}
+            else:
+                body = {"error": errors[case]}; headers = cors
+            return {"status": status, "headers": headers | {"content-type": "application/json"},
+                    "body": json.dumps(body)}
+
+        expected = value["httpBoundary"]["expectations"]
+        with patch.object(
+            MODULE, "_route_request_v4", side_effect=map(observation, expected),
+        ) as request:
+            receipt = MODULE.route_matrix_v5(Fake(), value)
+
+        self.assertEqual(receipt, list(MODULE.POLICY.SYNTHETIC_ACTIVE_ROUTE_EXPECTATIONS))
+        self.assertEqual(receipt, expected)
+        self.assertEqual(request.call_count, len(receipt))
+        self.assertEqual(
+            [(call.args[1], call.args[2]) for call in request.call_args_list],
+            [(item["method"], item["path"]) for item in expected],
+        )
+
     def test_v5_active_runtime_path_never_recreates_already_active_objects(self):
         value = ready_policy()
+        active_value = MODULE.POLICY.synthetic_active_runtime_policy_descriptor(value)
         issuer = {
             "target": {"apiVersion": "v1", "kind": "Secret", "namespace": MODULE.NAMESPACE, "name": MODULE.ELIGIBILITY_ISSUER_SECRET_NAME},
             "uid": "12345678-1234-4123-8123-123456789abc",
@@ -3792,6 +3905,11 @@ class ExecutorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             kube = Path(directory) / "kubeconfig"; kube.write_text("fixture")
             with contextlib.ExitStack() as stack:
+                active_policy = stack.enter_context(patch.object(
+                    MODULE,
+                    "synthetic_active_runtime_policy_v5",
+                    return_value=active_value,
+                ))
                 returns = {
                     "render_v4": {},
                     "snapshot_kubeconfig_v4": snapshot,
@@ -3809,8 +3927,11 @@ class ExecutorTests(unittest.TestCase):
                     "verify_preservation_v4": {},
                     "deployment_health_fact_v4": {"deployment": True},
                 }
+                patched = {}
                 for name, returned in returns.items():
-                    stack.enter_context(patch.object(MODULE, name, return_value=returned))
+                    patched[name] = stack.enter_context(
+                        patch.object(MODULE, name, return_value=returned)
+                    )
                 for name in (
                     "require_same_cluster_identity_v4",
                     "require_same_secret_materialization_v4",
@@ -3834,6 +3955,11 @@ class ExecutorTests(unittest.TestCase):
                 )
         self.assertEqual(result["status"], "active-runtime-verified")
         self.assertFalse(result["effects"]["clusterMutation"])
+        active_policy.assert_called_once_with(REV, value)
+        patched["render_v4"].assert_called_once_with(REV, active_value)
+        self.assertEqual(patched["runtime_image_v4"].call_args.args[2], active_value)
+        self.assertEqual(patched["database_status_v5"].call_args.args[2], active_value)
+        self.assertEqual(patched["route_matrix_v5"].call_args.args[1], active_value)
         self.assertEqual(semantic.call_count, 2)
         self.assertEqual(issuer_read.call_count, 2)
         issuer_continuity.assert_called_once_with(issuer, issuer)
