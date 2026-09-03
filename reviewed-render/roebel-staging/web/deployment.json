@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:08922f9e6c97a16f52ab3361f54c8657a2a76d89ad110401867b46cda8d8e8cd",
-      "stadtstack.io/source-revision": "4c44ae3df1e37161156098899ccf192cd0bbe370"
+      "stadtstack.io/release-set-sha256": "sha256:7cacf5873e2533c0240230ec9120988f678c2b62d5a378b4ddf30ee044add9c7",
+      "stadtstack.io/source-revision": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
     },
     "labels": {
       "app.kubernetes.io/component": "readonly-presentation",
@@ -34,11 +34,16 @@
     "template": {
       "metadata": {
         "annotations": {
+          "stadtstack.io/identity-attester-runtime-code-keccak256": "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51",
+          "stadtstack.io/identity-citizen-runtime-code-keccak256": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb",
+          "stadtstack.io/identity-contract-authority": "none",
+          "stadtstack.io/identity-contract-set": "gnosis-staging-test-v1",
+          "stadtstack.io/identity-contract-set-sha256": "sha256:af51165b7854caf2058ca7c645d74d8c8717d738ec879e806ecb860da1cae131",
           "stadtstack.io/image-manifest": "sha256:33df9b850d5f39ccf2eb387359540ae886f05bec3a8f44ac030604c3c529351e",
           "stadtstack.io/public-config-sha256": "sha256:4c1e49cbcfbb6622551964eaeaae0089e745e0a6317855143502014d51b910df",
           "stadtstack.io/release": "roebel-mecky-conversation-v1",
           "stadtstack.io/release-contract-sha256": "sha256:11234f4fce5593c235b6a1684bba8af6a4d365f1518705daaf0035a3f992306c",
-          "stadtstack.io/source-revision": "4c44ae3df1e37161156098899ccf192cd0bbe370",
+          "stadtstack.io/source-revision": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575",
           "stadtstack.io/truth-state": "staging-synthetic-workflow",
           "stadtstack.io/update": "native-post-topic-mecky-flow"
         },
@@ -123,6 +128,18 @@
                 }
               },
               {
+                "name": "ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET",
+                "value": "gnosis-staging-test-v1"
+              },
+              {
+                "name": "ROEBEL_PUBLIC_ATTESTER_NFT_ADDRESS",
+                "value": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3"
+              },
+              {
+                "name": "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS",
+                "value": "0x0Be374808A567c9088aC8208B90a4239432B3220"
+              },
+              {
                 "name": "ROEBEL_PUBLIC_GNOSIS_BUNDLER_URL",
                 "valueFrom": {
                   "configMapKeyRef": {
@@ -149,7 +166,7 @@
                 "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:ae17b4a30b13adb104d6f992cef40581b7b3738b89db61afcaa8a7e20708e8c1",
+            "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:3bea4f27ef2060a5f430b9d14f005ab1e4bf84052df03d77f25ad238317f520a",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,

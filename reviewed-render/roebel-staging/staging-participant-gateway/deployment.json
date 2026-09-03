@@ -41,25 +41,6 @@
       },
       "spec": {
         "automountServiceAccountToken": false,
-        "restartPolicy": "Always",
-        "serviceAccountName": "roebel-staging-participant-gateway",
-        "securityContext": {
-          "fsGroup": 65532,
-          "runAsGroup": 65532,
-          "runAsNonRoot": true,
-          "runAsUser": 65532,
-          "seccompProfile": {
-            "type": "RuntimeDefault"
-          }
-        },
-        "volumes": [
-          {
-            "emptyDir": {
-              "sizeLimit": "64Mi"
-            },
-            "name": "tmp"
-          }
-        ],
         "containers": [
           {
             "env": [
@@ -157,11 +138,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "4c44ae3df1e37161156098899ccf192cd0bbe370"
+                "value": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d"
+                "value": "sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -228,10 +209,43 @@
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
                 "value": "sha256:79fea3feb09029e6138c7675fa0b877c3367390bec012b07e052c55103de7c9c"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION",
+                "value": "enabled"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_POLICY_VERSION",
+                "value": "roebel-test-citizen-nft-v2-staging-2026-09"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_ADDRESS",
+                "value": "0x0be374808a567c9088ac8208b90a4239432b3220"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_RUNTIME_CODE_KECCAK256",
+                "value": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256",
+                "value": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
+                "value": "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:c27d4564bf142f9c5bf08ae3bd0bf8bdbfe6af665f7491a317d358ad0126a72d",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2",
             "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "periodSeconds": 20,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
             "name": "staging-participant-gateway",
             "ports": [
               {
@@ -249,24 +263,6 @@
               },
               "periodSeconds": 10,
               "successThreshold": 1,
-              "timeoutSeconds": 3
-            },
-            "livenessProbe": {
-              "failureThreshold": 3,
-              "periodSeconds": 20,
-              "successThreshold": 1,
-              "tcpSocket": {
-                "port": "http"
-              },
-              "timeoutSeconds": 3
-            },
-            "startupProbe": {
-              "failureThreshold": 30,
-              "periodSeconds": 2,
-              "successThreshold": 1,
-              "tcpSocket": {
-                "port": "http"
-              },
               "timeoutSeconds": 3
             },
             "resources": {
@@ -288,12 +284,40 @@
               },
               "readOnlyRootFilesystem": true
             },
+            "startupProbe": {
+              "failureThreshold": 30,
+              "periodSeconds": 2,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": "http"
+              },
+              "timeoutSeconds": 3
+            },
             "volumeMounts": [
               {
                 "mountPath": "/tmp",
                 "name": "tmp"
               }
             ]
+          }
+        ],
+        "restartPolicy": "Always",
+        "securityContext": {
+          "fsGroup": 65532,
+          "runAsGroup": 65532,
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccountName": "roebel-staging-participant-gateway",
+        "volumes": [
+          {
+            "emptyDir": {
+              "sizeLimit": "64Mi"
+            },
+            "name": "tmp"
           }
         ]
       }

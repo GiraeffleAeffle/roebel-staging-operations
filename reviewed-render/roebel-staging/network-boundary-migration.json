@@ -7,6 +7,10 @@
         "POST",
         "OPTIONS"
       ],
+      "dynamicGetPrefixes": [
+        "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
+        "/api/civic/v1/eligibility/status/"
+      ],
       "exactGatewayPaths": [
         "/api/staging-participant/v1/status",
         "/api/staging-participant/v1/challenge",
@@ -74,21 +78,12 @@
         "name": "roebel-staging-participant-gateway",
         "namespace": "stadtstack-roebel-web-preview"
       },
-      "dynamicGetPrefixes": [
-        "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
-        "/api/civic/v1/eligibility/status/"
-      ],
       "routeProbeSamples": [
         "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
         "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
       ]
     },
     "participantGateway": {
-      "namespace": "stadtstack-roebel-web-preview",
-      "name": "roebel-staging-participant-gateway",
-      "replicas": 1,
-      "serviceAccountToken": false,
-      "writerAuthority": "fixed-staging-rpcs-only",
       "civicAuthority": "none",
       "egress": "dns-plus-policy-pinned-gnosis-internal-postgrest-and-exact-workbench-only",
       "internalPostgrest": {
@@ -114,8 +109,49 @@
           "namespace": "stadtstack-roebel-web-preview",
           "valuesCommitted": false
         }
-      }
+      },
+      "name": "roebel-staging-participant-gateway",
+      "namespace": "stadtstack-roebel-web-preview",
+      "replicas": 1,
+      "serviceAccountToken": false,
+      "writerAuthority": "fixed-staging-rpcs-only"
     },
+    "publicMeckyReviewedWebSource": {
+      "authority": "none",
+      "destinationNamespace": "stadtstack-roebel-web-preview",
+      "destinationPodLabels": {
+        "app.kubernetes.io/name": "roebel-web-presentation"
+      },
+      "dns": {
+        "destinationNamespace": "kube-system",
+        "destinationPodLabels": {
+          "k8s-app": "kube-dns"
+        },
+        "ports": [
+          {
+            "port": 53,
+            "protocol": "UDP"
+          },
+          {
+            "port": 53,
+            "protocol": "TCP"
+          }
+        ]
+      },
+      "knowledgeOrigin": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080",
+      "port": 8080,
+      "protocol": "TCP",
+      "publicIndexOrigin": null,
+      "source": {
+        "namespace": "stadtstack-roebel-staging-lab",
+        "podSelector": {
+          "app.kubernetes.io/component": "public-mecky",
+          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+        }
+      },
+      "sourceKinds": "local_news,ratsinformation"
+    },
+    "signedNostr": "not-present",
     "tracerActivation": {
       "applicationObjectCount": 8,
       "createBeforeUnsuspend": true,
@@ -123,35 +159,6 @@
       "secretMaterializerRunner": "scripts/materialize-tracer-data-plane-secrets.py",
       "sharedSourceMutation": "forbidden"
     },
-    "workbenchIngress": {
-      "name": "roebel-staging-participant-workbench-ingress",
-      "namespace": "stadtstack-roebel-staging-lab",
-      "port": 18083,
-      "existingPolicyMutation": "forbidden",
-      "sources": [
-        {
-          "namespace": "stadtstack-roebel-web-preview",
-          "podSelector": {
-            "app.kubernetes.io/component": "staging-participant-gateway",
-            "app.kubernetes.io/name": "roebel-staging-participant-gateway",
-            "app.kubernetes.io/part-of": "stadtstack",
-            "stadtstack.io/authority": "none",
-            "stadtstack.io/civic-authority": "none",
-            "stadtstack.io/environment": "staging"
-          }
-        },
-        {
-          "namespace": "stadtstack-roebel-web-preview",
-          "podSelector": {
-            "app.kubernetes.io/component": "readonly-presentation",
-            "app.kubernetes.io/name": "roebel-web-presentation",
-            "app.kubernetes.io/part-of": "stadtstack",
-            "stadtstack.io/authority": "none"
-          }
-        }
-      ]
-    },
-    "signedNostr": "not-present",
     "webCivicProjection": {
       "authority": "none",
       "destinationNamespace": "stadtstack-roebel-staging-lab",
@@ -204,40 +211,33 @@
       },
       "upstreamUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
     },
-    "publicMeckyReviewedWebSource": {
-      "authority": "none",
-      "destinationNamespace": "stadtstack-roebel-web-preview",
-      "destinationPodLabels": {
-        "app.kubernetes.io/name": "roebel-web-presentation"
-      },
-      "dns": {
-        "destinationNamespace": "kube-system",
-        "destinationPodLabels": {
-          "k8s-app": "kube-dns"
-        },
-        "ports": [
-          {
-            "port": 53,
-            "protocol": "UDP"
-          },
-          {
-            "port": 53,
-            "protocol": "TCP"
+    "workbenchIngress": {
+      "existingPolicyMutation": "forbidden",
+      "name": "roebel-staging-participant-workbench-ingress",
+      "namespace": "stadtstack-roebel-staging-lab",
+      "port": 18083,
+      "sources": [
+        {
+          "namespace": "stadtstack-roebel-web-preview",
+          "podSelector": {
+            "app.kubernetes.io/component": "staging-participant-gateway",
+            "app.kubernetes.io/name": "roebel-staging-participant-gateway",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/authority": "none",
+            "stadtstack.io/civic-authority": "none",
+            "stadtstack.io/environment": "staging"
           }
-        ]
-      },
-      "knowledgeOrigin": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080",
-      "port": 8080,
-      "protocol": "TCP",
-      "publicIndexOrigin": null,
-      "source": {
-        "namespace": "stadtstack-roebel-staging-lab",
-        "podSelector": {
-          "app.kubernetes.io/component": "public-mecky",
-          "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
+        },
+        {
+          "namespace": "stadtstack-roebel-web-preview",
+          "podSelector": {
+            "app.kubernetes.io/component": "readonly-presentation",
+            "app.kubernetes.io/name": "roebel-web-presentation",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/authority": "none"
+          }
         }
-      },
-      "sourceKinds": "local_news,ratsinformation"
+      ]
     }
   },
   "effects": {
@@ -269,7 +269,7 @@
       "kind": "Deployment",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:f6ab4b24797c11627cd0de10b083cb122c37dc4591fad4a34e52c905fb78dade"
+      "sha256": "sha256:8f685bc0ffb6d362314182395ca747195ab66492c9e6cc1290196e5cd62fc974"
     },
     {
       "kind": "Service",
@@ -287,7 +287,7 @@
       "kind": "Ingress",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:f29280c163845c77fadc65387873dcfecd75ebb6b5bdff5f3d5c4a9d8622038e"
+      "sha256": "sha256:78c95b786956d4aae9742a727e18c5f9a5092653a6622654b9654429647c00ec"
     },
     {
       "kind": "NetworkPolicy",
@@ -303,8 +303,7 @@
     }
   ],
   "rbacBootstrap": {
-    "required": true,
-    "transaction": "cas-unsuspend-both-or-suspend-both",
+    "liveMutationPerformed": false,
     "reconcilers": [
       {
         "kustomization": {
@@ -431,7 +430,8 @@
         }
       }
     ],
-    "liveMutationPerformed": false
+    "required": true,
+    "transaction": "cas-unsuspend-both-or-suspend-both"
   },
   "schemaVersion": "roebel_staging_participant_gateway_boundary_v1",
   "status": "approved-for-exact-staging-activation"
