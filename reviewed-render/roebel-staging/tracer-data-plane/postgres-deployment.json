@@ -3,7 +3,7 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:a1d5c3c5ea268586497d1a6062540281c80f5d3e4c637ade67dc9f8ea06c28a6",
+      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:4df3de1d91e90e4db5b09423fa74e9f725baf85436e9e6d230361d4686222bdb",
       "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
     },
     "labels": {
@@ -39,8 +39,8 @@
     "template": {
       "metadata": {
         "annotations": {
-          "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline",
-          "stadtstack.io/bootstrap-artifacts-sha256": "sha256:a1d5c3c5ea268586497d1a6062540281c80f5d3e4c637ade67dc9f8ea06c28a6"
+          "stadtstack.io/bootstrap-artifacts-sha256": "sha256:4df3de1d91e90e4db5b09423fa74e9f725baf85436e9e6d230361d4686222bdb",
+          "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
         },
         "labels": {
           "app.kubernetes.io/component": "tracer-database",

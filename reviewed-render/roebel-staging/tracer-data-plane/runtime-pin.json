@@ -1,5 +1,4 @@
 {
-  "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
   "activationReady": true,
   "authority": {
     "civicAuthority": "none",
@@ -27,15 +26,15 @@
   },
   "network": {
     "externalIngress": false,
+    "postgresCallers": [
+      "roebel-tracer-postgrest"
+    ],
     "postgrestClusterUrl": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
     "postgrestReaders": [
       "roebel-web-presentation"
     ],
     "postgrestRpcCallers": [
       "roebel-staging-participant-gateway"
-    ],
-    "postgresCallers": [
-      "roebel-tracer-postgrest"
     ]
   },
   "productSource": {
@@ -59,12 +58,18 @@
         "configMapFilename": "75-staging-citizen-adoption.sql",
         "path": "supabase/migrations/20260901_staging_citizen_adoption.sql",
         "sha256": "sha256:35e12ecc7e54e76f8e12b17e828970bc2d3bd4393f14f58fe9604dd00d398a2d"
+      },
+      {
+        "configMapFilename": "76-staging-synthetic-citizen-adoption.sql",
+        "path": "supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql",
+        "sha256": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
       }
     ],
     "protectedRef": "refs/heads/main",
     "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
-    "sourceRevision": "4c44ae3df1e37161156098899ccf192cd0bbe370"
+    "sourceRevision": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
   },
+  "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
   "secretReference": {
     "keys": [
       "anon-jwt",

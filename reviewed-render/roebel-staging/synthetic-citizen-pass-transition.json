@@ -1,0 +1,115 @@
+{
+  "authorityBinding": "none",
+  "capability": {
+    "administrativeEndorsement": false,
+    "authorityBinding": "none",
+    "bindingVote": false,
+    "civicCaseCreated": false,
+    "databaseSchemaSha256": "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66",
+    "environment": "staging",
+    "migrationSha256": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282",
+    "paymentEffect": false,
+    "policyVersion": "roebel-test-citizen-nft-v2-staging-2026-09",
+    "realCitizenEligibility": false,
+    "rollback": "restore-exact-predecessor-bytes-and-remove-76-artifact",
+    "schemaVersion": "roebel_staging_synthetic_citizen_pass_boundary_v1",
+    "testCitizenNft": {
+      "address": "0x0be374808a567c9088ac8208b90a4239432b3220",
+      "chainId": 100,
+      "runtimeCodeKeccak256": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+    },
+    "testOnly": true,
+    "treasuryEffect": false
+  },
+  "environment": "staging",
+  "forward": {
+    "atomicComponents": [
+      "roebel-web-staging",
+      "staging-participant-gateway",
+      "ephemeral-tracer-data-plane"
+    ],
+    "migrationPath": "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql"
+  },
+  "rollback": {
+    "removeFiles": [
+      "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql",
+      "reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json"
+    ],
+    "restoreFiles": [
+      {
+        "path": "policy/repository-contract.json",
+        "predecessorSha256": "sha256:bcff810119e2ae5db7062f6acbfa736df8914542ae6d6288c4a311209bbfb13e",
+        "successorSha256": "sha256:01e5da887be21ff8d02130eac86caa3e9ca8b156b4b32a528e6bbd643471389c"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/head.json",
+        "predecessorSha256": "sha256:abfebcb306bc37fe1a8e6e5121a7c7af5fc4fa1ed1d5d9a713ce6eb275d33b24",
+        "successorSha256": "sha256:41943495a7b61f20a64d6d99fdcf0c91e2229d9329641379926e25703c831f87"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/integrity.json",
+        "predecessorSha256": "sha256:ea7933197ae7ad63dc7861283aedcb034d2e3f8d32e71c8634609d9a08ad31bc",
+        "successorSha256": "sha256:b3911a09bbebae03a907b824c3bf220223a17a93152a001ed2503e8948252c59"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/live-preconditions.json",
+        "predecessorSha256": "sha256:7c9050df40adb69c29f3304e374537f43970c2bb8967656a54ddcec1fc0e4433",
+        "successorSha256": "sha256:d630c2622c383c5f4437ac3e5d4611773b586d2c43577057e441ba973074a135"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/network-boundary-migration.json",
+        "predecessorSha256": "sha256:5bf3bbc923bf009bb9c5254fdd82d68ab25cb8cbeac3a262372c544274c800d4",
+        "successorSha256": "sha256:e0892e2874c0ec42ea1349255a1984d18cd3c9a14f9a9216e227fe522ad8904a"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/public-mecky/deployment.json",
+        "predecessorSha256": "sha256:df8dfd568b61568d31d671f15f8c01e053dd9bee22292b0e2b77d70c564ee592",
+        "successorSha256": "sha256:b6a5edadfe7316a1d4ee629f4a49fe06392bfc00b3f1283af700bcbdbc90bc98"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/staging-participant-gateway/deployment.json",
+        "predecessorSha256": "sha256:c000fde266114d6d96fba6a3610c8008c4041b64cd867fbddc22036e231a9b3a",
+        "successorSha256": "sha256:5f2bc60622c3e12199a11a4a25c5b62af1218ba2613ec6a2880ada40387b4a67"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/staging-participant-gateway/ingress.json",
+        "predecessorSha256": "sha256:659762feb33204f7ec7900de2a3e53afdbbc1b37c918d6f9e3808a748e9e29bf",
+        "successorSha256": "sha256:3349d57fb9da4f49db5a9c35f6041fb965f65c66a7086f5b4a6f6b19a122267a"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json",
+        "predecessorSha256": "sha256:58dd8db41e87f305aa23e606db19bc55ce658da772290c94b62e409d18d18fa8",
+        "successorSha256": "sha256:58d9b3a3426d699625b7b3f0cfab53039b278d9bc5ecca5ace2d1c7227d528f9"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/zz-roebel-tracer.sh",
+        "predecessorSha256": "sha256:150b20afa6fe3c31a0a1666895a243d493b610ff7b204ebf8c9d80cc9b18b3fc",
+        "successorSha256": "sha256:59a8098c9d6ad86ce51c7430b24e025371a4d6ba67f5cc3fa6f5b0892c784fb9"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/tracer-data-plane/kustomization.yaml",
+        "predecessorSha256": "sha256:54968a2361cacd38c83990c5317dff4f36efa782510aca35cd4cfe7f5495f477",
+        "successorSha256": "sha256:b671f9844a797ab584345b51d2ece99e21eab5d28b999b40f33d6d573b73da6e"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/tracer-data-plane/postgres-deployment.json",
+        "predecessorSha256": "sha256:b9d6ddee6c180c6db494d38bdbe505db6871b8d903292b25577b0ff66039812c",
+        "successorSha256": "sha256:a8929aa5aacb29abb19e31ffa94299f26d9170adae1620bc56c4fc273cebb607"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json",
+        "predecessorSha256": "sha256:e4e25ffeb33ac01cbce5458463f965110be6e2f0af550e9bbf604fcc89a03246",
+        "successorSha256": "sha256:94abcb0bb20a7697cb4002798cf1bdb37f70dd62748f30fdcde64594d919c664"
+      },
+      {
+        "path": "reviewed-render/roebel-staging/web/deployment.json",
+        "predecessorSha256": "sha256:8f28e78669df365e0731c15d96f01e9f839f1087d674c7ba699fdc20b4f99f8f",
+        "successorSha256": "sha256:50229b633bd84da49a6b51a168c9cbba55bb45a53caa8469eecd4c5395d3f639"
+      }
+    ],
+    "strategy": "restore-exact-predecessor-bytes-and-remove-added-files"
+  },
+  "schemaVersion": "roebel_staging_synthetic_citizen_pass_transition_v1",
+  "sourceRevision": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575",
+  "testOnly": true
+}
