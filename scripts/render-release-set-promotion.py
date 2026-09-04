@@ -727,10 +727,8 @@ def gateway_early_allowlist(
 ) -> str:
     return "\n".join([
         "http-request deny deny_status 404 if "
-        + " ".join([
-            *(f"!{{ path {path} }}" for path in exact_paths),
-            *(f"!{{ path_beg {prefix} }}" for prefix in dynamic_get_prefixes),
-        ]),
+        + f"!{{ path {' '.join(exact_paths)} }} "
+        + f"!{{ path_beg {' '.join(dynamic_get_prefixes)} }}",
         "http-request deny deny_status 405 if { method POST } "
         + " ".join(f"!{{ path {path} }}" for path in post_paths),
         "http-request deny deny_status 405 if { method OPTIONS } "

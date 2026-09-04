@@ -287,7 +287,7 @@
       "kind": "Ingress",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:78c95b786956d4aae9742a727e18c5f9a5092653a6622654b9654429647c00ec"
+      "sha256": "sha256:580cbb9b0991c433262604c4be0c1e2e6e6441d736c975ae1bd5023a45d9573c"
     },
     {
       "kind": "NetworkPolicy",
