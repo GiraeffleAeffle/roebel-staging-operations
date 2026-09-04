@@ -386,12 +386,22 @@ jobs:
           if test '${{ steps.schema.outputs.version }}' = v2; then
             git add policy/repository-contract.json
           fi
-          git commit -m "chore: promote Röbel staging $SOURCE_REVISION"
+          candidate_tree="$(git write-tree)"
           remote_sha="$(git ls-remote --heads origin "refs/heads/$AUTOMATION_BRANCH" | cut -f1)"
           if test -n "$remote_sha"; then
-            git push --force-with-lease="refs/heads/$AUTOMATION_BRANCH:$remote_sha" origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+            git fetch --no-tags --depth=1 origin "$remote_sha"
+            remote_tree="$(git rev-parse "$remote_sha^{tree}")"
+            # Read raw parent headers: shallow history hides parents from git log.
+            remote_parents="$(git cat-file commit "$remote_sha" | sed -n '/^$/q; s/^parent //p')"
+            if test "$remote_tree" = "$candidate_tree" && test "$remote_parents" = "$base_sha"; then
+              echo "unchanged candidate $remote_sha; preserving its checks and reviews"
+            else
+              git commit -m "chore: promote Röbel staging $SOURCE_REVISION"
+              git push --force-with-lease="refs/heads/$AUTOMATION_BRANCH:$remote_sha" origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+            fi
           else
-            git push origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
+            git commit -m "chore: promote Röbel staging $SOURCE_REVISION"
+            git push --force-with-lease="refs/heads/$AUTOMATION_BRANCH:" origin "HEAD:refs/heads/$AUTOMATION_BRANCH"
           fi
           title="chore: promote Röbel staging ${SOURCE_REVISION:0:12}"
           body="$RUNNER_TEMP/promotion-body.md"
