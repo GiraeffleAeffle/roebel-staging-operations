@@ -27,6 +27,13 @@ VERIFIER_SPEC = importlib.util.spec_from_file_location(
 assert VERIFIER_SPEC and VERIFIER_SPEC.loader
 VERIFIER = importlib.util.module_from_spec(VERIFIER_SPEC)
 VERIFIER_SPEC.loader.exec_module(VERIFIER)
+FIXTURE_SPEC = importlib.util.spec_from_file_location(
+    "reviewed_render_fixtures_for_promotion_test",
+    Path(__file__).with_name("test_verify_reviewed_render.py"),
+)
+assert FIXTURE_SPEC and FIXTURE_SPEC.loader
+FIXTURES = importlib.util.module_from_spec(FIXTURE_SPEC)
+FIXTURE_SPEC.loader.exec_module(FIXTURES)
 
 
 def sha(value: bytes) -> str:
@@ -140,10 +147,18 @@ class AutomaticPromotionTests(unittest.TestCase):
             f"!{{ path_beg {' '.join(dynamic_get_prefixes)} }}",
         )
 
-    def fixture(self) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
+    def fixture(
+        self, *, before_synthetic_activation: bool = False,
+    ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
         temporary = tempfile.TemporaryDirectory()
         root = Path(temporary.name) / "repo"
-        shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        base = Path(temporary.name) / "base"
+        shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        if before_synthetic_activation:
+            # Historical activation tests need a verified pre-activation base;
+            # ordinary image promotions must exercise the current steady state.
+            FIXTURES.ReviewedRenderVerifierTests().normalize_synthetic_citizen_pass_seed(base)
+        shutil.copytree(base, root)
         incoming = Path(temporary.name) / "incoming"
         (incoming / "evidence").mkdir(parents=True)
 
@@ -215,7 +230,9 @@ class AutomaticPromotionTests(unittest.TestCase):
     def synthetic_fixture(
         self,
     ) -> tuple[tempfile.TemporaryDirectory[str], Path, Path, Path]:
-        temporary, root, incoming, candidate_path = self.fixture()
+        temporary, root, incoming, candidate_path = self.fixture(
+            before_synthetic_activation=True,
+        )
         candidate = json.loads(candidate_path.read_text())
         revision = MODULE.SYNTHETIC_CITIZEN_PASS_SOURCE_REVISION
         candidate["promotionRevision"] = revision
@@ -353,39 +370,48 @@ class AutomaticPromotionTests(unittest.TestCase):
                 "--root",
                 str(candidate),
                 "--base-root",
-                str(ROOT),
+                str(candidate.parent / "base"),
             ],
             capture_output=True,
             text=True,
         )
         return completed.returncode, completed.stderr
 
-    def test_v1_remains_an_ordinary_release_without_test_contract_selector(self) -> None:
-        temporary, root, incoming, candidate = self.fixture()
-        self.addCleanup(temporary.cleanup)
-        result = MODULE.render(root, candidate, incoming)
-        self.assertEqual(result["status"], "rendered_effect_free")
-        self.assertEqual(result["changedComponents"], list(MODULE.COMPONENT_ORDER))
-        web = json.loads(
-            (root / "reviewed-render/roebel-staging/web/deployment.json").read_text(),
-        )
-        environment = web["spec"]["template"]["spec"]["containers"][0]["env"]
-        by_name = {item["name"]: item for item in environment}
-        self.assertTrue(MODULE.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES.isdisjoint(by_name))
-        annotations = web["spec"]["template"]["metadata"]["annotations"]
-        self.assertTrue(
-            set(MODULE.WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS).isdisjoint(annotations),
-        )
-
-        verification = MODULE.Path(ROOT / "scripts/verify-reviewed-render.py")
-        import subprocess
-
-        completed = subprocess.run(
-            ["python3", str(verification), "--root", str(root), "--base-root", str(ROOT)],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+    def test_v1_preserves_current_identity_and_protected_topology(self) -> None:
+        for before_activation in (False, True):
+            with self.subTest(before_synthetic_activation=before_activation):
+                temporary, root, incoming, candidate = self.fixture(
+                    before_synthetic_activation=before_activation,
+                )
+                self.addCleanup(temporary.cleanup)
+                before = VERIFIER.verify_tree(root)
+                if before_activation:
+                    self.assertIsNone(before["webIdentityContractSet"])
+                mutable = {
+                    "head.json", "integrity.json", "live-preconditions.json",
+                    "public-mecky/deployment.json", "web/deployment.json",
+                }
+                render = root / MODULE.RENDER_ROOT
+                protected = {
+                    str(path.relative_to(render)): path.read_bytes()
+                    for path in render.rglob("*")
+                    if path.is_file() and str(path.relative_to(render)) not in mutable
+                }
+                result = MODULE.render(root, candidate, incoming)
+                self.assertEqual(result["status"], "rendered_effect_free")
+                self.assertEqual(result["changedComponents"], list(MODULE.COMPONENT_ORDER))
+                after = VERIFIER.verify_tree(root)
+                self.assertEqual(after["webIdentityContractSet"], before["webIdentityContractSet"])
+                self.assertEqual(
+                    {
+                        str(path.relative_to(render)): path.read_bytes()
+                        for path in render.rglob("*")
+                        if path.is_file() and str(path.relative_to(render)) not in mutable
+                    },
+                    protected,
+                )
+                returncode, stderr = self.verify_with_base(root)
+                self.assertEqual(returncode, 0, stderr)
 
     def test_v2_renders_only_the_atomic_synthetic_citizen_pass_transition(self) -> None:
         temporary, root, incoming, candidate = self.synthetic_fixture()
@@ -436,7 +462,7 @@ class AutomaticPromotionTests(unittest.TestCase):
             set(MODULE.SYNTHETIC_CITIZEN_PASS_EXISTING_PATHS),
         )
         base_pin = json.loads(
-            (ROOT / MODULE.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json").read_text(),
+            (root.parent / "base" / MODULE.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json").read_text(),
         )
         candidate_pin = json.loads(
             (root / MODULE.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json").read_text(),
@@ -456,11 +482,11 @@ class AutomaticPromotionTests(unittest.TestCase):
         ):
             self.assertEqual(
                 (root / relative).read_bytes(),
-                (ROOT / relative).read_bytes(),
+                (root.parent / "base" / relative).read_bytes(),
                 str(relative),
             )
         base_ingress = json.loads(
-            (ROOT / MODULE.PARTICIPANT_GATEWAY_ROOT / "ingress.json").read_text(),
+            (root.parent / "base" / MODULE.PARTICIPANT_GATEWAY_ROOT / "ingress.json").read_text(),
         )
         candidate_ingress = json.loads(
             (root / MODULE.PARTICIPANT_GATEWAY_ROOT / "ingress.json").read_text(),
@@ -479,21 +505,8 @@ class AutomaticPromotionTests(unittest.TestCase):
         ]
         self.assertEqual(candidate_ingress, base_ingress)
 
-        import subprocess
-
-        completed = subprocess.run(
-            [
-                "python3",
-                str(ROOT / "scripts/verify-reviewed-render.py"),
-                "--root",
-                str(root),
-                "--base-root",
-                str(ROOT),
-            ],
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
+        returncode, stderr = self.verify_with_base(root)
+        self.assertEqual(returncode, 0, stderr)
 
     def test_protected_verifier_rejects_each_synthetic_leg_in_isolation(self) -> None:
         def remove_selector(root: Path) -> None:
@@ -511,7 +524,7 @@ class AutomaticPromotionTests(unittest.TestCase):
 
         def restore_paths(root: Path, paths: list[str]) -> None:
             for relative in paths:
-                (root / relative).write_bytes((ROOT / relative).read_bytes())
+                (root / relative).write_bytes((root.parent / "base" / relative).read_bytes())
 
         gateway_paths = [
             str(MODULE.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"),
