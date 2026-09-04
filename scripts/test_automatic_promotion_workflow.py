@@ -1,12 +1,121 @@
 from __future__ import annotations
 
 import re
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/automatic-promotion.yml"
+
+
+class PromotionBranchBehaviorTests(unittest.TestCase):
+    """Run the production Git stanza against a disposable, local bare remote."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="promotion-branch-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.remote = self.root / "remote.git"
+        self.branch = "automation/roebel-staging-latest"
+        self.env = {
+            key: value for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        } | {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "Fixture",
+            "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+            "GIT_COMMITTER_NAME": "Fixture",
+            "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+            "AUTOMATION_BRANCH": self.branch,
+            "SOURCE_REVISION": "a" * 40,
+        }
+        self.git(self.root, "init", "--bare", str(self.remote))
+        seed = self.root / "seed"
+        self.git(self.root, "init", "--initial-branch=main", str(seed))
+        target = seed / "reviewed-render/roebel-staging/head.json"
+        target.parent.mkdir(parents=True)
+        target.write_text("baseline\n")
+        self.git(seed, "add", ".")
+        self.git(seed, "commit", "-m", "baseline")
+        self.base = self.git(seed, "rev-parse", "HEAD")
+        self.git(seed, "remote", "add", "origin", str(self.remote))
+        self.git(seed, "push", "origin", "main")
+        workflow = WORKFLOW.read_text()
+        stanza = workflow.split('          base_sha="$(git rev-parse HEAD)"\n', 1)[1]
+        stanza = stanza.split('          title=', 1)[0]
+        self.stanza = 'set -euo pipefail\nbase_sha="$(git rev-parse HEAD)"\n' + textwrap.dedent(stanza).replace("${{ steps.schema.outputs.version }}", "v1")
+        self.attempt = 0
+
+    def git(self, cwd: Path, *arguments: str) -> str:
+        return subprocess.check_output(
+            ["git", *arguments], cwd=cwd, env=self.env,
+            text=True, stderr=subprocess.PIPE,
+        ).strip()
+
+    def candidate(self, content: str) -> Path:
+        self.attempt += 1
+        workspace = self.root / f"attempt-{self.attempt}"
+        self.git(self.root, "clone", "--branch", "main", str(self.remote), str(workspace))
+        (workspace / "reviewed-render/roebel-staging/head.json").write_text(content)
+        return workspace
+
+    def publish(self, workspace: Path) -> subprocess.CompletedProcess[str]:
+        # Different timestamps reproduce the CI-invalidating commit churn.
+        timestamp = f"2001-01-{self.attempt:02d}T00:00:00Z"
+        return subprocess.run(
+            ["bash", "-c", self.stanza], cwd=workspace,
+            env=self.env | {"GIT_AUTHOR_DATE": timestamp, "GIT_COMMITTER_DATE": timestamp},
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=20,
+        )
+
+    def remote_head(self) -> str:
+        return self.git(self.root, "--git-dir", str(self.remote), "rev-parse", f"refs/heads/{self.branch}")
+
+    def test_identical_candidate_preserves_commit_and_review_binding(self) -> None:
+        first = self.publish(self.candidate("release one\n"))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        head = self.remote_head()
+        second = self.publish(self.candidate("release one\n"))
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(self.remote_head(), head)
+
+    def test_new_render_replaces_candidate_with_one_current_base_parent(self) -> None:
+        first = self.publish(self.candidate("release one\n"))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        old = self.remote_head()
+        workspace = self.candidate("release two\n")
+        second = self.publish(workspace)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotEqual(self.remote_head(), old)
+        self.assertEqual(self.git(workspace, "show", "-s", "--format=%P", "HEAD"), self.base)
+
+    def test_same_tree_with_a_different_parent_is_not_reused(self) -> None:
+        workspace = self.candidate("release one\n")
+        self.git(workspace, "add", ".")
+        tree = self.git(workspace, "write-tree")
+        parentless = self.git(workspace, "commit-tree", tree, "-m", "wrong ancestry")
+        self.git(workspace, "push", "origin", f"{parentless}:refs/heads/{self.branch}")
+        result = self.publish(workspace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(self.remote_head(), parentless)
+        self.assertEqual(self.git(workspace, "show", "-s", "--format=%P", "HEAD"), self.base)
+
+    def test_moved_protected_base_aborts_before_publishing(self) -> None:
+        stale = self.candidate("release one\n")
+        seed = self.root / "seed"
+        (seed / "reviewed-render/roebel-staging/head.json").write_text("new baseline\n")
+        self.git(seed, "commit", "-am", "advance protected base")
+        self.git(seed, "push", "origin", "main")
+        result = self.publish(stale)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.git(self.root, "ls-remote", "--heads", str(self.remote), f"refs/heads/{self.branch}"), "")
 
 
 class AutomaticPromotionWorkflowTests(unittest.TestCase):
