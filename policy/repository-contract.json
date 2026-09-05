@@ -265,7 +265,7 @@
     "normalReleaseSetPromotionMayChange": false,
     "renderRoot": "reviewed-render/roebel-staging/tracer-data-plane",
     "runtimePin": "reviewed-render/roebel-staging/tracer-data-plane/runtime-pin.json",
-    "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
+    "schemaVersion": "roebel_retained_tracer_data_plane_pin_v1",
     "secretMaterialization": {
       "adoption": "forbidden",
       "anonJwt": {
@@ -457,10 +457,23 @@
       "valuesCommitted": false
     },
     "storage": {
-      "durability": "emptyDir-recreated-baseline",
-      "persistentVolumeClaim": false,
-      "sizeLimit": "2Gi"
-    }
+      "accessModes": [
+        "ReadWriteOnce"
+      ],
+      "claimName": "roebel-tracer-postgres-data-v1",
+      "claimProvisionedByFlux": false,
+      "durability": "retained-pvc-restored-v1",
+      "emptyDatabaseBootstrapAllowed": false,
+      "existingClaimRequired": true,
+      "namespace": "stadtstack-roebel-staging-lab",
+      "persistentVolumeClaim": true,
+      "requestedStorage": "10Gi",
+      "requiredReclaimPolicy": "Retain",
+      "restoreRequiredBeforeStartup": true,
+      "storageClassName": "hcloud-volumes",
+      "volumeMode": "Filesystem"
+    },
+    "storageTransitionRecord": "reviewed-render/roebel-staging/tracer-storage-continuity-v1.json"
   },
   "promotionBoundary": {
     "completePreviousHeadRequired": true,
