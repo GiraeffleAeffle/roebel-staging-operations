@@ -905,9 +905,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(synthetic_state, (True, True, True))
 
         render = destination / VERIFIER.RENDER_ROOT
-        # Historical v4 fixtures discard both later test-only migrations.
+        # Historical v4 fixtures discard later identity/storage transition records.
         # This only edits the disposable fixture, never a live database.
-        for relative in (VERIFIER.IDENTITY_ROTATION_SQL_PATH, VERIFIER.IDENTITY_ROTATION_RECORD_PATH):
+        for relative in (VERIFIER.IDENTITY_ROTATION_SQL_PATH, VERIFIER.IDENTITY_ROTATION_RECORD_PATH, VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH):
             (destination / relative).unlink(missing_ok=True)
         for relative in (
             VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
@@ -3034,6 +3034,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 # not an admitted live transition or a changed source hash.
                 VERIFIER.IDENTITY_ROTATION_SQL_PATH,
                 VERIFIER.IDENTITY_ROTATION_RECORD_PATH,
+                str(VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH),
             }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
