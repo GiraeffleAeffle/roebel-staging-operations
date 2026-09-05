@@ -86,6 +86,18 @@ SYNTHETIC_PRODUCT_ARTIFACTS = (
     *PRODUCT_ARTIFACTS,
     SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT,
 )
+# Keep this module self-contained: the live verifier also compiles its exact
+# Git blob with a synthetic __file__, without reading sibling modules.
+IDENTITY_ROTATION_SOURCE_REVISION = "2961a04fb9b869bff35a411784c3fb4747eaf435"
+IDENTITY_ROTATION_ARTIFACT = (
+    "77-staging-synthetic-citizen-pass-v2.sql",
+    "supabase/migrations/20260905_staging_synthetic_citizen_pass_v2.sql",
+    "sha256:46aa0bd9efb89c837302f98a1ebd03151fc0f1828eb3212a79bc342ecc854f87",
+)
+ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS = (
+    *SYNTHETIC_PRODUCT_ARTIFACTS,
+    IDENTITY_ROTATION_ARTIFACT,
+)
 
 RUNTIME_SECRET_KEYS = (
     "anon-jwt",
@@ -269,7 +281,12 @@ def runtime_pin(
     source_revision: str | None = PRODUCT_SOURCE_REVISION,
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
-    if product_artifacts == SYNTHETIC_PRODUCT_ARTIFACTS:
+    if product_artifacts == ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS:
+        require(
+            source_revision == IDENTITY_ROTATION_SOURCE_REVISION,
+            "rotated synthetic tracer source revision is not the reviewed publication",
+        )
+    elif product_artifacts == SYNTHETIC_PRODUCT_ARTIFACTS:
         require(
             isinstance(source_revision, str) and REVISION.fullmatch(source_revision),
             "synthetic tracer product source revision invalid",
@@ -750,6 +767,14 @@ def expected_postgres_deployment(
         template_annotations["stadtstack.io/bootstrap-artifacts-sha256"] = (
             bootstrap_artifacts_sha256
         )
+    elif product_artifacts == ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS:
+        # The data lives in emptyDir. Rotating this annotation would recreate
+        # the Pod and destroy it. Keep the entire predecessor Pod template;
+        # update only Deployment metadata and the stable-name ConfigMap, then
+        # apply migration 77 in-place. A future fresh Pod reads all migrations.
+        template_annotations = expected_postgres_deployment(
+            SYNTHETIC_PRODUCT_ARTIFACTS
+        )["spec"]["template"]["metadata"]["annotations"]
     mounts = [
         {"mountPath": "/var/lib/postgresql/data", "name": "postgres-data"},
         {
@@ -1097,6 +1122,8 @@ def expected_application_objects(
     product_artifacts: tuple[tuple[str, str, str], ...] | None = None,
 ) -> dict[str, dict[str, Any]]:
     if product_artifacts is None:
+        rotation = root / RENDER_ROOT / "bootstrap" / IDENTITY_ROTATION_ARTIFACT[0]
+        require(not rotation.is_symlink(), "tracer rotation bootstrap must not be a symlink")
         synthetic_migration = (
             root / RENDER_ROOT / "bootstrap" / SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT[0]
         )
@@ -1116,7 +1143,10 @@ def expected_application_objects(
                 synthetic_migration.is_file() and citizen_migration.is_file(),
                 "tracer synthetic-adoption bootstrap requires the real-adoption predecessor",
             )
-            product_artifacts = SYNTHETIC_PRODUCT_ARTIFACTS
+            product_artifacts = (
+                ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS if rotation.is_file()
+                else SYNTHETIC_PRODUCT_ARTIFACTS
+            )
         elif citizen_migration.exists():
             require(
                 citizen_migration.is_file(),
@@ -1206,11 +1236,17 @@ def expected_files(
 def verify_render(root: Path) -> dict[str, Any]:
     render = root / RENDER_ROOT
     require(render.is_dir(), "tracer data-plane render root missing")
+    rotation = render / "bootstrap" / IDENTITY_ROTATION_ARTIFACT[0]
+    require(not rotation.is_symlink(), "tracer rotation bootstrap must not be a symlink")
+    rotated = rotation.is_file()
     synthetic = (render / "bootstrap/76-staging-synthetic-citizen-adoption.sql").is_file()
     successor = (render / "bootstrap/75-staging-citizen-adoption.sql").is_file()
     require(not synthetic or successor, "synthetic tracer migration lacks real-adoption predecessor")
+    require(not rotated or synthetic, "tracer rotation lacks the v1 predecessor")
     if synthetic:
-        product_artifacts = SYNTHETIC_PRODUCT_ARTIFACTS
+        product_artifacts = (
+            ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS if rotated else SYNTHETIC_PRODUCT_ARTIFACTS
+        )
         runtime_value = json.loads((render / "runtime-pin.json").read_text())
         source_revision = runtime_value.get("productSource", {}).get("sourceRevision")
         require(

@@ -43,7 +43,10 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         bootstrap = root / POLICY.RENDER_ROOT / "bootstrap"
         citizen = bootstrap / POLICY.PRODUCT_ARTIFACTS[-1][0]
         synthetic = bootstrap / POLICY.SYNTHETIC_CITIZEN_ADOPTION_ARTIFACT[0]
-        if synthetic.is_file():
+        rotation = bootstrap / POLICY.IDENTITY_ROTATION_ARTIFACT[0]
+        if rotation.is_file():
+            selected = POLICY.ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS
+        elif synthetic.is_file():
             selected = POLICY.SYNTHETIC_PRODUCT_ARTIFACTS
         elif citizen.is_file():
             selected = POLICY.PRODUCT_ARTIFACTS

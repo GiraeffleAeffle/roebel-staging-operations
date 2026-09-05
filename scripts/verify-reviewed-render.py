@@ -72,6 +72,20 @@ def load_tracer_data_plane_module():
 
 TRACER_DATA_PLANE = load_tracer_data_plane_module()
 
+
+def load_identity_rotation_policy():
+    # Always resolve beside protected policy, never inside a candidate checkout.
+    path = Path(__file__).with_name("staging_test_identity_rotation.py")
+    spec = importlib.util.spec_from_file_location("protected_test_identity_rotation", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected test identity rotation policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+IDENTITY_ROTATION = load_identity_rotation_policy()
+
 ELIGIBILITY_ISSUER_POLICY_PATH = (
     "policy/staging-participant-eligibility-issuer-materialization-policy.json"
 )
@@ -239,6 +253,9 @@ EXPECTED_FILES = {
     "scripts/staging_participant_flux_bootstrap.py",
     "scripts/staging_participant_gateway_policy.py",
     "scripts/tracer_data_plane_policy.py",
+    "scripts/staging_test_identity_rotation.py",
+    "scripts/test_staging_test_identity_rotation.py",
+    "tests/fixtures/staging-synthetic-citizen-pass-v2.sql",
     "scripts/materialize-tracer-data-plane-secrets.py",
     "scripts/run-tracer-data-plane-live.py",
     "scripts/test_automatic_promotion_workflow.py",
@@ -584,6 +601,23 @@ SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH = str(
     TRACER_DATA_PLANE.RENDER_ROOT
     / "bootstrap/76-staging-synthetic-citizen-adoption.sql"
 )
+IDENTITY_ROTATION_SQL_PATH = str(
+    TRACER_DATA_PLANE.RENDER_ROOT / "bootstrap" / IDENTITY_ROTATION.MIGRATION_ARTIFACT[0]
+)
+IDENTITY_ROTATION_RECORD_PATH = f"{RENDER_ROOT}/test-identity-rotation-v2.json"
+IDENTITY_ROTATION_FILES = {
+    "policy/repository-contract.json",
+    f"{RENDER_ROOT}/head.json", f"{RENDER_ROOT}/integrity.json",
+    f"{RENDER_ROOT}/live-preconditions.json", f"{RENDER_ROOT}/network-boundary-migration.json",
+    f"{RENDER_ROOT}/web/deployment.json", f"{RENDER_ROOT}/public-mecky/deployment.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
+    f"{PARTICIPANT_GATEWAY_ROOT}/deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/runtime-pin.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/postgres-deployment.json",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/kustomization.yaml",
+    f"{TRACER_DATA_PLANE.RENDER_ROOT}/bootstrap/zz-roebel-tracer.sh",
+    IDENTITY_ROTATION_SQL_PATH, IDENTITY_ROTATION_RECORD_PATH,
+}
 SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH = (
     f"{RENDER_ROOT}/synthetic-citizen-pass-transition.json"
 )
@@ -1000,6 +1034,14 @@ def verify_repository_file_set(root: Path) -> str:
         return "reviewed-public-knowledge-participant-gateway"
     if actual == SYNTHETIC_CITIZEN_PASS_SIGNED_NOSTR_EXPECTED_FILES:
         return "signed-nostr-participant-gateway"
+    if actual == SYNTHETIC_CITIZEN_PASS_EXPECTED_FILES | {
+        IDENTITY_ROTATION_SQL_PATH, IDENTITY_ROTATION_RECORD_PATH
+    }:
+        return "reviewed-public-knowledge-participant-gateway"
+    if actual == SYNTHETIC_CITIZEN_PASS_SIGNED_NOSTR_EXPECTED_FILES | {
+        IDENTITY_ROTATION_SQL_PATH, IDENTITY_ROTATION_RECORD_PATH
+    }:
+        return "signed-nostr-participant-gateway"
     missing_current = sorted(EXPECTED_FILES - actual)
     unexpected = sorted(actual - EXPECTED_FILES)
     raise VerificationError(
@@ -1330,6 +1372,12 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             else TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS
         )
     )
+    rotated_identity = (root / IDENTITY_ROTATION_SQL_PATH).is_file()
+    if rotated_identity:
+        tracer_artifacts = TRACER_DATA_PLANE.ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS
+    synthetic_boundary = synthetic_citizen_pass_boundary()
+    if rotated_identity:
+        synthetic_boundary = IDENTITY_ROTATION.boundary(synthetic_boundary)
     gateway_http = participant_gateway_http_contract(participant_policy)
     if synthetic_citizen_pass:
         gateway_http["schemaVersion"] = (
@@ -1482,7 +1530,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
             "schemaVersion": gateway_http["schemaVersion"],
             **(
-                {"syntheticCitizenAdoption": synthetic_citizen_pass_boundary()}
+                {"syntheticCitizenAdoption": synthetic_boundary}
                 if synthetic_citizen_pass
                 else {}
             ),
@@ -2243,6 +2291,10 @@ def verify_web_identity_contract_set(
     enabled: bool,
 ) -> dict[str, Any] | None:
     """Require the profile and address pair atomically under no authority."""
+    rotated = by_name.get("ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET", {}).get("value") == IDENTITY_ROTATION.WEB_IDENTITY["profile"]
+    identity = IDENTITY_ROTATION.WEB_IDENTITY if rotated else WEB_IDENTITY_CONTRACT_SET
+    expected_env = IDENTITY_ROTATION.web_environment() if rotated else WEB_IDENTITY_CONTRACT_SET_ENV
+    expected_annotations = IDENTITY_ROTATION.web_annotations() if rotated else WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
     pod_annotations = deployment["spec"]["template"]["metadata"]["annotations"]
     present_names = WEB_IDENTITY_CONTRACT_SET_ENV_NAMES & set(by_name)
     present_annotations = (
@@ -2259,32 +2311,32 @@ def verify_web_identity_contract_set(
         "Web identity contract set must configure profile and both addresses atomically",
     )
     require(
-        [by_name[item["name"]] for item in WEB_IDENTITY_CONTRACT_SET_ENV]
-        == WEB_IDENTITY_CONTRACT_SET_ENV,
+        [by_name[item["name"]] for item in expected_env]
+        == expected_env,
         "Web identity contract set profile/address binding invalid",
     )
     require(
         {
             name: pod_annotations[name]
-            for name in WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
+            for name in expected_annotations
             if name in pod_annotations
         }
-        == WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS,
+        == expected_annotations,
         "Web identity contract set authority/code evidence invalid",
     )
     require(
-        WEB_IDENTITY_CONTRACT_SET["chainId"] == 100
-        and WEB_IDENTITY_CONTRACT_SET["authority"] == "none",
+        identity["chainId"] == 100
+        and identity["authority"] == "none",
         "Web identity contract set reviewed invariant invalid",
     )
     require(
-        WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS[
+        expected_annotations[
             "stadtstack.io/identity-contract-set-sha256"
         ]
-        == digest(WEB_IDENTITY_CONTRACT_SET),
+        == digest(identity),
         "Web identity contract set evidence checksum invalid",
     )
-    return copy.deepcopy(WEB_IDENTITY_CONTRACT_SET)
+    return copy.deepcopy(identity)
 
 
 def public_mecky_reviewed_web_source_enabled(root: Path) -> bool:
@@ -4852,6 +4904,14 @@ def expected_synthetic_citizen_pass_gateway_runtime_pin(
             isinstance(release[field], str) and SHA256.fullmatch(release[field]),
             f"synthetic participant gateway {field} invalid",
         )
+    if release == IDENTITY_ROTATION.GATEWAY_RELEASE:
+        predecessor = expected_synthetic_citizen_pass_gateway_runtime_pin({
+            "sourceRevision": SYNTHETIC_CITIZEN_PASS_SOURCE_REVISION,
+            "sourceTreeSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_SOURCE_TREE_SHA256,
+            "workflowSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_WORKFLOW_SHA256,
+            "manifestDigest": SYNTHETIC_CITIZEN_PASS_GATEWAY_MANIFEST_DIGEST,
+        }, participant_policy)
+        return IDENTITY_ROTATION.gateway_runtime_pin(predecessor)
     require(
         release
         == {
@@ -5071,7 +5131,12 @@ def expected_participant_gateway_resources(
                 not present,
                 "synthetic participant gateway predecessor environment is partial",
             )
-            container["env"].extend(copy.deepcopy(SYNTHETIC_CITIZEN_PASS_ENV))
+            synthetic_environment = (
+                IDENTITY_ROTATION.gateway_environment(SYNTHETIC_CITIZEN_PASS_ENV)
+                if runtime_pin["sourceRevision"] == IDENTITY_ROTATION.SOURCE_REVISION
+                else copy.deepcopy(SYNTHETIC_CITIZEN_PASS_ENV)
+            )
+            container["env"].extend(synthetic_environment)
             expected["ingress"] = expected_synthetic_citizen_pass_gateway_ingress()
     return {
         "deployment": expected["deployment"],
@@ -5946,6 +6011,19 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(integrity["networkBoundaryMigrationSha256"] == digest(migration), "network-boundary migration checksum mismatch")
     verify_kustomizations(root, signed_nostr, participant_gateway, True)
     live = verify_live_preconditions(root, head)
+    web_container = deployments["roebel-web-staging"]["spec"]["template"]["spec"]["containers"][0]
+    selected_identity = verify_web_identity_contract_set(
+        deployments["roebel-web-staging"],
+        {item["name"]: item for item in web_container["env"]},
+        identity_contract_set,
+    )
+    rotated_state = (
+        selected_identity == IDENTITY_ROTATION.WEB_IDENTITY,
+        (root / IDENTITY_ROTATION_SQL_PATH).is_file(),
+        bool(participant_gateway_objects and participant_gateway_objects["runtimePin"]["sourceRevision"] == IDENTITY_ROTATION.SOURCE_REVISION),
+    )
+    require(rotated_state in {(False, False, False), (True, True, True)},
+            "test identity rotation requires matching Web, gateway and database pins")
     return {
         "root": root,
         "head": head,
@@ -5967,10 +6045,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "workbenchBaselineEnabled": True,
         "tracerDataPlane": tracer_data_plane,
         "webTracerFeed": tracer_feed_route,
-        "webIdentityContractSet": (
-            copy.deepcopy(WEB_IDENTITY_CONTRACT_SET)
-            if identity_contract_set else None
-        ),
+        "webIdentityContractSet": selected_identity,
     }
 
 
@@ -6273,7 +6348,10 @@ def tracer_citizen_adoption_enabled(snapshot: dict[str, Any]) -> bool:
     if (
         isinstance(state[0], str)
         and REVISION.fullmatch(state[0])
-        and state[1] == expected_synthetic
+        and state[1] in (expected_synthetic, [
+            {"path": path, "sha256": digest}
+            for _filename, path, digest in TRACER_DATA_PLANE.ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS
+        ])
     ):
         return True
     raise VerificationError("tracer citizen-adoption state drift")
@@ -6288,7 +6366,10 @@ def tracer_synthetic_citizen_pass_enabled(snapshot: dict[str, Any]) -> bool:
     return (
         isinstance(tracer.get("productSourceRevision"), str)
         and REVISION.fullmatch(tracer["productSourceRevision"]) is not None
-        and tracer.get("productArtifacts") == expected
+        and tracer.get("productArtifacts") in (expected, [
+            {"path": path, "sha256": digest}
+            for _filename, path, digest in TRACER_DATA_PLANE.ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS
+        ])
     )
 
 
@@ -6563,6 +6644,83 @@ def expected_release_deployment(
     container["image"] = f"{COMPONENTS[component]['repository']}@{record['manifestDigest']}"
     container["imagePullPolicy"] = "IfNotPresent"
     return value
+
+
+def expected_test_identity_rotation_record(candidate_root: Path, base_root: Path) -> dict[str, Any]:
+    added = {IDENTITY_ROTATION_SQL_PATH, IDENTITY_ROTATION_RECORD_PATH}
+    return {
+        "schemaVersion": "roebel_staging_test_identity_rotation_v2",
+        "sourceRevision": IDENTITY_ROTATION.SOURCE_REVISION,
+        "environment": "staging", "testOnly": True, "authorityBinding": "none",
+        "previousIdentity": WEB_IDENTITY_CONTRACT_SET,
+        "nextIdentity": IDENTITY_ROTATION.WEB_IDENTITY,
+        "gatewayRelease": IDENTITY_ROTATION.GATEWAY_RELEASE,
+        "migration": {
+            "path": IDENTITY_ROTATION_SQL_PATH,
+            "sha256": IDENTITY_ROTATION.MIGRATION_ARTIFACT[2],
+            "apply": "in-place-on-existing-postgres-pod",
+            "postgresPodTemplateChanged": False,
+            "historicalRowsPreserved": True,
+            "liveExecutionReceiptRequired": True,
+        },
+        "rollback": "forward-only-schema-rotation-requires-reviewed-reverse-migration",
+        "changedFiles": [
+            {"path": path,
+             "predecessorSha256": bytes_digest((base_root / path).read_bytes()),
+             "successorSha256": bytes_digest((candidate_root / path).read_bytes())}
+            for path in sorted(IDENTITY_ROTATION_FILES - added)
+        ],
+        "addedFiles": sorted(added),
+    }
+
+
+def verify_test_identity_rotation(candidate: dict[str, Any], base: dict[str, Any]) -> None:
+    """Admit one exact forward rotation while retaining the emptyDir Pod."""
+    require(base["webIdentityContractSet"] == WEB_IDENTITY_CONTRACT_SET
+            and candidate["webIdentityContractSet"] == IDENTITY_ROTATION.WEB_IDENTITY,
+            "test identity rotation must advance the registered v1 pair to v2")
+    require(candidate["renderFileSet"] == base["renderFileSet"], "test identity rotation render shape drift")
+    require(candidate["head"]["promotionRevision"] == IDENTITY_ROTATION.SOURCE_REVISION,
+            "test identity rotation requires the reviewed app publication")
+    require(component_map(candidate["head"])["roebel-web-staging"]["sourceRevision"] == IDENTITY_ROTATION.SOURCE_REVISION,
+            "test identity rotation requires the matching Web source")
+    require(candidate["head"] != base["head"], "test identity rotation requires a new release")
+    for field in ("publicMeckyReviewedEgress", "publicMeckyReviewedWebSource", "webTracerFeed", "signedNostr", "stagingParticipantGatewayPolicy"):
+        require(candidate[field] == base[field], f"test identity rotation changed {field}")
+    expected_old_gateway = expected_synthetic_citizen_pass_gateway_runtime_pin({
+        "sourceRevision": SYNTHETIC_CITIZEN_PASS_SOURCE_REVISION,
+        "sourceTreeSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_SOURCE_TREE_SHA256,
+        "workflowSha256": SYNTHETIC_CITIZEN_PASS_GATEWAY_WORKFLOW_SHA256,
+        "manifestDigest": SYNTHETIC_CITIZEN_PASS_GATEWAY_MANIFEST_DIGEST,
+    })
+    require(base["stagingParticipantGateway"]["runtimePin"] == expected_old_gateway,
+            "test identity rotation gateway predecessor drift")
+    require(candidate["stagingParticipantGateway"]["runtimePin"] == IDENTITY_ROTATION.gateway_runtime_pin(expected_old_gateway),
+            "test identity rotation gateway successor drift")
+    for component in COMPONENT_ORDER:
+        expected = expected_release_deployment(base["deployments"][component], candidate["head"], component)
+        if component == "roebel-web-staging":
+            container = expected["spec"]["template"]["spec"]["containers"][0]
+            by_name = {item["name"]: item for item in container["env"]}
+            for item in IDENTITY_ROTATION.web_environment():
+                by_name[item["name"]].update(item)
+            expected["spec"]["template"]["metadata"]["annotations"].update(IDENTITY_ROTATION.web_annotations())
+        require(candidate["deployments"][component] == expected,
+                f"test identity rotation {component} deployment drift")
+    candidate_root, base_root = candidate["root"], base["root"]
+    postgres_path = TRACER_DATA_PLANE.RENDER_ROOT / "postgres-deployment.json"
+    require(load_json(candidate_root / postgres_path)["spec"]["template"] == load_json(base_root / postgres_path)["spec"]["template"],
+            "test identity rotation must preserve the complete PostgreSQL Pod template")
+    require(changed_repository_files(candidate_root, base_root) == IDENTITY_ROTATION_FILES,
+            "test identity rotation changed file set drift")
+    require(repository_files(candidate_root) - repository_files(base_root) == {IDENTITY_ROTATION_SQL_PATH, IDENTITY_ROTATION_RECORD_PATH},
+            "test identity rotation added file set drift")
+    require(load_json(candidate_root / IDENTITY_ROTATION_RECORD_PATH) == expected_test_identity_rotation_record(candidate_root, base_root),
+            "test identity rotation transition record drift")
+    require(candidate["live"]["previous"] == base["head"], "test identity rotation previous-head CAS drift")
+    for index, component in enumerate(COMPONENT_ORDER):
+        require(candidate["live"]["preconditions"][index]["currentImage"] == base["deployments"][component]["spec"]["template"]["spec"]["containers"][0]["image"],
+                f"test identity rotation {component} image CAS drift")
 
 
 def verify_synthetic_citizen_pass_transition(
@@ -6925,6 +7083,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         and candidate_synthetic_state == (True, True, True)
     ):
         verify_synthetic_citizen_pass_transition(candidate, base)
+        return
+
+    if base_identity_contract_set != candidate_identity_contract_set and base_identity_contract_set is not None:
+        verify_test_identity_rotation(candidate, base)
         return
 
     require(
