@@ -28,13 +28,20 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
             ROOT / POLICY.RENDER_ROOT,
             root / POLICY.RENDER_ROOT,
         )
+        if (ROOT / POLICY.RETAINED_RECORD_PATH).is_file():
+            shutil.copy2(ROOT / POLICY.RETAINED_RECORD_PATH, root / POLICY.RETAINED_RECORD_PATH)
         return temporary, root
 
     def test_committed_render_matches_closed_policy(self) -> None:
         result = POLICY.verify_render(ROOT)
         self.assertEqual(result["status"], "passed")
         self.assertFalse(result["externalIngress"])
-        self.assertFalse(result["persistentVolumeClaim"])
+        self.assertEqual(result["persistentVolumeClaim"], POLICY.retained_enabled(ROOT))
+        if result["persistentVolumeClaim"]:
+            pin = json.loads((ROOT / POLICY.RENDER_ROOT / "runtime-pin.json").read_text())
+            self.assertEqual(pin["database"]["claimName"], "roebel-tracer-postgres-data-v1")
+            self.assertEqual(pin["database"]["requiredReclaimPolicy"], "Retain")
+            self.assertFalse(pin["database"]["durableCivicRecordsAllowed"])
         self.assertFalse(result["secretValuesCommitted"])
 
     def test_application_object_default_tracks_the_exact_render_variant(self) -> None:
@@ -271,7 +278,7 @@ class TracerDataPlanePolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(POLICY.PolicyError, "postgrest-service.json drift"):
             POLICY.verify_render(root)
 
-    def test_mutation_persistent_database_is_rejected(self) -> None:
+    def test_mutation_unreviewed_persistent_database_is_rejected(self) -> None:
         temporary, root = self.candidate()
         self.addCleanup(temporary.cleanup)
         path = root / POLICY.RENDER_ROOT / "postgres-deployment.json"
