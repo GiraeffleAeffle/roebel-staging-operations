@@ -3029,6 +3029,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             | {
                 VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
                 VERIFIER.SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+                # These later artifacts are absent from the exact phase-A
+                # predecessor reconstructed above. This is fixture removal,
+                # not an admitted live transition or a changed source hash.
+                VERIFIER.IDENTITY_ROTATION_SQL_PATH,
+                VERIFIER.IDENTITY_ROTATION_RECORD_PATH,
             }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
@@ -3129,7 +3134,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         tree = VERIFIER.verify_tree(ROOT)
         self.assertEqual(
             tree["webIdentityContractSet"],
-            VERIFIER.WEB_IDENTITY_CONTRACT_SET,
+            VERIFIER.IDENTITY_ROTATION.WEB_IDENTITY
+            if (ROOT / VERIFIER.IDENTITY_ROTATION_RECORD_PATH).is_file()
+            else VERIFIER.WEB_IDENTITY_CONTRACT_SET,
         )
         self.assertTrue(VERIFIER.tracer_synthetic_citizen_pass_enabled(tree))
         self.assertTrue(VERIFIER.gateway_synthetic_citizen_pass_enabled(tree))
@@ -3142,28 +3149,43 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def test_web_identity_contract_set_policy_is_exact_and_non_authoritative(self) -> None:
         tree = VERIFIER.verify_tree(ROOT)
-        contract_set = VERIFIER.WEB_IDENTITY_CONTRACT_SET
-        self.assertEqual(tree["webIdentityContractSet"], contract_set)
-        self.assertEqual(contract_set["chainId"], 100)
-        self.assertEqual(contract_set["authority"], "none")
-        self.assertEqual(
-            contract_set["contracts"]["attesterNft"],
-            {
-                "address": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3",
-                "runtimeCodeKeccak256": (
-                    "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51"
-                ),
+        contract_set = tree["webIdentityContractSet"]
+        expected_contracts = {
+            "gnosis-staging-test-v1": {
+                "attesterNft": {
+                    "address": "0x5983F6300bCE3D9C1336a858Bd73F259bB8330F3",
+                    "runtimeCodeKeccak256": "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51",
+                },
+                "citizenNft": {
+                    "address": "0x0Be374808A567c9088aC8208B90a4239432B3220",
+                    "runtimeCodeKeccak256": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb",
+                },
             },
-        )
-        self.assertEqual(
-            contract_set["contracts"]["citizenNft"],
-            {
-                "address": "0x0Be374808A567c9088aC8208B90a4239432B3220",
-                "runtimeCodeKeccak256": (
-                    "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
-                ),
+            "gnosis-staging-test-v2": {
+                "attesterNft": {
+                    "address": "0x76b558Feb869c77790431497554C9aa8797896Fa",
+                    "runtimeCodeKeccak256": "0x3c12a034ea9c2749c786497b5d50dcfaa4eff84860819d788517145a2276ee51",
+                },
+                "citizenNft": {
+                    "address": "0x4765cB681E8eB080B3191DD550E81eaA41907323",
+                    "runtimeCodeKeccak256": "0x0131b35a46839c2c50e013a5702dd1a75ab2c079890711900071d56486d1bce4",
+                },
             },
-        )
+        }
+        # Check both immutable sets, even when only one is deployed. Derive
+        # neither the expected addresses nor hashes from the current render.
+        for identity in (
+            VERIFIER.WEB_IDENTITY_CONTRACT_SET,
+            VERIFIER.IDENTITY_ROTATION.WEB_IDENTITY,
+            contract_set,
+        ):
+            with self.subTest(profile=identity["profile"]):
+                self.assertIn(identity["profile"], expected_contracts)
+                self.assertEqual(identity["chainId"], 100)
+                self.assertEqual(identity["authority"], "none")
+                self.assertEqual(
+                    identity["contracts"], expected_contracts[identity["profile"]],
+                )
         web = tree["deployments"]["roebel-web-staging"]
         env = web["spec"]["template"]["spec"]["containers"][0]["env"]
         by_name = {item["name"]: item for item in env}
@@ -3173,8 +3195,13 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 for name in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV_NAMES
             },
             {
-                item["name"]: item["value"]
-                for item in VERIFIER.WEB_IDENTITY_CONTRACT_SET_ENV
+                "ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET": contract_set["profile"],
+                "ROEBEL_PUBLIC_ATTESTER_NFT_ADDRESS": expected_contracts[
+                    contract_set["profile"]
+                ]["attesterNft"]["address"],
+                "ROEBEL_PUBLIC_CITIZEN_NFT_ADDRESS": expected_contracts[
+                    contract_set["profile"]
+                ]["citizenNft"]["address"],
             },
         )
         self.assertFalse(
@@ -3861,7 +3888,11 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             )
             self.assertEqual(
                 gateway["syntheticCitizenAdoption"],
-                VERIFIER.synthetic_citizen_pass_boundary(),
+                VERIFIER.IDENTITY_ROTATION.boundary(
+                    VERIFIER.synthetic_citizen_pass_boundary(),
+                )
+                if (ROOT / VERIFIER.IDENTITY_ROTATION_RECORD_PATH).is_file()
+                else VERIFIER.synthetic_citizen_pass_boundary(),
             )
         self.assertEqual(gateway["exactGatewayPaths"], http["exactGatewayPaths"])
         self.assertEqual(gateway["methodPathMatrix"], http["methodPathMatrix"])
