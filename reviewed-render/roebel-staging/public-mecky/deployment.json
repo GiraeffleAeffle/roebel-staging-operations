@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:2799b766f2d1efcc832c86c08d32641a3a9cab971ce9c59fc33482665b1e095d",
-      "stadtstack.io/source-revision": "9309131a5bbae40629f469510ecedd410b6bc5d4"
+      "stadtstack.io/release-set-sha256": "sha256:2fe22d2f416d06f3059641b3fe9a4eaa62fac25a81f61a32e94fa17616beff2b",
+      "stadtstack.io/source-revision": "2961a04fb9b869bff35a411784c3fb4747eaf435"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "9309131a5bbae40629f469510ecedd410b6bc5d4",
+          "stadtstack.io/source-revision": "2961a04fb9b869bff35a411784c3fb4747eaf435",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -157,7 +157,7 @@
                 "value": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:e069d66413d6fb6c6a3de4ecc9e453b092de093c9fa33f22cd194bc8f722b2d3",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:f749db3552a97cc05b7159bad5e7c814b529fd412f28c4d9ff3b7015ac5e5ddb",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,

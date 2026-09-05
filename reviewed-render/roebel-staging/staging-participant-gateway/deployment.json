@@ -138,11 +138,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
+                "value": "2961a04fb9b869bff35a411784c3fb4747eaf435"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2"
+                "value": "sha256:ee7fd9e8cb8dc9032ddcf7615579dfcf2ac93f3c7e0a5735c7932eed2fef1c1c"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -220,22 +220,22 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_ADDRESS",
-                "value": "0x0be374808a567c9088ac8208b90a4239432b3220"
+                "value": "0x4765cb681e8eb080b3191dd550e81eaa41907323"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_RUNTIME_CODE_KECCAK256",
-                "value": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+                "value": "0x0131b35a46839c2c50e013a5702dd1a75ab2c079890711900071d56486d1bce4"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256",
-                "value": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+                "value": "sha256:46aa0bd9efb89c837302f98a1ebd03151fc0f1828eb3212a79bc342ecc854f87"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
-                "value": "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66"
+                "value": "sha256:c072fbc87a8fe6d4be9ef83359e919b639a5afddcef2a0dda337defad272462a"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:ee7fd9e8cb8dc9032ddcf7615579dfcf2ac93f3c7e0a5735c7932eed2fef1c1c",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,

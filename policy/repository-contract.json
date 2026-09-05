@@ -197,6 +197,10 @@
         {
           "path": "supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql",
           "sha256": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+        },
+        {
+          "path": "supabase/migrations/20260905_staging_synthetic_citizen_pass_v2.sql",
+          "sha256": "sha256:46aa0bd9efb89c837302f98a1ebd03151fc0f1828eb3212a79bc342ecc854f87"
         }
       ],
       "vaultBeforeParticipantMigrations": true
@@ -755,18 +759,18 @@
       "authorityBinding": "none",
       "bindingVote": false,
       "civicCaseCreated": false,
-      "databaseSchemaSha256": "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66",
+      "databaseSchemaSha256": "sha256:c072fbc87a8fe6d4be9ef83359e919b639a5afddcef2a0dda337defad272462a",
       "environment": "staging",
-      "migrationSha256": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282",
+      "migrationSha256": "sha256:46aa0bd9efb89c837302f98a1ebd03151fc0f1828eb3212a79bc342ecc854f87",
       "paymentEffect": false,
       "policyVersion": "roebel-test-citizen-nft-v2-staging-2026-09",
       "realCitizenEligibility": false,
-      "rollback": "restore-exact-predecessor-bytes-and-remove-76-artifact",
+      "rollback": "forward-only-schema-rotation-requires-reviewed-reverse-migration",
       "schemaVersion": "roebel_staging_synthetic_citizen_pass_boundary_v1",
       "testCitizenNft": {
-        "address": "0x0be374808a567c9088ac8208b90a4239432b3220",
+        "address": "0x4765cb681e8eb080b3191dd550e81eaa41907323",
         "chainId": 100,
-        "runtimeCodeKeccak256": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb"
+        "runtimeCodeKeccak256": "0x0131b35a46839c2c50e013a5702dd1a75ab2c079890711900071d56486d1bce4"
       },
       "testOnly": true,
       "treasuryEffect": false
