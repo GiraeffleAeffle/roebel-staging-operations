@@ -3,7 +3,7 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:4df3de1d91e90e4db5b09423fa74e9f725baf85436e9e6d230361d4686222bdb",
+      "stadtstack.io/bootstrap-artifacts-sha256": "sha256:bdb9752b092a92eea5e48e7045069849daa2140f93bf2c2d49817366edd14555",
       "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
     },
     "labels": {

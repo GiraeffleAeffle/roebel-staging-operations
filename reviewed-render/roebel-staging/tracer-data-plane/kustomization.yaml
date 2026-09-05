@@ -19,6 +19,7 @@ configMapGenerator:
       - 74-staging-participant-topic-tracer.sql=bootstrap/74-staging-participant-topic-tracer.sql
       - 75-staging-citizen-adoption.sql=bootstrap/75-staging-citizen-adoption.sql
       - 76-staging-synthetic-citizen-adoption.sql=bootstrap/76-staging-synthetic-citizen-adoption.sql
+      - 77-staging-synthetic-citizen-pass-v2.sql=bootstrap/77-staging-synthetic-citizen-pass-v2.sql
 generatorOptions:
   disableNameSuffixHash: true
   labels:

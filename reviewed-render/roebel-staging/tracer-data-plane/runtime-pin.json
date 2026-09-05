@@ -63,11 +63,16 @@
         "configMapFilename": "76-staging-synthetic-citizen-adoption.sql",
         "path": "supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql",
         "sha256": "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+      },
+      {
+        "configMapFilename": "77-staging-synthetic-citizen-pass-v2.sql",
+        "path": "supabase/migrations/20260905_staging_synthetic_citizen_pass_v2.sql",
+        "sha256": "sha256:46aa0bd9efb89c837302f98a1ebd03151fc0f1828eb3212a79bc342ecc854f87"
       }
     ],
     "protectedRef": "refs/heads/main",
     "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
-    "sourceRevision": "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
+    "sourceRevision": "2961a04fb9b869bff35a411784c3fb4747eaf435"
   },
   "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
   "secretReference": {

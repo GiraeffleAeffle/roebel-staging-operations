@@ -269,7 +269,7 @@
       "kind": "Deployment",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:8f685bc0ffb6d362314182395ca747195ab66492c9e6cc1290196e5cd62fc974"
+      "sha256": "sha256:02e0a621af5eec561a5a9a10e00362b65c98b18dac33c05c2c522fb73f45fac7"
     },
     {
       "kind": "Service",
