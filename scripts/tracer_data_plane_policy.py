@@ -986,6 +986,9 @@ def expected_postgres_deployment(product_artifacts=PRODUCT_ARTIFACTS, *, retaine
     for metadata in (value["metadata"], value["spec"]["template"]["metadata"]):
         metadata["annotations"]["stadtstack.io/storage-truth"] = "retained-pvc-restored-v1"
     pod = value["spec"]["template"]["spec"]
+    # This image's configuration overrides PGDATA unless data_directory is
+    # explicit. Keep its configuration directory and pin the restored data path.
+    pod["containers"][0]["args"] = ["postgres", "-D", "/etc/postgresql", "-c", f"data_directory={RETAINED_PGDATA}"]
     for item in pod["containers"][0]["env"]:
         if item["name"] == "PGDATA":
             item["value"] = RETAINED_PGDATA

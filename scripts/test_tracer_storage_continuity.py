@@ -101,6 +101,11 @@ class StorageContinuityTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationError):
             verifier.verify_tree(self.candidate)
 
+    def test_image_configuration_cannot_override_the_restored_data_directory(self):
+        self.mutate_deployment(lambda value: value["spec"]["template"]["spec"]["containers"][0].pop("args"))
+        with self.assertRaises(verifier.VerificationError):
+            verifier.verify_tree(self.candidate)
+
     def test_deployment_selector_remains_immutable(self):
         self.mutate_deployment(lambda value: value["spec"]["selector"]["matchLabels"].update({"stadtstack.io/data-lifecycle": "renamed"}))
         with self.assertRaises(verifier.VerificationError):
