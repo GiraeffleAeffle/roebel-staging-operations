@@ -7,10 +7,22 @@
     "voteMutation": false
   },
   "database": {
-    "durability": "emptyDir-recreated-baseline",
+    "accessModes": [
+      "ReadWriteOnce"
+    ],
+    "claimName": "roebel-tracer-postgres-data-v1",
+    "claimProvisionedByFlux": false,
+    "durability": "retained-pvc-restored-v1",
     "durableCivicRecordsAllowed": false,
-    "persistentVolumeClaim": false,
-    "sizeLimit": "2Gi"
+    "emptyDatabaseBootstrapAllowed": false,
+    "existingClaimRequired": true,
+    "namespace": "stadtstack-roebel-staging-lab",
+    "persistentVolumeClaim": true,
+    "requestedStorage": "10Gi",
+    "requiredReclaimPolicy": "Retain",
+    "restoreRequiredBeforeStartup": true,
+    "storageClassName": "hcloud-volumes",
+    "volumeMode": "Filesystem"
   },
   "images": {
     "postgres": {
@@ -74,7 +86,7 @@
     "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
     "sourceRevision": "2961a04fb9b869bff35a411784c3fb4747eaf435"
   },
-  "schemaVersion": "roebel_ephemeral_tracer_data_plane_pin_v1",
+  "schemaVersion": "roebel_retained_tracer_data_plane_pin_v1",
   "secretReference": {
     "keys": [
       "anon-jwt",

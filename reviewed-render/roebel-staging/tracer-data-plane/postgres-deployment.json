@@ -4,7 +4,7 @@
   "metadata": {
     "annotations": {
       "stadtstack.io/bootstrap-artifacts-sha256": "sha256:bdb9752b092a92eea5e48e7045069849daa2140f93bf2c2d49817366edd14555",
-      "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
+      "stadtstack.io/storage-truth": "retained-pvc-restored-v1"
     },
     "labels": {
       "app.kubernetes.io/component": "tracer-database",
@@ -40,7 +40,7 @@
       "metadata": {
         "annotations": {
           "stadtstack.io/bootstrap-artifacts-sha256": "sha256:4df3de1d91e90e4db5b09423fa74e9f725baf85436e9e6d230361d4686222bdb",
-          "stadtstack.io/storage-truth": "ephemeral-emptydir-recreated-baseline"
+          "stadtstack.io/storage-truth": "retained-pvc-restored-v1"
         },
         "labels": {
           "app.kubernetes.io/component": "tracer-database",
@@ -56,10 +56,17 @@
         "automountServiceAccountToken": false,
         "containers": [
           {
+            "args": [
+              "postgres",
+              "-D",
+              "/etc/postgresql",
+              "-c",
+              "data_directory=/var/lib/postgresql/data/pgdata"
+            ],
             "env": [
               {
                 "name": "PGDATA",
-                "value": "/var/lib/postgresql/data"
+                "value": "/var/lib/postgresql/data/pgdata"
               },
               {
                 "name": "POSTGRES_DB",
@@ -200,6 +207,47 @@
             ]
           }
         ],
+        "initContainers": [
+          {
+            "command": [
+              "/bin/sh",
+              "-ec",
+              "test -d /var/lib/postgresql/data/pgdata/base; test \"$(cat /var/lib/postgresql/data/pgdata/PG_VERSION)\" = 15; test \"$(cat /var/lib/postgresql/data/.roebel-tracer-restored-v1)\" = roebel-tracer-restored-v1"
+            ],
+            "image": "docker.io/supabase/postgres@sha256:af083ef64d0408c8f098ee6f5c364a59b26f36fbc0f3a334a62c5c1d57362e9b",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "require-restored-data",
+            "resources": {
+              "limits": {
+                "cpu": "100m",
+                "memory": "32Mi"
+              },
+              "requests": {
+                "cpu": "5m",
+                "memory": "16Mi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 106,
+              "runAsNonRoot": true,
+              "runAsUser": 105
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/var/lib/postgresql/data",
+                "name": "postgres-data",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
         "restartPolicy": "Always",
         "securityContext": {
           "seccompProfile": {
@@ -210,10 +258,11 @@
         "terminationGracePeriodSeconds": 30,
         "volumes": [
           {
-            "emptyDir": {
-              "sizeLimit": "2Gi"
-            },
-            "name": "postgres-data"
+            "name": "postgres-data",
+            "persistentVolumeClaim": {
+              "claimName": "roebel-tracer-postgres-data-v1",
+              "readOnly": false
+            }
           },
           {
             "configMap": {
