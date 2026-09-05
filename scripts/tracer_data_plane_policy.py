@@ -999,7 +999,9 @@ def expected_postgres_deployment(product_artifacts=PRODUCT_ARTIFACTS, *, retaine
         "imagePullPolicy": "IfNotPresent",
         "command": ["/bin/sh", "-ec", f'test -d {RETAINED_PGDATA}/base; test "$(cat {RETAINED_PGDATA}/PG_VERSION)" = 15; test "$(cat {RESTORE_MARKER})" = {RESTORE_MARKER_VALUE}'],
         "volumeMounts": [{"name": "postgres-data", "mountPath": "/var/lib/postgresql/data", "readOnly": True}],
-        "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
+        # The pinned image owns PGDATA as postgres (105:106). A root process
+        # with every capability dropped cannot traverse its mode-0700 directory.
+        "securityContext": {"runAsUser": 105, "runAsGroup": 106, "runAsNonRoot": True, "allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
         "resources": {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"cpu": "100m", "memory": "32Mi"}},
     }]
     return value
