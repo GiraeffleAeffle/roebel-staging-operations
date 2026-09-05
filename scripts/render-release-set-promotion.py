@@ -181,6 +181,20 @@ def load_tracer_data_plane_module():
 TRACER_DATA_PLANE = load_tracer_data_plane_module()
 
 
+def load_identity_rotation_policy():
+    # Always resolve beside protected policy, never inside a candidate checkout.
+    path = Path(__file__).with_name("staging_test_identity_rotation.py")
+    spec = importlib.util.spec_from_file_location("protected_test_identity_rotation", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected test identity rotation policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+IDENTITY_ROTATION = load_identity_rotation_policy()
+
+
 class PromotionError(RuntimeError):
     pass
 
@@ -601,22 +615,25 @@ def activate_web_identity_contract_set(deployment: dict[str, Any]) -> None:
         set(WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS) & set(annotations)
     )
     if present_names or present_annotations:
+        rotated = by_name.get("ROEBEL_PUBLIC_IDENTITY_CONTRACT_SET", {}).get("value") == IDENTITY_ROTATION.WEB_IDENTITY["profile"]
+        expected_env = IDENTITY_ROTATION.web_environment() if rotated else WEB_IDENTITY_CONTRACT_SET_ENV
+        expected_annotations = IDENTITY_ROTATION.web_annotations() if rotated else WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
         require(
             present_names == WEB_IDENTITY_CONTRACT_SET_ENV_NAMES,
             "Web identity contract set predecessor is partial",
         )
         require(
-            [by_name[item["name"]] for item in WEB_IDENTITY_CONTRACT_SET_ENV]
-            == WEB_IDENTITY_CONTRACT_SET_ENV,
+            [by_name[item["name"]] for item in expected_env]
+            == expected_env,
             "Web identity contract set predecessor address binding drift",
         )
         require(
             {
                 name: annotations[name]
-                for name in WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS
+                for name in expected_annotations
                 if name in annotations
             }
-            == WEB_IDENTITY_CONTRACT_SET_ANNOTATIONS,
+            == expected_annotations,
             "Web identity contract set predecessor evidence drift",
         )
         return

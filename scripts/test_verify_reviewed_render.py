@@ -905,6 +905,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.assertEqual(synthetic_state, (True, True, True))
 
         render = destination / VERIFIER.RENDER_ROOT
+        # Historical v4 fixtures discard both later test-only migrations.
+        # This only edits the disposable fixture, never a live database.
+        for relative in (VERIFIER.IDENTITY_ROTATION_SQL_PATH, VERIFIER.IDENTITY_ROTATION_RECORD_PATH):
+            (destination / relative).unlink(missing_ok=True)
         for relative in (
             VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
             VERIFIER.SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
