@@ -270,6 +270,7 @@ EXPECTED_FILES = {
     "scripts/test_staging_participant_flux_bootstrap.py",
     "scripts/test_staging_participant_gateway_policy.py",
     "scripts/test_tracer_data_plane_policy.py",
+    "scripts/test_tracer_storage_continuity.py",
     "scripts/test_materialize_tracer_data_plane_secrets.py",
     "scripts/test_run_tracer_data_plane_live.py",
     "scripts/test_verify_case_staging_topology.py",
@@ -1010,6 +1011,10 @@ def verify_tracer_phase_a_file_boundary(candidate_root: Path, base_root: Path) -
 def verify_repository_file_set(root: Path) -> str:
     """Admit exactly one whole render shape and report which shape it is."""
     actual = repository_files(root)
+    retained_record = str(TRACER_DATA_PLANE.RETAINED_RECORD_PATH)
+    if retained_record in actual:
+        require(TRACER_DATA_PLANE.retained_enabled(root), "retained record without retained runtime")
+        actual = actual - {retained_record}
     if actual == EXPECTED_FILES:
         return "current"
     if actual == FUTURE_EXPECTED_FILES:
@@ -1437,6 +1442,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         },
         "ephemeralTracerDataPlaneBoundary": TRACER_DATA_PLANE.contract_boundary(
             tracer_artifacts,
+            retained=TRACER_DATA_PLANE.retained_enabled(root),
         ),
         "stagingParticipantGatewayBoundary": {
             "activationPolicy": PARTICIPANT_POLICY.POLICY_PATH,
@@ -6991,6 +6997,23 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
     changed_files = changed_repository_files(candidate_root, base_root)
+    retained_before = bool(base.get("tracerDataPlane", {}).get("persistentVolumeClaim"))
+    retained_after = bool(candidate.get("tracerDataPlane", {}).get("persistentVolumeClaim"))
+    require(not (retained_before and not retained_after), "retained database cannot return to emptyDir")
+    if retained_after and not retained_before:
+        record = str(TRACER_DATA_PLANE.RETAINED_RECORD_PATH)
+        expected_changes = {
+            "policy/repository-contract.json",
+            str(TRACER_DATA_PLANE.RENDER_ROOT / "runtime-pin.json"),
+            str(TRACER_DATA_PLANE.RENDER_ROOT / "postgres-deployment.json"),
+            record,
+        }
+        require(changed_files == expected_changes, "retained storage transition changed file set drift")
+        require(repository_files(candidate_root) - repository_files(base_root) == {record}, "retained storage transition added file set drift")
+        require(base.get("webIdentityContractSet") == IDENTITY_ROTATION.WEB_IDENTITY, "retained storage predecessor must use reviewed test identity")
+        unchanged = lambda snapshot: {key: value for key, value in snapshot.items() if key not in {"root", "tracerDataPlane"}}
+        require(unchanged(candidate) == unchanged(base), "retained storage changed an unrelated runtime boundary")
+        return
     issuer_projection_files = set(
         ELIGIBILITY_ISSUER_DRY_RUN_PROJECTION_TRANSITION
     )

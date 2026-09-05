@@ -277,7 +277,7 @@ SQL
 '''
 
 
-def runtime_pin(
+def _ephemeral_runtime_pin(
     source_revision: str | None = PRODUCT_SOURCE_REVISION,
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
@@ -663,7 +663,7 @@ def validate_synthetic_citizen_adoption_transition(
     return successor
 
 
-def contract_boundary(
+def _ephemeral_contract_boundary(
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
     """Return the public repository contract for this dormant render."""
@@ -751,7 +751,7 @@ def exec_probe(command: list[str], failure: int, period: int, timeout: int = 3) 
     }
 
 
-def expected_postgres_deployment(
+def _ephemeral_postgres_deployment(
     product_artifacts: tuple[tuple[str, str, str], ...] = PRODUCT_ARTIFACTS,
 ) -> dict[str, Any]:
     bootstrap_artifacts_sha256 = canonical_sha256(
@@ -890,6 +890,116 @@ def expected_postgres_deployment(
             },
         },
     }
+
+
+RETAINED_SCHEMA = "roebel_retained_tracer_data_plane_pin_v1"
+RETAINED_CLAIM = "roebel-tracer-postgres-data-v1"
+RETAINED_STORAGE_CLASS = "hcloud-volumes"
+RETAINED_SIZE = "10Gi"
+RETAINED_RECORD_PATH = Path("reviewed-render/roebel-staging/tracer-storage-continuity-v1.json")
+RESTORE_MARKER = "/var/lib/postgresql/data/.roebel-tracer-restored-v1"
+RESTORE_MARKER_VALUE = "roebel-tracer-restored-v1"
+RETAINED_PGDATA = "/var/lib/postgresql/data/pgdata"
+
+
+def retained_storage() -> dict[str, Any]:
+    return {
+        "durability": "retained-pvc-restored-v1",
+        "persistentVolumeClaim": True,
+        "claimName": RETAINED_CLAIM,
+        "namespace": NAMESPACE,
+        "storageClassName": RETAINED_STORAGE_CLASS,
+        "requestedStorage": RETAINED_SIZE,
+        "accessModes": ["ReadWriteOnce"],
+        "volumeMode": "Filesystem",
+        "requiredReclaimPolicy": "Retain",
+        "existingClaimRequired": True,
+        "claimProvisionedByFlux": False,
+        "restoreRequiredBeforeStartup": True,
+        "emptyDatabaseBootstrapAllowed": False,
+    }
+
+
+def retained_transition_record() -> dict[str, Any]:
+    """Value-free transition requirements; live evidence stays private."""
+    return {
+        "schemaVersion": "roebel_tracer_storage_continuity_v1",
+        "authority": "none",
+        "municipalRecordsAllowed": False,
+        "storage": retained_storage(),
+        "postgresImage": POSTGRES_IMAGE,
+        "sourceProfile": "gnosis-staging-test-v2",
+        "secretReferenceChanged": False,
+        "networkPolicyChanged": False,
+        "legacyImmutableSelectorPreserved": True,
+        "privateEvidenceRequired": [
+            "exact-source-pod-uid-and-current-protected-revision",
+            "encrypted-database-roles-and-runtime-dependency-backup",
+            "independent-decryption-and-archive-member-checksums",
+            "owned-claim-uid-volume-binding-retain-policy-and-capacity",
+            "isolated-restoration-with-no-application-service-selection",
+            "all-source-table-hashes-sequences-roles-functions-and-acls-preserved",
+            "restored-database-survives-a-pod-replacement",
+            "postgrest-quiesced-and-source-witness-unchanged-before-cutover",
+            "restore-process-stopped-before-application-mount",
+            "ready-database-and-public-receipt-replay-before-reconciler-resume",
+        ],
+        "rollback": {
+            "beforeCutover": "leave-original-pod-and-data-serving",
+            "afterCutover": "preserve-restored-claim-and-use-reviewed-forward-recovery",
+            "returnToEmptyDirAllowed": False,
+            "deleteClaimOrVolumeAllowed": False,
+        },
+        "restoreMarker": {"path": RESTORE_MARKER, "value": RESTORE_MARKER_VALUE},
+        "markerMeaning": "startup-guard-only-private-restore-proof-is-separate",
+    }
+
+
+def retained_enabled(root: Path) -> bool:
+    return json.loads((root / RENDER_ROOT / "runtime-pin.json").read_text()).get("schemaVersion") == RETAINED_SCHEMA
+
+
+def runtime_pin(source_revision=PRODUCT_SOURCE_REVISION, product_artifacts=PRODUCT_ARTIFACTS, *, retained=False):
+    value = _ephemeral_runtime_pin(source_revision, product_artifacts)
+    if retained:
+        require(product_artifacts == ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS, "retained storage requires the complete rotated identity")
+        value["schemaVersion"] = RETAINED_SCHEMA
+        value["database"] = {**retained_storage(), "durableCivicRecordsAllowed": False}
+    return value
+
+
+def contract_boundary(product_artifacts=PRODUCT_ARTIFACTS, *, retained=False):
+    value = _ephemeral_contract_boundary(product_artifacts)
+    if retained:
+        require(product_artifacts == ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS, "retained storage requires the complete rotated identity")
+        value["schemaVersion"] = RETAINED_SCHEMA
+        value["storage"] = retained_storage()
+        value["storageTransitionRecord"] = str(RETAINED_RECORD_PATH)
+    return value
+
+
+def expected_postgres_deployment(product_artifacts=PRODUCT_ARTIFACTS, *, retained=False):
+    value = _ephemeral_postgres_deployment(product_artifacts)
+    if not retained:
+        return value
+    require(product_artifacts == ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS, "retained storage requires the complete rotated identity")
+    for metadata in (value["metadata"], value["spec"]["template"]["metadata"]):
+        metadata["annotations"]["stadtstack.io/storage-truth"] = "retained-pvc-restored-v1"
+    pod = value["spec"]["template"]["spec"]
+    for item in pod["containers"][0]["env"]:
+        if item["name"] == "PGDATA":
+            item["value"] = RETAINED_PGDATA
+    pod["volumes"][0] = {"name": "postgres-data", "persistentVolumeClaim": {"claimName": RETAINED_CLAIM, "readOnly": False}}
+    pod["initContainers"] = [{
+        "name": "require-restored-data",
+        "image": POSTGRES_IMAGE,
+        "imagePullPolicy": "IfNotPresent",
+        "command": ["/bin/sh", "-ec", f'test -d {RETAINED_PGDATA}/base; test "$(cat {RETAINED_PGDATA}/PG_VERSION)" = 15; test "$(cat {RESTORE_MARKER})" = {RESTORE_MARKER_VALUE}'],
+        "volumeMounts": [{"name": "postgres-data", "mountPath": "/var/lib/postgresql/data", "readOnly": True}],
+        "securityContext": {"allowPrivilegeEscalation": False, "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
+        "resources": {"requests": {"cpu": "5m", "memory": "16Mi"}, "limits": {"cpu": "100m", "memory": "32Mi"}},
+    }]
+    return value
 
 
 def expected_postgres_service() -> dict[str, Any]:
@@ -1162,7 +1272,7 @@ def expected_application_objects(
         "bootstrapConfigMap": expected_bootstrap_config_map(root, product_artifacts),
         "postgresService": expected_postgres_service(),
         "postgrestService": expected_postgrest_service(),
-        "postgresDeployment": expected_postgres_deployment(product_artifacts),
+        "postgresDeployment": expected_postgres_deployment(product_artifacts, retained=retained_enabled(root)),
         "postgrestDeployment": expected_postgrest_deployment(),
     }
     require(tuple(objects) == application_object_order(), "tracer application object order drift")
@@ -1239,6 +1349,13 @@ def verify_render(root: Path) -> dict[str, Any]:
     rotation = render / "bootstrap" / IDENTITY_ROTATION_ARTIFACT[0]
     require(not rotation.is_symlink(), "tracer rotation bootstrap must not be a symlink")
     rotated = rotation.is_file()
+    retained = retained_enabled(root)
+    record = root / RETAINED_RECORD_PATH
+    require(not record.is_symlink(), "retained storage record must not be a symlink")
+    require(record.is_file() == retained, "retained storage requires its complete transition record")
+    if retained:
+        require(rotated, "retained storage requires the complete rotated identity")
+        require(json.loads(record.read_text()) == retained_transition_record(), "retained storage transition record drift")
     synthetic = (render / "bootstrap/76-staging-synthetic-citizen-adoption.sql").is_file()
     successor = (render / "bootstrap/75-staging-citizen-adoption.sql").is_file()
     require(not synthetic or successor, "synthetic tracer migration lacks real-adoption predecessor")
@@ -1269,9 +1386,9 @@ def verify_render(root: Path) -> dict[str, Any]:
     for filename, factory in JSON_FILES.items():
         actual = json.loads((render / filename).read_text())
         if filename == "runtime-pin.json":
-            expected = runtime_pin(source_revision, product_artifacts)
+            expected = runtime_pin(source_revision, product_artifacts, retained=retained)
         elif filename == "postgres-deployment.json":
-            expected = expected_postgres_deployment(product_artifacts)
+            expected = expected_postgres_deployment(product_artifacts, retained=retained)
         else:
             expected = factory()
         require(actual == expected, f"tracer data-plane {filename} drift")
@@ -1305,10 +1422,10 @@ def verify_render(root: Path) -> dict[str, Any]:
     ):
         require(forbidden not in serialized, f"secret-shaped value committed: {forbidden}")
     require("Ingress" not in {value.get("kind") for value in objects.values()}, "public Ingress forbidden")
-    require("PersistentVolumeClaim" not in serialized, "persistent storage forbidden")
+    require("PersistentVolumeClaim" not in serialized, "claim provisioning in the application render is forbidden")
 
     return {
-        "schemaVersion": "roebel_ephemeral_tracer_data_plane_verification_v1",
+        "schemaVersion": "roebel_retained_tracer_data_plane_verification_v1" if retained else "roebel_ephemeral_tracer_data_plane_verification_v1",
         "status": "passed",
         "activationReady": runtime_pin(source_revision, product_artifacts)["activationReady"],
         "productSourceRevision": source_revision,
@@ -1318,7 +1435,7 @@ def verify_render(root: Path) -> dict[str, Any]:
         ],
         "renderCanonicalSha256": canonical_sha256(objects),
         "externalIngress": False,
-        "persistentVolumeClaim": False,
+        "persistentVolumeClaim": retained,
         "secretValuesCommitted": False,
     }
 

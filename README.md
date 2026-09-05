@@ -19,6 +19,35 @@ object identities, and references to existing ConfigMaps or Secrets. It may
 not contain a Secret object, a Secret value, credentials, personal data,
 posts, discussions, Civic Cases, municipal records, or runtime status.
 
+## Retained staging tracer storage
+
+The storage-continuity policy admits one forward transition from the existing
+temporary PostgreSQL directory to the separately provisioned
+`roebel-tracer-postgres-data-v1` claim in the same staging namespace. The claim
+must use the existing `hcloud-volumes` class, request `10Gi`, and bind a
+`Retain` volume. Flux consumes the reviewed claim reference; it does not
+provision or delete the claim or change the platform storage controller.
+
+Admission requires the complete rotated test identity and exactly four changed
+render/contract files. The database image, runtime Secret, Services, network
+policies and authority boundaries remain fixed. The immutable Deployment
+selector retains its historical `ephemeral-tracer` label; the storage annotation
+and runtime contract state the actual retained-storage requirement.
+
+An init container refuses startup without a PostgreSQL 15 data directory and
+the restore marker. The marker is a startup guard, not proof of a successful
+restore. Private operations evidence must independently bind the encrypted
+database/roles/runtime-dependency backup, the exact claim and volume, restored
+table/catalog witnesses and a Pod replacement test. Application writers are
+quiesced for the final source comparison and cutover. Recovery after cutover
+keeps the restored claim; returning to `emptyDir` is rejected.
+
+This policy adds no live storage or restore claim by itself. Retained staging
+records do not grant municipal eligibility or publication authority. A volume
+with a `Retain` policy also needs independently verified backups; see
+[Kubernetes storage lifecycle](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
+and [PostgreSQL dump and restore](https://www.postgresql.org/docs/15/backup-dump.html).
+
 ## One-time E2E workbench handover
 
 `reviewed-render/roebel-staging/workbench-baseline/` records the exact
