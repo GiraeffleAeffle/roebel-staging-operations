@@ -106,6 +106,11 @@ class StorageContinuityTests(unittest.TestCase):
         with self.assertRaises(verifier.VerificationError):
             verifier.verify_tree(self.candidate)
 
+    def test_startup_guard_must_read_data_as_the_pinned_postgres_user(self):
+        self.mutate_deployment(lambda value: value["spec"]["template"]["spec"]["initContainers"][0]["securityContext"].update(runAsUser=0))
+        with self.assertRaises(verifier.VerificationError):
+            verifier.verify_tree(self.candidate)
+
     def test_deployment_selector_remains_immutable(self):
         self.mutate_deployment(lambda value: value["spec"]["selector"]["matchLabels"].update({"stadtstack.io/data-lifecycle": "renamed"}))
         with self.assertRaises(verifier.VerificationError):
