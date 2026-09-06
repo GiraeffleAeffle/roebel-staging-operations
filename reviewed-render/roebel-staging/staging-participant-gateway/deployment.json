@@ -138,11 +138,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "2961a04fb9b869bff35a411784c3fb4747eaf435"
+                "value": "c25cbdff5f18143257c4849d91bbee3b18166ab1"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:ee7fd9e8cb8dc9032ddcf7615579dfcf2ac93f3c7e0a5735c7932eed2fef1c1c"
+                "value": "sha256:b69922baff63356efadd705fcecc20e0b73a90725e2402b9a641a00c7b283e73"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -233,9 +233,21 @@
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
                 "value": "sha256:c072fbc87a8fe6d4be9ef83359e919b639a5afddcef2a0dda337defad272462a"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ELIGIBILITY_STATUS",
+                "value": "enabled"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_STATUS_MIGRATION_SHA256",
+                "value": "sha256:62b4974d8b52be7ba5f31c06ab1c9604ec3370bbab1443b8a95fe2ae6fc49de7"
+              },
+              {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_STATUS_DATABASE_SCHEMA_SHA256",
+                "value": "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:ee7fd9e8cb8dc9032ddcf7615579dfcf2ac93f3c7e0a5735c7932eed2fef1c1c",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:b69922baff63356efadd705fcecc20e0b73a90725e2402b9a641a00c7b283e73",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,

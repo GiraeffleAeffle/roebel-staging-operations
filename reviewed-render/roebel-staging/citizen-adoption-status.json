@@ -1,0 +1,10 @@
+{
+  "authorityBinding": "none",
+  "caseAdmissionActivated": false,
+  "databasePreflightRequired": true,
+  "liveEvidenceCommitted": false,
+  "policy": "policy/citizen-adoption-status/activation.json",
+  "policyCanonicalSha256": "sha256:8a4778a1aabb98a13875c5689d74268fce403b488e473058d1d12be6bf1b02b9",
+  "runtimePinCanonicalSha256": "sha256:ef5d4b3b527f0ee453bcb49705fe98a652ba28ee66e5f0f487080c24afc1930e",
+  "schemaVersion": "roebel_citizen_adoption_status_desired_state_v1"
+}
