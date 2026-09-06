@@ -9,7 +9,8 @@
       ],
       "dynamicGetPrefixes": [
         "/api/staging-participant/v1/citizen-adoption/by-suggestion/",
-        "/api/civic/v1/eligibility/status/"
+        "/api/civic/v1/eligibility/status/",
+        "/api/staging-participant/v1/citizen-adoption/acceptance/"
       ],
       "exactGatewayPaths": [
         "/api/staging-participant/v1/status",
@@ -40,7 +41,8 @@
         "GET": [
           "/api/staging-participant/v1/status",
           "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
-          "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
+          "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222",
+          "/api/staging-participant/v1/citizen-adoption/acceptance/0000000000000000000000000000000000000000000000000000000000000000"
         ],
         "OPTIONS": [
           "/api/staging-participant/v1/status",
@@ -80,7 +82,8 @@
       },
       "routeProbeSamples": [
         "/api/staging-participant/v1/citizen-adoption/by-suggestion/0000000000000000000000000000000000000000000000000000000000000000/adopter/1111111111111111111111111111111111111111111111111111111111111111",
-        "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222"
+        "/api/civic/v1/eligibility/status/2222222222222222222222222222222222222222222222222222222222222222",
+        "/api/staging-participant/v1/citizen-adoption/acceptance/0000000000000000000000000000000000000000000000000000000000000000"
       ]
     },
     "participantGateway": {
@@ -269,7 +272,7 @@
       "kind": "Deployment",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:02e0a621af5eec561a5a9a10e00362b65c98b18dac33c05c2c522fb73f45fac7"
+      "sha256": "sha256:227459f6142588f2d3986625f7c481899ec91ec62209c9a9baa70aaca3ce5b7a"
     },
     {
       "kind": "Service",
@@ -287,7 +290,7 @@
       "kind": "Ingress",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:580cbb9b0991c433262604c4be0c1e2e6e6441d736c975ae1bd5023a45d9573c"
+      "sha256": "sha256:7da65f16152e209bd955f96855c9c305c803e9346d5e92633215f01b755c0470"
     },
     {
       "kind": "NetworkPolicy",
