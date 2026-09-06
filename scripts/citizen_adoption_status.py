@@ -1,8 +1,8 @@
 """Pinned signed-status rollout, separate from the retained database bootstrap.
 
-This module proposes desired state and SQL for review. It never contacts a
-cluster, reads credentials, assigns municipal roles, or executes migrations.
-The existing admission verifier is unchanged and does not admit this proposal.
+This protected module admits one exact seven-file status transition. It also
+prepares desired state and SQL offline; it never contacts a cluster, reads
+credentials, assigns municipal roles, or executes migrations.
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from pathlib import Path
 
 
 SCHEMA = "roebel_staging_participant_gateway_runtime_pin_v6"
-BASE_REVISION = "9728b97c2d39a3d7ae4d9af439e93b55df9357ef"
-BASE_FILES_SHA256 = "sha256:cb40f099ea6e829b086b11f8db1c7a4aff9e7aa156ef9d83546d8741df5df330"
 ROOT = Path("policy/citizen-adoption-status")
 POLICY_PATH = ROOT / "activation.json"
 RECORD_PATH = Path("reviewed-render/roebel-staging/citizen-adoption-status.json")
@@ -41,6 +39,12 @@ ARTIFACTS = (
      "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332"),
 )
 LICENSE_ARTIFACT = ("LICENSE.AGPL-3.0", "LICENSE", "sha256:0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0")
+POLICY_FILES = {
+    "scripts/citizen_adoption_status.py",
+    "scripts/test_citizen_adoption_status.py",
+    str(POLICY_PATH),
+    *(str(ROOT / filename) for filename, _, _ in (*ARTIFACTS, LICENSE_ARTIFACT)),
+}
 ACCEPTANCE_PREFIX = "/api/staging-participant/v1/citizen-adoption/acceptance/"
 STATUS_PREFIX = "/api/civic/v1/eligibility/status/"
 PUBLIC_ORIGIN = "https://roebel-web.staging.agentcart.eu"
@@ -199,12 +203,8 @@ def prepare(v, root, base_root, product_root, publication_path):
     return proposal(v, root, base_root)
 
 
-def proposal(v, root, base_root):
-    """Build data for review from the exact retained-storage predecessor."""
-    verify_policy(v, root)
-    base_files = {path: v.bytes_digest((base_root / path).read_bytes()) for path in sorted(v.repository_files(base_root))}
-    v.require(v.digest(base_files) == BASE_FILES_SHA256, "citizen status protected base files drift")
-    current = v.verify_tree(base_root)
+def activation_files(v, base_root, current):
+    """The sole allowed transformation of an already verified predecessor."""
     v.require(not enabled(base_root), "citizen status already enabled")
     v.require(current["tracerDataPlane"]["persistentVolumeClaim"], "citizen status requires retained database storage")
     v.require(current["stagingParticipantGateway"]["runtimePin"] == v.expected_synthetic_citizen_pass_gateway_runtime_pin(v.IDENTITY_ROTATION.GATEWAY_RELEASE), "citizen status gateway predecessor drift")
@@ -245,17 +245,53 @@ def proposal(v, root, base_root):
     write(Path(v.RENDER_ROOT) / "integrity.json", integrity)
     write(RECORD_PATH, record(v))
     v.require(set(proposed_files) == TRANSITION_FILES, "citizen status proposal file set drift")
+    return proposed_files
+
+
+def verify_state(v, root, gateway, tracer):
+    active = enabled(root)
+    v.require(active == bool(gateway and gateway["runtimePin"]["schemaVersion"] == SCHEMA), "citizen status record/runtime mismatch")
+    if active:
+        v.require(tracer["persistentVolumeClaim"], "citizen status requires retained database storage")
+        v.require(v.load_json(root / RECORD_PATH) == record(v), "citizen status desired-state record drift")
+    return active
+
+
+def verify_transition(v, candidate, base):
+    v.require(not base.get("citizenEligibilityStatus") and candidate.get("citizenEligibilityStatus"), "citizen status rollback requires separate exact predecessor admission")
+    candidate_root, base_root = candidate["root"], base["root"]
+    v.require(v.changed_repository_files(candidate_root, base_root) == TRANSITION_FILES, "citizen status transition changed file set drift")
+    expected = activation_files(v, base_root, base)
+    for path, content in expected.items():
+        v.require((candidate_root / path).read_bytes() == content.encode(), f"citizen status transition bytes drift: {path}")
+
+
+def proposal(v, root, base_root):
+    """Build review data from a verified base and its unchanged candidate copy."""
+    v.require(root.resolve() != base_root.resolve(), "citizen status candidate must be isolated from protected base")
+    verify_policy(v, root)
+    current = v.verify_tree(base_root)
+    v.require(not v.changed_repository_files(root, base_root), "citizen status candidate differs from protected base files")
+    proposed_files = activation_files(v, base_root, current)
+    base_files = {path: v.bytes_digest((base_root / path).read_bytes()) for path in sorted(v.repository_files(base_root))}
     return {
         "schemaVersion": "roebel_citizen_adoption_status_review_proposal_v1",
-        "status": "proposal-only-admission-policy-approval-required",
-        "operationsBaseRevision": BASE_REVISION,
-        "operationsBaseFilesSha256": BASE_FILES_SHA256,
+        "status": "proposal-only",
+        "operationsBaseFilesSha256": v.digest(base_files),
         "policy": descriptor(),
         "proposedFiles": proposed_files,
         "proposedFileSha256": {path: v.bytes_digest(content.encode()) for path, content in proposed_files.items()},
         "migrationSql": migration_sql(v, root),
         "deploymentEffect": False, "admissionPassed": False,
     }
+
+
+def render(v, root, base_root):
+    """Write the candidate checkout only, then run protected-base admission."""
+    result = proposal(v, root, base_root)
+    for path, content in result["proposedFiles"].items():
+        (root / path).write_text(content)
+    return v.verify(root, base_root)
 
 
 if __name__ == "__main__":
@@ -266,8 +302,13 @@ if __name__ == "__main__":
     parser.add_argument("--base-root", type=Path, required=True)
     parser.add_argument("--product-root", type=Path, required=True)
     parser.add_argument("--publication-receipt", type=Path, required=True)
+    parser.add_argument("--write-render", action="store_true", help="write and verify the seven files in the isolated candidate checkout")
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location("protected_status_verifier", Path(__file__).with_name("verify-reviewed-render.py"))
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
-    print(json.dumps(prepare(verifier, args.root, args.base_root, args.product_root, args.publication_receipt), indent=2))
+    result = prepare(verifier, args.root, args.base_root, args.product_root, args.publication_receipt)
+    if args.write_render:
+        result["verification"] = render(verifier, args.root, args.base_root)
+        result["admissionPassed"] = True
+    print(json.dumps(result, indent=2))

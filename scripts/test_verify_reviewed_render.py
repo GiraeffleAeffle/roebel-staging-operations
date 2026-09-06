@@ -907,7 +907,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         render = destination / VERIFIER.RENDER_ROOT
         # Historical v4 fixtures discard later identity/storage transition records.
         # This only edits the disposable fixture, never a live database.
-        for relative in (VERIFIER.IDENTITY_ROTATION_SQL_PATH, VERIFIER.IDENTITY_ROTATION_RECORD_PATH, VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH):
+        for relative in (VERIFIER.IDENTITY_ROTATION_SQL_PATH, VERIFIER.IDENTITY_ROTATION_RECORD_PATH, VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH, VERIFIER.CITIZEN_STATUS.RECORD_PATH):
             (destination / relative).unlink(missing_ok=True)
         for relative in (
             VERIFIER.SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
@@ -985,6 +985,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         gateway_contract["routeProbeSamples"] = http["routeProbeSamples"]
         gateway_contract["schemaVersion"] = http["schemaVersion"]
         gateway_contract.pop("syntheticCitizenAdoption")
+        gateway_contract.pop("citizenEligibilityStatus", None)
         contract_path.write_text(json.dumps(contract, indent=2) + "\n")
 
         migration_path = render / "network-boundary-migration.json"
@@ -3035,6 +3036,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.IDENTITY_ROTATION_SQL_PATH,
                 VERIFIER.IDENTITY_ROTATION_RECORD_PATH,
                 str(VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH),
+                str(VERIFIER.CITIZEN_STATUS.RECORD_PATH),
             }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
@@ -3895,6 +3897,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 if (ROOT / VERIFIER.IDENTITY_ROTATION_RECORD_PATH).is_file()
                 else VERIFIER.synthetic_citizen_pass_boundary(),
             )
+        if VERIFIER.CITIZEN_STATUS.enabled(ROOT):
+            http = VERIFIER.CITIZEN_STATUS.extend_http(http)
         self.assertEqual(gateway["exactGatewayPaths"], http["exactGatewayPaths"])
         self.assertEqual(gateway["methodPathMatrix"], http["methodPathMatrix"])
         self.assertEqual(

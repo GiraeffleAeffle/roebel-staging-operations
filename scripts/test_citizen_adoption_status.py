@@ -1,13 +1,11 @@
-"""Review proposals must not silently activate or replace retained state."""
+"""Exercise the protected status transition and its storage/authority boundary."""
 
 import importlib.util
-import io
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import unittest
 
@@ -22,7 +20,7 @@ def load(name, filename):
 
 
 status = load("status_proposal_test", "citizen_adoption_status.py")
-verifier = load("unchanged_status_base_verifier", "verify-reviewed-render.py")
+verifier = load("protected_status_base_verifier", "verify-reviewed-render.py")
 
 
 class CitizenStatusProposalTests(unittest.TestCase):
@@ -31,16 +29,19 @@ class CitizenStatusProposalTests(unittest.TestCase):
         cls.temporary = tempfile.TemporaryDirectory(prefix="roebel-status-proposal-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.base = Path(cls.temporary.name) / "protected-base"
-        cls.base.mkdir()
-        archive = subprocess.check_output(["git", "-C", str(ROOT), "archive", status.BASE_REVISION])
-        with tarfile.open(fileobj=io.BytesIO(archive)) as source:
-            source.extractall(cls.base, filter="data")
+        shutil.copytree(ROOT, cls.base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        # Retain today's protected code, but bind the active-state fixture to
+        # the reviewed predecessor even after a later rollout reaches main.
+        predecessor = "9728b97c2d39a3d7ae4d9af439e93b55df9357ef"
+        for path in status.TRANSITION_FILES - {str(status.RECORD_PATH)}:
+            (cls.base / path).write_bytes(subprocess.check_output(["git", "-C", str(ROOT), "show", predecessor + ":" + path]))
+        (cls.base / status.RECORD_PATH).unlink(missing_ok=True)
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="roebel-status-input-")
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        shutil.copytree(ROOT / status.ROOT, self.root / status.ROOT)
+        shutil.copytree(self.base, self.root, dirs_exist_ok=True)
 
     def prepare(self):
         return status.proposal(verifier, self.root, self.base)
@@ -53,7 +54,7 @@ class CitizenStatusProposalTests(unittest.TestCase):
         self.assertEqual(set(result["proposedFiles"]), status.TRANSITION_FILES)
         self.assertEqual(set(result["proposedFileSha256"]), status.TRANSITION_FILES)
         self.assertEqual(before, verifier.digest({p: verifier.bytes_digest((self.base / p).read_bytes()) for p in sorted(verifier.repository_files(self.base))}))
-        self.assertFalse((self.root / "reviewed-render").exists())
+        self.assertFalse(verifier.changed_repository_files(self.root, self.base))
         path = "reviewed-render/roebel-staging/staging-participant-gateway/runtime-pin.json"
         old = json.loads((self.base / path).read_text())
         new = json.loads(result["proposedFiles"][path])
@@ -140,8 +141,124 @@ class CitizenStatusProposalTests(unittest.TestCase):
         modified = self.root / "different-base"
         shutil.copytree(self.base, modified)
         (modified / "README.md").write_text("unreviewed change\n")
-        with self.assertRaisesRegex(verifier.VerificationError, "base files drift"):
+        with self.assertRaisesRegex(verifier.VerificationError, "differs from protected base files"):
             status.proposal(verifier, self.root, modified)
+
+    def activate(self):
+        return status.render(verifier, self.root, self.base)
+
+    def test_full_admission_and_steady_state_preserve_unrelated_files(self):
+        result = self.activate()
+        self.assertTrue(result["baseTransitionVerified"])
+        self.assertEqual(verifier.changed_repository_files(self.root, self.base), status.TRANSITION_FILES)
+        self.assertEqual(verifier.verify(self.root)["status"], "passed")
+        before, after = verifier.verify_tree(self.base), verifier.verify_tree(self.root)
+        for key in ("head", "live", "webIdentityContractSet", "tracerDataPlane", "workbenchBaseline", "reviewedPublicKnowledge", "signedNostr"):
+            self.assertEqual(before[key], after[key], key)
+        self.assertTrue(after["citizenEligibilityStatus"])
+        self.assertEqual(after["stagingParticipantGateway"]["runtimePin"]["citizenAdoption"], before["stagingParticipantGateway"]["runtimePin"]["citizenAdoption"])
+
+    def test_every_partial_transition_fails_admission(self):
+        proposal = self.prepare()
+        for missing in status.TRANSITION_FILES:
+            with self.subTest(missing=missing):
+                for path, content in proposal["proposedFiles"].items():
+                    target = self.root / path
+                    if path == missing:
+                        if (self.base / path).exists():
+                            target.write_bytes((self.base / path).read_bytes())
+                        else:
+                            target.unlink(missing_ok=True)
+                    else:
+                        target.write_text(content)
+                with self.assertRaises(verifier.VerificationError):
+                    verifier.verify(self.root, self.base)
+
+    def test_candidate_policy_code_is_data_and_cannot_join_activation(self):
+        self.activate()
+        for relative in ("scripts/citizen_adoption_status.py", "scripts/verify-reviewed-render.py", ".github/workflows/reviewed-render-admission.yml", "README.md"):
+            with self.subTest(path=relative):
+                path = self.root / relative
+                original = path.read_bytes()
+                # This invalid Python would execute if candidate policy were
+                # imported. Admission must instead reject its changed bytes.
+                path.write_bytes(b"raise RuntimeError('candidate code executed')\n")
+                with self.assertRaisesRegex(verifier.VerificationError, "changed.*files|file set drift"):
+                    verifier.verify(self.root, self.base)
+                path.write_bytes(original)
+
+    def test_missing_policy_artifact_cannot_be_hidden_by_active_render(self):
+        self.activate()
+        (self.root / status.POLICY_PATH).unlink()
+        with self.assertRaisesRegex(verifier.VerificationError, "repository file set drift"):
+            verifier.verify(self.root, self.base)
+
+    def test_source_pins_real_and_test_authority_remain_closed(self):
+        self.activate()
+        path = self.root / verifier.PARTICIPANT_GATEWAY_ROOT / "runtime-pin.json"
+        original = path.read_bytes()
+        for field, value in (("sourceRevision", "f" * 40), ("manifestDigest", "sha256:" + "f" * 64), ("workflowSha256", "sha256:" + "f" * 64), ("sourceTreeSha256", "sha256:" + "f" * 64), ("citizenEligibilityStatus", "disabled"), ("citizenAdoptionStatusMigrationSha256", "sha256:" + "f" * 64), ("citizenAdoptionStatusDatabaseSchemaSha256", "sha256:" + "f" * 64), ("citizenAdoption", {}), ("syntheticCitizenAdoption", {})):
+            with self.subTest(field=field):
+                value_pin = json.loads(original)
+                value_pin[field] = value
+                path.write_text(json.dumps(value_pin))
+                with self.assertRaisesRegex(verifier.VerificationError, "runtime pin drift"):
+                    verifier.verify(self.root, self.base)
+        path.write_bytes(original)
+
+    def test_runtime_inputs_secret_substitution_and_expanded_ingress_rejected(self):
+        self.activate()
+        path = self.root / verifier.PARTICIPANT_GATEWAY_ROOT / "deployment.json"
+        original = path.read_bytes()
+        for mode in ("partial", "duplicate", "secret"):
+            with self.subTest(mode=mode):
+                value = json.loads(original)
+                env = value["spec"]["template"]["spec"]["containers"][0]["env"]
+                if mode == "partial":
+                    env.pop()
+                elif mode == "duplicate":
+                    env.append(env[-1])
+                else:
+                    next(item for item in env if "valueFrom" in item)["valueFrom"]["secretKeyRef"]["name"] = "different-secret"
+                path.write_text(json.dumps(value))
+                with self.assertRaisesRegex(verifier.VerificationError, "resource drift"):
+                    verifier.verify(self.root, self.base)
+        path.write_bytes(original)
+        path = self.root / verifier.PARTICIPANT_GATEWAY_ROOT / "ingress.json"
+        value = json.loads(path.read_bytes())
+        key = "haproxy-ingress.github.io/config-backend-early"
+        value["metadata"]["annotations"][key] += " !{ path_beg /unreviewed/ }"
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(verifier.VerificationError, "resource drift"):
+            verifier.verify(self.root, self.base)
+
+    def test_retained_database_cannot_change_during_status_rollout(self):
+        self.activate()
+        path = self.root / verifier.TRACER_DATA_PLANE.RENDER_ROOT / "postgres-deployment.json"
+        value = json.loads(path.read_bytes())
+        value["spec"]["template"]["spec"]["volumes"][0] = {"name": "data", "emptyDir": {}}
+        path.write_text(json.dumps(value))
+        with self.assertRaises(verifier.VerificationError):
+            verifier.verify(self.root, self.base)
+
+    def test_record_cannot_claim_live_readiness_or_case_authority(self):
+        self.activate()
+        path = self.root / status.RECORD_PATH
+        value = json.loads(path.read_bytes())
+        value["caseAdmissionActivated"] = True
+        value["liveEvidenceCommitted"] = True
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(verifier.VerificationError, "desired-state record drift"):
+            verifier.verify(self.root, self.base)
+
+    def test_reactivation_reverse_and_writing_the_base_are_rejected(self):
+        with self.assertRaisesRegex(verifier.VerificationError, "must be isolated"):
+            status.render(verifier, self.base, self.base)
+        self.activate()
+        with self.assertRaisesRegex(verifier.VerificationError, "differs from protected base files"):
+            self.activate()
+        with self.assertRaisesRegex(verifier.VerificationError, "rollback requires separate"):
+            verifier.verify(self.base, self.root)
 
 
 if __name__ == "__main__":

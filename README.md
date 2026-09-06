@@ -21,21 +21,28 @@ posts, discussions, Civic Cases, municipal records, or runtime status.
 
 ## Retained staging tracer storage
 
-### Signed citizen-status rollout proposal
+### Signed citizen-status rollout
 
 `scripts/citizen_adoption_status.py` prepares a review proposal for the
 published signed-status gateway. It binds the exact retained-storage
-Operations base, the Röbel source tree and workflow, the publication receipt,
+Operations predecessor, the Röbel source tree and workflow, the publication receipt,
 three additive SQL migrations and their schema contract. It returns seven
 proposed configuration files and one transactional SQL batch as JSON on stdout.
-It does not write the reviewed render or contact Kubernetes or PostgreSQL.
+By default it does not write the reviewed render. It never contacts Kubernetes
+or PostgreSQL. `--write-render` writes an isolated candidate checkout and runs
+admission against its unchanged protected base.
 
-The admission verifier and workflows are unchanged. This proposal requires
-explicit approval to extend the protected admission policy before a deployment
-candidate can be admitted. The current protected-base check rejects the added
-proposal files; proposal tests are not deployment admission. The later policy
-must preserve the exact predecessor, reject partial activation and unrelated
-file changes, and retain the existing real and TEST identity checks.
+The protected verifier loads this policy beside itself, never from candidate
+code. It admits only the seven exact files produced from the reviewed v5
+gateway with retained storage. It rejects partial activation, policy edits,
+unrelated changes, source substitutions and changes to real or TEST identity.
+The active v6 render must carry the matching desired-state record and all
+three status inputs. Rollback requires separately reviewed exact predecessor
+admission; deleting the status record cannot silently disable the checks.
+This policy update leaves the current active render unchanged. Its initial
+merge needs explicit protected-policy maintenance because the preceding
+verifier cannot admit its own replacement. Later rollout PRs run the new
+verifier from their protected base through the existing workflow.
 
 The supplemental SQL stays separate from the retained database's existing
 bootstrap. The proposed migration batch creates only the three reviewed
@@ -57,12 +64,13 @@ unmodified source copies at the commit recorded in `activation.json`. Their
 upstream license is preserved in `LICENSE.AGPL-3.0`; this repository's MIT
 license does not relicense those artifacts.
 
-Run the proposal checks with
+Run the proposal and admission checks with
 `python3 -m unittest -v scripts/test_citizen_adoption_status.py`. The proposal
 command accepts `--root`, `--base-root`, `--product-root` and
-`--publication-receipt`; `--base-root` must contain the exact archived protected
-Operations revision stated by the proposal. Save its output in private review
-evidence, outside this public repository.
+`--publication-receipt`. `--base-root` must contain the complete protected
+Operations checkout after this policy is admitted; `--root` starts as a
+separate, byte-identical copy. The output binds the full base file manifest.
+Save its output in private review evidence, outside this public repository.
 
 ### Existing retained-storage contract
 

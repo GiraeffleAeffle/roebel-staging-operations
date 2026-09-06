@@ -18,6 +18,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -85,6 +86,27 @@ def load_identity_rotation_policy():
 
 
 IDENTITY_ROTATION = load_identity_rotation_policy()
+
+
+def load_citizen_status_policy():
+    # A candidate supplies data only; executable policy comes from this file's
+    # protected checkout, just like the other admission modules above.
+    path = Path(__file__).with_name("citizen_adoption_status.py")
+    spec = importlib.util.spec_from_file_location("protected_citizen_status_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected citizen status policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CITIZEN_STATUS = load_citizen_status_policy()
+
+
+def citizen_status_interface():
+    # Test loaders need not register this module in sys.modules. Supply the
+    # existing protected render functions without importing candidate code.
+    return SimpleNamespace(**globals())
 
 ELIGIBILITY_ISSUER_POLICY_PATH = (
     "policy/staging-participant-eligibility-issuer-materialization-policy.json"
@@ -223,6 +245,7 @@ PUBLIC_MECKY_REVIEWED_EGRESS_DESTINATION_LABELS = {
 }
 
 EXPECTED_FILES = {
+    *CITIZEN_STATUS.POLICY_FILES,
     ".github/CODEOWNERS",
     ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
@@ -1011,6 +1034,7 @@ def verify_tracer_phase_a_file_boundary(candidate_root: Path, base_root: Path) -
 def verify_repository_file_set(root: Path) -> str:
     """Admit exactly one whole render shape and report which shape it is."""
     actual = repository_files(root)
+    actual = actual - {str(CITIZEN_STATUS.RECORD_PATH)}
     retained_record = str(TRACER_DATA_PLANE.RETAINED_RECORD_PATH)
     if retained_record in actual:
         require(TRACER_DATA_PLANE.retained_enabled(root), "retained record without retained runtime")
@@ -1400,6 +1424,8 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         gateway_http.setdefault("dynamicGetPrefixes", []).append(
             SYNTHETIC_CITIZEN_PASS_DYNAMIC_GET_PREFIX
         )
+    if CITIZEN_STATUS.enabled(root):
+        gateway_http = CITIZEN_STATUS.extend_http(gateway_http)
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -1535,6 +1561,11 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
             "renderRoot": PARTICIPANT_GATEWAY_ROOT,
             "runtimePin": f"{PARTICIPANT_GATEWAY_ROOT}/runtime-pin.json",
             "schemaVersion": gateway_http["schemaVersion"],
+            **(
+                {"citizenEligibilityStatus": CITIZEN_STATUS.descriptor()}
+                if CITIZEN_STATUS.enabled(root)
+                else {}
+            ),
             **(
                 {"syntheticCitizenAdoption": synthetic_boundary}
                 if synthetic_citizen_pass
@@ -4859,6 +4890,9 @@ def verify_participant_gateway_runtime_pin(
     value: Any,
     participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("schemaVersion") == CITIZEN_STATUS.SCHEMA:
+        require(value == CITIZEN_STATUS.runtime_pin(citizen_status_interface(), participant_policy), "citizen status runtime pin drift")
+        return copy.deepcopy(value)
     if (
         isinstance(value, dict)
         and value.get("schemaVersion")
@@ -5097,6 +5131,9 @@ def expected_participant_gateway_resources(
     civic_projection_route: bool = False,
 ) -> dict[str, Any]:
     """Compatibility adapter to the single protected policy module."""
+    if runtime_pin.get("schemaVersion") == CITIZEN_STATUS.SCHEMA:
+        verify_participant_gateway_runtime_pin(runtime_pin, participant_policy)
+        return CITIZEN_STATUS.resources(citizen_status_interface(), participant_policy, civic_projection_route)
     try:
         expected = PARTICIPANT_POLICY.expected_gateway_resources(
             participant_policy,
@@ -5495,6 +5532,8 @@ def verify_network_boundary_migration(
         require(participant_gateway_objects is not None, "participant gateway boundary objects unavailable")
         require(participant_policy is not None, "participant gateway policy unavailable")
         gateway_http = participant_gateway_http_contract(participant_policy)
+        if participant_gateway_objects["runtimePin"]["schemaVersion"] == CITIZEN_STATUS.SCHEMA:
+            gateway_http = CITIZEN_STATUS.extend_http(gateway_http)
         ingress_paths = gateway_http["exactGatewayPaths"]
         post_paths = gateway_http["methodPathMatrix"]["POST"]
         gateway_flux = expected_participant_gateway_flux_objects()
@@ -5908,6 +5947,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     root = root.resolve()
     require(root.is_dir(), "repository root missing")
     render_file_set = verify_repository_file_set(root)
+    CITIZEN_STATUS.verify_policy(citizen_status_interface(), root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
     workbench_baseline = verify_workbench_baseline(root)
@@ -6023,10 +6063,11 @@ def verify_tree(root: Path) -> dict[str, Any]:
         {item["name"]: item for item in web_container["env"]},
         identity_contract_set,
     )
+    citizen_status = CITIZEN_STATUS.verify_state(citizen_status_interface(), root, participant_gateway_objects, tracer_data_plane)
     rotated_state = (
         selected_identity == IDENTITY_ROTATION.WEB_IDENTITY,
         (root / IDENTITY_ROTATION_SQL_PATH).is_file(),
-        bool(participant_gateway_objects and participant_gateway_objects["runtimePin"]["sourceRevision"] == IDENTITY_ROTATION.SOURCE_REVISION),
+        bool(participant_gateway_objects and (participant_gateway_objects["runtimePin"]["sourceRevision"] == IDENTITY_ROTATION.SOURCE_REVISION or citizen_status)),
     )
     require(rotated_state in {(False, False, False), (True, True, True)},
             "test identity rotation requires matching Web, gateway and database pins")
@@ -6052,6 +6093,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "tracerDataPlane": tracer_data_plane,
         "webTracerFeed": tracer_feed_route,
         "webIdentityContractSet": selected_identity,
+        "citizenEligibilityStatus": citizen_status,
     }
 
 
@@ -6384,7 +6426,7 @@ def gateway_synthetic_citizen_pass_enabled(snapshot: dict[str, Any]) -> bool:
     return bool(
         gateway
         and gateway["runtimePin"].get("schemaVersion")
-        == "roebel_staging_participant_gateway_runtime_pin_v5"
+        in {"roebel_staging_participant_gateway_runtime_pin_v5", CITIZEN_STATUS.SCHEMA}
     )
 
 
@@ -6997,6 +7039,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
     changed_files = changed_repository_files(candidate_root, base_root)
+    require(not changed_files & CITIZEN_STATUS.POLICY_FILES, "citizen status promotion changed protected policy files")
+    if candidate.get("citizenEligibilityStatus") != base.get("citizenEligibilityStatus"):
+        CITIZEN_STATUS.verify_transition(citizen_status_interface(), candidate, base)
+        return
     retained_before = bool(base.get("tracerDataPlane", {}).get("persistentVolumeClaim"))
     retained_after = bool(candidate.get("tracerDataPlane", {}).get("persistentVolumeClaim"))
     require(not (retained_before and not retained_after), "retained database cannot return to emptyDir")
