@@ -21,6 +21,59 @@ posts, discussions, Civic Cases, municipal records, or runtime status.
 
 ## Retained staging tracer storage
 
+### Signed citizen-status rollout
+
+`scripts/citizen_adoption_status.py` prepares a review proposal for the
+published signed-status gateway. It binds the exact retained-storage
+Operations predecessor, the Röbel source tree and workflow, the publication receipt,
+three additive SQL migrations and their schema contract. It returns seven
+proposed configuration files and one transactional SQL batch as JSON on stdout.
+By default it does not write the reviewed render. It never contacts Kubernetes
+or PostgreSQL. `--write-render` writes an isolated candidate checkout and runs
+admission against its unchanged protected base.
+
+The protected verifier loads this policy beside itself, never from candidate
+code. It admits only the seven exact files produced from the reviewed v5
+gateway with retained storage. It rejects partial activation, policy edits,
+unrelated changes, source substitutions and changes to real or TEST identity.
+The active v6 render must carry the matching desired-state record and all
+three status inputs. Rollback requires separately reviewed exact predecessor
+admission; deleting the status record cannot silently disable the checks.
+This policy update leaves the current active render unchanged. Its initial
+merge needs explicit protected-policy maintenance because the preceding
+verifier cannot admit its own replacement. Later rollout PRs run the new
+verifier from their protected base through the existing workflow.
+
+The supplemental SQL stays separate from the retained database's existing
+bootstrap. The proposed migration batch creates only the three reviewed
+functions in one transaction, checks their catalog, and requests PostgREST
+schema reload after success. Its error-stop setting and bounded statement and
+lock timeouts prevent committing a partial batch. Reapplying the batch fails
+on existing functions; it must not be used as an automatic retry mechanism.
+Private restore/catalog evidence and the actual migration remain prerequisites
+for any gateway promotion.
+
+The existing issuer Secret, real CitizenNFT policy, TEST pass, retained claim,
+HTTP readiness probe and shared rate limit are preserved. The reserved status
+route already exists; the proposed new ingress allowance is the read-only
+exact-event acceptance lookup. No Case, municipal role or public decision is
+created by preparing this proposal.
+
+The four Röbel SQL/schema artifacts in `policy/citizen-adoption-status/` are
+unmodified source copies at the commit recorded in `activation.json`. Their
+upstream license is preserved in `LICENSE.AGPL-3.0`; this repository's MIT
+license does not relicense those artifacts.
+
+Run the proposal and admission checks with
+`python3 -m unittest -v scripts/test_citizen_adoption_status.py`. The proposal
+command accepts `--root`, `--base-root`, `--product-root` and
+`--publication-receipt`. `--base-root` must contain the complete protected
+Operations checkout after this policy is admitted; `--root` starts as a
+separate, byte-identical copy. The output binds the full base file manifest.
+Save its output in private review evidence, outside this public repository.
+
+### Existing retained-storage contract
+
 The storage-continuity policy admits one forward transition from the existing
 temporary PostgreSQL directory to the separately provisioned
 `roebel-tracer-postgres-data-v1` claim in the same staging namespace. The claim

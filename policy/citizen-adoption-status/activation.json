@@ -1,0 +1,105 @@
+{
+  "authority": {
+    "binding": "none",
+    "caseAdmissionActivated": false,
+    "rolesAssigned": false,
+    "syntheticPassGrantsEligibility": false
+  },
+  "database": {
+    "automaticMigration": false,
+    "bootstrapReplay": false,
+    "claim": "roebel-tracer-postgres-data-v1",
+    "deployment": "roebel-tracer-postgres",
+    "expectedPreflight": {
+      "database_schema_sha256": "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332",
+      "migration_id": "20260906_staging_citizen_adoption_status_readiness"
+    },
+    "migrationMode": "one-transaction-before-gateway-promotion",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "preflightRpc": "staging_participant_gateway_citizen_adoption_status_preflight",
+    "preserve": [
+      "retained-storage",
+      "existing-bootstrap-bytes",
+      "original-receipts",
+      "real-and-test-identity-policies"
+    ]
+  },
+  "http": {
+    "acceptanceBaseUrl": "https://roebel-web.staging.agentcart.eu/api/staging-participant/v1/citizen-adoption/acceptance/",
+    "holderDataPublic": false,
+    "identifier": "64-lowercase-hex",
+    "readMethod": "GET",
+    "statusBaseUrl": "https://roebel-web.staging.agentcart.eu/api/civic/v1/eligibility/status/",
+    "statusNonceHeader": "x-stadtstack-status-nonce",
+    "unavailableStatus": 503,
+    "unknownIdentifierStatus": 404
+  },
+  "publication": {
+    "receiptSha256": "sha256:678cbb12bfc65e4bcb823b718bb0525c57b6d86c43e9cee31eab64931f4adf1c",
+    "runId": "34019534693",
+    "schemaVersion": "roebel_staging_publication_receipt_v4",
+    "supplementalSqlAttestedByPublication": false
+  },
+  "rollback": "restore-exact-gateway-predecessor-keep-additive-sql-and-retained-records",
+  "runtime": {
+    "environment": [
+      {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ELIGIBILITY_STATUS",
+        "value": "enabled"
+      },
+      {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_STATUS_MIGRATION_SHA256",
+        "value": "sha256:62b4974d8b52be7ba5f31c06ab1c9604ec3370bbab1443b8a95fe2ae6fc49de7"
+      },
+      {
+        "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_STATUS_DATABASE_SCHEMA_SHA256",
+        "value": "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332"
+      }
+    ],
+    "readiness": "startup-and-every-status-request-and-internal-status",
+    "reuseExistingIssuerSecret": true,
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v6"
+  },
+  "schemaVersion": "roebel_citizen_adoption_status_activation_policy_v1",
+  "source": {
+    "manifestDigest": "sha256:b69922baff63356efadd705fcecc20e0b73a90725e2402b9a641a00c7b283e73",
+    "protectedRef": "refs/heads/main",
+    "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
+    "sourceRevision": "c25cbdff5f18143257c4849d91bbee3b18166ab1",
+    "sourceTreeSha256": "sha256:9b77ec660968839429d262299797ed5fb21e7089d1ab17f9d53141a40f267df5",
+    "workflowSha256": "sha256:57f845cd106120c365a60fcf9e80e00e5304c410f2aafd462ee8f89073dd1a61"
+  },
+  "sourceLicense": {
+    "appliesTo": [
+      "20260905_staging_citizen_eligibility_status_lookup.sql",
+      "20260906_staging_citizen_adoption_acceptance_lookup.sql",
+      "20260906_staging_citizen_adoption_status_readiness.sql",
+      "staging-citizen-adoption-status-schema-contract-v1.json"
+    ],
+    "operationsPath": "policy/citizen-adoption-status/LICENSE.AGPL-3.0",
+    "sha256": "sha256:0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+    "sourcePath": "LICENSE"
+  },
+  "supplementalArtifacts": [
+    {
+      "operationsPath": "policy/citizen-adoption-status/20260905_staging_citizen_eligibility_status_lookup.sql",
+      "sha256": "sha256:81ae161df079a183d4782b91b528a83100414e89e08c1287c8a4c4ad282e7689",
+      "sourcePath": "supabase/migrations/20260905_staging_citizen_eligibility_status_lookup.sql"
+    },
+    {
+      "operationsPath": "policy/citizen-adoption-status/20260906_staging_citizen_adoption_acceptance_lookup.sql",
+      "sha256": "sha256:810e0a03bc8b9ba60271c606bcff8dcdc0d18bb53e3f0ea2d15068f4542519bb",
+      "sourcePath": "supabase/migrations/20260906_staging_citizen_adoption_acceptance_lookup.sql"
+    },
+    {
+      "operationsPath": "policy/citizen-adoption-status/20260906_staging_citizen_adoption_status_readiness.sql",
+      "sha256": "sha256:62b4974d8b52be7ba5f31c06ab1c9604ec3370bbab1443b8a95fe2ae6fc49de7",
+      "sourcePath": "supabase/migrations/20260906_staging_citizen_adoption_status_readiness.sql"
+    },
+    {
+      "operationsPath": "policy/citizen-adoption-status/staging-citizen-adoption-status-schema-contract-v1.json",
+      "sha256": "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332",
+      "sourcePath": "supabase/staging-citizen-adoption-status-schema-contract-v1.json"
+    }
+  ]
+}

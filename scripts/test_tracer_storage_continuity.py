@@ -38,6 +38,16 @@ class StorageContinuityTests(unittest.TestCase):
         self.base = Path(self.temporary.name) / "base"
         self.candidate = Path(self.temporary.name) / "candidate"
         shutil.copytree(ROOT, self.base, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        # Storage activation predates status activation. Restore only that
+        # fixed render predecessor; keep the current protected verifier code.
+        if verifier.CITIZEN_STATUS.enabled(self.base):
+            status = verifier.CITIZEN_STATUS
+            for path in status.TRANSITION_FILES - {str(status.RECORD_PATH)}:
+                (self.base / path).write_bytes(subprocess.check_output([
+                    "git", "-C", str(ROOT), "show",
+                    "9728b97c2d39a3d7ae4d9af439e93b55df9357ef:" + path,
+                ]))
+            (self.base / status.RECORD_PATH).unlink()
         # Explicit historical predecessor makes these tests valid on both renders.
         artifacts = data.ROTATED_SYNTHETIC_PRODUCT_ARTIFACTS
         write(self.base, data.RENDER_ROOT / "runtime-pin.json", data.runtime_pin(data.IDENTITY_ROTATION_SOURCE_REVISION, artifacts))
