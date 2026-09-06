@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "roebel_synthetic_case_activation_proposal_v1",
+  "status": "review_only_not_admitted",
+  "caseSourceRevision": "02d10db3a68c37c66f78c7c558554ca0201525be",
+  "operationsPredecessor": "c4f551bec08f91c8ae2ae718d2ae82016961c7ed",
+  "topologyChecksum": "sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9",
+  "controlBindingChecksum": "sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce",
+  "publicBindingChecksum": "sha256:00f15bc0be77cfb4c2440fc56d854eb140b56960c069ae23143b164409af651a",
+  "privateConfigurationSha256": "sha256:b9f2e527e3459e3626e7255c57841388c477a8f51feab0f6ba39a8efd6e5e287",
+  "privateConfigurationSecretReference": {
+    "namespace": "stadtstack-roebel-staging-lab",
+    "name": "roebel-case-steward-control-runtime",
+    "key": "application-json",
+    "mustPreexist": true
+  },
+  "storageClaimUid": "9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd",
+  "storageVolumeUid": "c2656376-d80d-4868-9bfd-d6444790c6b5",
+  "freshEmptyStoreBootstrapOnly": true,
+  "restoreActivation": false,
+  "fluxReconciliation": false,
+  "staffAdmission": "private_operator_loopback_with_scoped_staging_credential",
+  "sourceOrDatabaseRecordsIncluded": false,
+  "resourceCount": 15,
+  "missingBeforeActivation": [
+    "protected Operations admission, exact-UID bootstrap ownership and explicit unsuspend after the reviewed revision is ready",
+    "private runtime Secret provisioning with matching configuration checksum",
+    "mounted runtime startup and clean restart verification",
+    "verified public receipt after explicit test admission"
+  ],
+  "artifacts": {
+    "control-binding.json": "sha256:a8c09f4518e7a939984ca8d9498a3c0026d4b408b3aad8018a7667b25642451a",
+    "flux-bootstrap.json": "sha256:033154773d9d4df8e11e8a9417c739509cb5e82f487bd4a9d4a275be4da743b9",
+    "kustomization.yaml": "sha256:0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
+    "public-binding.json": "sha256:2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
+    "resources.json": "sha256:66a4be2a3568ffedaf148e8c4e8ecfdf7b401d40092555238316babed5e68420",
+    "topology.json": "sha256:3c8a8bd0d62a2d7499aa5e43549677853c43203aa16aa466a1b84eccd4b4afd5",
+    "web-connection.json": "sha256:0ee648f1b78bad65ed3cdd7e9a92149d68621fff1f2d1570a6466a707b753c02"
+  },
+  "fluxOwnership": {
+    "namespace": "flux-roebel-staging",
+    "kustomization": "roebel-case-runtime",
+    "reconcilerServiceAccount": "roebel-case-runtime-reconciler",
+    "runtimeNamespace": "stadtstack-roebel-staging-lab",
+    "bootstrapSuspended": true,
+    "prune": false,
+    "createOrDeletePermissions": false,
+    "secretOrPvcPermissions": false,
+    "resourceNamesBoundToExactRender": true
+  },
+  "requiresExistingClaim": true
+}

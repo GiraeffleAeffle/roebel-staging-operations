@@ -1,0 +1,447 @@
+{
+  "schemaVersion": "roebel_synthetic_case_topology_proposal_v1",
+  "deploymentEnvironment": "staging",
+  "municipalityId": "roebel-mueritz",
+  "namespace": "stadtstack-roebel-staging-lab",
+  "resources": [
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-allow-private-outbox-and-dns-egress",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/component": "case-steward-control",
+                    "app.kubernetes.io/part-of": "roebel-case-staging"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18087,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-allow-roebel-web-ingress",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "roebel-web-presentation"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18086,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-default-deny",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "public",
+            "port": 18086,
+            "protocol": "TCP",
+            "targetPort": 18086
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "automountServiceAccountToken": false,
+      "imagePullSecrets": [],
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-allow-private-outbox-from-public",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/component": "case-public-binding",
+                    "app.kubernetes.io/part-of": "roebel-case-staging"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18087,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-default-deny",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-private-outbox",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "private-outbox",
+            "port": 18087,
+            "protocol": "TCP",
+            "targetPort": 18087
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "admission",
+            "port": 18085,
+            "protocol": "TCP",
+            "targetPort": 18085
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "automountServiceAccountToken": false,
+      "imagePullSecrets": [],
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-case-steward-control-allow-ledger-egress",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-steward-control",
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "ipBlock": {
+                  "cidr": "77.42.11.9/32"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 443,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "webEgressAddition": {
+    "to": [
+      {
+        "namespaceSelector": {
+          "matchLabels": {
+            "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+          }
+        },
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        }
+      }
+    ],
+    "ports": [
+      {
+        "port": 18086,
+        "protocol": "TCP"
+      }
+    ]
+  },
+  "controlImage": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+  "publicImage": "ghcr.io/giraeffleaeffle/stadtstack-case-public-binding@sha256:6616f2f5aeb40875c6a945d1f9bcd18521d00cff041dcdbaec43125d20328f1e",
+  "controlPodLabels": {
+    "app.kubernetes.io/name": "roebel-case-steward-control",
+    "app.kubernetes.io/component": "case-steward-control",
+    "app.kubernetes.io/part-of": "roebel-case-staging",
+    "stadtstack.io/authority": "none"
+  },
+  "publicPodLabels": {
+    "app.kubernetes.io/name": "roebel-case-public-binding",
+    "app.kubernetes.io/component": "case-public-binding",
+    "app.kubernetes.io/part-of": "roebel-case-staging",
+    "stadtstack.io/authority": "none"
+  },
+  "staffTransport": {
+    "mode": "private_operator_loopback",
+    "kubernetesPodUidRequired": true,
+    "admissionHost": "127.0.0.1",
+    "publicIngress": false,
+    "browserCredential": false
+  },
+  "restoreActivation": false
+}

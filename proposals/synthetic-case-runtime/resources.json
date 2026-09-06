@@ -1,0 +1,863 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-allow-private-outbox-and-dns-egress",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/component": "case-steward-control",
+                    "app.kubernetes.io/part-of": "roebel-case-staging"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18087,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-allow-roebel-web-ingress",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "roebel-web-presentation"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18086,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding-default-deny",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-public-binding",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "public",
+            "port": 18086,
+            "protocol": "TCP",
+            "targetPort": 18086
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "automountServiceAccountToken": false,
+      "imagePullSecrets": [],
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-public-binding",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-allow-private-outbox-from-public",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/component": "case-public-binding",
+                    "app.kubernetes.io/part-of": "roebel-case-staging"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18087,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-default-deny",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control-private-outbox",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "private-outbox",
+            "port": 18087,
+            "protocol": "TCP",
+            "targetPort": 18087
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "spec": {
+        "ports": [
+          {
+            "name": "admission",
+            "port": 18085,
+            "protocol": "TCP",
+            "targetPort": 18085
+          }
+        ],
+        "selector": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging"
+        },
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "automountServiceAccountToken": false,
+      "imagePullSecrets": [],
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        },
+        "name": "roebel-case-steward-control",
+        "namespace": "stadtstack-roebel-staging-lab"
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-case-steward-control-allow-ledger-egress",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-steward-control",
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Egress"
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "ipBlock": {
+                  "cidr": "77.42.11.9/32"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 443,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "roebel-case-steward-control-reviewed",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-steward-control",
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "immutable": true,
+      "data": {
+        "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"admission\",\"port\":18085},{\"bindScope\":\"pod_network\",\"id\":\"private-outbox\",\"port\":18087},{\"bindScope\":\"pod_network\",\"id\":\"probe\",\"port\":18088}],\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"releaseDigest\":\"sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430\",\"schemaVersion\":\"staging_case_control_deployment_binding_v1\",\"storage\":{\"accessMode\":\"ReadWriteOncePod\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"checksum\":\"sha256:5eb3368415ed0d5ae9191ce530875147c2a278043b9ed68b67841ea5b9826b3f\",\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"pvName\":\"pvc-9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"pvcName\":\"roebel-case-steward-control-state\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack/case-control\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\"},\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n",
+        "storage-marker.json": "{\"accessMode\":\"ReadWriteOncePod\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"pvName\":\"pvc-9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"pvcName\":\"roebel-case-steward-control-state\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"releaseDigest\":\"sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack/case-control\",\"schemaVersion\":\"staging_case_control_storage_marker_v1\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\",\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "roebel-case-public-binding-reviewed",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-public-binding",
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "immutable": true,
+      "data": {
+        "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:00f15bc0be77cfb4c2440fc56d854eb140b56960c069ae23143b164409af651a\",\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"public\",\"port\":18086},{\"bindScope\":\"pod_network\",\"id\":\"public-probe\",\"port\":18089}],\"municipalityId\":\"roebel-mueritz\",\"namespace\":\"stadtstack-roebel-staging-lab\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"outbox\":{\"namespace\":\"stadtstack-roebel-staging-lab\",\"port\":18087,\"serviceName\":\"roebel-case-steward-control-private-outbox\"},\"releaseDigest\":\"sha256:6616f2f5aeb40875c6a945d1f9bcd18521d00cff041dcdbaec43125d20328f1e\",\"schemaVersion\":\"staging_public_case_binding_deployment_binding_v1\",\"workload\":{\"automountServiceAccountToken\":false,\"imagePullSecrets\":[],\"serviceAccountName\":\"roebel-case-public-binding\"},\"workloadName\":\"roebel-case-public-binding\"}\n",
+        "application.json": "{\"drainTimeoutMs\":5000,\"probeAllowedHosts\":[\"127.0.0.1\"],\"publicAllowedHosts\":[\"roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local\"],\"reconcileIntervalMs\":5000}\n"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "roebel-case-steward-control",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-steward-control",
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "strategy": {
+          "type": "Recreate"
+        },
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "roebel-case-steward-control"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "roebel-case-steward-control",
+              "app.kubernetes.io/component": "case-steward-control",
+              "app.kubernetes.io/part-of": "roebel-case-staging",
+              "stadtstack.io/authority": "none"
+            }
+          },
+          "spec": {
+            "serviceAccountName": "roebel-case-steward-control",
+            "automountServiceAccountToken": false,
+            "imagePullSecrets": [],
+            "enableServiceLinks": false,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 1000,
+              "runAsGroup": 1000,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              },
+              "fsGroup": 1000,
+              "fsGroupChangePolicy": "OnRootMismatch"
+            },
+            "containers": [
+              {
+                "name": "runtime",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [
+                  {
+                    "name": "admission",
+                    "containerPort": 18085,
+                    "protocol": "TCP"
+                  },
+                  {
+                    "name": "private-outbox",
+                    "containerPort": 18087,
+                    "protocol": "TCP"
+                  },
+                  {
+                    "name": "control-probe",
+                    "containerPort": 18088,
+                    "protocol": "TCP"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "STADTSTACK_CASE_CONTROL_CONFIG_PATH",
+                    "value": "/run/stadtstack-control/private/application.json"
+                  },
+                  {
+                    "name": "STADTSTACK_CASE_CONTROL_REVIEWED_BINDING_PATH",
+                    "value": "/reviewed/reviewed-binding.json"
+                  },
+                  {
+                    "name": "STADTSTACK_CASE_CONTROL_BINDING_SHA256",
+                    "value": "sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce"
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "case-state",
+                    "mountPath": "/var/lib/stadtstack"
+                  },
+                  {
+                    "name": "private-config",
+                    "mountPath": "/run/stadtstack-control",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "reviewed",
+                    "mountPath": "/reviewed/reviewed-binding.json",
+                    "subPath": "reviewed-binding.json",
+                    "readOnly": true
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "512Mi"
+                  }
+                },
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": 18088,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": 18088,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": 18088,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "case-state",
+                "persistentVolumeClaim": {
+                  "claimName": "roebel-case-steward-control-state"
+                }
+              },
+              {
+                "name": "private-config",
+                "emptyDir": {
+                  "medium": "Memory",
+                  "sizeLimit": "2Mi"
+                }
+              },
+              {
+                "name": "reviewed",
+                "configMap": {
+                  "name": "roebel-case-steward-control-reviewed",
+                  "defaultMode": 292
+                }
+              }
+            ],
+            "initContainers": [
+              {
+                "name": "prepare-reviewed-config",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+                "imagePullPolicy": "IfNotPresent",
+                "command": [
+                  "node",
+                  "-e",
+                  "const fs = require('node:fs');\nconst crypto = require('node:crypto');\nconst root = '/var/lib/stadtstack/case-control';\nconst target = root + '/.stadtstack-control-storage-v1.json';\nconst marker = fs.readFileSync('/reviewed/storage-marker.json');\nconst st = fs.lstatSync(root);\nif (!st.isDirectory() || st.isSymbolicLink() || st.uid !== 1000 || st.gid !== 1000 || (st.mode & 0o7777) !== 0o700) throw Error('storage_identity_invalid');\ntry {\n  const prior = fs.lstatSync(target);\n  if (!prior.isFile() || prior.isSymbolicLink() || prior.uid !== 1000 || prior.gid !== 1000 || (prior.mode & 0o7777) !== 0o600 || !fs.readFileSync(target).equals(marker)) throw Error('storage_marker_invalid');\n} catch (error) {\n  if (error.code !== 'ENOENT') throw error;\n  if (fs.readdirSync(root).length !== 0) throw Error('storage_bootstrap_not_empty');\n  const fd = fs.openSync(target, 'wx', 0o600);\n  try { fs.writeFileSync(fd, marker); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }\n  const directory = fs.openSync(root, 'r');\n  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }\n}\nconst raw = process.env.ROEBEL_CASE_PRIVATE_CONFIG;\ndelete process.env.ROEBEL_CASE_PRIVATE_CONFIG;\nif (typeof raw !== 'string' || Buffer.byteLength(raw) < 1 || Buffer.byteLength(raw) > 1048576 || crypto.createHash('sha256').update(raw).digest('hex') !== process.env.ROEBEL_CASE_PRIVATE_CONFIG_SHA256) throw Error('private_configuration_invalid');\nconst value = JSON.parse(raw);\nif (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('private_configuration_invalid');\nfs.mkdirSync('/run/stadtstack-control/private', { mode: 0o700 });\nfs.chmodSync('/run/stadtstack-control/private', 0o700);\nfs.writeFileSync('/run/stadtstack-control/private/application.json', raw, { flag: 'wx', mode: 0o600 });\n"
+                ],
+                "env": [
+                  {
+                    "name": "ROEBEL_CASE_PRIVATE_CONFIG",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-case-steward-control-runtime",
+                        "key": "application-json"
+                      }
+                    }
+                  },
+                  {
+                    "name": "ROEBEL_CASE_PRIVATE_CONFIG_SHA256",
+                    "value": "b9f2e527e3459e3626e7255c57841388c477a8f51feab0f6ba39a8efd6e5e287"
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "case-state",
+                    "mountPath": "/var/lib/stadtstack"
+                  },
+                  {
+                    "name": "private-config",
+                    "mountPath": "/run/stadtstack-control"
+                  },
+                  {
+                    "name": "reviewed",
+                    "mountPath": "/reviewed/storage-marker.json",
+                    "subPath": "storage-marker.json",
+                    "readOnly": true
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "10m",
+                    "memory": "32Mi"
+                  },
+                  "limits": {
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "roebel-case-public-binding",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-public-binding",
+          "app.kubernetes.io/component": "case-public-binding",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "strategy": {
+          "type": "Recreate"
+        },
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "roebel-case-public-binding"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "roebel-case-public-binding",
+              "app.kubernetes.io/component": "case-public-binding",
+              "app.kubernetes.io/part-of": "roebel-case-staging",
+              "stadtstack.io/authority": "none"
+            }
+          },
+          "spec": {
+            "serviceAccountName": "roebel-case-public-binding",
+            "automountServiceAccountToken": false,
+            "imagePullSecrets": [],
+            "enableServiceLinks": false,
+            "terminationGracePeriodSeconds": 30,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 1000,
+              "runAsGroup": 1000,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "runtime",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-public-binding@sha256:6616f2f5aeb40875c6a945d1f9bcd18521d00cff041dcdbaec43125d20328f1e",
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [
+                  {
+                    "name": "public",
+                    "containerPort": 18086,
+                    "protocol": "TCP"
+                  },
+                  {
+                    "name": "public-probe",
+                    "containerPort": 18089,
+                    "protocol": "TCP"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "STADTSTACK_CASE_PUBLIC_CONFIG_PATH",
+                    "value": "/reviewed/application.json"
+                  },
+                  {
+                    "name": "STADTSTACK_CASE_PUBLIC_REVIEWED_BINDING_PATH",
+                    "value": "/reviewed/reviewed-binding.json"
+                  },
+                  {
+                    "name": "STADTSTACK_CASE_PUBLIC_BINDING_SHA256",
+                    "value": "sha256:00f15bc0be77cfb4c2440fc56d854eb140b56960c069ae23143b164409af651a"
+                  }
+                ],
+                "volumeMounts": [
+                  {
+                    "name": "reviewed",
+                    "mountPath": "/reviewed/reviewed-binding.json",
+                    "subPath": "reviewed-binding.json",
+                    "readOnly": true
+                  },
+                  {
+                    "name": "reviewed",
+                    "mountPath": "/reviewed/application.json",
+                    "subPath": "application.json",
+                    "readOnly": true
+                  }
+                ],
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "25m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "512Mi"
+                  }
+                },
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": 18089,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/livez",
+                    "port": 18089,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/readyz",
+                    "port": 18089,
+                    "httpHeaders": [
+                      {
+                        "name": "Host",
+                        "value": "127.0.0.1"
+                      }
+                    ]
+                  },
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 2,
+                  "failureThreshold": 12
+                }
+              }
+            ],
+            "volumes": [
+              {
+                "name": "reviewed",
+                "configMap": {
+                  "name": "roebel-case-public-binding-reviewed",
+                  "defaultMode": 292
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

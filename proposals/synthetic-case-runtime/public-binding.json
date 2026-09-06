@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "staging_public_case_binding_deployment_binding_v1",
+  "deploymentEnvironment": "staging",
+  "municipalityId": "roebel-mueritz",
+  "namespace": "stadtstack-roebel-staging-lab",
+  "workloadName": "roebel-case-public-binding",
+  "workload": {
+    "serviceAccountName": "roebel-case-public-binding",
+    "automountServiceAccountToken": false,
+    "imagePullSecrets": []
+  },
+  "releaseDigest": "sha256:6616f2f5aeb40875c6a945d1f9bcd18521d00cff041dcdbaec43125d20328f1e",
+  "operationsTopologyChecksum": "sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9",
+  "outbox": {
+    "serviceName": "roebel-case-steward-control-private-outbox",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "port": 18087
+  },
+  "listeners": [
+    {
+      "id": "public",
+      "port": 18086,
+      "bindScope": "pod_network"
+    },
+    {
+      "id": "public-probe",
+      "port": 18089,
+      "bindScope": "pod_network"
+    }
+  ],
+  "bindingChecksum": "sha256:00f15bc0be77cfb4c2440fc56d854eb140b56960c069ae23143b164409af651a"
+}
