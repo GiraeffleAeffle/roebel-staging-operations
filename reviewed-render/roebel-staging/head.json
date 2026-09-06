@@ -7,11 +7,11 @@
     },
     {
       "component": "roebel-web-staging",
-      "manifestDigest": "sha256:44b869a9eff3d27d01cd40a4991c3e58f489d325d520d84291d6e525ac91570c",
-      "sourceRevision": "d95c915ecd1269488efe5c5c0f0d1672103a833e"
+      "manifestDigest": "sha256:dead362b486e7b89dd9628a8ea6f5982c2847ac4e10deedba925f6d88a95698f",
+      "sourceRevision": "d685cd9beb0942bcf2a05e6d3dab7c34f452ab78"
     }
   ],
-  "promotionRevision": "d95c915ecd1269488efe5c5c0f0d1672103a833e",
-  "releaseSetDigest": "sha256:fc01eeb66b8088fe2300302908a697a009cd0e41cfc618c930505e990f7298ec",
+  "promotionRevision": "d685cd9beb0942bcf2a05e6d3dab7c34f452ab78",
+  "releaseSetDigest": "sha256:d2be03afb7741a44cb121cf067b9cd26fc938a7a4ed895a228730a1f448b5fdc",
   "schemaVersion": "roebel_staging_release_set_head_v1"
 }
