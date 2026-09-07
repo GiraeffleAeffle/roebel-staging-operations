@@ -1,6 +1,6 @@
 {
   "schemaVersion": "roebel_synthetic_case_activation_proposal_v1",
-  "status": "review_only_not_admitted",
+  "status": "review_only_runtime_activation_blocked",
   "caseSourceRevision": "02d10db3a68c37c66f78c7c558554ca0201525be",
   "operationsPredecessor": "c4f551bec08f91c8ae2ae718d2ae82016961c7ed",
   "topologyChecksum": "sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9",
@@ -22,7 +22,7 @@
   "sourceOrDatabaseRecordsIncluded": false,
   "resourceCount": 15,
   "missingBeforeActivation": [
-    "protected Operations admission, exact-UID bootstrap ownership and explicit unsuspend after the reviewed revision is ready",
+    "protected runtime activation transition, exact-UID bootstrap ownership and explicit unsuspend after the reviewed revision is ready",
     "private runtime Secret provisioning with matching configuration checksum",
     "mounted runtime startup and clean restart verification",
     "verified public receipt after explicit test admission"
@@ -32,7 +32,7 @@
     "flux-bootstrap.json": "sha256:033154773d9d4df8e11e8a9417c739509cb5e82f487bd4a9d4a275be4da743b9",
     "kustomization.yaml": "sha256:0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
     "public-binding.json": "sha256:2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
-    "resources.json": "sha256:66a4be2a3568ffedaf148e8c4e8ecfdf7b401d40092555238316babed5e68420",
+    "resources.json": "sha256:3b183afdbb542c3e891deba80766374380d46b116db5b5d7e60a5bba64032e18",
     "topology.json": "sha256:3c8a8bd0d62a2d7499aa5e43549677853c43203aa16aa466a1b84eccd4b4afd5",
     "web-connection.json": "sha256:0ee648f1b78bad65ed3cdd7e9a92149d68621fff1f2d1570a6466a707b753c02"
   },

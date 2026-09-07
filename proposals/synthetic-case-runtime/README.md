@@ -2,8 +2,10 @@
 
 This is a review proposal for the first empty-store Case bootstrap. It is not
 referenced by the active render, a Flux source path or a deployment runner.
-The protected admission verifier must explicitly admit the complete proposal
-before any runtime resource, staff credential or Web connection is activated.
+The draft checker pins the exact proposal bytes and keeps runtime activation
+blocked. Connecting it to protected admission is pending specific approval.
+The proposal does not itself authorize a runtime
+resource, staff credential, Web connection or bootstrap transaction.
 
 The two published Stadtstack images supply a single-writer control process
 and a separate public reader. The control binding pins the existing retained
@@ -20,7 +22,10 @@ immutable reviewed ConfigMaps; and two one-replica Deployments. Its
 included. The control init container takes the pre-provisioned private
 configuration through the existing env-only Secret reference, checks its
 independent SHA-256 pin, removes that environment entry and writes a regular
-runtime-owned 0600 file in memory. Public has no private configuration, PVC or
+runtime-owned 0600 file in memory. Validation precedes the first storage write.
+An init-container retry accepts only an identical, runtime-owned 0600 file;
+altered bytes, permissions, symlinks and hard links fail without overwriting it.
+Public has no private configuration, PVC or
 Secret reference. The control binding follows the actual source Interface,
 which omits `imagePullSecrets`; the Pod and public binding separately enforce
 empty image-pull Secret lists.
@@ -60,9 +65,27 @@ preflight separately verified the retained empty claim and removed its
 temporary probe identities. Private receipts and credential recovery evidence
 remain outside this public repository.
 
-The current protected verifier is intentionally unchanged and cannot admit
-these new proposal paths. A green ordinary image promotion does not authorize
-this runtime. Pending work is the exact protected admission transition,
-private Secret provisioning, reviewed bootstrap/Flux ownership, mounted startup
-and clean restart checks, then explicit test admission and a verified browser
-receipt. No restoration or municipal authority is implied by this proposal.
+The proposed integration would load its pins from the protected checkout;
+candidate hashes could not authorize altered objects or executable policy.
+The draft checker also produces
+an offline bootstrap review plan, including exact object identities, retained
+storage, the separately supplied credential and the required rollback scope.
+The plan makes no cluster or filesystem mutation and is not an executable
+deployment runner. The active render and all existing Flux paths remain
+unchanged. Admission of this proposal does not authorize runtime activation.
+The existing protected verifier and CI workflow remain unchanged and still
+reject this draft. The offline plan verifies the admitted active checkout
+separately; it does not reinterpret the draft as an admitted render.
+
+The requested integration is limited to three changes: load this checker
+beside the protected verifier and check the complete pinned proposal inventory;
+reject ordinary promotions that alter its checker, tests or proposal files;
+and include its six focused tests in the existing protected-base and main CI
+commands. Existing active-render, network, storage and authority checks remain
+in force. CI permissions and the trusted-base checkout model remain unchanged.
+This integration neither installs a credential nor creates a Case workload.
+
+Pending work is the reviewed bootstrap/Flux ownership transition, private
+Secret provisioning, mounted startup and clean restart checks, then explicit
+test admission and a verified browser receipt. Restoration and municipal
+authority remain outside this proposal.
