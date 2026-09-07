@@ -123,6 +123,14 @@ class KubernetesTests(unittest.TestCase):
         with self.assertRaises(core.BootstrapStopped):core.run_bootstrap(self.root,adapter=adapter,sink=sink)
         self.assertEqual(len([c for c in api.calls if c[0]=='POST']),14)
 
+    def test_service_account_omitted_empty_pull_secrets_keeps_nonempty_references_visible(self):
+        adapter,_=self.adapter_environment()
+        desired=adapter.plan['objects'][0]['desired']
+        actual=copy.deepcopy(desired);actual.pop('imagePullSecrets')
+        adapter.require_exact(actual,desired)
+        actual['imagePullSecrets']=[{'name':'unreviewed-registry-credential'}]
+        with self.assertRaises(core.BootstrapStopped):adapter.require_exact(actual,desired)
+
     def test_default_normalization_keeps_security_changes(self):
         adapter,_=self.adapter_environment()
         desired=next(o['desired'] for o in adapter.plan['objects'] if o['phase']=='control')

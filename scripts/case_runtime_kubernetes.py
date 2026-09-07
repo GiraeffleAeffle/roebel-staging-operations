@@ -59,6 +59,7 @@ def normalize(obj):
         _default(meta,'finalizers',['finalizers.fluxcd.io'])
     if value['kind']=='ServiceAccount':
         _default(value,'secrets',[])
+        _default(value,'imagePullSecrets',[])
     spec = value.get('spec',{})
     if value['kind']=='Service':
         core._require(spec.get('type','ClusterIP')=='ClusterIP' and not spec.get('externalIPs') and not spec.get('externalName'), 'non-internal Service forbidden')
