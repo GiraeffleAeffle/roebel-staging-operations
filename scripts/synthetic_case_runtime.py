@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path("proposals/synthetic-case-runtime")
 PINS = {
-    "README.md": "f1336f9c9a7bd84cdea32413ccd9d745429496e49eaa225b6442741a0e75787c",
+    "README.md": "b14482dd9134fa85088162c57e35a2c6670320b69d8611bd1eea77a442f92308",
     "control-binding.json": "a8c09f4518e7a939984ca8d9498a3c0026d4b408b3aad8018a7667b25642451a",
     "flux-bootstrap.json": "033154773d9d4df8e11e8a9417c739509cb5e82f487bd4a9d4a275be4da743b9",
     "kustomization.yaml": "0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",

@@ -2,8 +2,8 @@
 
 This is a review proposal for the first empty-store Case bootstrap. It is not
 referenced by the active render, a Flux source path or a deployment runner.
-The draft checker pins the exact proposal bytes and keeps runtime activation
-blocked. Connecting it to protected admission is pending specific approval.
+The checker pins the exact proposal bytes and keeps runtime activation
+blocked. Its integration loads executable policy only from the protected checkout.
 The proposal does not itself authorize a runtime
 resource, staff credential, Web connection or bootstrap transaction.
 
@@ -65,25 +65,26 @@ preflight separately verified the retained empty claim and removed its
 temporary probe identities. Private receipts and credential recovery evidence
 remain outside this public repository.
 
-The proposed integration would load its pins from the protected checkout;
-candidate hashes could not authorize altered objects or executable policy.
-The draft checker also produces
-an offline bootstrap review plan, including exact object identities, retained
-storage, the separately supplied credential and the required rollback scope.
-The plan makes no cluster or filesystem mutation and is not an executable
-deployment runner. The active render and all existing Flux paths remain
-unchanged. Admission of this proposal does not authorize runtime activation.
-The existing protected verifier and CI workflow remain unchanged and still
-reject this draft. The offline plan verifies the admitted active checkout
-separately; it does not reinterpret the draft as an admitted render.
+The integrated checker loads its pins beside the protected verifier; candidate
+hashes cannot authorize altered objects or executable policy. The exact
+repository inventory includes the complete bundle. Ordinary promotions cannot
+alter the checker, tests or proposal files. Its focused tests run in the
+existing protected-base and main CI commands; CI permissions and the trusted
+checkout model are unchanged. Existing render, network, storage and authority
+checks remain in force.
 
-The requested integration is limited to three changes: load this checker
-beside the protected verifier and check the complete pinned proposal inventory;
-reject ordinary promotions that alter its checker, tests or proposal files;
-and include its six focused tests in the existing protected-base and main CI
-commands. Existing active-render, network, storage and authority checks remain
-in force. CI permissions and the trusted-base checkout model remain unchanged.
-This integration neither installs a credential nor creates a Case workload.
+The checker also produces an offline bootstrap review plan with exact object
+identities, retained storage, separate credential provisioning and rollback
+scope. The plan makes no cluster or filesystem mutation and is not an
+executable deployment runner. The active render and existing Flux paths remain
+unchanged. Verification of this proposal does not activate a runtime.
+
+The pull request's old protected-base verifier still rejects these new paths
+until the policy integration is independently merged. Local validation of the
+new policy is separate from that required check and from deployment approval.
+Run the offline plan with an admitted checkout containing this policy as
+`--active-root`; an older checkout lacking the complete policy inventory is
+not reinterpreted as admitted by the new verifier.
 
 Pending work is the reviewed bootstrap/Flux ownership transition, private
 Secret provisioning, mounted startup and clean restart checks, then explicit

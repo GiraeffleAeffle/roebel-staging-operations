@@ -29,13 +29,18 @@ verifier = load("case_proposal_test_verifier", "verify-reviewed-render.py")
 INIT_HARNESS = r"""
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const vm = require('node:vm'), crypto = require('node:crypto'), assert = require('node:assert/strict');
+// Own the disposable fixture's file-creation mode.
+process.umask(0o077);
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'case-init-rehearsal-'));
 const roots = {'/var/lib/stadtstack': temporary+'/state', '/reviewed': temporary+'/reviewed', '/run/stadtstack-control': temporary+'/run'};
 const map = value => typeof value === 'string' ? Object.entries(roots).reduce((p,[from,to]) => p === from || p.startsWith(from+'/') ? to+p.slice(from.length) : p, value) : value;
 const state = temporary+'/state/case-control', privateDir = temporary+'/run/private';
 const marker = state+'/.stadtstack-control-storage-v1.json', config = privateDir+'/application.json';
-const actualUid = process.getuid(), actualGid = process.getgid();
+// macOS temporary directories inherit their parent's group, which may differ
+// from process.getgid(). Map the fixture's real ownership to the container IDs.
+const fixtureOwner = fs.statSync(temporary);
+const actualUid = fixtureOwner.uid, actualGid = fixtureOwner.gid;
 const mappedFs = new Proxy(fs, {get(target, key) {
   if (key === 'lstatSync') return p => {
     const st = fs.lstatSync(map(p));
@@ -91,7 +96,8 @@ class SyntheticCaseProposalTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="case-proposal-data-")
         self.addCleanup(temporary.cleanup)
         candidate = Path(temporary.name)
-        shutil.copytree(ROOT / policy.ROOT, candidate / policy.ROOT)
+        shutil.copytree(ROOT, candidate, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
         return candidate
 
     def test_reviewed_bundle_is_complete_and_runtime_activation_remains_blocked(self):
@@ -109,22 +115,21 @@ class SyntheticCaseProposalTests(unittest.TestCase):
         value["artifacts"]["resources.json"] = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
         proposal.write_text(json.dumps(value))
         with self.assertRaisesRegex(verifier.VerificationError, "protected pin mismatch"):
-            policy.verify_proposal(verifier,candidate)
+            verifier.verify_tree(candidate)
 
     def test_partial_or_symlinked_bundle_is_rejected(self):
         candidate = self.candidate()
         path = candidate / policy.ROOT / "control-binding.json"
         path.unlink()
-        with self.assertRaises(verifier.VerificationError): policy.verify_proposal(verifier,candidate)
+        with self.assertRaises(verifier.VerificationError): verifier.verify_tree(candidate)
         path.symlink_to(ROOT / policy.ROOT / "control-binding.json")
-        with self.assertRaisesRegex(verifier.VerificationError,"regular files"): policy.verify_proposal(verifier,candidate)
+        with self.assertRaisesRegex(verifier.VerificationError,"symlink|regular files"): verifier.verify_tree(candidate)
 
     def test_transition_rejects_candidate_policy_code_without_executing_it(self):
         base, candidate = self.candidate(), self.candidate()
-        (candidate/'scripts').mkdir()
         (candidate/'scripts/synthetic_case_runtime.py').write_text("raise RuntimeError('must never execute candidate policy')")
         with self.assertRaisesRegex(verifier.VerificationError,"protected Case proposal"):
-            policy.verify_transition(verifier,candidate,base)
+            verifier.verify_transition(verifier.verify_tree(candidate),verifier.verify_tree(base))
 
     def test_transition_preserves_an_identical_bundle(self):
         policy.verify_transition(verifier,self.candidate(),self.candidate())
