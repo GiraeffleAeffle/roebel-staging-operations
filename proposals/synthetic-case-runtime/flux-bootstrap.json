@@ -136,7 +136,10 @@
       "kind": "Kustomization",
       "metadata": {
         "name": "roebel-case-runtime",
-        "namespace": "flux-roebel-staging"
+        "namespace": "flux-roebel-staging",
+        "labels": {
+          "stadtstack.io/flux-tenant": "roebel-staging"
+        }
       },
       "spec": {
         "suspend": true,

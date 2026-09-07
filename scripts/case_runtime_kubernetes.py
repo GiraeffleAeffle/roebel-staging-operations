@@ -342,7 +342,12 @@ class KubectlTransport:
         core._require(isinstance(path,str) and path.startswith(('/api/','/apis/')) and all(c not in path for c in ('?','#','..','\n')),'invalid API path')
         args=['kubectl','--kubeconfig',str(self.snapshot.path),'--request-timeout=20s']
         if method=='GET':
-            result=self.runner.run(args+['get','--raw',path],timeout=25)
+            # Retry only an observed, transient TLS failure on a read. Writes
+            # retain their single-send outcome and durable recovery boundary.
+            for attempt in range(3):
+                result=self.runner.run(args+['get','--raw',path],timeout=25)
+                if result.code==0 or not any(error in result.err for error in ('TLS handshake timeout','context deadline exceeded')) or attempt==2:break
+                time.sleep(0.25*(attempt+1))
             if result.code and result.err.startswith('Error from server (NotFound):'):return None
         elif method=='POST':
             if payload.get('kind')=='Secret':

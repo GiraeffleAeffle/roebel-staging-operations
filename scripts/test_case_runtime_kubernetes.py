@@ -141,3 +141,49 @@ class KubernetesTests(unittest.TestCase):
         adapter.require_exact(actual,desired)
         actual['spec']['template']['spec']['containers'][0]['securityContext']['privileged']=True
         with self.assertRaises(core.BootstrapStopped):adapter.require_exact(actual,desired)
+
+
+class KubectlReadRetryTests(unittest.TestCase):
+    def transport(self, responses):
+        from types import SimpleNamespace
+        target={'apiVersion':'v1','kind':'ServiceAccount','namespace':kube.NAMESPACE,'name':'roebel-case-public-binding'}
+        runner=mock.Mock()
+        runner.run.side_effect=[SimpleNamespace(code=code,err=err,out=out) for code,err,out in responses]
+        plan={'objects':[{'target':target}], 'review':{'separateCredentialProvisioning':{}}}
+        return kube.KubectlTransport(runner,SimpleNamespace(path='/fixture/kubeconfig'),plan),runner,target
+
+    def test_transient_get_tls_failure_retries_then_returns_observed_data(self):
+        for message in ('Unable to connect: net/http: TLS handshake timeout','context deadline exceeded (Client.Timeout or context cancellation while reading body)'):
+            with self.subTest(message=message):
+                transport,runner,_=self.transport([(1,message,''),(0,'','{"metadata":{"uid":"observed"}}')])
+                with mock.patch.object(kube.time,'sleep'):
+                    self.assertEqual(transport.request('GET','/api/v1/namespaces/example',None)['metadata']['uid'],'observed')
+                self.assertEqual(runner.run.call_count,2)
+
+    def test_read_retry_is_bounded(self):
+        transport,runner,_=self.transport([(1,'TLS handshake timeout','')]*3)
+        with mock.patch.object(kube.time,'sleep'),self.assertRaises(core.BootstrapStopped):
+            transport.request('GET','/api/v1/namespaces/example',None)
+        self.assertEqual(runner.run.call_count,3)
+
+    def test_absence_and_authorization_failures_are_not_retried(self):
+        for message,absent in [('Error from server (NotFound): absent',True),('Error from server (Forbidden): denied',False)]:
+            with self.subTest(message=message):
+                transport,runner,_=self.transport([(1,message,'')])
+                if absent:self.assertIsNone(transport.request('GET','/api/v1/namespaces/example',None))
+                else:
+                    with self.assertRaises(core.BootstrapStopped):transport.request('GET','/api/v1/namespaces/example',None)
+                self.assertEqual(runner.run.call_count,1)
+
+    def test_timed_out_create_and_patch_are_never_resent(self):
+        for method in ('POST','PATCH'):
+            with self.subTest(method=method):
+                transport,runner,target=self.transport([(1,'TLS handshake timeout','')])
+                with self.assertRaises(core.BootstrapStopped):
+                    if method=='POST':
+                        payload={'apiVersion':target['apiVersion'],'kind':target['kind'],'metadata':{'name':target['name'],'namespace':target['namespace']}}
+                        transport.request('POST',kube.resource_path(target,True),payload)
+                    else:
+                        path='/metadata/annotations/stadtstack.io~1case-bootstrap-nonce'
+                        transport.patch_owned(target,'owned-uid','42',[{'op':'test','path':path,'value':'a'*64},{'op':'remove','path':path}])
+                self.assertEqual(runner.run.call_count,1)
