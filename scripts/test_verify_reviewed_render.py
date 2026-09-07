@@ -1216,7 +1216,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def set_current_tracer_feed_route(self, root: Path, enabled: bool) -> None:
         """Normalize one current-head fixture to the exact private feed route state."""
-        source = VERIFIER.verify_tree(ROOT)
+        normalize_case_web_seed(root)
+        source = VERIFIER.verify_tree(root)
         render = root / "reviewed-render/roebel-staging"
 
         deployment_path = render / "web/deployment.json"
@@ -1309,6 +1310,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def enable_public_mecky_reviewed_web_source(self, root: Path) -> None:
         """Materialize the exact internal Web knowledge route under review."""
+        normalize_case_web_seed(root)
         source = VERIFIER.verify_tree(root)
         if source["publicMeckyReviewedWebSource"]:
             return
@@ -1454,6 +1456,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def disable_public_mecky_reviewed_web_source(self, root: Path) -> None:
         """Restore the exact predecessor route for historical transition fixtures."""
+        normalize_case_web_seed(root)
         source = VERIFIER.verify_tree(root)
         if not source["publicMeckyReviewedWebSource"]:
             return
