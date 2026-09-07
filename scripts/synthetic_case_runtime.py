@@ -17,9 +17,9 @@ ROOT = Path("proposals/synthetic-case-runtime")
 PINS = {
     "README.md": "b14482dd9134fa85088162c57e35a2c6670320b69d8611bd1eea77a442f92308",
     "control-binding.json": "a8c09f4518e7a939984ca8d9498a3c0026d4b408b3aad8018a7667b25642451a",
-    "flux-bootstrap.json": "9e4feb517359324d1aed511da06a5ffa1250ef8aa081e18691fc824c4bcbeeea",
+    "flux-bootstrap.json": "99b7f085179a2d350778af5ce7ea0c6ca061a7cb2216355c94fc8f0a0d2cebdf",
     "kustomization.yaml": "0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
-    "proposal.json": "58d7124dc5ec42300fff23175a1e5d58a2beb5b4f65ddad0e53b6f0c47f5eba6",
+    "proposal.json": "bec4c269d65ce5593857eedff22b2ae81fe238ff8daff544a805ff33185d262e",
     "public-binding.json": "2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
     "resources.json": "f4c4f5c3f428082ad6321ba9d8e07bd2b80b58bd7ef84b96b670211a16d9a69d",
     "topology.json": "3c8a8bd0d62a2d7499aa5e43549677853c43203aa16aa466a1b84eccd4b4afd5",

@@ -131,6 +131,43 @@ class SyntheticCaseProposalTests(unittest.TestCase):
         self.assertEqual(reconciler['metadata']['labels'], {'stadtstack.io/flux-tenant': 'roebel-staging'})
         self.assertTrue(reconciler['spec']['suspend'])
 
+    def test_flux_deployment_health_can_list_children_without_new_write_or_secret_access(self):
+        records = policy.verify_proposal(verifier, ROOT)
+        items = records['flux-bootstrap.json']['items']
+        role = next(item for item in items if item['kind'] == 'Role')
+        self.assertEqual(role['metadata']['namespace'], 'stadtstack-roebel-staging-lab')
+        named, discovery = role['rules'][:5], role['rules'][5:]
+        # Flux cli-utils v1.2.2 follows Deployment -> ReplicaSet -> Pod using
+        # namespace/label-scoped LIST, not named GET or WATCH for children.
+        self.assertEqual(discovery, [
+            {'apiGroups': ['apps'], 'resources': ['replicasets'], 'verbs': ['list']},
+            {'apiGroups': [''], 'resources': ['pods'], 'verbs': ['list']},
+        ])
+        self.assertTrue(all(rule.get('resourceNames') and rule['verbs'] == ['get', 'patch', 'update'] for rule in named))
+        def permits(group, resource, verb):
+            return any(group in rule['apiGroups'] and resource in rule['resources'] and verb in rule['verbs'] for rule in discovery)
+        for group, resource in [('apps', 'replicasets'), ('', 'pods')]:
+            self.assertTrue(permits(group, resource, 'list'))
+            for verb in ['get', 'watch', 'create', 'patch', 'update', 'delete', 'deletecollection']:
+                with self.subTest(resource=resource, verb=verb): self.assertFalse(permits(group, resource, verb))
+        for resource in ['secrets', 'pods/log', 'pods/exec', 'configmaps', 'persistentvolumeclaims']:
+            self.assertFalse(permits('', resource, 'list'))
+        self.assertTrue(items[-1]['spec']['wait'])
+        self.assertEqual(items[-1]['spec']['serviceAccountName'], 'roebel-case-runtime-reconciler')
+
+    def test_candidate_cannot_self_authorize_broader_health_permissions(self):
+        candidate = self.candidate()
+        path = candidate / policy.ROOT / 'flux-bootstrap.json'
+        value = json.loads(path.read_text())
+        value['items'][1]['rules'][-1]['verbs'].append('patch')
+        path.write_text(json.dumps(value))
+        proposal = candidate / policy.ROOT / 'proposal.json'
+        value = json.loads(proposal.read_text())
+        value['artifacts']['flux-bootstrap.json'] = 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+        proposal.write_text(json.dumps(value))
+        with self.assertRaisesRegex(verifier.VerificationError, 'protected pin mismatch'):
+            verifier.verify_tree(candidate)
+
     def test_candidate_cannot_reauthorize_a_changed_image_with_its_own_hash(self):
         candidate = self.candidate()
         path = candidate / policy.ROOT / "resources.json"
