@@ -1,0 +1,158 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "roebel-case-runtime-reconciler",
+        "namespace": "flux-roebel-staging"
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "roebel-case-runtime-reconciler",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "configmaps"
+          ],
+          "resourceNames": [
+            "roebel-case-public-binding-reviewed",
+            "roebel-case-steward-control-reviewed"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "serviceaccounts"
+          ],
+          "resourceNames": [
+            "roebel-case-public-binding",
+            "roebel-case-steward-control"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "services"
+          ],
+          "resourceNames": [
+            "roebel-case-public-binding",
+            "roebel-case-steward-control",
+            "roebel-case-steward-control-private-outbox"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "apps"
+          ],
+          "resources": [
+            "deployments"
+          ],
+          "resourceNames": [
+            "roebel-case-public-binding",
+            "roebel-case-steward-control"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "networking.k8s.io"
+          ],
+          "resources": [
+            "networkpolicies"
+          ],
+          "resourceNames": [
+            "roebel-case-public-binding-allow-private-outbox-and-dns-egress",
+            "roebel-case-public-binding-allow-roebel-web-ingress",
+            "roebel-case-public-binding-default-deny",
+            "roebel-case-steward-control-allow-ledger-egress",
+            "roebel-case-steward-control-allow-private-outbox-from-public",
+            "roebel-case-steward-control-default-deny"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "roebel-case-runtime-reconciler",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "roebel-case-runtime-reconciler"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "roebel-case-runtime-reconciler",
+          "namespace": "flux-roebel-staging"
+        }
+      ]
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "roebel-case-runtime",
+        "namespace": "flux-roebel-staging"
+      },
+      "spec": {
+        "suspend": true,
+        "interval": "5m",
+        "retryInterval": "1m",
+        "timeout": "3m",
+        "prune": false,
+        "force": false,
+        "wait": true,
+        "serviceAccountName": "roebel-case-runtime-reconciler",
+        "path": "./reviewed-render/roebel-staging/case-runtime",
+        "sourceRef": {
+          "kind": "GitRepository",
+          "name": "roebel-staging-operations"
+        }
+      }
+    }
+  ]
+}

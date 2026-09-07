@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "staging_case_control_deployment_binding_v1",
+  "deploymentEnvironment": "staging",
+  "municipalityId": "roebel-mueritz",
+  "workloadName": "roebel-case-steward-control",
+  "workload": {
+    "serviceAccountName": "roebel-case-steward-control",
+    "automountServiceAccountToken": false
+  },
+  "releaseDigest": "sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+  "operationsTopologyChecksum": "sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9",
+  "deployment": {
+    "replicas": 1,
+    "strategy": "Recreate",
+    "noOverlappingPods": true
+  },
+  "storage": {
+    "rootDir": "/var/lib/stadtstack/case-control",
+    "pvcNamespace": "stadtstack-roebel-staging-lab",
+    "pvcName": "roebel-case-steward-control-state",
+    "pvcUid": "9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd",
+    "pvName": "pvc-9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd",
+    "storageClass": "hcloud-volumes",
+    "accessMode": "ReadWriteOncePod",
+    "volumeMode": "Filesystem",
+    "requestedBytes": "10737418240",
+    "uid": 1000,
+    "gid": 1000,
+    "mode": "0700",
+    "filesystemType": "0xef53",
+    "minAvailableBytes": "1073741824",
+    "marker": {
+      "fileName": ".stadtstack-control-storage-v1.json",
+      "checksum": "sha256:5eb3368415ed0d5ae9191ce530875147c2a278043b9ed68b67841ea5b9826b3f",
+      "uid": 1000,
+      "gid": 1000,
+      "mode": "0600"
+    }
+  },
+  "listeners": [
+    {
+      "id": "admission",
+      "port": 18085,
+      "bindScope": "pod_network"
+    },
+    {
+      "id": "private-outbox",
+      "port": 18087,
+      "bindScope": "pod_network"
+    },
+    {
+      "id": "probe",
+      "port": 18088,
+      "bindScope": "pod_network"
+    }
+  ],
+  "bindingChecksum": "sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce"
+}
