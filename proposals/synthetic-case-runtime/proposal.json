@@ -32,7 +32,7 @@
     "flux-bootstrap.json": "sha256:033154773d9d4df8e11e8a9417c739509cb5e82f487bd4a9d4a275be4da743b9",
     "kustomization.yaml": "sha256:0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
     "public-binding.json": "sha256:2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
-    "resources.json": "sha256:3b183afdbb542c3e891deba80766374380d46b116db5b5d7e60a5bba64032e18",
+    "resources.json": "sha256:f4c4f5c3f428082ad6321ba9d8e07bd2b80b58bd7ef84b96b670211a16d9a69d",
     "topology.json": "sha256:3c8a8bd0d62a2d7499aa5e43549677853c43203aa16aa466a1b84eccd4b4afd5",
     "web-connection.json": "sha256:0ee648f1b78bad65ed3cdd7e9a92149d68621fff1f2d1570a6466a707b753c02"
   },
