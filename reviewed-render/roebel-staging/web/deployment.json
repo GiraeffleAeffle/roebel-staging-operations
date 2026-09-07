@@ -164,6 +164,10 @@
               {
                 "name": "PUBLIC_MECKY_CHAT_URL",
                 "value": "http://public-mecky.stadtstack-roebel-staging-lab.svc.cluster.local:18084"
+              },
+              {
+                "name": "STADTSTACK_PUBLIC_CASE_BINDING_ORIGIN",
+                "value": "http://roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local:18086"
               }
             ],
             "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:dead362b486e7b89dd9628a8ea6f5982c2847ac4e10deedba925f6d88a95698f",

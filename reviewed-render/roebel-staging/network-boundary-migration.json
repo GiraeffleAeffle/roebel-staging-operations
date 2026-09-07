@@ -241,6 +241,35 @@
           }
         }
       ]
+    },
+    "webCaseBinding": {
+      "authority": "none",
+      "credentials": "none",
+      "origin": "http://roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local:18086",
+      "egress": {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-public-binding",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18086,
+            "protocol": "TCP"
+          }
+        ]
+      },
+      "sourceNamespace": "stadtstack-roebel-web-preview"
     }
   },
   "effects": {
@@ -254,7 +283,7 @@
       "kind": "NetworkPolicy",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:adbb94870ff1be33806ec8636cbe0c1bb6ba895fa894a4f5702c510a35a8a953"
+      "sha256": "sha256:41d0b25ca9bebb2e510e3a16802f50e97f83e0fd58f7d2546013f56ea942464e"
     },
     {
       "kind": "Ingress",
