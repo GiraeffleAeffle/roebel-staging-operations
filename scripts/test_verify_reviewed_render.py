@@ -189,6 +189,29 @@ def participant_ready_policy() -> dict:
     return VERIFIER.PARTICIPANT_POLICY.approved_next_activation_policy_descriptor()
 
 
+def normalize_case_web_seed(root, verifier=VERIFIER):
+    """Reconstruct the pre-Case Web fixture, preserving all other current pins."""
+    proposal=verifier.CASE_RUNTIME.connection(verifier,root)
+    if proposal is None:return
+    base=verifier.verify_tree(root)
+    directory=root/verifier.RENDER_ROOT
+    web=copy.deepcopy(base['deployments']['roebel-web-staging'])
+    web['spec']['template']['spec']['containers'][0]['env'].remove(proposal['environmentAddition'])
+    network=verifier.load_json(directory/'web/networkpolicy.json')
+    network['spec']['egress'].remove(proposal['egressAddition'])
+    boundary=copy.deepcopy(base['migration']);boundary['boundary'].pop('webCaseBinding')
+    for obj in boundary['objects']:
+        if obj['kind']=='NetworkPolicy' and obj['name']==proposal['networkPolicy'] and obj['namespace']==proposal['namespace']:obj['sha256']=verifier.digest(network)
+    objects=copy.deepcopy(base['objects']);objects[3]=web;objects[4]=network
+    payload={'nextEnvironmentHead':base['head'],'objects':objects,'reviewedPublicKnowledge':base['reviewedPublicKnowledge'],
+             'stagingParticipantGateway':{k:v for k,v in base['stagingParticipantGateway'].items() if k!='civicProjectionRoute'}}
+    integrity=copy.deepcopy(base['integrity']);integrity['desiredRenderSha256']=verifier.digest(payload)
+    integrity['networkBoundaryMigrationSha256']=verifier.digest(boundary)
+    for name,value in [('web/deployment.json',web),('web/networkpolicy.json',network),('network-boundary-migration.json',boundary),('integrity.json',integrity)]:
+        (directory/name).write_text(json.dumps(value,indent=2)+'\n')
+    verifier.verify_tree(root)
+
+
 class ReviewedRenderVerifierTests(unittest.TestCase):
     def setUp(self) -> None:
         # Protected admission uses the real UTC clock. Tests pin one explicit
@@ -894,6 +917,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def normalize_synthetic_citizen_pass_seed(self, destination: Path) -> None:
         """Restore an ordinary v4 fixture from the admitted synthetic steady state."""
+        normalize_case_web_seed(destination)
         source = VERIFIER.verify_tree(destination)
         synthetic_state = (
             source["webIdentityContractSet"] is not None,
@@ -1192,7 +1216,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def set_current_tracer_feed_route(self, root: Path, enabled: bool) -> None:
         """Normalize one current-head fixture to the exact private feed route state."""
-        source = VERIFIER.verify_tree(ROOT)
+        normalize_case_web_seed(root)
+        source = VERIFIER.verify_tree(root)
         render = root / "reviewed-render/roebel-staging"
 
         deployment_path = render / "web/deployment.json"
@@ -1285,6 +1310,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def enable_public_mecky_reviewed_web_source(self, root: Path) -> None:
         """Materialize the exact internal Web knowledge route under review."""
+        normalize_case_web_seed(root)
         source = VERIFIER.verify_tree(root)
         if source["publicMeckyReviewedWebSource"]:
             return
@@ -1430,6 +1456,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def disable_public_mecky_reviewed_web_source(self, root: Path) -> None:
         """Restore the exact predecessor route for historical transition fixtures."""
+        normalize_case_web_seed(root)
         source = VERIFIER.verify_tree(root)
         if not source["publicMeckyReviewedWebSource"]:
             return

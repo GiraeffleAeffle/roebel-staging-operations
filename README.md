@@ -1,23 +1,48 @@
 # Röbel staging operations
 
-This public repository is the value-free, reviewed desired-state source for
-exactly two existing Röbel staging Deployments and the fixed, internal-only
-Public Mecky chat network boundary:
+This public repository records the reviewed desired state and bounded local
+operators for Röbel staging: Web, Public Mecky, reviewed public knowledge,
+the participant gateway, retained tracer PostgreSQL/PostgREST, and the synthetic
+Case runtime. Immutable images, source revisions and object identities are
+checked by the protected-base admission verifier. Private configuration,
+credentials, participant posts and actual Case records stay outside Git.
 
-- `stadtstack-roebel-web-preview/roebel-web-presentation`
-- `stadtstack-roebel-staging-lab/public-mecky`
-- `stadtstack-roebel-staging-lab/Service/public-mecky`
-- `stadtstack-roebel-staging-lab/NetworkPolicy/public-mecky-chat-from-web`
-- `stadtstack-roebel-web-preview/NetworkPolicy/roebel-web-presentation`
-- `stadtstack-roebel-web-preview/Ingress/roebel-web-presentation`
-- `stadtstack-roebel-staging-lab/NetworkPolicy/e2e-workbench` (one-time
-  baseline handover; its existing workload remains separately owned)
+## Synthetic Case rollout
 
-It is deliberately not an infrastructure repository and not a civic record.
-It contains immutable image digests, source revisions, checksums, Kubernetes
-object identities, and references to existing ConfigMaps or Secrets. It may
-not contain a Secret object, a Secret value, credentials, personal data,
-posts, discussions, Civic Cases, municipal records, or runtime status.
+`scripts/run-case-runtime.py` provides one ordered, receipt-backed workflow:
+
+1. `plan` verifies the independently pinned proposal and prints its digest.
+2. `provision` creates only the immutable, checksum-bound runtime Secret from
+   an inherited private file descriptor. It never overwrites an existing Secret.
+3. `bootstrap` creates the 19 exact Case resources, verifies existing staging
+   workloads and retained volumes, proves a clean control restart, and leaves
+   the dedicated Flux Kustomization suspended.
+4. `admit-saved-test` uses only the previously signed synthetic test bundle.
+   It checks for an existing public receipt before submitting, then proves the
+   same receipt survives a clean control restart and public-reader replay.
+5. `handover` removes transaction nonces with UID/resourceVersion checks,
+   unsuspends the dedicated reconciler, and verifies the admitted revision and
+   every owned UID. It preserves the existing retained claim throughout.
+6. A separate four-file Web connection enables only the reviewed public-reader
+   origin and matching TCP egress after the preceding verification succeeds.
+
+Live commands require an isolated interpreter, an exact clean approved Git
+revision, the reviewed plan digest, an explicit kubeconfig and a fresh private
+receipt. The existing protected transport supplies pinned executable handles;
+GitHub Actions has no cluster credentials. `recover` and `recover-handover`
+accept a prior durable receipt and re-prove ownership before continuing.
+Ambiguous responses are never retried blindly. Failure preserves resources and
+storage for inspection; this workflow has no automatic delete or restore path.
+
+The declared Case render alone does not bootstrap the cluster or connect Web.
+Its initial policy merge requires specific maintenance authorization; subsequent
+Web admission permits only the exact reviewed four-file transition. The pinned
+proposal documents remain historical review inputs, not live rollout receipts.
+Operator receipts in private storage establish actual activation status.
+
+This is a synthetic staging Case. It confers no municipal eligibility, official
+endorsement, binding vote, treasury authority or payment effect. Rich discussion
+visualization and a real administrative integration remain separate roadmap work.
 
 ## Retained staging tracer storage
 

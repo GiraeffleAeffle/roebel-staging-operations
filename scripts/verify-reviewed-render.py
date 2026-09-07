@@ -117,6 +117,19 @@ def load_synthetic_case_proposal_policy():
 CASE_PROPOSAL = load_synthetic_case_proposal_policy()
 
 
+def load_case_runtime_admission():
+    path = Path(__file__).with_name("case_runtime_admission.py")
+    spec = importlib.util.spec_from_file_location("protected_case_runtime_admission", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected Case runtime admission unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CASE_RUNTIME = load_case_runtime_admission()
+
+
 def citizen_status_interface():
     # Test loaders need not register this module in sys.modules. Supply the
     # existing protected render functions without importing candidate code.
@@ -351,6 +364,7 @@ EXPECTED_FILES = {
     WORKBENCH_BASELINE.KUSTOMIZATION_PATH,
     *TRACER_DATA_PLANE.expected_files(TRACER_DATA_PLANE.LEGACY_PRODUCT_ARTIFACTS),
     *CASE_PROPOSAL.FILES,
+    *CASE_RUNTIME.FILES,
 }
 
 FUTURE_EXPECTED_FILES = EXPECTED_FILES | REVIEWED_PUBLIC_KNOWLEDGE_FILES
@@ -4172,14 +4186,11 @@ def verify_web_network_policy(
     reviewed_web_source: bool = False,
 ) -> dict[str, Any]:
     policy = load_json(root / RENDER_ROOT / "web/networkpolicy.json")
-    require(
-        policy == expected_web_network_policy(
-            civic_projection_route,
-            tracer_feed_route,
-            reviewed_web_source,
-        ),
-        "Web NetworkPolicy drift",
-    )
+    expected = expected_web_network_policy(civic_projection_route,tracer_feed_route,reviewed_web_source)
+    case_connection = CASE_RUNTIME.connection(citizen_status_interface(),root)
+    if case_connection:
+        expected['spec']['egress'].append(case_connection['egressAddition'])
+    require(policy == expected, "Web NetworkPolicy drift")
     return policy
 
 
@@ -5702,6 +5713,7 @@ def verify_network_boundary_migration(
                 expected,
                 public_mecky_network_policy,
             )
+        CASE_RUNTIME.extend_web_boundary(citizen_status_interface(),root,expected)
         require(migration == expected, "participant gateway network-boundary receipt drift")
         return migration
     if signed_nostr:
@@ -5858,6 +5870,7 @@ def verify_network_boundary_migration(
             expected,
             public_mecky_network_policy,
         )
+    CASE_RUNTIME.extend_web_boundary(citizen_status_interface(),root,expected)
     require(migration == expected, "network-boundary migration receipt drift")
     return migration
 
@@ -5963,6 +5976,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     require(root.is_dir(), "repository root missing")
     render_file_set = verify_repository_file_set(root)
     CASE_PROPOSAL.verify_proposal(citizen_status_interface(), root)
+    CASE_RUNTIME.verify(citizen_status_interface(), root)
     CITIZEN_STATUS.verify_policy(citizen_status_interface(), root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
@@ -7056,6 +7070,9 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     base_root: Path = base["root"]
     changed_files = changed_repository_files(candidate_root, base_root)
     CASE_PROPOSAL.verify_transition(citizen_status_interface(), candidate_root, base_root)
+    CASE_RUNTIME.verify_transition(citizen_status_interface(), candidate_root, base_root)
+    if CASE_RUNTIME.verify_web_transition(citizen_status_interface(),candidate,base):
+        return
     require(not changed_files & CITIZEN_STATUS.POLICY_FILES, "citizen status promotion changed protected policy files")
     if candidate.get("citizenEligibilityStatus") != base.get("citizenEligibilityStatus"):
         CITIZEN_STATUS.verify_transition(citizen_status_interface(), candidate, base)
