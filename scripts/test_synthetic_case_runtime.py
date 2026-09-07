@@ -41,12 +41,19 @@ const marker = state+'/.stadtstack-control-storage-v1.json', config = privateDir
 // from process.getgid(). Map the fixture's real ownership to the container IDs.
 const fixtureOwner = fs.statSync(temporary);
 const actualUid = fixtureOwner.uid, actualGid = fixtureOwner.gid;
+// Model Linux setgid inheritance explicitly: macOS may clear this directory bit.
+let inheritedSetgid = ['inherited-setgid','prior-setgid'].includes(input.scenario);
 const mappedFs = new Proxy(fs, {get(target, key) {
-  if (key === 'lstatSync') return p => {
-    const st = fs.lstatSync(map(p));
+  if (key === 'lstatSync' || key === 'fstatSync') return p => {
+    const st = fs[key](map(p));
     return Object.assign(Object.create(Object.getPrototypeOf(st)), st, {
       uid: st.uid === actualUid ? 1000 : st.uid, gid: st.gid === actualGid ? 1000 : st.gid,
+      mode: st.mode | (inheritedSetgid && fs.existsSync(privateDir) && st.ino === fs.lstatSync(privateDir).ino ? 0o2000 : 0),
     });
+  };
+  if (key === 'fchmodSync') return (fd,mode) => {
+    assert.equal(fs.fstatSync(fd).ino,fs.lstatSync(privateDir).ino);
+    assert.equal(mode,0o700); fs.fchmodSync(fd,mode); inheritedSetgid=false;
   };
   return typeof target[key] === 'function' ? (...args) => target[key](...args.map(map)) : target[key];
 }});
@@ -68,6 +75,16 @@ try {
   } else if (input.scenario === 'invalid-digest' || input.scenario === 'invalid-json' || input.scenario === 'invalid-shape') {
     assert.throws(() => input.scenario === 'invalid-digest' ? run(raw,'0'.repeat(64)) : run(input.scenario === 'invalid-json' ? 'not-json' : '[]'), /private_configuration_invalid/);
     assert.equal(fs.existsSync(marker),false); assert.equal(fs.existsSync(privateDir),false);
+  } else if (input.scenario === 'inherited-setgid' || input.scenario === 'prior-setgid') {
+    if (input.scenario === 'prior-setgid') { fs.mkdirSync(privateDir,{mode:0o700}); fs.chmodSync(privateDir,0o2700); }
+    run(); assert.equal(inheritedSetgid,false); assert.equal(fs.statSync(privateDir).mode & 0o7777,0o700);
+    assert.equal(fs.statSync(config).mode & 0o7777,0o600);
+    assert.equal(fs.readFileSync(config,'utf8'),raw); run();
+  } else if (input.scenario === 'broad-directory' || input.scenario === 'symlink-directory') {
+    if (input.scenario === 'broad-directory') { fs.mkdirSync(privateDir); fs.chmodSync(privateDir,0o2750); }
+    else { fs.mkdirSync(temporary+'/other'); fs.symlinkSync(temporary+'/other',privateDir); }
+    assert.throws(() => run(),/private_configuration_directory_invalid/);
+    assert.equal(fs.existsSync(config),false);
   } else if (input.scenario === 'partial-directory') {
     fs.mkdirSync(privateDir,{mode:0o700}); run(); assert.equal(fs.readFileSync(config,'utf8'),raw);
   } else if (input.scenario === 'changed-config') {
@@ -141,7 +158,7 @@ class SyntheticCaseInitializerTests(unittest.TestCase):
         deployment=next(o for o in items if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')
         script=deployment['spec']['template']['spec']['initContainers'][0]['command'][2]
         marker=next(o for o in items if o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-control-reviewed')['data']['storage-marker.json']
-        scenarios=('retry','partial-directory','invalid-digest','invalid-json','invalid-shape','changed-config','broad-config','symlink-config','hardlink-config','unmarked-data','changed-marker','broad-root')
+        scenarios=('inherited-setgid','prior-setgid','broad-directory','symlink-directory','retry','partial-directory','invalid-digest','invalid-json','invalid-shape','changed-config','broad-config','symlink-config','hardlink-config','unmarked-data','changed-marker','broad-root')
         for scenario in scenarios:
             with self.subTest(scenario=scenario):
                 result=subprocess.run(['node','-e',INIT_HARNESS],input=json.dumps({'script':script,'marker':marker,'scenario':scenario}),text=True,capture_output=True,timeout=10)
