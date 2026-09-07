@@ -42,7 +42,12 @@ class StorageContinuityTests(unittest.TestCase):
         # fixed render predecessor; keep the current protected verifier code.
         if verifier.CITIZEN_STATUS.enabled(self.base):
             status = verifier.CITIZEN_STATUS
-            for path in status.TRANSITION_FILES - {str(status.RECORD_PATH)}:
+            # Keep the release attested by the restored integrity file coherent.
+            historical_files = (status.TRANSITION_FILES - {str(status.RECORD_PATH)}) | {
+                f"{verifier.RENDER_ROOT}/{name}"
+                for name in ("head.json", "live-preconditions.json", "web/deployment.json", "public-mecky/deployment.json")
+            }
+            for path in sorted(historical_files):
                 (self.base / path).write_bytes(subprocess.check_output([
                     "git", "-C", str(ROOT), "show",
                     "9728b97c2d39a3d7ae4d9af439e93b55df9357ef:" + path,
