@@ -89,6 +89,8 @@ class CaseBootstrapTests(unittest.TestCase):
         # by the verifier. Security tests mutate independent copied data roots.
         shutil.copytree(Path(__file__).resolve().parents[1],cls.root,dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+        from .test_verify_reviewed_render import normalize_case_web_seed
+        normalize_case_web_seed(cls.root,bootstrap._verifier())
 
     def environment(self):
         temporary = tempfile.TemporaryDirectory()
