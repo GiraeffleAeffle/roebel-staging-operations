@@ -19,9 +19,9 @@ PINS = {
     "control-binding.json": "a8c09f4518e7a939984ca8d9498a3c0026d4b408b3aad8018a7667b25642451a",
     "flux-bootstrap.json": "033154773d9d4df8e11e8a9417c739509cb5e82f487bd4a9d4a275be4da743b9",
     "kustomization.yaml": "0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
-    "proposal.json": "16fd9b28f0da44c211dd842970cc046d4651a3cd3e967b77a01c8ca4d60e7874",
+    "proposal.json": "7fd894f9ae5a8331818d04271f77e53c63e5d8b8bdd312fb2e4e3d3909f66dea",
     "public-binding.json": "2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
-    "resources.json": "3b183afdbb542c3e891deba80766374380d46b116db5b5d7e60a5bba64032e18",
+    "resources.json": "f4c4f5c3f428082ad6321ba9d8e07bd2b80b58bd7ef84b96b670211a16d9a69d",
     "topology.json": "3c8a8bd0d62a2d7499aa5e43549677853c43203aa16aa466a1b84eccd4b4afd5",
     "web-connection.json": "0ee648f1b78bad65ed3cdd7e9a92149d68621fff1f2d1570a6466a707b753c02",
 }
