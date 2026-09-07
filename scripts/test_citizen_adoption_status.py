@@ -33,7 +33,12 @@ class CitizenStatusProposalTests(unittest.TestCase):
         # Retain today's protected code, but bind the active-state fixture to
         # the reviewed predecessor even after a later rollout reaches main.
         predecessor = "9728b97c2d39a3d7ae4d9af439e93b55df9357ef"
-        for path in status.TRANSITION_FILES - {str(status.RECORD_PATH)}:
+        # The historical integrity file also binds the Web/Mecky release.
+        historical_files = (status.TRANSITION_FILES - {str(status.RECORD_PATH)}) | {
+            f"{verifier.RENDER_ROOT}/{name}"
+            for name in ("head.json", "live-preconditions.json", "web/deployment.json", "public-mecky/deployment.json")
+        }
+        for path in sorted(historical_files):
             (cls.base / path).write_bytes(subprocess.check_output(["git", "-C", str(ROOT), "show", predecessor + ":" + path]))
         (cls.base / status.RECORD_PATH).unlink(missing_ok=True)
 
