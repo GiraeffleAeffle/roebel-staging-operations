@@ -123,6 +123,14 @@ class SyntheticCaseProposalTests(unittest.TestCase):
         self.assertFalse(records["proposal.json"]["restoreActivation"])
         self.assertEqual(len(records["resources.json"]["items"]),15)
 
+    def test_case_reconciler_matches_existing_tenant_controller_watch_scope(self):
+        records = policy.verify_proposal(verifier, ROOT)
+        reconciler = records['flux-bootstrap.json']['items'][-1]
+        self.assertEqual(reconciler['kind'], 'Kustomization')
+        self.assertEqual(reconciler['metadata']['namespace'], 'flux-roebel-staging')
+        self.assertEqual(reconciler['metadata']['labels'], {'stadtstack.io/flux-tenant': 'roebel-staging'})
+        self.assertTrue(reconciler['spec']['suspend'])
+
     def test_candidate_cannot_reauthorize_a_changed_image_with_its_own_hash(self):
         candidate = self.candidate()
         path = candidate / policy.ROOT / "resources.json"
