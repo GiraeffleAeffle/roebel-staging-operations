@@ -10,9 +10,10 @@ import copy
 import importlib.util
 from pathlib import Path
 import secrets
+import re
 
-from scripts.staging_participant_flux_bootstrap import canonical_sha256
-from scripts import synthetic_case_runtime
+from .staging_participant_flux_bootstrap import canonical_sha256
+from . import synthetic_case_runtime
 
 NONCE = "stadtstack.io/case-bootstrap-nonce"
 
@@ -82,7 +83,48 @@ def _bound_identity(adapter, observed, desired):
     return {"uid": uid, "resourceVersion": version}
 
 
-def run_bootstrap(admitted_root, *, adapter, sink):
+def validate_runtime_evidence(phase,evidence):
+    fields=({'podUid','beforeContainerId','afterContainerId','exitCode','restartCount'} if phase=='control' else {'podUid','imageId'})
+    _require(isinstance(evidence,dict) and set(evidence)==fields,'runtime evidence shape invalid')
+    for key in fields-{'exitCode','restartCount'}:
+        _require(isinstance(evidence[key],str) and 0<len(evidence[key])<=512 and all(ord(c)>=32 for c in evidence[key]),'runtime evidence identity invalid')
+    if phase=='control':
+        _require(evidence['exitCode']==0 and type(evidence['restartCount']) is int and evidence['restartCount']>0 and evidence['beforeContainerId']!=evidence['afterContainerId'],'clean restart evidence invalid')
+    return copy.deepcopy(evidence)
+
+
+def bind_recovery(plan, receipt):
+    """Validate the exact plan and ordered ownership prefix before any API use."""
+    state = copy.deepcopy(receipt)
+    digest = state.pop("canonicalSha256", None)
+    _require(digest == canonical_sha256(state), "recovery receipt checksum mismatch")
+    _require(set(state) == {"schemaVersion", "planSha256", "nonce", "status", "objects", "checkpoint", "fluxSuspended", "webConnected", "caseAdmitted", "runtimeChecks"}, "recovery receipt shape mismatch")
+    _require(state["schemaVersion"] == "roebel_case_bootstrap_transaction_receipt_v1" and state["planSha256"] == plan["planSha256"], "recovery plan mismatch")
+    _require(isinstance(state["nonce"], str) and re.fullmatch(r"[0-9a-f]{64}", state["nonce"]), "recovery nonce invalid")
+    _require(state["fluxSuspended"] is True and state["webConnected"] is False and state["caseAdmitted"] is False, "recovery effect boundary mismatch")
+    _require(state["status"] in {"reserved", "creating", "stopped-preserve-owned-objects", "bootstrap-verified-flux-suspended"}, "recovery status invalid")
+    _require(state["checkpoint"] in {None, "control-verification-intent", "control-verified", "public-verification-intent", "public-verified"}, "recovery checkpoint invalid")
+    _require(isinstance(state["runtimeChecks"], dict) and set(state["runtimeChecks"]) <= {"control", "public"}, "recovery runtime evidence invalid")
+    for phase,evidence in state["runtimeChecks"].items():validate_runtime_evidence(phase,evidence)
+    records = state["objects"]
+    _require(isinstance(records, list) and len(records) <= len(plan["objects"]), "recovery prefix invalid")
+    uids = set()
+    for index, record in enumerate(records):
+        item = plan["objects"][index]
+        desired = copy.deepcopy(item["desired"])
+        desired["metadata"].setdefault("annotations", {})[NONCE] = state["nonce"]
+        _require(set(record) == {"target", "phase", "desiredSha256", "state", "uid", "resourceVersion"}, "recovery object shape mismatch")
+        _require(record["target"] == item["target"] and record["phase"] == item["phase"] and record["desiredSha256"] == canonical_sha256(desired), "recovery ordered object mismatch")
+        _require(record["state"] in {"create-intent", "created"}, "conflicted transaction cannot be resumed")
+        if record["state"] == "create-intent":
+            _require(index == len(records)-1 and record["uid"] is None and record["resourceVersion"] is None, "recovery unresolved prefix invalid")
+        else:
+            _require(isinstance(record["uid"], str) and record["uid"] and record["uid"] not in uids and isinstance(record["resourceVersion"], str) and record["resourceVersion"].isdigit(), "recovery owned identity invalid")
+            uids.add(record["uid"])
+    return state
+
+
+def run_bootstrap(admitted_root, *, adapter, sink, prior_receipt=None):
     """Run once through an injected adapter and a durable ReceiptSink.
 
     verify_preconditions must freshly verify source/cluster/namespaces, tracer
@@ -95,19 +137,35 @@ def run_bootstrap(admitted_root, *, adapter, sink):
     The nonce and pre-send intent remain available for separately reviewed recovery.
     """
     plan = build_plan(admitted_root)
-    nonce = secrets.token_hex(32)
-    state = {"schemaVersion": "roebel_case_bootstrap_transaction_receipt_v1",
-             "planSha256": plan["planSha256"], "nonce": nonce, "status": "reserved",
-             "objects": [], "checkpoint": None, "fluxSuspended": True,
-             "webConnected": False, "caseAdmitted": False}
+    if prior_receipt is None:
+        state = {"schemaVersion": "roebel_case_bootstrap_transaction_receipt_v1",
+                 "planSha256": plan["planSha256"], "nonce": secrets.token_hex(32), "status": "reserved",
+                 "objects": [], "checkpoint": None, "fluxSuspended": True,
+                 "webConnected": False, "caseAdmitted": False, "runtimeChecks": {}}
+    else:
+        state = bind_recovery(plan, prior_receipt)
+    nonce = state["nonce"]
     sink.commit(state)
     try:
         adapter.verify_preconditions(copy.deepcopy(plan))
-        for item in plan["objects"]:
-            _require(adapter.get(item["target"]) is None, "reserved Case target already exists; adoption forbidden")
+        for index, item in enumerate(plan["objects"]):
+            observed = adapter.get(item["target"])
+            if index >= len(state["objects"]):
+                _require(observed is None, "reserved Case target already exists; adoption forbidden")
+                continue
+            record = state["objects"][index]
+            desired = copy.deepcopy(item["desired"])
+            desired["metadata"].setdefault("annotations", {})[NONCE] = nonce
+            identity = _bound_identity(adapter, observed, desired)
+            if record["uid"] is not None:
+                _require(identity["uid"] == record["uid"], "recovery owned UID changed")
+            # An unresolved absent create is deliberately not retried: a timed
+            # out request can still arrive. Recovery requires exact observation.
+            record.update(identity, state="created")
+            sink.commit(state)
         state["status"] = "creating"
         sink.commit(state)
-        for item in plan["objects"]:
+        for index, item in enumerate(plan["objects"]):
             # Recheck preservation immediately before each mutation; absence is
             # finally enforced by create-only API semantics, never apply/upsert.
             adapter.verify_preconditions(copy.deepcopy(plan))
@@ -115,32 +173,35 @@ def run_bootstrap(admitted_root, *, adapter, sink):
             annotations = desired["metadata"].setdefault("annotations", {})
             _require(NONCE not in annotations, "reserved nonce annotation collision")
             annotations[NONCE] = nonce
-            record = {"target": item["target"], "phase": item["phase"],
-                      "desiredSha256": canonical_sha256(desired), "state": "create-intent",
-                      "uid": None, "resourceVersion": None}
-            state["objects"].append(record)
-            sink.commit(state)  # Must finish fsync before a request can leave.
-            try:
-                observed = adapter.create(desired)
-            except CreateConflict:
-                record["state"] = "conflict"
-                raise BootstrapStopped("create conflict; adoption forbidden") from None
-            except Exception:
-                # Do not retry: an API timeout may have committed the object.
-                observed = None
-            if observed is None:
-                observed = adapter.get(item["target"])
-            identity = _bound_identity(adapter, observed, desired)
-            _require(identity["uid"] not in {r["uid"] for r in state["objects"][:-1]}, "duplicate created UID")
-            record.update(identity, state="created")
-            sink.commit(state)
+            if index < len(state["objects"]):
+                record = state["objects"][index]
+            else:
+                record = {"target": item["target"], "phase": item["phase"],
+                          "desiredSha256": canonical_sha256(desired), "state": "create-intent",
+                          "uid": None, "resourceVersion": None}
+                state["objects"].append(record)
+                sink.commit(state)  # Must finish fsync before a request can leave.
+                try:
+                    observed = adapter.create(desired)
+                except CreateConflict:
+                    record["state"] = "conflict"
+                    raise BootstrapStopped("create conflict; adoption forbidden") from None
+                except Exception:
+                    # Do not retry: an API timeout may have committed the object.
+                    observed = None
+                if observed is None:
+                    observed = adapter.get(item["target"])
+                identity = _bound_identity(adapter, observed, desired)
+                _require(identity["uid"] not in {r["uid"] for r in state["objects"][:-1]}, "duplicate created UID")
+                record.update(identity, state="created")
+                sink.commit(state)
             if item["phase"] in {"control", "public"}:
                 state["checkpoint"] = item["phase"] + "-verification-intent"
                 sink.commit(state)
                 if item["phase"] == "control":
-                    adapter.verify_control_restart(copy.deepcopy(record), copy.deepcopy(plan))
+                    state["runtimeChecks"]["control"] = validate_runtime_evidence("control",adapter.verify_control_restart(copy.deepcopy(record), copy.deepcopy(plan)))
                 else:
-                    adapter.verify_public(copy.deepcopy(record), copy.deepcopy(plan))
+                    state["runtimeChecks"]["public"] = validate_runtime_evidence("public",adapter.verify_public(copy.deepcopy(record), copy.deepcopy(plan)))
                 state["checkpoint"] = item["phase"] + "-verified"
                 sink.commit(state)
         # Bind every final UID and exact spec again. Keep ownership nonces until
