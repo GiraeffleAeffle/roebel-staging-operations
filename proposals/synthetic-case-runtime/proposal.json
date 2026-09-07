@@ -29,7 +29,7 @@
   ],
   "artifacts": {
     "control-binding.json": "sha256:a8c09f4518e7a939984ca8d9498a3c0026d4b408b3aad8018a7667b25642451a",
-    "flux-bootstrap.json": "sha256:9e4feb517359324d1aed511da06a5ffa1250ef8aa081e18691fc824c4bcbeeea",
+    "flux-bootstrap.json": "sha256:99b7f085179a2d350778af5ce7ea0c6ca061a7cb2216355c94fc8f0a0d2cebdf",
     "kustomization.yaml": "sha256:0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
     "public-binding.json": "sha256:2da4fd604fc1a61fa061e0ef8262328bed0e4a4854c72b551f51fcfb97786643",
     "resources.json": "sha256:f4c4f5c3f428082ad6321ba9d8e07bd2b80b58bd7ef84b96b670211a16d9a69d",
