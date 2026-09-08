@@ -248,6 +248,55 @@ class CaseBootstrapTests(unittest.TestCase):
                     with self.assertRaisesRegex(verifier.VerificationError,'protected Case bootstrap'):
                         verifier.verify_transition(verifier.verify_tree(candidate),verifier.verify_tree(self.root))
 
+    def test_public_host_repair_changes_only_versioned_reader_configuration(self):
+        verifier=bootstrap._verifier()
+        original=json.loads((self.root/'proposals/synthetic-case-runtime/resources.json').read_text())['items']
+        plan=bootstrap.build_plan(self.root)
+        runtime=[o['desired'] for o in plan['objects'] if o['phase']!='suspended-flux']
+        host='roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local'
+        config=next(o for o in runtime if o['metadata']['name']=='roebel-case-public-binding-reviewed-v2')
+        self.assertIs(config['immutable'],True)
+        self.assertEqual(json.loads(config['data']['application.json'])['publicAllowedHosts'],[host,host+':18086'])
+        changed={}
+        for old in original:
+            name=old['metadata']['name']
+            new=next(o for o in runtime if o['kind']==old['kind'] and o['metadata']['name']==name+('-v2' if name=='roebel-case-public-binding-reviewed' else ''))
+            if old!=new:changed[name]=(old,new)
+        self.assertEqual(set(changed),{'roebel-case-public-binding-reviewed','roebel-case-public-binding'})
+        old,new=copy.deepcopy(changed['roebel-case-public-binding'])
+        volume=next(o for o in new['spec']['template']['spec']['volumes'] if 'configMap' in o)
+        volume['configMap']['name']='roebel-case-public-binding-reviewed'
+        self.assertEqual(old,new)
+        self.assertEqual(plan['review']['runtimeObjects'],[{**bootstrap.target(o),'canonicalSha256':verifier.digest(o)} for o in json.loads((self.root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())['items']])
+        original_flux=json.loads((self.root/'proposals/synthetic-case-runtime/flux-bootstrap.json').read_text())['items']
+        repaired_flux=[o['desired'] for o in plan['objects'] if o['phase']=='suspended-flux']
+        repaired_role=next(o for o in repaired_flux if o['kind']=='Role')
+        rule=next(r for r in repaired_role['rules'] if r['resources']==['configmaps'])
+        self.assertEqual(rule['verbs'],['get','patch','update'])
+        self.assertEqual(rule['resourceNames'].pop(),'roebel-case-public-binding-reviewed-v2')
+        self.assertEqual(repaired_flux,original_flux)
+
+    def test_public_host_repair_rejects_broader_hosts_or_unversioned_mutation(self):
+        verifier=bootstrap._verifier()
+        for mutation in ('host','port','probe','mutable','old-name','image'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                candidate=Path(temporary)
+                shutil.copytree(self.root,candidate,dirs_exist_ok=True)
+                path=candidate/'reviewed-render/roebel-staging/case-runtime/resources.json'
+                value=json.loads(path.read_text())
+                config=next(o for o in value['items'] if o['metadata']['name']=='roebel-case-public-binding-reviewed-v2')
+                application=json.loads(config['data']['application.json'])
+                if mutation=='host':application['publicAllowedHosts'].append('unreviewed.example')
+                if mutation=='port':application['publicAllowedHosts'][1]=application['publicAllowedHosts'][1].replace(':18086',':18085')
+                if mutation=='probe':application['probeAllowedHosts'].append('unreviewed.example')
+                if mutation=='mutable':config['immutable']=False
+                if mutation=='old-name':config['metadata']['name']='roebel-case-public-binding-reviewed'
+                if mutation=='image':next(o for o in value['items'] if o['kind']=='Deployment')['spec']['template']['spec']['containers'][0]['image']='unreviewed:latest'
+                config['data']['application.json']=json.dumps(application,sort_keys=True,separators=(',',':'))+'\n'
+                path.write_text(json.dumps(value,indent=2)+'\n')
+                with self.assertRaisesRegex(verifier.VerificationError,'exact public Host repair'):
+                    verifier.verify_tree(candidate)
+
     def test_web_connection_transition_is_exact_and_rejects_extra_changes(self):
         verifier=bootstrap._verifier()
         base=verifier.verify_tree(self.root)

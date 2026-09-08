@@ -419,7 +419,7 @@
       "apiVersion": "v1",
       "kind": "ConfigMap",
       "metadata": {
-        "name": "roebel-case-public-binding-reviewed",
+        "name": "roebel-case-public-binding-reviewed-v2",
         "namespace": "stadtstack-roebel-staging-lab",
         "labels": {
           "app.kubernetes.io/name": "roebel-case-public-binding",
@@ -431,7 +431,7 @@
       "immutable": true,
       "data": {
         "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:00f15bc0be77cfb4c2440fc56d854eb140b56960c069ae23143b164409af651a\",\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"public\",\"port\":18086},{\"bindScope\":\"pod_network\",\"id\":\"public-probe\",\"port\":18089}],\"municipalityId\":\"roebel-mueritz\",\"namespace\":\"stadtstack-roebel-staging-lab\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"outbox\":{\"namespace\":\"stadtstack-roebel-staging-lab\",\"port\":18087,\"serviceName\":\"roebel-case-steward-control-private-outbox\"},\"releaseDigest\":\"sha256:6616f2f5aeb40875c6a945d1f9bcd18521d00cff041dcdbaec43125d20328f1e\",\"schemaVersion\":\"staging_public_case_binding_deployment_binding_v1\",\"workload\":{\"automountServiceAccountToken\":false,\"imagePullSecrets\":[],\"serviceAccountName\":\"roebel-case-public-binding\"},\"workloadName\":\"roebel-case-public-binding\"}\n",
-        "application.json": "{\"drainTimeoutMs\":5000,\"probeAllowedHosts\":[\"127.0.0.1\"],\"publicAllowedHosts\":[\"roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local\"],\"reconcileIntervalMs\":5000}\n"
+        "application.json": "{\"drainTimeoutMs\":5000,\"probeAllowedHosts\":[\"127.0.0.1\"],\"publicAllowedHosts\":[\"roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local\",\"roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local:18086\"],\"reconcileIntervalMs\":5000}\n"
       }
     },
     {
@@ -850,7 +850,7 @@
               {
                 "name": "reviewed",
                 "configMap": {
-                  "name": "roebel-case-public-binding-reviewed",
+                  "name": "roebel-case-public-binding-reviewed-v2",
                   "defaultMode": 292
                 }
               }
