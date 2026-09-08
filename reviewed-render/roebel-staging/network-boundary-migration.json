@@ -269,7 +269,15 @@
           }
         ]
       },
-      "sourceNamespace": "stadtstack-roebel-web-preview"
+      "sourceNamespace": "stadtstack-roebel-web-preview",
+      "publicLookup": {
+        "pathPattern": "^/api/stadtstack/case-bindings/by-discussion/[0-9a-f]{64}$",
+        "methods": [
+          "GET",
+          "HEAD"
+        ],
+        "credentials": "none"
+      }
     }
   },
   "effects": {
@@ -289,7 +297,7 @@
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:18684dcad1f4c373d36b4006178fa2b89b8928f3a8da07cf1889bcd96ef469f5"
+      "sha256": "sha256:a8419db19e2f019229022e44e6278143b488c20b3bab3074b4e3ab264bf5cc9c"
     },
     {
       "kind": "ServiceAccount",

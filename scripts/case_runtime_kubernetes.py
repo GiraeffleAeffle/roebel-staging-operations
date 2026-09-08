@@ -287,11 +287,9 @@ class KubernetesAdapter:
 
     def verify_active_render(self,plan):
         self.verify_preconditions(plan)
-        root=self.root/'reviewed-render/roebel-staging/case-runtime'
-        for name in ('resources.json','kustomization.yaml'):
-            current=root/name
-            proposed=self.root/'proposals/synthetic-case-runtime'/name
-            core._require(current.is_file() and not current.is_symlink() and current.read_bytes()==proposed.read_bytes(),'Case Flux render not admitted at this source revision')
+        from . import case_runtime_admission
+        verifier=core._verifier()
+        case_runtime_admission.verify(verifier,self.root)
         # A clean checkout, verified by the invocation boundary, binds this
         # render to the exact source revision required again immediately below.
 

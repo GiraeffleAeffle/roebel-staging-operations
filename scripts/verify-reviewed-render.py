@@ -5353,7 +5353,7 @@ def verify_participant_gateway(
     }
 
 
-def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
+def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False, case_binding_lookup: bool = False) -> dict[str, Any]:
     # Participant routing is a separate, longer-prefix Ingress.  Keep this
     # compatibility parameter inert so every existing Web byte stays fixed.
     participant_gateway = False
@@ -5437,6 +5437,11 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) 
             "path": "/api/staging-participant/v1",
             "pathType": "Prefix",
         })
+    if case_binding_lookup:
+        lines=early.split('\n')
+        index=next(i for i,line in enumerate(lines) if line.startswith('http-request deny deny_status 404 if { path_beg /api }'))
+        lines[index]+=CASE_RUNTIME.PUBLIC_LOOKUP_ACL
+        early='\n'.join(lines)
     paths.append({
         "backend": {"service": {
             "name": "roebel-web-presentation",
@@ -5487,7 +5492,7 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False) 
 
 def verify_web_ingress(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
     ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
-    require(ingress == expected_web_ingress(signed_nostr, participant_gateway), "Web Ingress drift")
+    require(ingress == expected_web_ingress(signed_nostr, participant_gateway, CASE_RUNTIME.public_lookup_enabled(citizen_status_interface(),root)), "Web Ingress drift")
     return ingress
 
 

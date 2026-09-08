@@ -200,14 +200,18 @@ def normalize_case_web_seed(root, verifier=VERIFIER):
     network=verifier.load_json(directory/'web/networkpolicy.json')
     network['spec']['egress'].remove(proposal['egressAddition'])
     boundary=copy.deepcopy(base['migration']);boundary['boundary'].pop('webCaseBinding')
+    ingress=copy.deepcopy(base['objects'][5])
+    key='haproxy-ingress.github.io/config-backend-early'
+    ingress['metadata']['annotations'][key]=ingress['metadata']['annotations'][key].replace(verifier.CASE_RUNTIME.PUBLIC_LOOKUP_ACL,'')
     for obj in boundary['objects']:
         if obj['kind']=='NetworkPolicy' and obj['name']==proposal['networkPolicy'] and obj['namespace']==proposal['namespace']:obj['sha256']=verifier.digest(network)
-    objects=copy.deepcopy(base['objects']);objects[3]=web;objects[4]=network
+        if obj['kind']=='Ingress' and obj['name']=='roebel-web-presentation':obj['sha256']=verifier.digest(ingress)
+    objects=copy.deepcopy(base['objects']);objects[3]=web;objects[4]=network;objects[5]=ingress
     payload={'nextEnvironmentHead':base['head'],'objects':objects,'reviewedPublicKnowledge':base['reviewedPublicKnowledge'],
              'stagingParticipantGateway':{k:v for k,v in base['stagingParticipantGateway'].items() if k!='civicProjectionRoute'}}
     integrity=copy.deepcopy(base['integrity']);integrity['desiredRenderSha256']=verifier.digest(payload)
     integrity['networkBoundaryMigrationSha256']=verifier.digest(boundary)
-    for name,value in [('web/deployment.json',web),('web/networkpolicy.json',network),('network-boundary-migration.json',boundary),('integrity.json',integrity)]:
+    for name,value in [('web/deployment.json',web),('web/networkpolicy.json',network),('web/ingress.json',ingress),('network-boundary-migration.json',boundary),('integrity.json',integrity)]:
         (directory/name).write_text(json.dumps(value,indent=2)+'\n')
     verifier.verify_tree(root)
 
@@ -3064,6 +3068,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.IDENTITY_ROTATION_RECORD_PATH,
                 str(VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH),
                 str(VERIFIER.CITIZEN_STATUS.RECORD_PATH),
+                str(Path(VERIFIER.RENDER_ROOT) / "web/ingress.json"),
             }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
@@ -5717,7 +5722,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             [
                 "http-request deny deny_status 405 if { method POST } !{ path /api/chat/mecky }",
                 "http-request deny deny_status 405 unless { method GET HEAD POST }",
-                "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }",
+                "http-request deny deny_status 404 if { path_beg /api } !{ path_beg /api/public-feed/ } !{ path_beg /api/civic/v1/ } !{ path /api/notifications/unread-count } !{ path /api/chat/mecky }" + VERIFIER.CASE_RUNTIME.PUBLIC_LOOKUP_ACL,
             ],
         )
         web = json.loads((render / "web/deployment.json").read_text())
@@ -5770,6 +5775,53 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 "podSelector": {"matchLabels": VERIFIER.WEB_PRESENTATION_LABELS},
             },
         )
+
+    def test_public_case_lookup_exposes_only_exact_discussion_receipts(self) -> None:
+        import re
+        v=VERIFIER
+        current=v.verify_tree(ROOT)
+        pattern=v.CASE_RUNTIME.PUBLIC_LOOKUP_PATTERN
+        base='/api/stadtstack/case-bindings/by-discussion/'
+        self.assertTrue(re.fullmatch(pattern,base+'a0'*32))
+        for path in [base,base+'a'*63,base+'a'*65,base+'A'*64,base+'g'*64,
+                     base+'a'*64+'/private',base+'a'*64+'/',base+'%61'*64,
+                     '/api/stadtstack/private', '/api/stadtstack/case-bindings/',
+                     '/api/stadtstack/case-bindings/by-discussionX/'+'a'*64]:
+            with self.subTest(path=path):self.assertIsNone(re.fullmatch(pattern,path))
+        lookup=current['migration']['boundary']['webCaseBinding']['publicLookup']
+        self.assertEqual(lookup,{'pathPattern':pattern,'methods':['GET','HEAD'],'credentials':'none'})
+        key='haproxy-ingress.github.io/config-backend-early'
+        closed=v.expected_web_ingress(False)['metadata']['annotations'][key].splitlines()
+        exposed=current['objects'][5]['metadata']['annotations'][key].splitlines()
+        # These guards execute before the read-path exception, so POST, PUT,
+        # PATCH, DELETE and OPTIONS never reach the Case lookup.
+        self.assertEqual(exposed[:2],closed[:2])
+        self.assertEqual(exposed[2],closed[2]+v.CASE_RUNTIME.PUBLIC_LOOKUP_ACL)
+
+    def test_public_case_lookup_requires_reviewed_upstream_connection(self) -> None:
+        temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);candidate=Path(temp.name)/'candidate'
+        shutil.copytree(ROOT,candidate,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+        p=candidate/VERIFIER.RENDER_ROOT/'web/deployment.json'
+        web=json.loads(p.read_text())
+        env=web['spec']['template']['spec']['containers'][0]['env']
+        env[:]=[item for item in env if item.get('name')!='STADTSTACK_PUBLIC_CASE_BINDING_ORIGIN']
+        p.write_text(json.dumps(web))
+        with self.assertRaisesRegex(VERIFIER.VerificationError,'public Case lookup requires'):
+            VERIFIER.CASE_RUNTIME.public_lookup_enabled(VERIFIER,candidate)
+
+    def test_public_case_lookup_rejects_broader_path_or_write_exceptions(self) -> None:
+        acl=VERIFIER.CASE_RUNTIME.PUBLIC_LOOKUP_ACL
+        for old,new in [(acl,' !{ path_beg /api/stadtstack/ }'),
+                        (acl,acl.replace('[0-9a-f]{64}','.*')),
+                        ('!{ path /api/chat/mecky }','!{ path /api/chat/mecky }'+acl)]:
+            temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);candidate=Path(temp.name)/'candidate'
+            shutil.copytree(ROOT,candidate,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+            p=candidate/VERIFIER.RENDER_ROOT/'web/ingress.json';ingress=json.loads(p.read_text())
+            key='haproxy-ingress.github.io/config-backend-early'
+            ingress['metadata']['annotations'][key]=ingress['metadata']['annotations'][key].replace(old,new,1)
+            p.write_text(json.dumps(ingress))
+            with self.assertRaisesRegex(VERIFIER.VerificationError,'Web Ingress drift'):
+                VERIFIER.verify_web_ingress(candidate,False,True)
 
     def test_web_ingress_cannot_widen_mecky_post_path(self) -> None:
         for replacement in (

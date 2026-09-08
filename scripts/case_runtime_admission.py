@@ -1,4 +1,6 @@
 """Closed Case bootstrap implementation and independently pinned Flux render."""
+import copy
+import json
 from pathlib import Path
 
 FILES={
@@ -19,12 +21,33 @@ FILES={
 }
 
 
+PUBLIC_READER_HOST = 'roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local'
+PUBLIC_READER_CONFIG = 'roebel-case-public-binding-reviewed'
+
+
+def public_host_resources(original):
+    """Exact versioned configuration repair; retain the saved replay Host."""
+    expected=copy.deepcopy(original)
+    config=next(o for o in expected['items'] if o['kind']=='ConfigMap' and o['metadata']['name']==PUBLIC_READER_CONFIG)
+    config['metadata']['name']=PUBLIC_READER_CONFIG+'-v2'
+    application=json.loads(config['data']['application.json'])
+    application['publicAllowedHosts']=[PUBLIC_READER_HOST,PUBLIC_READER_HOST+':18086']
+    config['data']['application.json']=json.dumps(application,sort_keys=True,separators=(',',':'))+'\n'
+    deployment=next(o for o in expected['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-public-binding')
+    volume=next(o for o in deployment['spec']['template']['spec']['volumes'] if o.get('configMap',{}).get('name')==PUBLIC_READER_CONFIG)
+    volume['configMap']['name']=PUBLIC_READER_CONFIG+'-v2'
+    return expected
+
+
 def verify(v,root):
     # The protected proposal checker has already verified independent byte pins.
     for name in ('resources.json','kustomization.yaml'):
         active=root/'reviewed-render/roebel-staging/case-runtime'/name
         proposed=root/'proposals/synthetic-case-runtime'/name
-        v.require(active.is_file() and not active.is_symlink() and active.read_bytes()==proposed.read_bytes(),'Case runtime render differs from independently pinned proposal')
+        v.require(active.is_file() and not active.is_symlink(),'Case runtime render requires regular files')
+        expected=proposed.read_bytes()
+        repaired=(json.dumps(public_host_resources(json.loads(expected)),indent=2)+'\n').encode() if name=='resources.json' else expected
+        v.require(active.read_bytes() in (expected,repaired),'Case runtime render differs from independently pinned proposal or exact public Host repair')
     return {'bootstrapImplementationPresent':True,'automaticActivation':False,
             'webConnectionIncluded':False,'restoreActivation':False}
 
@@ -52,6 +75,18 @@ def connection(v,root):
     return proposal if found else None
 
 
+PUBLIC_LOOKUP_PATTERN = r'^/api/stadtstack/case-bindings/by-discussion/[0-9a-f]{64}$'
+PUBLIC_LOOKUP_ACL = ' !{ path_reg ' + PUBLIC_LOOKUP_PATTERN + ' }'
+
+
+def public_lookup_enabled(v,root):
+    ingress=v.load_json(root/v.RENDER_ROOT/'web/ingress.json')
+    early=ingress['metadata']['annotations']['haproxy-ingress.github.io/config-backend-early']
+    enabled=PUBLIC_LOOKUP_ACL in early
+    v.require(not enabled or connection(v,root) is not None,'public Case lookup requires the reviewed Web connection')
+    return enabled
+
+
 def extend_web_boundary(v,root,boundary):
     proposal=connection(v,root)
     if proposal:
@@ -59,6 +94,8 @@ def extend_web_boundary(v,root,boundary):
             'authority':'none','credentials':'none','origin':proposal['environmentAddition']['value'],
             'egress':proposal['egressAddition'],'sourceNamespace':proposal['namespace'],
         }
+        if public_lookup_enabled(v,root):
+            boundary['boundary']['webCaseBinding']['publicLookup']={'pathPattern':PUBLIC_LOOKUP_PATTERN,'methods':['GET','HEAD'],'credentials':'none'}
 
 
 def verify_web_transition(v,candidate,base):

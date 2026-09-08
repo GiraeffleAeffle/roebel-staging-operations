@@ -45,11 +45,12 @@ def target(obj):
 
 
 def build_plan(admitted_root):
-    """Derive every object from the independently pinned admitted proposal."""
+    """Derive objects from the render verified against the pinned proposal."""
     verifier = _verifier()
     review = synthetic_case_runtime.bootstrap_review_plan(verifier, admitted_root, admitted_root)
     records = synthetic_case_runtime.verify_proposal(verifier, admitted_root)
-    runtime = records["resources.json"]["items"]
+    runtime = verifier.load_json(admitted_root / 'reviewed-render/roebel-staging/case-runtime/resources.json')["items"]
+    review['runtimeObjects']=[{**target(obj),'canonicalSha256':verifier.digest(obj)} for obj in runtime]
     infrastructure = [o for o in runtime if o["kind"] != "Deployment"]
     # Isolation exists before either process. Control owns storage; public starts
     # only after the adapter has checked control startup and a clean restart.

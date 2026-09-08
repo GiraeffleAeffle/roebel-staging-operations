@@ -45,7 +45,7 @@ class StorageContinuityTests(unittest.TestCase):
             # Keep the release attested by the restored integrity file coherent.
             historical_files = (status.TRANSITION_FILES - {str(status.RECORD_PATH)}) | {
                 f"{verifier.RENDER_ROOT}/{name}"
-                for name in ("head.json", "live-preconditions.json", "web/deployment.json", "web/networkpolicy.json", "public-mecky/deployment.json")
+                for name in ("head.json", "live-preconditions.json", "web/deployment.json", "web/networkpolicy.json", "web/ingress.json", "public-mecky/deployment.json")
             }
             for path in sorted(historical_files):
                 (self.base / path).write_bytes(subprocess.check_output([
