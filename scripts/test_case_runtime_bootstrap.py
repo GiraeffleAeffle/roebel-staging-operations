@@ -268,6 +268,13 @@ class CaseBootstrapTests(unittest.TestCase):
         volume['configMap']['name']='roebel-case-public-binding-reviewed'
         self.assertEqual(old,new)
         self.assertEqual(plan['review']['runtimeObjects'],[{**bootstrap.target(o),'canonicalSha256':verifier.digest(o)} for o in json.loads((self.root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())['items']])
+        original_flux=json.loads((self.root/'proposals/synthetic-case-runtime/flux-bootstrap.json').read_text())['items']
+        repaired_flux=[o['desired'] for o in plan['objects'] if o['phase']=='suspended-flux']
+        repaired_role=next(o for o in repaired_flux if o['kind']=='Role')
+        rule=next(r for r in repaired_role['rules'] if r['resources']==['configmaps'])
+        self.assertEqual(rule['verbs'],['get','patch','update'])
+        self.assertEqual(rule['resourceNames'].pop(),'roebel-case-public-binding-reviewed-v2')
+        self.assertEqual(repaired_flux,original_flux)
 
     def test_public_host_repair_rejects_broader_hosts_or_unversioned_mutation(self):
         verifier=bootstrap._verifier()

@@ -13,7 +13,7 @@ import secrets
 import re
 
 from .staging_participant_flux_bootstrap import canonical_sha256
-from . import synthetic_case_runtime
+from . import synthetic_case_runtime, case_runtime_admission
 
 NONCE = "stadtstack.io/case-bootstrap-nonce"
 
@@ -58,8 +58,9 @@ def build_plan(admitted_root):
     infrastructure.sort(key=lambda o: (order[o["kind"]], o["metadata"]["name"]))
     control = next(o for o in runtime if o["kind"] == "Deployment" and o["metadata"]["name"] == "roebel-case-steward-control")
     public = next(o for o in runtime if o["kind"] == "Deployment" and o["metadata"]["name"] == "roebel-case-public-binding")
+    flux = case_runtime_admission.flux_bootstrap_objects(verifier,admitted_root,records["flux-bootstrap.json"]["items"])
     phases = [("isolation", infrastructure), ("control", [control]), ("public", [public]),
-              ("suspended-flux", records["flux-bootstrap.json"]["items"])]
+              ("suspended-flux", flux)]
     objects = [{"phase": phase, "target": target(obj), "desired": copy.deepcopy(obj)}
                for phase, values in phases for obj in values]
     _require(len(objects) == 19, "Case bootstrap inventory mismatch")

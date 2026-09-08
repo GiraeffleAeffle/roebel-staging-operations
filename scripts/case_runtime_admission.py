@@ -39,6 +39,17 @@ def public_host_resources(original):
     return expected
 
 
+def flux_bootstrap_objects(v,root,original):
+    """Allow reconciliation of the exact precreated v2 map, without create/delete."""
+    expected=copy.deepcopy(original)
+    runtime=v.load_json(root/'reviewed-render/roebel-staging/case-runtime/resources.json')['items']
+    if any(o['kind']=='ConfigMap' and o['metadata']['name']==PUBLIC_READER_CONFIG+'-v2' for o in runtime):
+        role=next(o for o in expected if o['kind']=='Role')
+        rule=next(r for r in role['rules'] if r['resources']==['configmaps'])
+        rule['resourceNames'].append(PUBLIC_READER_CONFIG+'-v2')
+    return expected
+
+
 def verify(v,root):
     # The protected proposal checker has already verified independent byte pins.
     for name in ('resources.json','kustomization.yaml'):
