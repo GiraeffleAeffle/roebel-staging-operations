@@ -58,6 +58,63 @@ failure. The parent must retain and link the private result before handover.
 
 ## Recovery and remaining Operations work
 
+### Retained target storage operation
+
+`scripts/run-case-review-storage.py` provides a separate `plan` / `advance`
+operation for the first rollout phase. Its fixed target is
+`roebel-case-steward-review-state-v1` in `stadtstack-roebel-staging-lab`: 10 GiB,
+`hcloud-volumes`, `ReadWriteOncePod`, filesystem storage. It requires the
+original source claim identity and binding to remain unchanged. The target
+starts empty; no data source, clone, workload or Secret is created by this
+operation.
+
+The protected caller reserves a fresh 32-byte hex operation ID, compiles and
+reviews the plan, then independently pins its checksum. Live invocation also
+requires an exact clean Operations revision, an explicit verified kubeconfig
+and a new private receipt file. The existing cluster-binding check runs before
+the storage transport can make a request. No ambient Kubernetes context is used.
+
+Creation intent is durably recorded before the single PVC create. A lost create
+response is resolved only by observing the exact ownership marker and claim
+specification. A Pending claim returns `awaiting-binding`; it does not spin or
+create a second claim. An unresolved create with no observable claim remains
+stopped. A definite create conflict is terminal and cannot adopt an existing
+claim, even if its name matches.
+
+Once bound, the operation verifies a separate PV and its claim UID, storage
+class, capacity, CSI driver and filesystem. If necessary, the only patch sets
+that PV's reclaim policy from `Delete` to `Retain`, guarded by JSON Patch tests
+of its UID, resourceVersion and previous policy. The source claim is rechecked
+before writes and completion. An uncertain patch is re-observed; it is never
+automatically rolled back to `Delete`. A completed receipt records the actual
+claim and volume identities required by the later deployment binding.
+
+Recovery requires the prior receipt and its independently supplied checksum,
+plus a new output receipt. It re-observes the same claim and volume; changed
+identities or a regressed retention policy stop. Neither failure nor recovery
+deletes storage. A retained-volume receipt is not evidence that data was copied
+or that a migration workload may start: quiescence, mounting, the target storage
+marker, private configuration and reviewed activation remain separate phases.
+
+The concrete source entrypoints are:
+
+```sh
+python3 -I scripts/run-case-review-storage.py --mode plan \
+  --expected-operations-revision EXACT_REVIEWED_COMMIT --operation-id RESERVED_HEX_ID
+
+python3 -I scripts/run-case-review-storage.py --mode advance \
+  --expected-operations-revision EXACT_REVIEWED_COMMIT --operation-id RESERVED_HEX_ID \
+  --expected-plan-sha256 REVIEWED_PLAN_SHA --kubeconfig PRIVATE_BOUND_KUBECONFIG \
+  --receipt NEW_PRIVATE_RECEIPT
+```
+
+Add `--prior-receipt` and `--expected-prior-sha256` together for recovery.
+The three new storage source/test files must join the protected inventory and
+the Python test must run from protected base in CI before this operation is
+eligible for a reviewed live invocation. No target has been provisioned yet.
+
+### Migration and handover
+
 The runner does not provision volumes, manage Secrets, stop workloads, change
 RBAC, run GitOps or bind network listeners. Before live use, a separate reviewed
 Operations transaction must:
@@ -112,6 +169,13 @@ accounts or Kubernetes. It checks admission version 3, exact source bytes,
 candidate activation, identical retry, ordinary runtime configuration and
 refusal to replay after the target has reopened. It starts no HTTP listener.
 The same invocation runs all descriptor tests. Seven tests pass locally.
+
+The storage transaction and its bounded kubectl Adapter are exercised by
+`python3 -m unittest -v scripts.test_case_review_storage`: twelve tests cover
+durable intent, delayed binding, lost responses, ownership conflicts, guarded
+retention, exact recovery, changed identities and forbidden transport requests.
+They use synthetic API responses and real private receipt files; they do not
+provision a live volume.
 
 CI admission and the protected file inventory include this operator. This
 source checkpoint is not an approved deployment or a substitute for the
