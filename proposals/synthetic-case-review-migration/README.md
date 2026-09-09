@@ -73,6 +73,14 @@ never blindly recreated. Conflicts, changed UIDs, injected Pod fields and failed
 checks stop the operation. Recovery requires the same independently pinned
 storage receipt and the consumer's prior receipt; use a new output each time.
 
+Kubernetes can add `topology.kubernetes.io/region` and
+`topology.kubernetes.io/zone` labels when binding the Pod to its Node, after
+initial create/dry-run. The semantic validator accepts only those two labels
+on a node-bound Pod with valid nonempty label values; every other label and the
+reviewed affinity/security specification still must match. This supports
+recovery of the same receipt-owned Pod without removing controller metadata or
+recreating resources. See [Kubernetes Pod topology labels](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/).
+
 The Pod uses the existing immutable control image with a fixed Node filesystem
 check. It mounts only the target PVC read-only, runs as UID/GID 1000, has no
 service-account token, Secrets, service links, writable root or network access,
@@ -81,6 +89,24 @@ the current Case control Pod's node, keeping the migration volumes compatible.
 It checks ext4, at least 1 GiB available, and an empty root apart from lost+found.
 It creates no directory or marker and never starts the application. CSI may
 apply the requested fsGroup to the fresh target during mounting.
+
+A fresh CSI disk cannot be formatted through the original read-only mount.
+For that recovery only, paired `--predecessor-consumer-receipt` and
+`--expected-predecessor-consumer-sha256` arguments compile a distinct v2 plan.
+The plan embeds the pinned original consumer receipt and creates the fixed
+`roebel-case-review-storage-check-v2` Pod and policy on the same owned claim.
+The target mount permits writes so CSI can format the disk; the fixed check
+program still only reads it. This is a separate plan and mount authorization.
+
+Before each create and successful completion, the operator rechecks the source,
+target and original Pod. An existing predecessor must have its receipt-owned
+UID, unchanged reviewed semantics, a terminal phase and no running containers.
+An absent predecessor is never recreated. A changed or active predecessor stops
+the operation. The v2 transport may GET the original Pod but cannot modify or
+delete it. The claim's ReadWriteOncePod access mode remains enforced. The v2
+operation has its own durable receipts and cannot adopt existing v2 resources.
+Optional `readOnly: false` fields may be omitted by Kubernetes; true remains
+distinct and every other volume setting must match the pinned plan.
 
 Resume the original storage operation after binding to obtain the actual
 retained PV receipt. Resume the consumer to verify the exact Pod's successful
@@ -157,7 +183,8 @@ python3 -I scripts/run-case-review-storage.py --mode advance \
 Add `--prior-receipt` and `--expected-prior-sha256` together for recovery.
 The three storage source/test files are included in the protected inventory,
 and the Python test runs from protected base in CI. A reviewed live invocation
-still requires its own exact plan and authorization. No target has been provisioned yet.
+still requires its own exact plan and authorization. Live observations belong in
+private rollout receipts, not this source contract.
 
 The control change adds exactly `scripts/case_review_storage.py`,
 `scripts/run-case-review-storage.py` and `scripts/test_case_review_storage.py`
@@ -225,7 +252,7 @@ refusal to replay after the target has reopened. It starts no HTTP listener.
 The same invocation runs all descriptor tests. Seven tests pass locally.
 
 The storage transaction and its bounded kubectl Adapter are exercised by
-`python3 -m unittest -v scripts.test_case_review_storage`: nineteen tests cover
+`python3 -m unittest -v scripts.test_case_review_storage`: twenty tests cover
 durable intent, delayed binding, lost responses, ownership conflicts, guarded
 retention, exact recovery, changed identities and forbidden transport requests.
 They use synthetic API responses and real private receipt files; they do not

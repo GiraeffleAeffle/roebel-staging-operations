@@ -273,7 +273,7 @@ console.log('Empty review filesystem verified');
 """
 
 
-def build_consumer_plan(storage_plan):
+def build_consumer_plan(storage_plan, predecessor=None):
     """Inert, separate authority for WFFC scheduling; never mounts the source."""
     _validate_plan(storage_plan, storage_plan['planSha256'])
     namespace = storage_plan['source']['pvcNamespace']
@@ -305,11 +305,27 @@ def build_consumer_plan(storage_plan):
     value = {'schemaVersion': 'roebel_case_review_binding_consumer_plan_v1',
              'storagePlanSha256': storage_plan['planSha256'], 'operationId': storage_plan['operationId'],
              'networkPolicy': policy, 'pod': pod}
+    if predecessor is not None:
+        previous = _pinned_receipt(predecessor, predecessor.get('canonicalSha256'))
+        original = build_consumer_plan(storage_plan)
+        require(previous.get('schemaVersion') == 'roebel_case_review_binding_consumer_receipt_v1' and
+                previous.get('planSha256') == original['planSha256'] and
+                previous.get('status') in ('awaiting-check', 'verified') and
+                all(isinstance(previous.get(k), str) and UUID.fullmatch(previous[k]) for k in ('claimUid', 'podUid', 'networkPolicyUid')),
+                'formatting consumer requires the original owned consumer receipt')
+        value['schemaVersion'] = 'roebel_case_review_binding_consumer_plan_v2'
+        value['predecessorReceipt'] = copy.deepcopy(predecessor)
+        for key in ('networkPolicy', 'pod'):
+            value[key]['metadata']['name'] = CONSUMER_NAME + '-v2'
+        # CSI must format the fresh disk before a read-only filesystem mount
+        # exists. The fixed non-root program still performs filesystem reads only.
+        value['pod']['spec']['volumes'][0]['persistentVolumeClaim']['readOnly'] = False
+        value['pod']['spec']['containers'][0]['volumeMounts'][0]['readOnly'] = False
     return {**value, 'planSha256': canonical_sha256(value)}
 
 
 def _consumer_plan(plan, storage_plan, pin):
-    require(plan == build_consumer_plan(storage_plan) and plan['planSha256'] == pin and SHA.fullmatch(pin),
+    require(plan == build_consumer_plan(storage_plan, plan.get('predecessorReceipt')) and plan['planSha256'] == pin and SHA.fullmatch(pin),
             'binding consumer plan mismatch')
 
 
@@ -321,6 +337,16 @@ def _consumer_object(observed, desired):
     actual = normalize(observed)
     expected = normalize(desired)
     if desired['kind'] == 'Pod':
+        # PodTopologyLabels admission copies these Node labels at binding,
+        # after initial CREATE/dry-run. They convey topology, not authority.
+        # Keep every other label and the reviewed scheduling constraints exact.
+        labels = actual['metadata'].get('labels', {})
+        for key in ('topology.kubernetes.io/region', 'topology.kubernetes.io/zone'):
+            if key in labels:
+                require(bool(actual['spec'].get('nodeName')) and isinstance(labels[key], str) and
+                        re.fullmatch('[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?', labels[key]),
+                        'consumer topology label invalid or not yet node-bound')
+                labels.pop(key)
         for value in (actual, expected):
             spec = value['spec']
             node = spec.pop('nodeName', None)
@@ -329,6 +355,14 @@ def _consumer_object(observed, desired):
                                  ('tolerations', [{'key':'node.kubernetes.io/not-ready','operator':'Exists','effect':'NoExecute','tolerationSeconds':300},
                                                   {'key':'node.kubernetes.io/unreachable','operator':'Exists','effect':'NoExecute','tolerationSeconds':300}])]:
                 _default(spec, key, default)
+            for volume in spec.get('volumes', []):
+                claim = volume.get('persistentVolumeClaim', {})
+                if claim.get('readOnly') is False:
+                    claim.pop('readOnly')
+            for container in spec.get('containers', []):
+                for mount in container.get('volumeMounts', []):
+                    if mount.get('readOnly') is False:
+                        mount.pop('readOnly')
             # Reuse the established Pod-template default normalization. Extras
             # such as injected volumes, env, sidecars and host access still fail.
             wrapped = {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {},
@@ -394,6 +428,17 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
         sc = transport.request('GET', '/apis/storage.k8s.io/v1/storageclasses/hcloud-volumes', None)
         require(sc.get('provisioner') == 'csi.hetzner.cloud' and sc.get('volumeBindingMode') == 'WaitForFirstConsumer' and
                 sc.get('reclaimPolicy') == 'Retain', 'consumer storage class changed')
+        if 'predecessorReceipt' in plan:
+            predecessor = plan['predecessorReceipt']
+            require(predecessor['claimUid'] == owned['claimUid'], 'formatting target differs from predecessor')
+            old_path = f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/pods/{CONSUMER_NAME}"
+            old = transport.request('GET', old_path, None)
+            if old is not None:
+                require(_consumer_object(old, build_consumer_plan(storage_plan)['pod'])['uid'] == predecessor['podUid'],
+                        'predecessor Pod identity changed')
+                require(old.get('status', {}).get('phase') in ('Failed', 'Succeeded') and
+                        all('running' not in item.get('state', {}) for item in old['status'].get('containerStatuses', [])),
+                        'predecessor consumer must be terminal before replacement')
         return claim
 
     check_source_target()
@@ -402,10 +447,10 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
                ('pod', 'podUid', 'policy-created', 'pod-intent', 'awaiting-check',
                 f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/pods")]
     if state['status'] == 'reserved':
-        require(transport.request('GET', objects[1][-1] + '/' + CONSUMER_NAME, None) is None,
+        require(transport.request('GET', objects[1][-1] + '/' + plan['pod']['metadata']['name'], None) is None,
                 'consumer Pod already exists; do not create its network policy')
     for key, uid_key, start, intent, completed, collection in objects:
-        desired = plan[key]; path = collection + '/' + CONSUMER_NAME
+        desired = plan[key]; path = collection + '/' + desired['metadata']['name']
         observed = transport.request('GET', path, None)
         if state['status'] == start:
             require(observed is None, 'consumer object already exists; never adopt it')
@@ -449,7 +494,10 @@ class KubectlConsumerTransport:
         if method == 'GET' and payload is None and path in (self.storage.source_path, self.storage.target_path):
             return self.storage.request(method, path, payload)
         base = ['kubectl', '--kubeconfig', str(self.snapshot.path), '--request-timeout=20s']
-        known = {collection + '/' + CONSUMER_NAME: key for collection, key in self.collections.items()}
+        known = {collection + '/' + self.plan[key]['metadata']['name']: key for collection, key in self.collections.items()}
+        predecessor_path = next(collection for collection, key in self.collections.items() if key == 'pod') + '/' + CONSUMER_NAME
+        if 'predecessorReceipt' in self.plan:
+            known[predecessor_path] = 'predecessor'
         if method == 'GET':
             require(payload is None and path in {*known, '/apis/storage.k8s.io/v1/storageclasses/hcloud-volumes'}, 'consumer read outside inventory')
             result = self.runner.run(base + ['get', '--raw', path], timeout=25)
@@ -466,5 +514,9 @@ class KubectlConsumerTransport:
         observed = json.loads(result.out)
         key = known.get(path) if method == 'GET' else self.collections[path]
         if key is not None:
-            _consumer_object(observed, self.plan[key])
+            if key == 'predecessor':
+                require(_consumer_object(observed, build_consumer_plan(self.storage.plan)['pod'])['uid'] == self.plan['predecessorReceipt']['podUid'],
+                        'predecessor transport identity changed')
+            else:
+                _consumer_object(observed, self.plan[key])
         return observed
