@@ -113,6 +113,14 @@ The three new storage source/test files must join the protected inventory and
 the Python test must run from protected base in CI before this operation is
 eligible for a reviewed live invocation. No target has been provisioned yet.
 
+The pending control change adds exactly `scripts/case_review_storage.py`,
+`scripts/run-case-review-storage.py` and `scripts/test_case_review_storage.py`
+to `case_runtime_admission.py`'s `FILES`. In the existing admission workflow,
+it adds `python3 -m unittest -v base/scripts/test_case_review_storage.py` to the
+protected-base PR checks and the corresponding `candidate/scripts` command to
+protected-main checks. No action version, dependency, permission, render or
+existing bootstrap operation changes. These control edits are not applied yet.
+
 ### Migration and handover
 
 The runner does not provision volumes, manage Secrets, stop workloads, change
