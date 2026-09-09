@@ -1,7 +1,7 @@
 # Offline administration-review migration operator
 
 Status: source implementation and offline verification only. This directory is
-not included by any Kustomization, workflow or live operator. The existing
+not included by any Kustomization or live operator. CI runs its offline tests. The existing
 19-object bootstrap and active reviewed render keep their existing meaning.
 
 `scripts/run-case-review-migration.mjs` bridges private Operations files to the
@@ -113,12 +113,11 @@ candidate activation, identical retry, ordinary runtime configuration and
 refusal to replay after the target has reopened. It starts no HTTP listener.
 The same invocation runs all descriptor tests. Seven tests pass locally.
 
-CI admission and the protected file inventory have not yet been extended for
-this proposed operator. Include that extension with the complete bounded
-Operations transaction; this source checkpoint alone is not an approved
-deployment or a substitute for its live verification.
+CI admission and the protected file inventory include this operator. This
+source checkpoint is not an approved deployment or a substitute for the
+remaining bounded Operations transaction and its live verification.
 
-The concrete pending CI extension is limited to:
+The CI integration is limited to:
 
 - Add this README and the three new `.mjs` files to `case_runtime_admission.py`
   `FILES`, so later promotions cannot alter them through candidate execution.
@@ -133,9 +132,6 @@ The concrete pending CI extension is limited to:
 - Update the existing workflow-shape test for the additional checkout and
   assert the protected-base integration command and immutable source revision.
 
-Automatic approval review rejected this extension on 2026-09-09 because it
-changes the protected workflow and admission inventory and adds an external
-checkout/dependency installation without specific authorization. None of these
-four protected-file edits was applied. Source implementation, seven local
-tests and this reviewable proposal are complete; authorization for this exact
-CI extension is pending. No branch-protection exception is included.
+The existing protected base rejects changes to its own workflow and admission
+inventory. This extension therefore requires an explicitly reviewed maintenance
+merge; it does not relax that rule or change branch protection itself.

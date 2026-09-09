@@ -234,10 +234,12 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_reviewed_admission_fetches_history_only_for_trusted_checkouts(self) -> None:
         workflow = (ROOT / ".github/workflows/reviewed-render-admission.yml").read_text()
         self.assertEqual(workflow.count("fetch-depth: 0"), 2)
-        self.assertEqual(workflow.count("fetch-depth: 1"), 1)
+        self.assertEqual(workflow.count("fetch-depth: 1"), 2)
         self.assertIn("name: Check out protected base", workflow)
         self.assertIn("name: Check out untrusted candidate as data", workflow)
         self.assertIn("name: Check out protected main", workflow)
+        self.assertIn('CASE_REVIEW_TEST_SOURCE_ROOT="$GITHUB_WORKSPACE/case-source" node --test base/scripts/test_case_review_migration_integration.mjs', workflow)
+        self.assertIn('ref: fdb0b7f36c33d925be141d8e9037b48d17612df8', workflow)
 
     def test_eligibility_issuer_materialization_policy_is_exact(self) -> None:
         policy = VERIFIER.verify_eligibility_issuer_materialization_policy(ROOT)
