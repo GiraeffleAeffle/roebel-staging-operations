@@ -244,5 +244,175 @@ class ReviewStorageTests(unittest.TestCase):
         self.assertEqual(commands, [])
 
 
+
+
+class ConsumerKubernetes:
+    def __init__(self, storage_api, plan, receipt):
+        self.storage_api, self.plan, self.receipt = storage_api, plan, receipt
+        self.objects, self.writes = {}, []
+        self.fault = None
+        self.sc = {'provisioner': 'csi.hetzner.cloud', 'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain'}
+
+    def request(self, method, path, payload):
+        if '/persistentvolumeclaims/' in path:
+            return self.storage_api.request(method, path, payload)
+        if path.endswith('/storageclasses/hcloud-volumes'):
+            assert method == 'GET' and payload is None
+            return copy.deepcopy(self.sc)
+        key = 'networkPolicy' if '/networkpolicies' in path else 'pod'
+        assert path.endswith(('/networkpolicies', '/pods', '/' + storage.CONSUMER_NAME))
+        if method == 'GET':
+            return copy.deepcopy(self.objects.get(key))
+        assert method == 'POST' and payload == self.plan[key]
+        durable = json.loads(self.receipt.read_text())
+        assert durable['status'] == ('policy-intent' if key == 'networkPolicy' else 'pod-intent')
+        assert key not in self.objects
+        self.writes.append(key)
+        if self.fault == 'conflict-' + key:
+            raise CreateConflict('untrusted conflict body')
+        if self.fault == 'missing-' + key:
+            raise TimeoutError('untrusted timeout')
+        obj = copy.deepcopy(payload)
+        obj['metadata'].update(uid='00000000-0000-4000-8000-00000000000' + ('3' if key == 'networkPolicy' else '4'), resourceVersion='1')
+        if key == 'pod':
+            obj['status'] = {'phase': 'Pending'}
+        self.objects[key] = obj
+        if self.fault == 'lost-' + key:
+            raise TimeoutError('untrusted timeout')
+        return copy.deepcopy(obj)
+
+    def complete(self):
+        self.storage_api.bind()
+        self.storage_api.volume['spec']['persistentVolumeReclaimPolicy'] = 'Retain'
+        self.objects['pod']['spec']['nodeName'] = 'fixture-node'
+        self.objects['pod']['status'] = {'phase': 'Succeeded', 'containerStatuses': [
+            {'name': 'check', 'restartCount': 0, 'imageID': storage.CONSUMER_IMAGE,
+             'state': {'terminated': {'exitCode': 0}}}]}
+
+
+class BindingConsumerTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(); self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.storage_plan = storage.build_plan(ROOT, 'b' * 64)
+        initial = ReceiptSink.reserve(self.root / 'storage.json')
+        self.storage_api = Kubernetes(self.storage_plan, initial.path); self.storage_api.pending = True
+        self.owned = storage.advance_storage(self.storage_plan, expected_plan_sha256=self.storage_plan['planSha256'],
+                                             transport=self.storage_api, sink=initial)
+        self.plan = storage.build_consumer_plan(self.storage_plan)
+        self.sink = ReceiptSink.reserve(self.root / 'consumer.json')
+        self.api = ConsumerKubernetes(self.storage_api, self.plan, self.sink.path)
+
+    def advance(self, prior=None, sink=None, transport=None):
+        sink = sink or self.sink; self.api.receipt = sink.path
+        return storage.advance_consumer(self.plan, self.storage_plan, expected_plan_sha256=self.plan['planSha256'],
+            storage_receipt=self.owned, expected_storage_receipt_sha256=self.owned['canonicalSha256'],
+            transport=transport or self.api, sink=sink, prior=prior, expected_prior_sha256=prior and prior['canonicalSha256'])
+
+    def resume(self, name='resume.json'):
+        prior = json.loads(self.api.receipt.read_text())
+        return self.advance(prior, ReceiptSink.reserve(self.root / name))
+
+    def test_pending_consumer_then_completed_check_and_separate_retention_receipt(self):
+        source = copy.deepcopy(self.storage_api.source)
+        first = self.advance()
+        self.assertEqual(first['status'], 'awaiting-check')
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+        self.api.complete()
+        complete = self.resume()
+        self.assertEqual(complete['status'], 'verified')
+        self.assertEqual(complete['previousReceiptSha256'], first['canonicalSha256'])
+        replay = self.resume('replay.json')
+        self.assertEqual(replay['status'], 'verified')
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+        retained = storage.advance_storage(self.storage_plan, expected_plan_sha256=self.storage_plan['planSha256'],
+            transport=self.storage_api, sink=ReceiptSink.reserve(self.root / 'retained.json'), prior=self.owned,
+            expected_prior_sha256=self.owned['canonicalSha256'])
+        self.assertEqual(retained['status'], 'retained')
+        self.assertEqual(self.storage_api.source, source)
+
+    def test_lost_policy_and_pod_responses_observe_without_recreating(self):
+        self.api.fault = 'lost-networkPolicy'
+        self.assertEqual(self.advance()['status'], 'awaiting-check')
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+        # A separate operation exercises loss after Pod creation.
+        self.setUp(); self.api.fault = 'lost-pod'
+        self.assertEqual(self.advance()['status'], 'awaiting-check')
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+
+    def test_unknown_create_is_not_repeated_and_conflicts_are_terminal(self):
+        for key in ('networkPolicy', 'pod'):
+            for fault in ('missing-', 'conflict-'):
+                with self.subTest(key=key, fault=fault):
+                    self.setUp(); self.api.fault = fault + key
+                    with self.assertRaises(BootstrapStopped): self.advance()
+                    before = list(self.api.writes)
+                    with self.assertRaises(BootstrapStopped): self.resume()
+                    self.assertEqual(self.api.writes, before)
+
+    def test_source_target_storage_class_and_pins_block_before_creation(self):
+        for changed in ('source', 'target', 'class', 'receipt', 'plan', 'existing-pod'):
+            with self.subTest(changed=changed):
+                self.setUp()
+                if changed == 'existing-pod': self.api.objects['pod'] = copy.deepcopy(self.plan['pod'])
+                if changed == 'source': self.storage_api.source['metadata']['uid'] = CLAIM_UID
+                if changed == 'target': self.storage_api.target['metadata']['uid'] = VOLUME_UID
+                if changed == 'class': self.api.sc['reclaimPolicy'] = 'Delete'
+                if changed == 'receipt': self.owned['claimUid'] = VOLUME_UID
+                if changed == 'plan': self.plan['pod']['spec']['volumes'][0]['persistentVolumeClaim']['claimName'] = self.storage_plan['source']['pvcName']
+                with self.assertRaises(BootstrapStopped): self.advance()
+                self.assertEqual(self.api.writes, [])
+
+    def test_server_defaults_allowed_but_injection_and_failed_completion_rejected(self):
+        self.advance(); self.api.complete()
+        desired = copy.deepcopy(self.api.objects['pod'])
+        desired['spec'].update(serviceAccount='roebel-case-steward-control', dnsPolicy='ClusterFirst',
+            schedulerName='default-scheduler', priority=0, preemptionPolicy='PreemptLowerPriority', imagePullSecrets=[])
+        desired['spec']['containers'][0].update(terminationMessagePath='/dev/termination-log', terminationMessagePolicy='File')
+        self.api.objects['pod'] = desired
+        self.assertEqual(self.resume()['status'], 'verified')
+        mutations = [lambda p: p['spec'].update(automountServiceAccountToken=True),
+                     lambda p: p['spec'].update(hostNetwork=True),
+                     lambda p: p['spec']['containers'].append({'name':'injected'}),
+                     lambda p: p['spec']['volumes'].append({'name':'secret','secret':{'secretName':'private'}}),
+                     lambda p: p['spec']['containers'][0]['volumeMounts'][0].update(readOnly=False),
+                     lambda p: p['status']['containerStatuses'][0]['state']['terminated'].update(exitCode=1),
+                     lambda p: p['status']['containerStatuses'][0].update(imageID='wrong-image'),
+                     lambda p: p['metadata'].update(uid=CLAIM_UID)]
+        for i, mutate in enumerate(mutations):
+            self.api.objects['pod'] = copy.deepcopy(desired); mutate(self.api.objects['pod'])
+            prior = json.loads((self.root / 'resume.json').read_text())
+            with self.assertRaises(BootstrapStopped):
+                self.advance(prior, ReceiptSink.reserve(self.root / f'reject-{i}.json'))
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+
+    def test_receipt_failure_prevents_every_create(self):
+        class Broken:
+            def commit(self, state): raise OSError('fixture disk failure')
+        with self.assertRaises(OSError): self.advance(sink=SimpleNamespace(path=self.sink.path, commit=Broken().commit))
+        self.assertEqual(self.api.writes, [])
+
+    def test_real_command_adapter_and_forbidden_operations(self):
+        api = self.api
+        class Runner:
+            def run(self, args, input_text=None, timeout=None):
+                assert args[:4] == ['kubectl','--kubeconfig','/fixture/config','--request-timeout=20s']
+                assert timeout == 25
+                method = {'get':'GET', 'create':'POST'}[args[4]]
+                assert args[5] == '--raw'
+                value = api.request(method, args[6], json.loads(input_text) if input_text else None)
+                if value is None:
+                    return SimpleNamespace(code=1, out='', err='Error from server (NotFound): fixture')
+                return SimpleNamespace(code=0, out=json.dumps(value), err='')
+        transport = storage.KubectlConsumerTransport(Runner(), SimpleNamespace(path='/fixture/config'),
+            self.plan, self.storage_plan, self.plan['planSha256'])
+        self.assertEqual(self.advance(transport=transport)['status'], 'awaiting-check')
+        for method, path, payload in [('DELETE','/api/v1/namespaces/x/pods/x',None),
+                                      ('GET','/api/v1/secrets',None),
+                                      ('PATCH',transport.storage.target_path,[]),
+                                      ('POST',next(iter(transport.collections)),{'kind':'Pod'})]:
+            with self.assertRaises(BootstrapStopped): transport.request(method,path,payload)
+
+
 if __name__ == '__main__':
     unittest.main()
