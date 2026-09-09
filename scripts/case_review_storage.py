@@ -1,9 +1,10 @@
 """Retained target-volume provisioning for the review migration.
 
-This module creates one fresh PVC and can change only its bound PV's reclaim
-policy to Retain. It never mounts storage, reads Secrets, stops a workload or
-imports a Case. A protected caller supplies the independently approved plan
-hash, a bounded Kubernetes transport, and a pre-reserved private ReceiptSink.
+The storage operation creates one fresh PVC and can set its bound PV to Retain.
+A separately pinned consumer operation creates a deny-all policy and one short
+Pod that reads only the target filesystem. Neither operation reads Secrets,
+changes an existing workload or imports a Case. Callers supply independent plan
+pins, bounded transports and pre-reserved private durable receipts.
 """
 from __future__ import annotations
 
@@ -255,4 +256,215 @@ class KubectlStorageTransport:
         elif path == pv_path:
             _volume(self.plan, self.claim, observed)
             self.volume = copy.deepcopy(observed)
+        return observed
+
+
+CONSUMER_NAME = 'roebel-case-review-storage-check'
+CONSUMER_LABEL = 'stadtstack.io/review-storage-consumer'
+CONSUMER_IMAGE = 'ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430'
+CONSUMER_CHECK = """const fs = require('node:fs');
+const root = '/review-target';
+const info = fs.lstatSync(root);
+const stat = fs.statfsSync(root, { bigint: true });
+if (!info.isDirectory() || info.isSymbolicLink() || stat.type !== 0xef53n ||
+    stat.bavail * stat.bsize < 1073741824n ||
+    fs.readdirSync(root).some(name => name !== 'lost+found')) process.exit(1);
+console.log('Empty review filesystem verified');
+"""
+
+
+def build_consumer_plan(storage_plan):
+    """Inert, separate authority for WFFC scheduling; never mounts the source."""
+    _validate_plan(storage_plan, storage_plan['planSha256'])
+    namespace = storage_plan['source']['pvcNamespace']
+    metadata = {'name': CONSUMER_NAME, 'namespace': namespace,
+                'labels': {CONSUMER_LABEL: storage_plan['operationId'][:32]},
+                'annotations': {OWNER: storage_plan['operationId']}}
+    policy = {'apiVersion': 'networking.k8s.io/v1', 'kind': 'NetworkPolicy',
+              'metadata': copy.deepcopy(metadata),
+              'spec': {'podSelector': {'matchLabels': {CONSUMER_LABEL: storage_plan['operationId'][:32]}},
+                       'policyTypes': ['Ingress', 'Egress'], 'ingress': [], 'egress': []}}
+    pod = {'apiVersion': 'v1', 'kind': 'Pod', 'metadata': copy.deepcopy(metadata),
+           'spec': {'serviceAccountName': 'roebel-case-steward-control',
+                    'automountServiceAccountToken': False, 'enableServiceLinks': False,
+                    'restartPolicy': 'Never', 'activeDeadlineSeconds': 300,
+                    'terminationGracePeriodSeconds': 5,
+                    'securityContext': {'runAsNonRoot': True, 'runAsUser': 1000, 'runAsGroup': 1000,
+                                        'fsGroup': 1000, 'seccompProfile': {'type': 'RuntimeDefault'}},
+                    'affinity': {'podAffinity': {'requiredDuringSchedulingIgnoredDuringExecution': [
+                        {'labelSelector': {'matchLabels': {'app.kubernetes.io/name': 'roebel-case-steward-control'}},
+                         'namespaces': [namespace], 'topologyKey': 'kubernetes.io/hostname'}]}},
+                    'containers': [{'name': 'check', 'image': CONSUMER_IMAGE, 'imagePullPolicy': 'IfNotPresent',
+                                    'command': ['node', '-e', CONSUMER_CHECK],
+                                    'securityContext': {'allowPrivilegeEscalation': False, 'readOnlyRootFilesystem': True,
+                                                        'capabilities': {'drop': ['ALL']}},
+                                    'resources': {'requests': {'cpu': '10m', 'memory': '32Mi'},
+                                                  'limits': {'cpu': '100m', 'memory': '128Mi'}},
+                                    'volumeMounts': [{'name': 'target', 'mountPath': '/review-target', 'readOnly': True}]}],
+                    'volumes': [{'name': 'target', 'persistentVolumeClaim': {'claimName': TARGET_NAME, 'readOnly': True}}]}}
+    value = {'schemaVersion': 'roebel_case_review_binding_consumer_plan_v1',
+             'storagePlanSha256': storage_plan['planSha256'], 'operationId': storage_plan['operationId'],
+             'networkPolicy': policy, 'pod': pod}
+    return {**value, 'planSha256': canonical_sha256(value)}
+
+
+def _consumer_plan(plan, storage_plan, pin):
+    require(plan == build_consumer_plan(storage_plan) and plan['planSha256'] == pin and SHA.fullmatch(pin),
+            'binding consumer plan mismatch')
+
+
+def _consumer_object(observed, desired):
+    from .case_runtime_kubernetes import normalize, _default
+    require(isinstance(observed, dict) and observed.get('kind') == desired['kind'] and
+            observed.get('apiVersion') == desired['apiVersion'], 'binding consumer object invalid')
+    identity = _identity(observed)
+    actual = normalize(observed)
+    expected = normalize(desired)
+    if desired['kind'] == 'Pod':
+        for value in (actual, expected):
+            spec = value['spec']
+            node = spec.pop('nodeName', None)
+            require(node is None or isinstance(node, str) and re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}', node), 'consumer node invalid')
+            for key, default in [('priority', 0), ('preemptionPolicy', 'PreemptLowerPriority'),
+                                 ('tolerations', [{'key':'node.kubernetes.io/not-ready','operator':'Exists','effect':'NoExecute','tolerationSeconds':300},
+                                                  {'key':'node.kubernetes.io/unreachable','operator':'Exists','effect':'NoExecute','tolerationSeconds':300}])]:
+                _default(spec, key, default)
+            # Reuse the established Pod-template default normalization. Extras
+            # such as injected volumes, env, sidecars and host access still fail.
+            wrapped = {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {},
+                       'spec': {'template': {'metadata': {}, 'spec': spec}}}
+            value['spec'] = normalize(wrapped)['spec']['template']['spec']
+    require(actual == expected, 'binding consumer semantics changed')
+    return identity
+
+
+def _pinned_receipt(receipt, pin):
+    require(isinstance(receipt, dict) and isinstance(pin, str) and SHA.fullmatch(pin), 'receipt pin missing')
+    body = copy.deepcopy(receipt)
+    require(body.pop('canonicalSha256', None) == pin == canonical_sha256(body), 'receipt pin mismatch')
+    return body
+
+
+def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receipt, expected_storage_receipt_sha256,
+                     transport, sink, prior=None, expected_prior_sha256=None):
+    """Create deny-all policy then one bounded consumer; no delete or app writes.
+
+    The existing storage receipt must already own the target claim. Each create
+    is preceded by a durable intent. Unknown outcomes never trigger re-creation.
+    Completion proves only this Pod's empty-filesystem check, not PV retention
+    or migration authority; resume the separate storage operation for Retain.
+    """
+    _consumer_plan(plan, storage_plan, expected_plan_sha256)
+    owned = _pinned_receipt(storage_receipt, expected_storage_receipt_sha256)
+    require(owned.get('schemaVersion') == 'roebel_case_review_storage_receipt_v1' and
+            owned.get('planSha256') == storage_plan['planSha256'] and owned.get('operationId') == plan['operationId'] and
+            owned.get('status') in ('awaiting-binding', 'retain-intent', 'retained') and
+            isinstance(owned.get('claimUid'), str) and UUID.fullmatch(owned['claimUid']), 'consumer requires owned target claim')
+    state = {'schemaVersion': 'roebel_case_review_binding_consumer_receipt_v1', 'planSha256': plan['planSha256'],
+             'storageReceiptSha256': expected_storage_receipt_sha256, 'claimUid': owned['claimUid'],
+             'previousReceiptSha256': None, 'status': 'reserved', 'networkPolicyUid': None, 'podUid': None}
+    if prior is not None:
+        previous = _pinned_receipt(prior, expected_prior_sha256)
+        require(set(previous) == set(state) and all(previous[k] == state[k] for k in
+                ('schemaVersion', 'planSha256', 'storageReceiptSha256', 'claimUid')), 'consumer recovery identity changed')
+        require(previous['status'] in ('reserved', 'policy-intent', 'policy-created', 'pod-intent', 'awaiting-check', 'verified'),
+                'consumer recovery state cannot continue')
+        for key in ('networkPolicyUid', 'podUid'):
+            require(previous[key] is None or isinstance(previous[key], str) and UUID.fullmatch(previous[key]), 'consumer receipt UID invalid')
+        require(previous['status'] in ('reserved', 'policy-intent') or previous['networkPolicyUid'] is not None, 'policy ownership absent')
+        require(previous['status'] not in ('awaiting-check', 'verified') or previous['podUid'] is not None, 'Pod ownership absent')
+        state = previous; state['previousReceiptSha256'] = expected_prior_sha256
+    else:
+        require(expected_prior_sha256 is None, 'unexpected consumer recovery pin')
+
+    def commit(status):
+        state['status'] = status
+        sink.commit(copy.deepcopy(state))
+        return {**copy.deepcopy(state), 'canonicalSha256': canonical_sha256(state)}
+
+    def check_source_target():
+        _source(storage_plan, transport)
+        path = f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/persistentvolumeclaims/{TARGET_NAME}"
+        claim = transport.request('GET', path, None)
+        require(_claim(claim, storage_plan['target'], owned=True)['uid'] == owned['claimUid'] and
+                claim.get('status', {}).get('phase') in ('Pending', 'Bound'), 'consumer target ownership changed')
+        if claim['status']['phase'] == 'Bound':
+            require(isinstance(claim['spec'].get('volumeName'), str) and claim['spec']['volumeName'] != storage_plan['source']['pvName'] and
+                    owned.get('volumeName') in (None, claim['spec']['volumeName']), 'consumer volume binding changed')
+        sc = transport.request('GET', '/apis/storage.k8s.io/v1/storageclasses/hcloud-volumes', None)
+        require(sc.get('provisioner') == 'csi.hetzner.cloud' and sc.get('volumeBindingMode') == 'WaitForFirstConsumer' and
+                sc.get('reclaimPolicy') == 'Retain', 'consumer storage class changed')
+        return claim
+
+    check_source_target()
+    objects = [('networkPolicy', 'networkPolicyUid', 'reserved', 'policy-intent', 'policy-created',
+                f"/apis/networking.k8s.io/v1/namespaces/{storage_plan['source']['pvcNamespace']}/networkpolicies"),
+               ('pod', 'podUid', 'policy-created', 'pod-intent', 'awaiting-check',
+                f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/pods")]
+    if state['status'] == 'reserved':
+        require(transport.request('GET', objects[1][-1] + '/' + CONSUMER_NAME, None) is None,
+                'consumer Pod already exists; do not create its network policy')
+    for key, uid_key, start, intent, completed, collection in objects:
+        desired = plan[key]; path = collection + '/' + CONSUMER_NAME
+        observed = transport.request('GET', path, None)
+        if state['status'] == start:
+            require(observed is None, 'consumer object already exists; never adopt it')
+            check_source_target(); commit(intent)
+            try:
+                observed = transport.request('POST', collection, copy.deepcopy(desired))
+            except CreateConflict:
+                commit('conflict'); raise BootstrapStopped('consumer create conflict') from None
+            except Exception:
+                observed = transport.request('GET', path, None)
+        require(observed is not None, 'consumer create outcome unresolved; never repeat create')
+        identity = _consumer_object(observed, desired)
+        require(state[uid_key] in (None, identity['uid']), 'consumer object UID changed')
+        state[uid_key] = identity['uid']
+        if state['status'] == intent:
+            commit(completed)
+    phase = observed.get('status', {}).get('phase')
+    require(phase in ('Pending', 'Running', 'Succeeded'), 'consumer failed; retain evidence')
+    if phase != 'Succeeded':
+        require(state['status'] != 'verified', 'completed consumer regressed')
+        return commit('awaiting-check')
+    statuses = observed['status'].get('containerStatuses', [])
+    require(len(statuses) == 1 and statuses[0].get('name') == 'check' and statuses[0].get('restartCount') == 0 and
+            statuses[0].get('state', {}).get('terminated', {}).get('exitCode') == 0 and
+            statuses[0].get('imageID', '').endswith(CONSUMER_IMAGE.split('@')[1]), 'consumer completion unverified')
+    require(check_source_target()['status']['phase'] == 'Bound', 'consumer target binding regressed')
+    return commit('verified')
+
+
+class KubectlConsumerTransport:
+    """Only source/target/class reads and the exact consumer/policy GET+POST."""
+    def __init__(self, runner, snapshot, plan, storage_plan, expected_plan_sha256):
+        _consumer_plan(plan, storage_plan, expected_plan_sha256)
+        self.runner, self.snapshot, self.plan = runner, snapshot, copy.deepcopy(plan)
+        self.storage = KubectlStorageTransport(runner, snapshot, storage_plan, storage_plan['planSha256'])
+        ns = storage_plan['source']['pvcNamespace']
+        self.collections = {f'/api/v1/namespaces/{ns}/pods': 'pod',
+                            f'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies': 'networkPolicy'}
+
+    def request(self, method, path, payload):
+        if method == 'GET' and payload is None and path in (self.storage.source_path, self.storage.target_path):
+            return self.storage.request(method, path, payload)
+        base = ['kubectl', '--kubeconfig', str(self.snapshot.path), '--request-timeout=20s']
+        known = {collection + '/' + CONSUMER_NAME: key for collection, key in self.collections.items()}
+        if method == 'GET':
+            require(payload is None and path in {*known, '/apis/storage.k8s.io/v1/storageclasses/hcloud-volumes'}, 'consumer read outside inventory')
+            result = self.runner.run(base + ['get', '--raw', path], timeout=25)
+            if result.code and result.err.startswith('Error from server (NotFound):') and path in known:
+                return None
+        elif method == 'POST':
+            require(path in self.collections and payload == self.plan[self.collections[path]], 'consumer create outside plan')
+            result = self.runner.run(base + ['create', '--raw', path, '-f', '-'], input_text=json.dumps(payload, separators=(',', ':')), timeout=25)
+            if result.code and result.err.startswith('Error from server (AlreadyExists):'):
+                raise CreateConflict('consumer create conflict')
+        else:
+            raise BootstrapStopped('consumer method outside inventory')
+        require(result.code == 0 and len(result.out) <= 4 * 1024 * 1024, 'consumer response unresolved')
+        observed = json.loads(result.out)
+        key = known.get(path) if method == 'GET' else self.collections[path]
+        if key is not None:
+            _consumer_object(observed, self.plan[key])
         return observed

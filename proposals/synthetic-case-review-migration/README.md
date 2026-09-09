@@ -58,6 +58,52 @@ failure. The parent must retain and link the private result before handover.
 
 ## Recovery and remaining Operations work
 
+### Binding a target volume with WaitForFirstConsumer
+
+The staging `hcloud-volumes` class uses `WaitForFirstConsumer` and already
+retains PVs. The PVC operation correctly returns `awaiting-binding`; a separate
+consumer must be scheduled before provisioning can finish.
+
+`consumer-plan` compiles a separately pinned plan from the same storage nonce.
+`consumer-advance` requires an independently pinned existing storage receipt
+that owns the target PVC, plus its own fresh receipt output. It creates the
+fixed deny-all NetworkPolicy before one `roebel-case-review-storage-check` Pod.
+Durable intent precedes each create; uncertain outcomes are re-observed and
+never blindly recreated. Conflicts, changed UIDs, injected Pod fields and failed
+checks stop the operation. Recovery requires the same independently pinned
+storage receipt and the consumer's prior receipt; use a new output each time.
+
+The Pod uses the existing immutable control image with a fixed Node filesystem
+check. It mounts only the target PVC read-only, runs as UID/GID 1000, has no
+service-account token, Secrets, service links, writable root or network access,
+and has a five-minute active deadline. Required Pod affinity schedules it on
+the current Case control Pod's node, keeping the migration volumes compatible.
+It checks ext4, at least 1 GiB available, and an empty root apart from lost+found.
+It creates no directory or marker and never starts the application. CSI may
+apply the requested fsGroup to the fresh target during mounting.
+
+Resume the original storage operation after binding to obtain the actual
+retained PV receipt. Resume the consumer to verify the exact Pod's successful
+exit and image digest. These are separate proofs: neither permits migration.
+The completed Pod and its policy remain as evidence; this operation has no
+delete permission. Later handover must verify the Pod is terminal and the mount
+released before starting another writer. Failed Pods are retained for diagnosis,
+not automatically replaced. The source workload stays running during this phase.
+
+Example inert plan command, with the same nonce as the storage plan:
+
+```sh
+python3 -I scripts/run-case-review-storage.py --mode consumer-plan \
+  --expected-operations-revision "$REVIEWED_REVISION" --operation-id "$STORAGE_NONCE"
+```
+
+The `consumer-advance` invocation adds `--expected-plan-sha256`, `--kubeconfig`,
+`--receipt`, `--storage-receipt` and `--expected-storage-receipt-sha256`.
+For recovery also supply `--prior-receipt` and `--expected-prior-sha256`.
+Plan generation is inert; source admission and exact live authorization remain
+separate. No new protected inventory entry or CI permission is needed because
+this extends the existing storage module, CLI and test file.
+
 ### Retained target storage operation
 
 `scripts/run-case-review-storage.py` provides a separate `plan` / `advance`
@@ -179,7 +225,7 @@ refusal to replay after the target has reopened. It starts no HTTP listener.
 The same invocation runs all descriptor tests. Seven tests pass locally.
 
 The storage transaction and its bounded kubectl Adapter are exercised by
-`python3 -m unittest -v scripts.test_case_review_storage`: twelve tests cover
+`python3 -m unittest -v scripts.test_case_review_storage`: nineteen tests cover
 durable intent, delayed binding, lost responses, ownership conflicts, guarded
 retention, exact recovery, changed identities and forbidden transport requests.
 They use synthetic API responses and real private receipt files; they do not
