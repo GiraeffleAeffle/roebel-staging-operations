@@ -109,17 +109,17 @@ python3 -I scripts/run-case-review-storage.py --mode advance \
 ```
 
 Add `--prior-receipt` and `--expected-prior-sha256` together for recovery.
-The three new storage source/test files must join the protected inventory and
-the Python test must run from protected base in CI before this operation is
-eligible for a reviewed live invocation. No target has been provisioned yet.
+The three storage source/test files are included in the protected inventory,
+and the Python test runs from protected base in CI. A reviewed live invocation
+still requires its own exact plan and authorization. No target has been provisioned yet.
 
-The pending control change adds exactly `scripts/case_review_storage.py`,
+The control change adds exactly `scripts/case_review_storage.py`,
 `scripts/run-case-review-storage.py` and `scripts/test_case_review_storage.py`
 to `case_runtime_admission.py`'s `FILES`. In the existing admission workflow,
 it adds `python3 -m unittest -v base/scripts/test_case_review_storage.py` to the
 protected-base PR checks and the corresponding `candidate/scripts` command to
 protected-main checks. No action version, dependency, permission, render or
-existing bootstrap operation changes. These control edits are not applied yet.
+existing bootstrap operation changes.
 
 ### Migration and handover
 
