@@ -251,6 +251,7 @@ class ConsumerKubernetes:
         self.storage_api, self.plan, self.receipt = storage_api, plan, receipt
         self.objects, self.writes = {}, []
         self.fault = None
+        self.predecessor = None
         self.sc = {'provisioner': 'csi.hetzner.cloud', 'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain'}
 
     def request(self, method, path, payload):
@@ -260,7 +261,10 @@ class ConsumerKubernetes:
             assert method == 'GET' and payload is None
             return copy.deepcopy(self.sc)
         key = 'networkPolicy' if '/networkpolicies' in path else 'pod'
-        assert path.endswith(('/networkpolicies', '/pods', '/' + storage.CONSUMER_NAME))
+        if key == 'pod' and path.endswith('/' + storage.CONSUMER_NAME) and 'predecessorReceipt' in self.plan:
+            assert method == 'GET' and payload is None
+            return copy.deepcopy(self.predecessor)
+        assert path.endswith(('/networkpolicies', '/pods', '/' + self.plan[key]['metadata']['name']))
         if method == 'GET':
             return copy.deepcopy(self.objects.get(key))
         assert method == 'POST' and payload == self.plan[key]
@@ -385,6 +389,103 @@ class BindingConsumerTests(unittest.TestCase):
             with self.assertRaises(BootstrapStopped):
                 self.advance(prior, ReceiptSink.reserve(self.root / f'reject-{i}.json'))
         self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+
+    def test_node_binding_topology_labels_allow_recovery_but_no_other_drift(self):
+        self.advance(); self.api.complete()
+        pod = self.api.objects['pod']
+        pod['metadata']['labels'].update({'topology.kubernetes.io/region': 'region-a',
+                                         'topology.kubernetes.io/zone': 'zone-b'})
+        self.assertEqual(self.resume()['status'], 'verified')
+        saved = json.loads((self.root / 'resume.json').read_text())
+        base = copy.deepcopy(pod)
+        mutations = [lambda p: p['metadata']['labels'].update({'topology.kubernetes.io/zone': ''}),
+                     lambda p: p['metadata']['labels'].update({'topology.kubernetes.io/zone': 'x'*64}),
+                     lambda p: p['metadata']['labels'].update({'topology.kubernetes.io/zone': 'bad/value'}),
+                     lambda p: p['metadata']['labels'].update({'topology.kubernetes.io/other': 'injected'}),
+                     lambda p: p['metadata']['labels'].update({storage.CONSUMER_LABEL: 'other-operation'}),
+                     lambda p: p['spec'].pop('nodeName'),
+                     lambda p: p['spec'].pop('affinity')]
+        for i, change in enumerate(mutations):
+            self.api.objects['pod'] = copy.deepcopy(base); change(self.api.objects['pod'])
+            with self.assertRaises(BootstrapStopped):
+                self.advance(saved, ReceiptSink.reserve(self.root / f'topology-reject-{i}.json'))
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+
+    def formatting_recovery(self):
+        previous = self.advance()
+        original = copy.deepcopy(self.api.objects['pod'])
+        self.plan = storage.build_consumer_plan(self.storage_plan, previous)
+        self.sink = ReceiptSink.reserve(self.root / 'formatting.json')
+        self.api = ConsumerKubernetes(self.storage_api, self.plan, self.sink.path)
+        self.api.predecessor = original
+        return previous
+
+    def test_formatting_recovery_requires_terminal_owned_predecessor(self):
+        previous = self.formatting_recovery()
+        original = copy.deepcopy(self.api.predecessor)
+        variants = [lambda p: None,
+                    lambda p: p.update(status={'phase': 'Running'}),
+                    lambda p: p.update(status={'phase': 'Failed', 'containerStatuses': [{'state': {'running': {}}}]}),
+                    lambda p: p['metadata'].update(uid=CLAIM_UID),
+                    lambda p: p['spec'].update(automountServiceAccountToken=True)]
+        for mutate in variants:
+            self.api.predecessor = copy.deepcopy(original); mutate(self.api.predecessor)
+            with self.assertRaises(BootstrapStopped): self.advance()
+            self.assertEqual(self.api.writes, [])
+        self.api.predecessor = original
+        self.api.predecessor['status'] = {'phase': 'Failed', 'reason': 'DeadlineExceeded'}
+        self.assertEqual(self.advance()['status'], 'awaiting-check')
+        self.api.complete()
+        # Kubernetes omits optional false booleans in the returned object.
+        self.api.objects['pod']['spec']['volumes'][0]['persistentVolumeClaim'].pop('readOnly')
+        self.api.objects['pod']['spec']['containers'][0]['volumeMounts'][0].pop('readOnly')
+        self.assertEqual(self.resume()['status'], 'verified')
+        self.assertEqual(self.resume('replay.json')['status'], 'verified')
+        self.assertEqual(self.api.writes, ['networkPolicy', 'pod'])
+        self.assertEqual(self.plan['predecessorReceipt'], previous)
+        self.assertEqual(self.api.predecessor['metadata']['uid'], previous['podUid'])
+
+    def test_formatting_plan_pins_predecessor_and_preserves_read_only_original(self):
+        original_plan = copy.deepcopy(self.plan)
+        previous = self.formatting_recovery()
+        self.assertEqual(storage.build_consumer_plan(self.storage_plan), original_plan)
+        self.assertNotEqual(self.plan['planSha256'], original_plan['planSha256'])
+        with self.assertRaises(BootstrapStopped):
+            storage._consumer_plan(self.plan, self.storage_plan, original_plan['planSha256'])
+        for key, value in [('planSha256', 'sha256:' + '0'*64), ('podUid', None), ('status', 'conflict')]:
+            wrong = copy.deepcopy(previous); wrong[key] = value
+            wrong.pop('canonicalSha256'); wrong['canonicalSha256'] = canonical_sha256(wrong)
+            with self.assertRaises(BootstrapStopped): storage.build_consumer_plan(self.storage_plan, wrong)
+        wrong = copy.deepcopy(previous); wrong['podUid'] = CLAIM_UID
+        with self.assertRaises(BootstrapStopped): storage.build_consumer_plan(self.storage_plan, wrong)
+        wrong.pop('canonicalSha256'); wrong['claimUid'] = VOLUME_UID
+        wrong['canonicalSha256'] = canonical_sha256(wrong)
+        self.plan = storage.build_consumer_plan(self.storage_plan, wrong); self.api.plan = self.plan
+        with self.assertRaises(BootstrapStopped): self.advance()
+        self.assertEqual(self.api.writes, [])
+
+    def test_formatting_transport_cannot_mutate_predecessor(self):
+        self.formatting_recovery()
+        self.api.predecessor['status'] = {'phase': 'Failed'}
+        api = self.api
+        calls = []
+        class Runner:
+            def run(self, args, input_text=None, timeout=None):
+                calls.append(args)
+                value = api.request({'get': 'GET', 'create': 'POST'}[args[4]], args[6],
+                                    json.loads(input_text) if input_text else None)
+                return SimpleNamespace(code=0, out=json.dumps(value), err='') if value is not None else SimpleNamespace(code=1, out='', err='Error from server (NotFound): fixture')
+        transport = storage.KubectlConsumerTransport(Runner(), SimpleNamespace(path='/fixture/config'),
+            self.plan, self.storage_plan, self.plan['planSha256'])
+        self.assertEqual(self.advance(transport=transport)['status'], 'awaiting-check')
+        before = len(calls)
+        old_path = f"/api/v1/namespaces/{self.storage_plan['source']['pvcNamespace']}/pods/{storage.CONSUMER_NAME}"
+        for method in ('DELETE', 'PATCH', 'POST'):
+            with self.assertRaises(BootstrapStopped): transport.request(method, old_path, None)
+        collection = old_path.rsplit('/', 1)[0]
+        with self.assertRaises(BootstrapStopped):
+            transport.request('POST', collection, storage.build_consumer_plan(self.storage_plan)['pod'])
+        self.assertEqual(len(calls), before)
 
     def test_receipt_failure_prevents_every_create(self):
         class Broken:

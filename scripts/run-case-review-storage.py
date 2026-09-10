@@ -18,6 +18,8 @@ def main():
     parser.add_argument('--expected-plan-sha256')
     parser.add_argument('--kubeconfig')
     parser.add_argument('--receipt')
+    parser.add_argument('--predecessor-consumer-receipt')
+    parser.add_argument('--expected-predecessor-consumer-sha256')
     parser.add_argument('--storage-receipt')
     parser.add_argument('--expected-storage-receipt-sha256')
     parser.add_argument('--prior-receipt')
@@ -37,8 +39,14 @@ def main():
     plan = storage.build_plan(root, args.operation_id)
     consumer = args.mode.startswith('consumer-')
     storage_plan = plan
+    predecessor = None
+    if args.predecessor_consumer_receipt or args.expected_predecessor_consumer_sha256:
+        if not consumer or not args.predecessor_consumer_receipt or not args.expected_predecessor_consumer_sha256:
+            raise RuntimeError('formatting consumer requires paired predecessor receipt and pin')
+        predecessor = load_receipt(Path(args.predecessor_consumer_receipt))
+        storage._pinned_receipt(predecessor, args.expected_predecessor_consumer_sha256)
     if consumer:
-        plan = storage.build_consumer_plan(storage_plan)
+        plan = storage.build_consumer_plan(storage_plan, predecessor)
     if args.mode in ('plan', 'consumer-plan'):
         if any((args.expected_plan_sha256, args.kubeconfig, args.receipt, args.prior_receipt, args.expected_prior_sha256, args.storage_receipt, args.expected_storage_receipt_sha256)):
             raise RuntimeError('plan mode accepts no live inputs')
