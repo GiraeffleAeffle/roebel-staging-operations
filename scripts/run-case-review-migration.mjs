@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { fstatSync, fsyncSync, readSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { captureSealedCase, verifyRestoredCase, MAX_ARCHIVE_BYTES } from "./case_review_backup.mjs";
 
 export const SOURCE_REVISION = "fdb0b7f36c33d925be141d8e9037b48d17612df8";
 export const CONTROL_IMAGE_DIGEST = "sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60";
@@ -27,17 +28,17 @@ export function canonical(value) {
   return encoded;
 }
 const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-function privateDescriptor(fd, { empty = false } = {}) {
+function privateDescriptor(fd, { empty = false, maxBytes = MAX_BYTES } = {}) {
   if (!Number.isSafeInteger(fd) || fd < 3) fail();
   const stat = fstatSync(fd, { bigint: true });
   if (!stat.isFile() || stat.uid !== BigInt(process.getuid()) || (stat.mode & 0o7777n) !== 0o600n || stat.nlink > 1n ||
-    stat.size > BigInt(MAX_BYTES) || (empty ? stat.size !== 0n : stat.size < 1n)) fail();
+    stat.size > BigInt(maxBytes) || (empty ? stat.size !== 0n : stat.size < 1n)) fail();
   return stat;
 }
 const identity = (stat) => `${stat.dev}:${stat.ino}`;
-function pinnedJson(fd, pin) {
+function pinnedBytes(fd, pin, maxBytes = MAX_BYTES) {
   if (typeof pin !== "string" || !SHA256.test(pin)) fail();
-  const before = privateDescriptor(fd);
+  const before = privateDescriptor(fd, { maxBytes });
   const bytes = Buffer.alloc(Number(before.size));
   let offset = 0;
   while (offset < bytes.length) {
@@ -45,10 +46,20 @@ function pinnedJson(fd, pin) {
     if (size < 1) fail();
     offset += size;
   }
-  const after = privateDescriptor(fd);
+  const after = privateDescriptor(fd, { maxBytes });
   if (identity(before) !== identity(after) || before.size !== after.size || before.mtimeNs !== after.mtimeNs ||
     before.ctimeNs !== after.ctimeNs || readSync(fd, Buffer.alloc(1), 0, 1, bytes.length) !== 0 || digest(bytes) !== pin) fail();
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  return bytes;
+}
+const pinnedJson = (fd, pin) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(pinnedBytes(fd, pin)));
+function writePrivate(fd, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+    if (written < 1) fail();
+    offset += written;
+  }
+  fsyncSync(fd);
 }
 
 function preparationFor(request, source, target, runtime) {
@@ -103,7 +114,7 @@ function preparationFor(request, source, target, runtime) {
  * Private result descriptors are reserved before invoking any runtime effect.
  * An uncertain result requires a new output descriptor, never blind overwrite.
  */
-export function runReviewMigration({ requestFd, expectedRequestSha256, sourceConfigFd, targetConfigFd, resultFd }, runtime) {
+export function runReviewMigration({ requestFd, expectedRequestSha256, sourceConfigFd, targetConfigFd, resultFd, archiveFd }, runtime) {
   try {
     const descriptors = [requestFd, sourceConfigFd, targetConfigFd, resultFd];
     const stats = descriptors.map((fd, index) => privateDescriptor(fd, { empty: index === 3 }));
@@ -113,8 +124,10 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
       const fields = ["schemaVersion", "mode", "sourceRevision", "controlImageDigest", "sourceRootDir", "caseId", "sourceSealChecksum",
         "admissionReceiptChecksum", "sourceConfigurationSha256", "targetConfigurationSha256", "targetBinding"];
       if (request.mode === "activate") fields.push("migrationPlan");
+      if (["capture-backup", "verify-backup"].includes(request.mode)) fields.push("sourceDeploymentClaimChecksum");
+      if (request.mode === "verify-backup") fields.push("archiveSha256");
       exact(request, fields);
-      if (request.schemaVersion !== "roebel_case_review_migration_request_v1" || !["prepare", "activate"].includes(request.mode) ||
+      if (request.schemaVersion !== "roebel_case_review_migration_request_v1" || !["prepare", "activate", "capture-backup", "verify-backup"].includes(request.mode) ||
         request.sourceRevision !== SOURCE_REVISION || request.controlImageDigest !== CONTROL_IMAGE_DIGEST ||
         typeof request.sourceRootDir !== "string" || request.sourceRootDir !== resolve(request.sourceRootDir) ||
         typeof request.caseId !== "string" || !request.caseId.startsWith("urn:stadtstack:synthetic-case:municipality:") ||
@@ -124,6 +137,13 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
       return request;
     };
     const request = readRequest();
+    const backup = ["capture-backup", "verify-backup"].includes(request.mode);
+    let archiveStat, archiveWritten = false, capturedArchiveSha256;
+    if (backup) {
+      if (typeof request.sourceDeploymentClaimChecksum !== "string" || !SHA256.test(request.sourceDeploymentClaimChecksum)) fail();
+      archiveStat = privateDescriptor(archiveFd, { empty: request.mode === "capture-backup", maxBytes: MAX_ARCHIVE_BYTES });
+      if (descriptors.includes(archiveFd) || stats.some((stat) => identity(stat) === identity(archiveStat))) fail();
+    } else if (archiveFd !== undefined) fail();
     const readConfigurations = () => {
       const source = pinnedJson(sourceConfigFd, request.sourceConfigurationSha256);
       const target = pinnedJson(targetConfigFd, request.targetConfigurationSha256);
@@ -139,9 +159,22 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
       descriptors.forEach((fd, index) => {
         if (identity(privateDescriptor(fd, { empty: index === 3 })) !== identity(stats[index])) fail();
       });
+      if (backup && identity(privateDescriptor(archiveFd, { empty: request.mode === "capture-backup" && !archiveWritten,
+        maxBytes: MAX_ARCHIVE_BYTES })) !== identity(archiveStat)) fail();
+      if (archiveWritten) pinnedBytes(archiveFd, capturedArchiveSha256, MAX_ARCHIVE_BYTES);
     };
     fresh();
-    const result = request.mode === "prepare" ? runtime.prepare(preparation) : runtime.activate({
+    let result;
+    if (request.mode === "capture-backup") {
+      const captured = captureSealedCase(preparation, request.sourceDeploymentClaimChecksum, runtime.verifySeal);
+      fresh();
+      writePrivate(archiveFd, captured.bytes);
+      capturedArchiveSha256 = captured.archiveSha256; archiveWritten = true;
+      result = { ...captured.evidence, archiveSha256: captured.archiveSha256 };
+    } else if (request.mode === "verify-backup") {
+      result = verifyRestoredCase(pinnedBytes(archiveFd, request.archiveSha256, MAX_ARCHIVE_BYTES), request.archiveSha256,
+        preparation, request.sourceDeploymentClaimChecksum, runtime);
+    } else result = request.mode === "prepare" ? runtime.prepare(preparation) : runtime.activate({
       preparation,
       reviewedBindingSource: { read: () => { fresh(); return readRequest().targetBinding; } },
       bindingPinSource: { read: () => { fresh(); return request.targetBinding.bindingChecksum; } },
@@ -157,20 +190,15 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
       sourceConfigurationSha256: request.sourceConfigurationSha256, targetConfigurationSha256: request.targetConfigurationSha256, result };
     const bytes = Buffer.from(`${canonical({ ...body, resultSha256: digest(canonical(body)) })}\n`);
     if (bytes.length > MAX_BYTES) fail();
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = writeSync(resultFd, bytes, offset, bytes.length - offset, offset);
-      if (written < 1) fail();
-      offset += written;
-    }
-    fsyncSync(resultFd);
-    return { status: request.mode === "prepare" ? "candidate-prepared" : "target-sealed", resultSha256: digest(canonical(body)) };
+    writePrivate(resultFd, bytes);
+    return { status: { prepare: "candidate-prepared", activate: "target-sealed", "capture-backup": "private-archive-captured",
+      "verify-backup": "restored-case-verified" }[request.mode], resultSha256: digest(canonical(body)) };
   } catch { fail(); }
 }
 
 function parseArguments(args) {
-  const names = ["request-fd", "expected-request-sha256", "source-config-fd", "target-config-fd", "result-fd"];
-  if (args.length !== names.length * 2) fail();
+  const names = ["request-fd", "expected-request-sha256", "source-config-fd", "target-config-fd", "result-fd", "archive-fd"];
+  if (![10, 12].includes(args.length)) fail();
   const found = new Map();
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index].slice(2), value = args[index + 1];
@@ -178,8 +206,9 @@ function parseArguments(args) {
     if (name !== "expected-request-sha256" && !/^[1-9][0-9]*$/.test(value)) fail();
     found.set(name, name === "expected-request-sha256" ? value : Number(value));
   }
+  if (names.slice(0, 5).some((name) => !found.has(name))) fail();
   return { requestFd: found.get("request-fd"), expectedRequestSha256: found.get("expected-request-sha256"),
-    sourceConfigFd: found.get("source-config-fd"), targetConfigFd: found.get("target-config-fd"), resultFd: found.get("result-fd") };
+    sourceConfigFd: found.get("source-config-fd"), targetConfigFd: found.get("target-config-fd"), resultFd: found.get("result-fd"), archiveFd: found.get("archive-fd") };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -189,10 +218,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const adapter = await import("file:///runtime/src/adapters/sqlite-atomic-topic-case-admission.ts");
     const control = await import("file:///runtime/src/staging-case-control-runtime.ts");
     const authentication = await import("file:///runtime/src/staging-administration-authenticator.ts");
+    const seal = await import("file:///runtime/src/case-shutdown-seal.ts");
     process.stdout.write(`${JSON.stringify(runReviewMigration(args, {
       prepare: adapter.prepareSyntheticDepartmentReviewMigration,
       activate: control.activateOperationsBoundSyntheticReviewMigration,
       validateGrants: authentication.createStagingAdministrationAuthenticator,
+      verifySeal: seal.verifyCaseShutdownSeal,
     }))}\n`);
   } catch {
     process.stderr.write("Case review migration stopped; preserve source, target and private receipts.\n");

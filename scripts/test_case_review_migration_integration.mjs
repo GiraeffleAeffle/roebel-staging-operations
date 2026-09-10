@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, statSync, statfsSync, chownSync, symlinkSync } from "node:fs";
+import { closeSync, openSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, statSync, statfsSync, chownSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,6 +23,7 @@ const control = await load("staging-case-control-runtime.ts");
 const preflight = await load("staging-case-control-preflight.ts");
 const claims = await load("case-durable-deployment-claim.ts");
 const authentication = await load("staging-administration-authenticator.ts");
+const sealVerifier = await load("case-shutdown-seal.ts");
 const checksum = (value) => hash(canonical(value));
 const snapshot = (root) => Object.fromEntries(readdirSync(root).sort().map((name) => [name, hash(readFileSync(join(root, name)))]));
 
@@ -68,6 +69,7 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   source.allowedAgentPubkeys = vector.policy.allowedAgentPubkeys;
   source.syntheticAdoption.policy = vector.policy;
   const old = fixtureBinding(originalRoot, false, source.municipalityId), next = fixtureBinding(targetRoot, true, source.municipalityId);
+  writeFileSync(join(originalRoot, old.binding.storage.marker.fileName), old.storageObserver.observe().markerText, { mode: 0o600 });
   const proof = preflight.createStagingCaseControlDeploymentProof({ reviewedBinding: old.binding,
     expectedBindingChecksum: old.binding.bindingChecksum, storageObserver: old.storageObserver });
   const seed = adapter.createSqliteAtomicTopicCaseAdmission({ municipalityId: source.municipalityId, policyVersion: source.policyVersion,
@@ -85,6 +87,7 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   const request = { sourceRootDir: originalRoot, caseId: admitted.caseId, sourceSealChecksum: seal.sealChecksum,
     admissionReceiptChecksum: admitted.receiptChecksum, targetBinding: next.binding };
   const runtime = { prepare: adapter.prepareSyntheticDepartmentReviewMigration,
+    verifySeal: sealVerifier.verifyCaseShutdownSeal,
     validateGrants: authentication.createStagingAdministrationAuthenticator,
     activate: (input) => control.activateOperationsBoundSyntheticReviewMigration({ ...input, storageObserver: next.storageObserver }) };
   const prepare = files(t, { source, target, request });
@@ -94,6 +97,141 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   assert.equal(candidate.receipt.caseVersion, 3);
   assert.equal(candidate.receipt.admissionReceiptChecksum, admitted.receiptChecksum);
   assert.deepEqual(snapshot(originalRoot), originalBytes);
+  await t.test("backup round trip replays the restored real Case and preserves every source file", async (t) => {
+    const capture = files(t, { mode: "capture-backup", source, target, request: { ...request,
+      sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum } });
+    const archivePath = join(temporaryRoot, "captured.archive"), archiveFd = openSync(archivePath, "wx+", 0o600);
+    t.after(() => closeSync(archiveFd));
+    const captured = runReviewMigration({ ...capture.args, archiveFd }, runtime);
+    assert.equal(captured.status, "private-archive-captured");
+    const archive = readFileSync(archivePath), archiveSha256 = hash(archive);
+    assert.equal(capture.result().result.archiveSha256, archiveSha256);
+    const verify = files(t, { mode: "verify-backup", source, target, request: { ...request,
+      sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum, archiveSha256 } });
+    assert.equal(runReviewMigration({ ...verify.args, archiveFd }, runtime).status, "restored-case-verified");
+    assert.equal(verify.result().result.restoredFilesSha256, capture.result().result.sourceFilesSha256);
+    assert.equal(verify.result().result.admissionReceiptChecksum, admitted.receiptChecksum);
+    assert.deepEqual(snapshot(originalRoot), originalBytes);
+
+    await t.test("real age encryption restores and replays the Case through the host backup operator", {
+      skip: !process.env.CASE_REVIEW_TEST_AGE_BIN || !process.env.CASE_REVIEW_TEST_AGE_KEYGEN_BIN,
+    }, () => {
+      const age = realpathSync(process.env.CASE_REVIEW_TEST_AGE_BIN), keygen = realpathSync(process.env.CASE_REVIEW_TEST_AGE_KEYGEN_BIN);
+      const key = join(temporaryRoot, "test-age.key"), wrongKey = join(temporaryRoot, "wrong-age.key");
+      for (const path of [key, wrongKey]) execFileSync(keygen, ["-o", path], { stdio: "pipe" });
+      const recipient = execFileSync(keygen, ["-y", key], { encoding: "utf8", stdio: "pipe" }).trim();
+      const restored = files(t, { mode: "verify-backup", source, target, request: { ...request,
+        sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum, archiveSha256 } });
+      const driver = join(temporaryRoot, "verify-restored.mjs");
+      writeFileSync(driver, `import {runReviewMigration} from ${JSON.stringify(new URL("./run-case-review-migration.mjs", import.meta.url).href)};
+import {prepareSyntheticDepartmentReviewMigration} from ${JSON.stringify(pathToFileURL(join(sourceRoot,"src/adapters/sqlite-atomic-topic-case-admission.ts")).href)};
+import {createStagingAdministrationAuthenticator} from ${JSON.stringify(pathToFileURL(join(sourceRoot,"src/staging-administration-authenticator.ts")).href)};
+import {verifyCaseShutdownSeal} from ${JSON.stringify(pathToFileURL(join(sourceRoot,"src/case-shutdown-seal.ts")).href)};
+const args = JSON.parse(process.argv[2]);
+process.stdout.write(JSON.stringify(runReviewMigration(args,{prepare:prepareSyntheticDepartmentReviewMigration,validateGrants:createStagingAdministrationAuthenticator,verifySeal:verifyCaseShutdownSeal})));`, { mode: 0o600 });
+      const specPath = join(temporaryRoot, "host-spec.json");
+      writeFileSync(specPath, canonical({ capture: capture.result(), archivePath, output: join(temporaryRoot, "encrypted-backup"),
+        age, ageSha256: hash(readFileSync(age)), recipient, key, wrongKey, node: process.execPath, driver,
+        verifyDirectory: restored.root, verifyRequestSha256: restored.args.expectedRequestSha256 }), { mode: 0o600 });
+      const script = `import json, os, pathlib, subprocess, sys
+from scripts.case_review_handover import encrypt_and_verify_case_backup, BootstrapStopped
+s=json.loads(pathlib.Path(sys.argv[1]).read_text())
+def verify(path, pin):
+    assert pin == s['capture']['result']['archiveSha256']
+    directory=pathlib.Path(s['verifyDirectory'])
+    handles=[os.open(directory/name, os.O_RDONLY) for name in ('request','source','target')]
+    handles += [os.open(directory/'result',os.O_RDWR),os.open(path,os.O_RDONLY)]
+    try:
+        args=dict(zip(('requestFd','sourceConfigFd','targetConfigFd','resultFd','archiveFd'),handles))
+        args['expectedRequestSha256']=s['verifyRequestSha256']
+        result=subprocess.run([s['node'],s['driver'],json.dumps(args)],pass_fds=handles,capture_output=True,timeout=30)
+        assert result.returncode == 0, 'restored runtime verification failed'
+        return json.loads((directory/'result').read_text())
+    finally:
+        for fd in handles: os.close(fd)
+kwargs=dict(capture=s['capture'],expected_capture_sha256=s['capture']['resultSha256'],archive_path=s['archivePath'],
+    output_directory=s['output'],age_binary=s['age'],expected_age_sha256=s['ageSha256'],recipient=s['recipient'],
+    identity_path=s['key'],expected_verification_request_sha256=s['verifyRequestSha256'],verify_restored=verify)
+result=encrypt_and_verify_case_backup(**kwargs)
+out=pathlib.Path(s['output'])
+assert (out/'case-backup.age').is_file() and (out/'backup-verified.json').is_file()
+assert not (out/'restored.archive').exists()
+assert result['restoredFilesSha256']==s['capture']['result']['sourceFilesSha256']
+assert result['encryptedArchiveSha256']!=result['archiveSha256']
+for fault in ('wrong-key','wrong-capture','wrong-binary','existing-output','cipher-replaced'):
+    changed=kwargs | {'output_directory':s['output']+'-'+fault}
+    if fault=='wrong-key': changed['identity_path']=s['wrongKey']
+    if fault=='wrong-capture': changed['expected_capture_sha256']='sha256:'+'0'*64
+    if fault=='wrong-binary': changed['expected_age_sha256']='sha256:'+'0'*64
+    if fault=='existing-output': changed['output_directory']=s['output']
+    if fault=='cipher-replaced':
+        def replace_cipher(path,pin):
+            cipher=path.parent/'case-backup.age'
+            cipher.unlink();cipher.write_bytes(b'replaced')
+            return json.loads((pathlib.Path(s['verifyDirectory'])/'result').read_text())
+        changed['verify_restored']=replace_cipher
+    try: encrypt_and_verify_case_backup(**changed)
+    except BootstrapStopped: pass
+    else: raise AssertionError('backup fault accepted')
+    if fault!='existing-output':
+        failed=pathlib.Path(changed['output_directory'])
+        assert not (failed/'backup-verified.json').exists()
+        assert not (failed/'restored.archive').exists()
+assert (out/'backup-verified.json').is_file()
+print(json.dumps({'status':'encrypted-backup-restored-and-replayed','negativeCases':5}))
+`;
+      const result = JSON.parse(execFileSync("python3", ["-c", script, specPath], { encoding: "utf8", stdio: "pipe" }));
+      assert.equal(result.status, "encrypted-backup-restored-and-replayed");
+      assert.deepEqual(snapshot(originalRoot), originalBytes);
+    });
+
+    for (const fault of ["hash", "path", "duplicate", "database", "missing-marker", "nonempty-result", "alias"]) {
+      const changed = JSON.parse(archive);
+      if (fault === "path") changed.files[0].name = "../outside";
+      if (fault === "duplicate") changed.files.push(changed.files[0]);
+      if (fault === "database") {
+        const file = changed.files.find((f) => f.name === seal.databaseBasename);
+        const bytes = Buffer.from(file.base64, "base64"); bytes[0] ^= 1;
+        file.base64 = bytes.toString("base64"); file.sha256 = hash(bytes);
+      }
+      if (fault === "missing-marker") changed.files = changed.files.filter((f) => !f.name.startsWith("."));
+      const bytes = Buffer.from(canonical(changed) + "\n"), path = join(temporaryRoot, fault + ".archive");
+      writeFileSync(path, bytes, { mode: 0o600 }); const fd = openSync(path, "r"); t.after(() => closeSync(fd));
+      const h = files(t, { mode: "verify-backup", source, target, request: { ...request,
+        sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum, archiveSha256: fault === "hash" ? hash("wrong") : hash(bytes) } });
+      if (fault === "nonempty-result") h.replace("result", "preserved");
+      assert.throws(() => runReviewMigration({ ...h.args, archiveFd: fault === "alias" ? h.args.requestFd : fd }, runtime),
+        { message: "case_review_migration_stopped" }, fault);
+      assert.deepEqual(snapshot(originalRoot), originalBytes);
+    }
+    // Symlinks/hardlinks must not escape into a captured backup, even if they
+    // refer to the same valid database. Active epochs must also block capture.
+    for (const fault of ["symlink", "hardlink", "epoch"]) {
+      const path = join(originalRoot, fault === "epoch" ? "case-open-epoch-v1.json" : "unexpected");
+      if (fault === "symlink") symlinkSync(archivePath, path);
+      if (fault === "hardlink") linkSync(join(originalRoot, seal.databaseBasename), path);
+      if (fault === "epoch") writeFileSync(path, "{}", { mode: 0o600 });
+      try {
+        const h = files(t, { mode: "capture-backup", source, target, request: { ...request, sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum } });
+        const fd = openSync(join(temporaryRoot, fault + ".output"), "wx+", 0o600); t.after(() => closeSync(fd));
+        assert.throws(() => runReviewMigration({ ...h.args, archiveFd: fd }, runtime), { message: "case_review_migration_stopped" });
+      } finally { rmSync(path); }
+    }
+    const changedSource = files(t, { mode: "verify-backup", source, target, request: { ...request,
+      sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum, archiveSha256 } });
+    const markerPath=join(originalRoot, old.binding.storage.marker.fileName), markerBytes=readFileSync(markerPath);
+    try {
+      assert.throws(() => runReviewMigration({ ...changedSource.args, archiveFd }, { ...runtime,
+        prepare(input) {
+          const candidate=runtime.prepare(input);
+          writeFileSync(markerPath, Buffer.concat([markerBytes,Buffer.from("\n")]));
+          return candidate;
+        },
+      }), { message: "case_review_migration_stopped" });
+      assert.equal(readFileSync(join(changedSource.root,"result")).length,0);
+    } finally { writeFileSync(markerPath,markerBytes); }
+    assert.deepEqual(snapshot(originalRoot),originalBytes);
+  });
   const claim = { schemaVersion: "case_durable_deployment_claim_v1", municipalityId: source.municipalityId,
     releaseDigest: next.binding.releaseDigest, controlDeploymentBindingChecksum: next.binding.bindingChecksum,
     pvc: { namespace: next.binding.storage.pvcNamespace, name: next.binding.storage.pvcName, uid: next.binding.storage.pvcUid }, pvName: next.binding.storage.pvName };

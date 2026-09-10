@@ -14,6 +14,7 @@ FILES={
     'scripts/case_runtime_saved_adoption.py',
     'scripts/run-case-runtime.py',
     'scripts/run-case-review-migration.mjs',
+    'scripts/case_review_backup.mjs',
     'scripts/case_review_storage.py',
     'scripts/run-case-review-storage.py',
     'scripts/test_case_review_storage.py',

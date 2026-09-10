@@ -8,7 +8,7 @@ not included by any Kustomization or live operator. CI runs its offline tests. T
 already published Stadtstack PR 70 runtime. It uses the exact source revision
 `fdb0b7f36c33d925be141d8e9037b48d17612df8` and control image
 `ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60`.
-The CLI imports three fixed modules from `/runtime/src`; it cannot select an
+The CLI imports fixed modules from `/runtime/src`; it cannot select an
 alternative runtime through its request. Selecting and attesting the actual
 container image remains the responsibility of the protected Operations caller.
 
@@ -20,7 +20,7 @@ inputs for reading and a **new, empty** result for writing, passing inherited
 descriptor numbers of at least 3. No configuration or credential goes into
 arguments, environment, stdout, stderr or public receipts.
 
-The five CLI arguments are `--request-fd`, `--expected-request-sha256`,
+The five base CLI arguments are `--request-fd`, `--expected-request-sha256`,
 `--source-config-fd`, `--target-config-fd` and `--result-fd`. The independently
 reviewed request hash must come from the protected Operations plan. Computing a
 hash from arbitrary user input at invocation does not establish authorization.
@@ -32,7 +32,7 @@ The request is a closed JSON object with these fields:
 | Field | Meaning |
 | --- | --- |
 | `schemaVersion` | `roebel_case_review_migration_request_v1` |
-| `mode` | `prepare` or `activate` |
+| `mode` | `prepare`, `activate`, `capture-backup` or `verify-backup` |
 | `sourceRevision`, `controlImageDigest` | Exact constants above |
 | `sourceRootDir`, `caseId` | Canonical mounted source path and the admitted synthetic Case |
 | `sourceSealChecksum`, `admissionReceiptChecksum` | Observed clean source seal and original immutable admission |
@@ -55,6 +55,64 @@ candidate or linked activation receipt and a checksum of the result envelope;
 it is written and fsynced only to the private result descriptor. Stdout contains
 only status and result checksum. A fixed error and exit 78 preserve privacy on
 failure. The parent must retain and link the private result before handover.
+
+## Encrypted Case backup and fixed migration worker
+
+Backup is part of the same descriptor operator, using the same pinned source
+and target configurations. `capture-backup` additionally requires the separately
+pinned `sourceDeploymentClaimChecksum` and a new empty private `--archive-fd`.
+`verify-backup` requires that claim, `archiveSha256` from the capture result, and
+an archive descriptor containing the decrypted bytes. Prepare/activate reject
+an unexpected archive descriptor. The archive descriptor must be readable too,
+because its contents are checked after writing; the other descriptor constraints
+remain unchanged. The archive limit is 64 MiB, with at most 32 flat files and
+32 MiB total decoded data. Larger stores need a separately reviewed limit or
+streaming implementation before shutdown.
+
+The archive preserves exact bytes and modes (0600/0640/0644) of owned regular
+files inside the private 0700 Case root, including the storage marker and owner
+SQLite file. It does not claim to preserve filesystem timestamps or group IDs.
+It rejects symbolic/hard links, traversal, duplicate names, nonempty journal
+sidecars and active transition markers. Public runtime seal verification binds
+the closed database and original admission. Two source snapshots must agree.
+Archive JSON/base64 is **plaintext**, never a public receipt or log payload.
+
+`encrypt_and_verify_case_backup` on the Operations host consumes the independently
+pinned capture result and owned archive. It runs a byte-pinned age executable
+with one explicit X25519 recipient, saves ciphertext in a new private directory,
+then decrypts through a private descriptor using the separately supplied identity.
+No identity or configuration bytes appear in command arguments. Its verifier
+must invoke the fixed-image `verify-backup` command against that decrypted file,
+using the independently pinned verification request. That command restores into
+a new private directory and runs the real runtime's full history/receipt replay
+and migration preparation. It compares the restored files and rechecks the
+original source, then removes only its throwaway restore/candidate directories.
+The host rechecks both archives and records success only after runtime validation.
+Ciphertext and the completion receipt are retained; the host's temporary decrypted
+archive is removed on success or failure. The caller still owns and must clean up
+its original plaintext capture after securely retaining verified ciphertext.
+
+`compile_migration_worker` produces an **inactive** ConfigMap, deny-all policy and
+one Pod using the existing published runtime image. It binds source/target
+claims, the successor candidate, node identity, and the two exact configuration
+references/hashes. It has no service-account token, service links, ingress,
+egress, host mount or application listener. It copies the two pinned Secret
+files into 0600 tmpfs files and waits for the protected operator's commands.
+Both retained volumes are writable solely because the runtime needs ownership
+locks during activation. Compiling or starting the worker is not permission to
+invoke a migration. The live Adapter still must verify all stage receipts,
+physical mount release, exact Pod/image/node/claim identities and current source
+fencing before any descriptor invocation. Request/response transport, successor
+admission, runtime restart verification and GitOps restoration are not complete.
+
+The real SQLite integration includes capture, independent restore/replay,
+source preservation and malformed-archive/descriptor failures. For the additional
+real age host round trip (which also rejects a wrong identity, altered pins and
+an existing output directory), set `CASE_REVIEW_TEST_AGE_BIN` and
+`CASE_REVIEW_TEST_AGE_KEYGEN_BIN` to local absolute executable paths before running
+`test_case_review_migration_integration.mjs`. Test keys are disposable; no live
+identity or Case is used. Without those variables only the age-specific test is
+skipped; SQLite capture/restore still runs in CI.
 
 ## Recovery and remaining Operations work
 

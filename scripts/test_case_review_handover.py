@@ -197,6 +197,50 @@ class ReviewRuntimeCompilerTests(unittest.TestCase):
         self.assertEqual(next(e for e in spec['containers'][0]['env'] if e['name']=='STADTSTACK_CASE_CONTROL_BINDING_SHA256')['value'],binding['bindingChecksum'])
         self.assertNotIn('nodePort',json.dumps(items))
 
+    def worker_fixture(self):
+        candidate=self.compile();plan,_=fixture()
+        source=json.loads((self.root/'proposals/synthetic-case-runtime/control-binding.json').read_text())
+        original=json.loads((self.root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+        deployment=next(o for o in original['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')
+        env=deployment['spec']['template']['spec']['initContainers'][0]['env']
+        for key in ('sourceRenderSha256','targetRenderSha256','targetBindingSha256'):plan['pins'][key]=candidate[key]
+        plan['pins']['sourceBindingSha256']=source['bindingChecksum']
+        plan['pins']['sourceConfigurationSha256']='sha256:'+next(e['value'] for e in env if e['name']=='ROEBEL_CASE_PRIVATE_CONFIG_SHA256')
+        plan['pins']['targetConfigurationSha256']=self.receipt['configurationSha256']
+        plan['pins']['migrationImageDigest']=self.storage.plan['targetBinding']['releaseDigest']
+        plan['identities'].update(sourcePvcUid=source['storage']['pvcUid'],targetPvcUid=self.storage.plan['targetBinding']['storage']['pvcUid'],
+                                  configurationSecretUid=self.receipt['uid'])
+        plan.pop('planSha256');plan['planSha256']=sha(plan)
+        return plan,candidate
+
+    def test_worker_uses_fixed_image_and_pinned_secret_files_without_network_or_application_start(self):
+        plan,candidate=self.worker_fixture()
+        worker=review.compile_migration_worker(self.root,plan,expected_plan_sha256=plan['planSha256'],candidate=candidate,
+                    expected_candidate_sha256=candidate['candidateSha256'],node_name='example-node')
+        spec=worker['pod']['spec'];container=spec['containers'][0]
+        self.assertFalse(spec['automountServiceAccountToken']);self.assertFalse(spec['enableServiceLinks'])
+        self.assertEqual(spec['restartPolicy'],'Never');self.assertEqual(spec['nodeSelector'],{'kubernetes.io/hostname':'example-node'})
+        self.assertTrue(container['image'].endswith('@'+plan['pins']['migrationImageDigest']))
+        self.assertEqual(container['command'],['node','/reviewed/worker-entry.mjs'])
+        self.assertEqual(container['env'],[{'name':'TMPDIR','value':'/work/private'}])
+        self.assertEqual(worker['networkPolicy']['spec']['ingress'],[]);self.assertEqual(worker['networkPolicy']['spec']['egress'],[])
+        self.assertEqual(len([v for v in spec['volumes'] if 'persistentVolumeClaim' in v]),2)
+        self.assertNotIn('hostPath',json.dumps(worker));self.assertNotIn('application-json',json.dumps(worker['configMap']))
+        self.assertEqual(set(worker['configMap']['data']),{'worker-entry.mjs','run-case-review-migration.mjs','case_review_backup.mjs'})
+        self.assertEqual(worker['status'],'inactive-not-admitted')
+
+    def test_worker_rejects_changed_candidate_configuration_or_volume_before_compiling(self):
+        for fault in ('candidate','source-configuration','target-claim','image'):
+            plan,candidate=self.worker_fixture()
+            if fault=='candidate':candidate['resources']['items'].pop()
+            if fault=='source-configuration':plan['pins']['sourceConfigurationSha256']=sha('wrong')
+            if fault=='target-claim':plan['identities']['targetPvcUid']=uid(333)
+            if fault=='image':plan['pins']['migrationImageDigest']=sha('wrong')
+            plan.pop('planSha256');plan['planSha256']=sha(plan)
+            with self.subTest(fault=fault),self.assertRaises(BootstrapStopped):
+                review.compile_migration_worker(self.root,plan,expected_plan_sha256=plan['planSha256'],candidate=candidate,
+                    expected_candidate_sha256=candidate['candidateSha256'],node_name='example-node')
+
 
 class SourceFenceTests(unittest.TestCase):
     def setUp(self):

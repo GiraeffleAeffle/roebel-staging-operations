@@ -14,6 +14,130 @@ from datetime import datetime, timezone
 from .case_runtime_bootstrap import BootstrapStopped, _require
 from .staging_participant_flux_bootstrap import canonical_sha256
 
+
+def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_path,
+                                   output_directory, age_binary, expected_age_sha256,
+                                   recipient, identity_path, expected_verification_request_sha256,
+                                   verify_restored):
+    """Encrypt an owned capture and verify a *decrypted* restore with the runtime.
+
+    verify_restored(path, archive_sha256) invokes the fixed-image descriptor
+    operator's verify-backup mode and returns its private result envelope. It
+    must bind the independently pinned verification request and actual image.
+    This host operation only writes a fresh local directory. It cannot stop a
+    workload, mount a volume, import a Case or manufacture runtime validation.
+    Ciphertext and a private completion receipt are retained. The temporary
+    decrypted archive is removed even on failure; caller owns the input archive.
+    """
+    import hashlib
+    import os
+    from pathlib import Path
+    import stat
+    import subprocess
+    from .staging_participant_flux_bootstrap import ReceiptSink
+
+    limit = 64 * 1024 * 1024
+    def envelope(value, expected, mode):
+        _closed(value, {'schemaVersion','mode','requestSha256','sourceRevision','controlImageDigest',
+                       'sourceConfigurationSha256','targetConfigurationSha256','result','resultSha256'},
+                'backup runtime result shape invalid')
+        _sha(expected)
+        _require(value['resultSha256'] == expected == canonical_sha256({k:v for k,v in value.items() if k != 'resultSha256'}) and
+                 value['schemaVersion'] == 'roebel_case_review_migration_result_v1' and value['mode'] == mode and
+                 value['sourceRevision'] == 'fdb0b7f36c33d925be141d8e9037b48d17612df8' and
+                 value['controlImageDigest'] == 'sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60',
+                 'backup runtime result pin mismatch')
+    envelope(capture, expected_capture_sha256, 'capture-backup')
+    expected_fields = {'sourceSealChecksum','sourceDeploymentClaimChecksum','sourceDatabaseSha256',
+                       'sourceFilesSha256','caseId','caseVersion','admissionReceiptChecksum','archiveSha256'}
+    facts = capture['result']
+    _closed(facts, expected_fields, 'backup capture evidence invalid')
+    for key,value in facts.items():
+        if key.endswith(('Checksum','Sha256')): _sha(value)
+    _require(type(facts['caseVersion']) is int and facts['caseVersion'] == 3, 'backup Case version invalid')
+    _sha(expected_verification_request_sha256)
+    _sha(expected_age_sha256)
+    _require(isinstance(recipient, str) and re.fullmatch(r'age1[0-9a-z]{58}', recipient), 'backup requires one explicit age recipient')
+    binary = Path(age_binary)
+    _require(binary.is_absolute() and binary.resolve() == binary and binary.is_file() and
+             'sha256:'+hashlib.sha256(binary.read_bytes()).hexdigest() == expected_age_sha256,
+             'backup age binary pin mismatch')
+
+    def private_file(path):
+        path = Path(path)
+        _require(path.is_absolute() and path.resolve() == path, 'backup private path is not canonical')
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        info = os.fstat(fd)
+        if not (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
+                info.st_uid == os.getuid() and info.st_nlink == 1 and 0 < info.st_size <= limit):
+            os.close(fd)
+            raise BootstrapStopped('backup private input invalid')
+        return fd
+    def file_hash(fd):
+        os.lseek(fd, 0, os.SEEK_SET); digest = hashlib.sha256(); total = 0
+        while block := os.read(fd, 1024 * 1024):
+            total += len(block)
+            _require(total <= limit + 1024 * 1024, 'backup exceeds bounded size')
+            digest.update(block)
+        os.lseek(fd, 0, os.SEEK_SET)
+        return 'sha256:'+digest.hexdigest()
+    def retained(path, fd):
+        actual, opened = os.lstat(path), os.fstat(fd)
+        _require(stat.S_ISREG(actual.st_mode) and stat.S_IMODE(actual.st_mode) == 0o600 and
+                 actual.st_uid == os.getuid() and actual.st_nlink == 1 and
+                 (actual.st_dev,actual.st_ino) == (opened.st_dev,opened.st_ino), 'backup retained file replaced')
+
+    descriptors = []
+    decrypted = None
+    try:
+        archive_fd = private_file(archive_path); descriptors.append(archive_fd)
+        identity_fd = private_file(identity_path); descriptors.append(identity_fd)
+        _require(os.fstat(archive_fd).st_ino != os.fstat(identity_fd).st_ino or
+                 os.fstat(archive_fd).st_dev != os.fstat(identity_fd).st_dev, 'backup input alias')
+        _require(file_hash(archive_fd) == facts['archiveSha256'], 'backup captured archive changed')
+        output = Path(output_directory)
+        _require(output.is_absolute() and output.parent.resolve() == output.parent, 'backup output parent is not canonical')
+        output.mkdir(mode=0o700, exist_ok=False)
+        cipher = output/'case-backup.age'
+        decrypted = output/'restored.archive'
+        cipher_fd = os.open(cipher, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); descriptors.append(cipher_fd)
+        def run(arguments, source_fd, target_fd, pass_fds=()):
+            _require('sha256:'+hashlib.sha256(binary.read_bytes()).hexdigest() == expected_age_sha256, 'backup age binary changed')
+            result = subprocess.run([str(binary), *arguments], stdin=source_fd, stdout=target_fd,
+                                    stderr=subprocess.PIPE, pass_fds=pass_fds, timeout=120,
+                                    env={'PATH':'/usr/bin:/bin','LC_ALL':'C'}, check=False)
+            _require(result.returncode == 0, 'backup encryption or decryption failed')
+            os.fsync(target_fd); os.lseek(target_fd, 0, os.SEEK_SET)
+        run(['--encrypt','--recipient',recipient], archive_fd, cipher_fd)
+        encrypted_sha = file_hash(cipher_fd)
+        _require(os.fstat(cipher_fd).st_size > 0 and encrypted_sha != facts['archiveSha256'], 'backup ciphertext missing')
+        restored_fd = os.open(decrypted, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); descriptors.append(restored_fd)
+        run(['--decrypt','--identity',f'/dev/fd/{identity_fd}'], cipher_fd, restored_fd, (identity_fd,))
+        _require(file_hash(restored_fd) == facts['archiveSha256'] == file_hash(archive_fd), 'backup decrypt did not reproduce capture')
+        verified = verify_restored(decrypted, facts['archiveSha256'])
+        envelope(verified, verified.get('resultSha256'), 'verify-backup')
+        _require(verified['requestSha256'] == expected_verification_request_sha256 and
+                 all(verified[key] == capture[key] for key in ('sourceConfigurationSha256','targetConfigurationSha256')),
+                 'backup verification request changed')
+        restored = verified['result']
+        _closed(restored, expected_fields | {'restoredFilesSha256','restoredCandidateChecksum'}, 'backup restore evidence invalid')
+        _sha(restored['restoredCandidateChecksum'])
+        _require(all(restored[key] == value for key,value in facts.items()) and restored['restoredFilesSha256'] == facts['sourceFilesSha256'] and
+                 file_hash(restored_fd) == facts['archiveSha256'] and file_hash(cipher_fd) == encrypted_sha and
+                 file_hash(archive_fd) == facts['archiveSha256'], 'backup restore or retained ciphertext changed')
+        retained(cipher,cipher_fd); retained(decrypted,restored_fd); retained(archive_path,archive_fd)
+        record = {'schemaVersion':'roebel_encrypted_case_backup_receipt_v1', 'ageBinarySha256':expected_age_sha256,
+                  'captureResultSha256':expected_capture_sha256,'verificationResultSha256':verified['resultSha256'],
+                  'encryptedArchiveSha256':encrypted_sha, **restored}
+        sink = ReceiptSink.reserve(output/'backup-verified.json')
+        sink.commit(record)
+        return record | {'receiptSha256':canonical_sha256(record)}
+    except Exception:
+        raise BootstrapStopped('Case backup stopped; retain the source and owned encrypted artifacts') from None
+    finally:
+        for fd in descriptors: os.close(fd)
+        if decrypted is not None: decrypted.unlink(missing_ok=True)
+
 STEPS = ('fence-source', 'release-mounts', 'verify-backup', 'prepare-migration',
          'activate-migration', 'release-migration', 'start-review-runtime',
          'verify-review-runtime', 'restore-gitops')
@@ -276,6 +400,102 @@ def compile_review_runtime(root, storage_plan, initialization_plan, *, expected_
               'configurationSecretUid':receipt['uid'],'targetBindingSha256':binding['bindingChecksum'],
               'resources':candidate,'sourceReconcilerRole':old_role,'targetReconcilerRole':role}
     return {**result,'candidateSha256':canonical_sha256(result)}
+
+
+def compile_migration_worker(root, plan, *, expected_plan_sha256, candidate,
+                             expected_candidate_sha256, node_name):
+    """Inactive, fixed-image worker for the already ordered handover stages.
+
+    Its two mounts permit the public runtime's ownership locks. No command
+    starts automatically beyond copying pinned private configuration to tmpfs.
+    The live Adapter must verify Pod/node/claim UIDs and parent stage receipts
+    before each descriptor invocation; this compiler grants no live authority.
+    """
+    import json
+    from . import case_runtime_bootstrap as core, case_review_storage as storage
+    validate_plan(plan, expected_plan_sha256)
+    _require(candidate.get('candidateSha256') == expected_candidate_sha256 ==
+             canonical_sha256({k:v for k,v in candidate.items() if k != 'candidateSha256'}) and
+             candidate.get('schemaVersion') == 'roebel_review_runtime_candidate_v1', 'migration worker candidate changed')
+    _require(isinstance(node_name, str) and re.fullmatch(r'[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?', node_name), 'migration node name invalid')
+    for name in ('sourceRenderSha256','targetRenderSha256','targetBindingSha256'):
+        _require(candidate[name] == plan['pins'][name], 'migration worker render pin changed')
+    _require(candidate['configurationSecretUid'] == plan['identities']['configurationSecretUid'] and
+             canonical_sha256(candidate['resources']) == plan['pins']['targetRenderSha256'] and
+             plan['pins']['migrationImageDigest'] == storage.REVIEW_IMAGE.split('@')[1], 'migration worker runtime identity changed')
+    core._verifier().verify_tree(root)
+    original = json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+    binding = json.loads((root/'proposals/synthetic-case-runtime/control-binding.json').read_text())
+    _require(canonical_sha256(original) == plan['pins']['sourceRenderSha256'] and
+             binding['bindingChecksum'] == plan['pins']['sourceBindingSha256'] and
+             binding['storage']['pvcUid'] == plan['identities']['sourcePvcUid'], 'migration worker source changed')
+    def control(items):
+        return next(o for o in items if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')['spec']['template']['spec']
+    old, new = control(original['items']), control(candidate['resources']['items'])
+    target_map = next(o for o in candidate['resources']['items'] if o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-review-reviewed-v1')
+    target_binding = json.loads(target_map['data']['reviewed-binding.json'])
+    _require(target_binding['bindingChecksum'] == plan['pins']['targetBindingSha256'] and
+             target_binding['storage']['pvcUid'] == plan['identities']['targetPvcUid'] and
+             target_binding['storage']['rootDir'] == '/var/lib/stadtstack-review/case-control' and
+             binding['storage']['rootDir'] == '/var/lib/stadtstack/case-control', 'migration worker target changed')
+    refs = []
+    for spec, pin in ((old, plan['pins']['sourceConfigurationSha256']), (new, plan['pins']['targetConfigurationSha256'])):
+        env = spec['initContainers'][0]['env']
+        _require(next(e['value'] for e in env if e['name']=='ROEBEL_CASE_PRIVATE_CONFIG_SHA256') == pin.removeprefix('sha256:'),
+                 'migration worker configuration pin changed')
+        refs.append(next(e['valueFrom']['secretKeyRef'] for e in env if e['name']=='ROEBEL_CASE_PRIVATE_CONFIG'))
+    name = 'roebel-case-review-migration-v1'
+    label = {'stadtstack.io/review-migration':plan['operationId'][:32]}
+    meta = {'name':name,'namespace':binding['storage']['pvcNamespace'],'labels':label,
+            'annotations':{'stadtstack.io/review-handover-plan':plan['planSha256']}}
+    # Secret volumes are read-only and non-public. Copy their bytes once into
+    # owned 0600 files: the descriptor operator rejects Kubernetes symlinks and
+    # group-readable inputs. Never put their payloads in an environment or log.
+    entry = """import {createHash} from 'node:crypto';
+import {mkdirSync,readFileSync,openSync,writeSync,fsyncSync,closeSync} from 'node:fs';
+try {
+ process.umask(0o077); mkdirSync('/work/private',{mode:0o700});
+ const expected = EXPECTED;
+ for (const name of ['source','target']) {
+  const bytes=readFileSync('/'+name+'-configuration/application.json');
+  if(bytes.length<1 || bytes.length>1048576 || 'sha256:'+createHash('sha256').update(bytes).digest('hex')!==expected[name]) throw Error();
+  const fd=openSync('/work/private/'+name+'.json','wx',0o600);
+  try {let offset=0;while(offset<bytes.length){const n=writeSync(fd,bytes,offset,bytes.length-offset);if(n<1)throw Error();offset+=n;}fsyncSync(fd);} finally {closeSync(fd);}
+ }
+ const fd=openSync('/work/private','r');try{fsyncSync(fd);}finally{closeSync(fd);}
+ console.log('review-migration-worker-ready');
+ process.on('SIGTERM',()=>process.exit(0)); setInterval(()=>{},1000);
+} catch {console.error('review_migration_worker_stopped');process.exitCode=78;}
+""".replace('EXPECTED', json.dumps(dict(zip(('source','target'),(plan['pins']['sourceConfigurationSha256'],plan['pins']['targetConfigurationSha256']))),sort_keys=True))
+    programs = {file:(root/'scripts'/file).read_text() for file in ('run-case-review-migration.mjs','case_review_backup.mjs')}
+    programs['worker-entry.mjs'] = entry
+    config = {'apiVersion':'v1','kind':'ConfigMap','metadata':copy.deepcopy(meta),'immutable':True,'data':programs}
+    volumes = [{'name':'source-state','persistentVolumeClaim':{'claimName':binding['storage']['pvcName']}},
+               {'name':'target-state','persistentVolumeClaim':{'claimName':target_binding['storage']['pvcName']}},
+               {'name':'reviewed','configMap':{'name':name,'defaultMode':0o444}},
+               {'name':'work','emptyDir':{'medium':'Memory','sizeLimit':'512Mi'}}]
+    mounts = [{'name':'source-state','mountPath':'/var/lib/stadtstack','readOnly':False},
+              {'name':'target-state','mountPath':'/var/lib/stadtstack-review','readOnly':False},
+              {'name':'reviewed','mountPath':'/reviewed','readOnly':True},
+              {'name':'work','mountPath':'/work','readOnly':False}]
+    for side, ref in zip(('source','target'), refs):
+        volumes.append({'name':side+'-configuration','secret':{'secretName':ref['name'],'defaultMode':0o440,
+                        'items':[{'key':ref['key'],'path':'application.json'}]}})
+        mounts.append({'name':side+'-configuration','mountPath':'/'+side+'-configuration','readOnly':True})
+    container = {'name':'migration','image':storage.REVIEW_IMAGE,'imagePullPolicy':'IfNotPresent',
+                 'command':['node','/reviewed/worker-entry.mjs'],'env':[{'name':'TMPDIR','value':'/work/private'}],
+                 'securityContext':copy.deepcopy(old['containers'][0]['securityContext']),
+                 'resources':{'requests':{'cpu':'100m','memory':'256Mi'},'limits':{'cpu':'1','memory':'1Gi'}},'volumeMounts':mounts}
+    pod = {'apiVersion':'v1','kind':'Pod','metadata':copy.deepcopy(meta), 'spec':{
+        'automountServiceAccountToken':False,'enableServiceLinks':False,'restartPolicy':'Never','activeDeadlineSeconds':3600,
+        'terminationGracePeriodSeconds':30,'nodeSelector':{'kubernetes.io/hostname':node_name},
+        'securityContext':copy.deepcopy(old['securityContext']),'containers':[container],'volumes':volumes}}
+    policy = {'apiVersion':'networking.k8s.io/v1','kind':'NetworkPolicy','metadata':copy.deepcopy(meta),
+              'spec':{'podSelector':{'matchLabels':label},'policyTypes':['Ingress','Egress'],'ingress':[],'egress':[]}}
+    result = {'schemaVersion':'roebel_review_migration_worker_v1','status':'inactive-not-admitted',
+              'handoverPlanSha256':plan['planSha256'],'candidateSha256':expected_candidate_sha256,
+              'nodeUid':plan['identities']['nodeUid'],'nodeName':node_name,'networkPolicy':policy,'configMap':config,'pod':pod}
+    return result | {'workerSha256':canonical_sha256(result)}
 
 
 def advance_source_fence(root, plan, *, expected_plan_sha256, parent_receipt,
