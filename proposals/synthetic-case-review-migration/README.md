@@ -289,6 +289,34 @@ They cover write ordering, lost responses at every stage, incomplete-stage
 recovery, invalid backups/mount proofs, changed identities, stale plans and
 receipt failures. Their success is source evidence, not a live migration claim.
 
+The concrete `advance_source_fence` helper implements the first stage using
+only GET and two UID/resourceVersion-guarded JSON patches: suspend the existing
+Case Kustomization, then scale the existing control Deployment from one to zero.
+It requires the parent coordinator's independently pinned intent, reproduces
+the original render, and invokes the full prerequisite verifier with the current
+sub-stage state before each write. It waits while Flux reports reconciliation
+in progress. An unresolved patch is observed on recovery and never resent;
+a changed UID, generation, owner or workload specification stops the stage.
+Its linked sub-receipt never resumes Flux, deletes a Pod or changes RBAC.
+
+This helper verifies desired fencing state only. [Flux suspension](https://fluxcd.io/flux/components/kustomize/kustomizations/#suspend)
+pauses reconciliation; it is not a filesystem lock or proof of termination.
+`release-mounts` must subsequently prove that no source writer remains and that
+both RWOP mounts are physically released before migration. Current stage
+fencing must be rechecked throughout import and handover. The complete live
+Adapter remains unfinished, so this helper must not be invoked in staging yet.
+
+`observe_mount_release` supplies the read-only part of the next stage. It
+checks the original binding and claim identities, rejects incomplete Pod lists
+or any Pod using either claim, and observes host mountinfo plus kubelet Pod
+directories through the pinned node transport. `mountObserverPodUid` names a
+separate ready Pod on the same pinned node; it must differ from both Pods being
+retired. Its mount and directory must be visible, and its API identity/readiness
+is checked again after the host read. Empty, wrong-node or stale views cannot
+certify release. The returned private receipt contains a timestamp, evidence
+and the host-view hash, without raw mount output. Pod retirement remains a
+separately receipted operation; the helper sends no writes.
+
 ### Migration and handover
 
 The runner does not provision volumes, manage Secrets, stop workloads, change

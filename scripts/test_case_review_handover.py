@@ -196,3 +196,154 @@ class ReviewRuntimeCompilerTests(unittest.TestCase):
         self.assertEqual(spec['containers'][0]['ports'][-1]['containerPort'],18090)
         self.assertEqual(next(e for e in spec['containers'][0]['env'] if e['name']=='STADTSTACK_CASE_CONTROL_BINDING_SHA256')['value'],binding['bindingChecksum'])
         self.assertNotIn('nodePort',json.dumps(items))
+
+
+class SourceFenceTests(unittest.TestCase):
+    def setUp(self):
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        self.core,self.kube=core,kube;self.root=Path(__file__).resolve().parent.parent
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.number=0
+        self.plan,_=fixture()
+        now=datetime.now(timezone.utc)
+        self.plan['notBeforeUtc']=(now-timedelta(minutes=1)).isoformat(timespec='milliseconds').replace('+00:00','Z')
+        self.plan['expiresAtUtc']=(now+timedelta(minutes=30)).isoformat(timespec='milliseconds').replace('+00:00','Z')
+        self.plan['identities']['clusterUid']=kube.CLUSTER_UID
+        active=json.loads((self.root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+        self.plan['pins']['sourceRenderSha256']=sha(active)
+        self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        parent={'schemaVersion':'roebel_review_handover_receipt_v1','planSha256':self.plan['planSha256'],'operationId':self.plan['operationId'],
+                'previousReceiptSha256':None,'status':'effect-intent','completed':[],'pending':'fence-source'}
+        self.parent=parent|{'canonicalSha256':sha(parent)}
+        baseline=core.build_plan(self.root)
+        self.flux=copy.deepcopy(baseline['objects'][-1]['desired']);self.flux['spec']['suspend']=False
+        self.deployment=copy.deepcopy(next(o['desired'] for o in baseline['objects'] if o['target']['kind']=='Deployment' and o['target']['name']=='roebel-case-steward-control'))
+        for obj,key in ((self.flux,'reconcilerUid'),(self.deployment,'sourceDeploymentUid')):
+            obj['metadata'].update(uid=self.plan['identities'][key],resourceVersion='10',generation=1)
+        self.paths={kube.resource_path(core.target(o)):o for o in (self.flux,self.deployment)}
+        self.paths['/api/v1/namespaces/kube-system']={'metadata':{'uid':kube.CLUSTER_UID}}
+        self.patches=[];self.fault=None;self.ready=True;self.sink=self.new_sink()
+    def new_sink(self):
+        self.number+=1
+        return ReceiptSink.reserve(Path(self.directory.name)/f'fence-{self.number}.json')
+    def request(self,method,path,payload):
+        self.assertIn(path,self.paths)
+        if method=='GET':return copy.deepcopy(self.paths[path])
+        self.assertEqual(method,'PATCH');self.patches.append(path)
+        saved=json.loads(self.sink.path.read_text());self.assertEqual(saved['status'],'patch-intent')
+        obj=self.paths[path];field=payload[-1]['path'].split('/')[-1]
+        self.assertEqual(payload,[{'op':'test','path':'/metadata/uid','value':obj['metadata']['uid']},
+            {'op':'test','path':'/metadata/resourceVersion','value':obj['metadata']['resourceVersion']},
+            {'op':'test','path':'/spec/'+field,'value':obj['spec'][field]},
+            {'op':'replace','path':'/spec/'+field,'value':True if field=='suspend' else 0}])
+        if self.fault=='lost-without-write':raise TimeoutError('unresolved')
+        obj['spec'][field]=payload[-1]['value'];obj['metadata']['generation']+=1;obj['metadata']['resourceVersion']='11'
+        if self.fault=='reconciling' and field=='suspend':obj['status']={'conditions':[{'type':'Reconciling','status':'True'}]}
+        if self.fault=='uid-after-suspend' and field=='suspend':self.deployment['metadata']['uid']=uid(999)
+        if self.fault=='lost-after-write':raise TimeoutError('private server error')
+        return copy.deepcopy(obj)
+    def prerequisites(self,plan,state):
+        if not self.ready:raise RuntimeError('full handover missing')
+    def advance(self,prior=None):
+        return review.advance_source_fence(self.root,self.plan,expected_plan_sha256=self.plan['planSha256'],parent_receipt=self.parent,
+               expected_parent_sha256=self.parent['canonicalSha256'],transport=self,sink=self.sink,verify_ready=self.prerequisites,
+               prior=prior,expected_prior_sha256=prior and prior['canonicalSha256'])
+    def resume(self):
+        prior=json.loads(self.sink.path.read_text());self.sink=self.new_sink();return self.advance(prior)
+    def test_suspend_then_guarded_scale_and_read_only_recovery(self):
+        self.assertEqual(self.advance()['status'],'source-fenced')
+        self.assertEqual(self.patches,[self.kube.resource_path(self.core.target(o)) for o in (self.flux,self.deployment)])
+        self.assertEqual(self.resume()['status'],'source-fenced');self.assertEqual(len(self.patches),2)
+    def test_lost_applied_response_never_repeats_a_patch(self):
+        self.fault='lost-after-write';self.assertEqual(self.advance()['status'],'source-fenced')
+        self.assertEqual(len(self.patches),2)
+    def test_unresolved_patch_waits_without_blind_retry(self):
+        self.fault='lost-without-write';self.assertEqual(self.advance()['status'],'awaiting-patch')
+        self.assertEqual(self.resume()['status'],'awaiting-patch');self.assertEqual(len(self.patches),1)
+        self.assertEqual(self.deployment['spec']['replicas'],1)
+    def test_inflight_reconciliation_blocks_scaling_until_reobserved(self):
+        self.fault='reconciling';self.assertEqual(self.advance()['status'],'awaiting-patch')
+        self.assertEqual(self.deployment['spec']['replicas'],1)
+        self.flux['status']['conditions']=[];self.fault=None
+        self.assertEqual(self.resume()['status'],'source-fenced');self.assertEqual(len(self.patches),2)
+    def test_changed_source_identity_preserves_existing_fence_without_scaling(self):
+        self.fault='uid-after-suspend'
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertTrue(self.flux['spec']['suspend']);self.assertEqual(self.deployment['spec']['replicas'],1)
+        self.assertEqual(len(self.patches),1)
+    def test_missing_parent_intent_or_full_prerequisites_prevents_shutdown(self):
+        self.ready=False
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.patches,[])
+        self.ready=True;self.parent['pending']=None;self.parent.pop('canonicalSha256');self.parent['canonicalSha256']=sha(self.parent)
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.patches,[])
+    def test_foreign_suspend_or_generation_drift_is_not_adopted(self):
+        self.flux['spec']['suspend']=True
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.patches,[])
+        self.flux['spec']['suspend']=False;self.sink=self.new_sink();self.advance()
+        self.deployment['metadata']['generation']+=1
+        with self.assertRaises(BootstrapStopped):self.resume()
+        self.assertEqual(len(self.patches),2)
+
+
+class MountReleaseTests(unittest.TestCase):
+    def setUp(self):
+        from . import case_runtime_kubernetes as kube
+        self.plan,_=fixture();self.plan['identities']['clusterUid']=kube.CLUSTER_UID
+        self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        self.root=Path(__file__).resolve().parent.parent
+        binding=json.loads((self.root/'proposals/synthetic-case-runtime/control-binding.json').read_text())
+        self.plan['pins']['sourceBindingSha256']=binding['bindingChecksum'];self.plan['identities']['sourcePvcUid']=binding['storage']['pvcUid']
+        self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        self.ids=self.plan['identities'];self.node_name='synthetic-node'
+        self.observer={'metadata':{'uid':self.ids['mountObserverPodUid']},'spec':{'nodeName':self.node_name,'volumes':[]},
+                       'status':{'phase':'Running','conditions':[{'type':'Ready','status':'True'}]}}
+        self.pods=[self.observer];self.reads=0;self.fault=None
+        self.names=[self.ids['mountObserverPodUid']]
+        self.mounts=f"100 1 1:1 / /var/lib/kubelet/pods/{self.ids['mountObserverPodUid']}/volumes/example rw - tmpfs tmpfs rw\n"
+    def request(self,method,path,payload):
+        self.assertEqual(method,'GET');self.assertIsNone(payload)
+        if path.endswith('/kube-system'):return {'metadata':{'uid':self.ids['clusterUid']}}
+        if '/persistentvolumeclaims/' in path:
+            uid_key='targetPvcUid' if path.endswith('roebel-case-steward-review-state-v1') else 'sourcePvcUid'
+            return {'metadata':{'uid':self.ids[uid_key]},'spec':{'accessModes':['ReadWriteOncePod']},'status':{'phase':'Bound'}}
+        if path.endswith('/pods'):
+            self.reads+=1
+            return {'items':copy.deepcopy(self.pods),'metadata':{'continue':'next'} if self.fault=='paginated' else {}}
+        self.assertEqual(path,'/api/v1/nodes/'+self.node_name)
+        return {'metadata':{'uid':uid(999) if self.fault=='node' else self.ids['nodeUid']}}
+    def view(self,name,node_uid):
+        self.assertEqual((name,node_uid),(self.node_name,self.ids['nodeUid']))
+        if self.fault=='observer-dies':self.observer['status']['phase']='Succeeded'
+        return {'mountInfo':self.mounts,'podDirectoryNames':self.names}
+    def observe(self):
+        return review.observe_mount_release(self.root,self.plan,expected_plan_sha256=self.plan['planSha256'],transport=self,node_filesystem=self.view,verify_ready=lambda p:None)
+    def test_api_and_physical_release_have_a_live_positive_control(self):
+        result=self.observe();self.assertTrue(result['evidence']['sourceMountAbsent'])
+        self.assertEqual(self.reads,2);self.assertNotIn(self.mounts,json.dumps(result))
+    def test_either_leftover_mount_or_directory_prevents_release(self):
+        for key in ('sourcePodUid','initializerPodUid'):
+            with self.subTest(key=key):
+                old=self.mounts;self.mounts+=f"101 1 1:1 / /var/lib/kubelet/pods/{self.ids[key]}/volumes/source rw - ext4 /dev/device rw\n"
+                self.assertIsNone(self.observe());self.mounts=old
+                self.names.append(self.ids[key]);self.assertIsNone(self.observe());self.names.pop()
+    def test_unexpected_new_pod_using_source_claim_blocks_release(self):
+        source=json.loads((self.root/'proposals/synthetic-case-runtime/control-binding.json').read_text())['storage']
+        self.pods.append({'metadata':{'uid':uid(999)},'spec':{'volumes':[{'persistentVolumeClaim':{'claimName':source['pvcName']}}]},'status':{'phase':'Pending'}})
+        self.assertIsNone(self.observe())
+    def test_empty_wrong_node_or_disappearing_positive_control_cannot_attest_absence(self):
+        original=self.mounts
+        self.mounts='unrelated mount view'
+        with self.assertRaises(BootstrapStopped):self.observe()
+        self.mounts=original;self.fault='node'
+        with self.assertRaises(BootstrapStopped):self.observe()
+        self.fault='observer-dies'
+        with self.assertRaises(BootstrapStopped):self.observe()
+
+    def test_incomplete_api_list_or_changed_binding_is_not_a_release_proof(self):
+        self.fault='paginated'
+        with self.assertRaises(BootstrapStopped):self.observe()
+        self.fault=None;self.plan['pins']['sourceBindingSha256']=sha('different binding')
+        self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        with self.assertRaises(BootstrapStopped):self.observe()

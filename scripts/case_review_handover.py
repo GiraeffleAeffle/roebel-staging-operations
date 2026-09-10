@@ -26,7 +26,7 @@ PINS = {'operationsRevision', 'implementationSha256', 'sourceRenderSha256',
         'admissionReceiptChecksum', 'targetDeploymentClaimChecksum', 'migrationImageDigest'}
 IDENTITIES = {'clusterUid', 'sourceDeploymentUid', 'reconcilerUid', 'sourcePodUid',
               'initializerPodUid', 'sourcePvcUid', 'targetPvcUid', 'sourcePvUid',
-              'targetPvUid', 'configurationSecretUid', 'nodeUid'}
+              'targetPvUid', 'configurationSecretUid', 'nodeUid', 'mountObserverPodUid'}
 
 
 def _closed(value, fields, message):
@@ -64,7 +64,7 @@ def validate_plan(plan, expected_sha256):
     _closed(plan['identities'], IDENTITIES, 'review handover identities incomplete')
     for value in plan['identities'].values():
         _require(isinstance(value, str) and UUID.fullmatch(value), 'review handover resource identity invalid')
-    for a,b in (('sourcePvcUid','targetPvcUid'), ('sourcePvUid','targetPvUid'), ('sourcePodUid','initializerPodUid')):
+    for a,b in (('sourcePvcUid','targetPvcUid'), ('sourcePvUid','targetPvUid'), ('sourcePodUid','initializerPodUid'), ('sourcePodUid','mountObserverPodUid'), ('initializerPodUid','mountObserverPodUid')):
         _require(plan['identities'][a] != plan['identities'][b], 'review handover source/target alias')
     for a,b in (('sourceRenderSha256','targetRenderSha256'), ('sourceBindingSha256','targetBindingSha256'),
                 ('sourceConfigurationSha256','targetConfigurationSha256')):
@@ -276,3 +276,187 @@ def compile_review_runtime(root, storage_plan, initialization_plan, *, expected_
               'configurationSecretUid':receipt['uid'],'targetBindingSha256':binding['bindingChecksum'],
               'resources':candidate,'sourceReconcilerRole':old_role,'targetReconcilerRole':role}
     return {**result,'candidateSha256':canonical_sha256(result)}
+
+
+def advance_source_fence(root, plan, *, expected_plan_sha256, parent_receipt,
+                         expected_parent_sha256, transport, sink, verify_ready,
+                         prior=None, expected_prior_sha256=None):
+    """Concrete GET/JSON-Patch adapter for the coordinator's first stage.
+
+    Only suspend this Case Kustomization and scale its existing control
+    Deployment from one to zero. Never delete a Pod, change permissions or
+    release the fence. Mount release and the clean seal are later proofs.
+    transport.request supports bounded GET and PATCH (JSON Patch), with fixed
+    safe errors. verify_ready must recheck the complete handover prerequisites.
+    """
+    import json
+    from . import case_runtime_bootstrap as core
+    from . import case_runtime_kubernetes as kube
+    validate_plan(plan, expected_plan_sha256)
+    parent = _state(plan, parent_receipt, expected_parent_sha256)
+    _require(parent['pending'] == 'fence-source' and not parent['completed'] and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'), 'source fencing requires owned parent intent')
+    baseline = core.build_plan(root)
+    active = json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+    _require(canonical_sha256(active) == plan['pins']['sourceRenderSha256'], 'source fence render drift')
+    deployment = next(o['desired'] for o in baseline['objects'] if o['target']['kind'] == 'Deployment' and o['target']['name'] == 'roebel-case-steward-control')
+    reconciler = copy.deepcopy(baseline['objects'][-1]['desired']);reconciler['spec']['suspend'] = False
+    _require(deployment['spec']['replicas'] == 1 and reconciler['kind'] == 'Kustomization' and
+             reconciler['metadata']['name'] == 'roebel-case-runtime', 'source fence inventory drift')
+    targets = [('suspend',reconciler,'reconcilerUid','suspend',False,True),
+               ('scale-zero',deployment,'sourceDeploymentUid','replicas',1,0)]
+    if prior is None:
+        _require(expected_prior_sha256 is None, 'source fence orphan recovery pin')
+        state = {'schemaVersion':'roebel_review_source_fence_v1','planSha256':expected_plan_sha256,
+                 'parentIntentSha256':expected_parent_sha256,'status':'reserved','changes':[],
+                 'previousReceiptSha256':None}
+    else:
+        state = copy.deepcopy(prior);pin = state.pop('canonicalSha256',None)
+        _require(pin == expected_prior_sha256 == canonical_sha256(state), 'source fence prior pin mismatch')
+        _closed(state, {'schemaVersion','planSha256','parentIntentSha256','status','changes','previousReceiptSha256'}, 'source fence receipt shape invalid')
+        _require(state['schemaVersion'] == 'roebel_review_source_fence_v1' and state['planSha256'] == expected_plan_sha256 and
+                 state['parentIntentSha256'] == expected_parent_sha256 and state['status'] in ('reserved','patch-intent','awaiting-patch','stopped-preserve-fence','source-fenced') and
+                 isinstance(state['changes'],list) and len(state['changes']) <= 2, 'source fence receipt binding invalid')
+        for index,record in enumerate(state['changes']):
+            _closed(record, {'step','uid','beforeResourceVersion','beforeGeneration','observedResourceVersion'}, 'source fence intent shape invalid')
+            _require(record['step'] == targets[index][0] and record['uid'] == plan['identities'][targets[index][2]] and
+                     isinstance(record['beforeResourceVersion'],str) and record['beforeResourceVersion'].isdigit() and
+                     type(record['beforeGeneration']) is int and record['beforeGeneration'] > 0 and
+                     (record['observedResourceVersion'] is None or (isinstance(record['observedResourceVersion'],str) and record['observedResourceVersion'].isdigit())), 'source fence intent invalid')
+            _require(record['observedResourceVersion'] is not None or index == len(state['changes'])-1, 'source fence unordered intent')
+        _require(state['status'] != 'source-fenced' or len(state['changes']) == 2 and all(r['observedResourceVersion'] for r in state['changes']), 'source fence completion invalid')
+        state['previousReceiptSha256'] = pin
+    def observed(desired, identity_key, field, allowed):
+        current = transport.request('GET',kube.resource_path(core.target(desired)),None)
+        _require(isinstance(current,dict) and current.get('metadata',{}).get('uid') == plan['identities'][identity_key], 'source fence UID changed')
+        meta = current['metadata']
+        _require(isinstance(meta.get('resourceVersion'),str) and meta['resourceVersion'].isdigit() and type(meta.get('generation')) is int and meta['generation'] > 0, 'source fence server identity invalid')
+        value = current.get('spec',{}).get(field)
+        _require(any(type(value) is type(item) and value == item for item in allowed), 'source fence field drift')
+        expected = copy.deepcopy(desired);expected['spec'][field] = value
+        clean = copy.deepcopy(current)
+        if desired['kind'] == 'Deployment':
+            labels = clean['metadata'].get('labels',{})
+            for key,wanted in [('kustomize.toolkit.fluxcd.io/name','roebel-case-runtime'),('kustomize.toolkit.fluxcd.io/namespace',kube.FLUX)]:
+                if key in labels:
+                    _require(labels.pop(key) == wanted, 'source fence Flux ownership drift')
+        _require(kube.normalize(clean) == kube.normalize(expected), 'source fence workload semantics changed')
+        return current
+    def fresh():
+        _require(_utc(plan['notBeforeUtc']) <= datetime.now(timezone.utc) < _utc(plan['expiresAtUtc']), 'source fence window closed')
+        verify_ready(copy.deepcopy(plan), copy.deepcopy(state))
+        cluster = transport.request('GET','/api/v1/namespaces/kube-system',None)
+        _require(cluster and cluster.get('metadata',{}).get('uid') == plan['identities']['clusterUid'] == kube.CLUSTER_UID, 'source fence cluster mismatch')
+    sink.commit(state)
+    try:
+        for index,(step,desired,identity,field,before,after) in enumerate(targets):
+            fresh()
+            if index:
+                flux = observed(reconciler,'reconcilerUid','suspend',[True])
+                if any(c.get('type') == 'Reconciling' and c.get('status') == 'True' for c in flux.get('status',{}).get('conditions',[])):
+                    state['status'] = 'awaiting-patch';sink.commit(state);return state
+            record = state['changes'][index] if index < len(state['changes']) else None
+            current = observed(desired,identity,field,[before,after] if record else [before])
+            if record is None:
+                record = {'step':step,'uid':current['metadata']['uid'],'beforeResourceVersion':current['metadata']['resourceVersion'],
+                          'beforeGeneration':current['metadata']['generation'],'observedResourceVersion':None}
+                state['changes'].append(record);state['status'] = 'patch-intent';sink.commit(state)
+                fresh()
+                patch = [{'op':'test','path':'/metadata/uid','value':record['uid']},
+                         {'op':'test','path':'/metadata/resourceVersion','value':record['beforeResourceVersion']},
+                         {'op':'test','path':'/spec/'+field,'value':before},
+                         {'op':'replace','path':'/spec/'+field,'value':after}]
+                try:
+                    transport.request('PATCH',kube.resource_path(core.target(desired)),patch)
+                except Exception:
+                    pass  # uncertain write: inspect once, never send it again
+                current = observed(desired,identity,field,[before,after])
+            if current['spec'][field] == before:
+                _require(record['observedResourceVersion'] is None, 'completed source fence regressed')
+                state['status'] = 'awaiting-patch';sink.commit(state);return state
+            _require(current['metadata']['generation'] == record['beforeGeneration']+1, 'source fence generation drift')
+            if record['observedResourceVersion'] is None:
+                record['observedResourceVersion'] = current['metadata']['resourceVersion'];sink.commit(state)
+        fresh()
+        flux = observed(reconciler,'reconcilerUid','suspend',[True])
+        if any(c.get('type') == 'Reconciling' and c.get('status') == 'True' for c in flux.get('status',{}).get('conditions',[])):
+            state['status'] = 'awaiting-patch';sink.commit(state);return state
+        observed(deployment,'sourceDeploymentUid','replicas',[0])
+        state['status'] = 'source-fenced';sink.commit(state)
+        return state
+    except Exception:
+        state['status'] = 'stopped-preserve-fence'
+        try:
+            sink.commit(state)
+        except Exception:
+            pass
+        raise BootstrapStopped('source fencing stopped; inspect owned intents without replay or automatic resume') from None
+
+
+def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_filesystem, verify_ready):
+    """Read-only API + host filesystem proof for the two released RWOP mounts.
+
+    node_filesystem(node_name, node_uid) must use the pinned node transport and
+    return complete host /proc/1/mountinfo plus /var/lib/kubelet/pods directory
+    names. A separately pinned, still-running Pod on that node is a positive
+    control. API absence alone, an empty host response or a vanished observer
+    cannot produce a release receipt. This helper never retires a Pod itself.
+    """
+    import json
+    from . import case_runtime_kubernetes as kube
+    validate_plan(plan,expected_plan_sha256)
+    ids = plan['identities']
+    binding = json.loads((root/'proposals/synthetic-case-runtime/control-binding.json').read_text())
+    body = dict(binding);binding_pin = body.pop('bindingChecksum')
+    _require(binding_pin == plan['pins']['sourceBindingSha256'] == canonical_sha256(body), 'mount observation source binding drift')
+    source = binding['storage']
+    _require(source['pvcUid'] == ids['sourcePvcUid'], 'mount observation source claim mismatch')
+    def api_observation():
+        verify_ready(copy.deepcopy(plan))
+        cluster=transport.request('GET','/api/v1/namespaces/kube-system',None)
+        _require(cluster and cluster.get('metadata',{}).get('uid') == ids['clusterUid'] == kube.CLUSTER_UID, 'mount observation cluster drift')
+        for name,identity in ((source['pvcName'],'sourcePvcUid'),('roebel-case-steward-review-state-v1','targetPvcUid')):
+            claim=transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/persistentvolumeclaims/{name}',None)
+            _require(claim and claim.get('metadata',{}).get('uid') == ids[identity] and not claim['metadata'].get('deletionTimestamp') and
+                     claim.get('spec',{}).get('accessModes') == ['ReadWriteOncePod'] and claim.get('status',{}).get('phase') == 'Bound', 'mount observation retained claim drift')
+        pods=transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/pods',None)
+        _require(isinstance(pods,dict) and isinstance(pods.get('items'),list) and not pods.get('metadata',{}).get('continue') and pods.get('metadata',{}).get('remainingItemCount') in (None,0), 'mount observation Pod list invalid')
+        observer=[p for p in pods['items'] if p.get('metadata',{}).get('uid') == ids['mountObserverPodUid']]
+        _require(len(observer) == 1, 'mount observation positive control missing')
+        observer=observer[0]
+        _require(observer.get('status',{}).get('phase') == 'Running' and not observer['metadata'].get('deletionTimestamp') and
+                 any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in observer['status'].get('conditions',[])), 'mount observation positive control not ready')
+        node_name=observer.get('spec',{}).get('nodeName')
+        _require(isinstance(node_name,str) and re.fullmatch(r'[a-z0-9][a-z0-9.-]{0,252}',node_name), 'mount observation node name invalid')
+        node=transport.request('GET','/api/v1/nodes/'+node_name,None)
+        _require(node and node.get('metadata',{}).get('uid') == ids['nodeUid'] and not node['metadata'].get('deletionTimestamp'), 'mount observation node identity drift')
+        blocked=[]
+        for pod in pods['items']:
+            pod_uid=pod.get('metadata',{}).get('uid')
+            claims={v.get('persistentVolumeClaim',{}).get('claimName') for v in pod.get('spec',{}).get('volumes',[])}
+            if pod_uid in (ids['sourcePodUid'],ids['initializerPodUid']) or claims & {source['pvcName'],'roebel-case-steward-review-state-v1'}:
+                blocked.append(pod_uid)
+        return node_name,blocked
+    node_name,blocked=api_observation()
+    if blocked:return None
+    view=node_filesystem(node_name,ids['nodeUid'])
+    _closed(view, {'mountInfo','podDirectoryNames'}, 'host mount observation shape invalid')
+    text,names=view['mountInfo'],view['podDirectoryNames']
+    _require(isinstance(text,str) and 0 < len(text.encode()) <= 4*1024*1024 and
+             isinstance(names,list) and len(names) <= 10000 and
+             all(isinstance(n,str) and UUID.fullmatch(n) for n in names) and len(names) == len(set(names)), 'host mount observation invalid')
+    prefix='/var/lib/kubelet/pods/'
+    def mounted(uid):
+        return re.search(re.escape(prefix+uid)+r'(?:/|\s)',text) is not None
+    _require(mounted(ids['mountObserverPodUid']) and ids['mountObserverPodUid'] in names, 'host mount view has no positive control')
+    if any(mounted(ids[key]) or ids[key] in names for key in ('sourcePodUid','initializerPodUid')):
+        return None
+    after,blocked=api_observation()
+    _require(after == node_name, 'mount observation node changed during read')
+    if blocked:return None
+    evidence={'sourcePodUid':ids['sourcePodUid'],'initializerPodUid':ids['initializerPodUid'],'nodeUid':ids['nodeUid'],
+              'sourceApiAbsent':True,'initializerApiAbsent':True,'sourceMountAbsent':True,'initializerMountAbsent':True,'positiveControlVerified':True}
+    receipt={'schemaVersion':'roebel_review_mount_release_v1','planSha256':expected_plan_sha256,
+             'mountObserverPodUid':ids['mountObserverPodUid'],'nodeName':node_name,
+             'hostViewSha256':canonical_sha256(view),'observedAtUtc':datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z'),'evidence':evidence}
+    return {**receipt,'canonicalSha256':canonical_sha256(receipt)}
