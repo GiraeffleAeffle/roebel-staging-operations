@@ -130,6 +130,48 @@ Plan generation is inert; source admission and exact live authorization remain
 separate. No new protected inventory entry or CI permission is needed because
 this extends the existing storage module, CLI and test file.
 
+### Create-only target initialization
+
+`initialize-plan` compiles the next separate operation from the original
+storage nonce, an independently pinned retained-storage receipt and a verified
+consumer receipt for that same claim. Pass `--storage-receipt` with
+`--expected-storage-receipt-sha256`, and `--checked-consumer-receipt` with
+`--expected-checked-consumer-sha256`. For a v2 check, also pass its original
+`--predecessor-consumer-receipt` and `--expected-predecessor-consumer-sha256` so
+the compiler reproduces the checked v2 plan. Plan mode remains offline and
+rejects live kubeconfig/result inputs. `initialize-advance` adds the independently
+reviewed initialization plan pin, bound kubeconfig and a fresh private receipt.
+
+The compiler derives the v2 binding from the protected original binding and
+the observed retained target. It fixes the PR70 image, fourth review listener,
+target path, marker and immutable ConfigMap program. Callers cannot supply a
+replacement program, Pod or binding. The target path is distinct from the
+source path to support the later simultaneous migration mounts.
+
+Each advance re-observes the source claim and the exact target claim/PV UID,
+Retain policy and storage class. Both earlier check Pod names must be absent;
+a terminal-but-retained Pod is insufficient. Retirement belongs to a separate
+explicitly authorized operation. API absence is not physical mount-release
+proof; the caller must establish that separately before starting a new writer.
+The runtime filesystem proof and successful pinned-image termination are
+required before this operation records `verified`.
+
+The operation creates only a deny-all NetworkPolicy, an immutable ConfigMap
+and one five-minute, non-root Pod, in that order. Durable intent precedes each
+create. It owns no delete, patch, Secret, source mount or application endpoint.
+The embedded program validates the exact binding/marker before writing, checks
+filesystem capacity and an empty volume root apart from lost+found, then
+creates only `case-control` and its marker at modes 0700/0600. It clears the
+fsGroup-inherited setgid bit only on its own newly created directory. Existing
+or partially initialized state is never repaired or overwritten automatically.
+
+The separate initialization receipt records ConfigMap, Pod, policy, claim and
+volume identities. Recovery uses a new result file and independently pinned
+prior receipt. Lost responses are re-observed without duplicate creates;
+conflicts, changed objects, failed Pods or disappeared effects stop. This phase
+neither provisions review grants nor migrates the Case. Immutable private
+configuration, source quiescence/seal, migration and reviewed handover follow.
+
 ### Retained target storage operation
 
 `scripts/run-case-review-storage.py` provides a separate `plan` / `advance`

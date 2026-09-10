@@ -2,13 +2,15 @@
 
 The storage operation creates one fresh PVC and can set its bound PV to Retain.
 A separately pinned consumer operation creates a deny-all policy and one short
-Pod that reads only the target filesystem. Neither operation reads Secrets,
+Pod that reads only the target filesystem. A separately pinned initializer
+creates its exact new root and marker. None of these operations reads Secrets,
 changes an existing workload or imports a Case. Callers supply independent plan
 pins, bounded transports and pre-reserved private durable receipts.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -381,14 +383,17 @@ def _pinned_receipt(receipt, pin):
 
 def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receipt, expected_storage_receipt_sha256,
                      transport, sink, prior=None, expected_prior_sha256=None):
-    """Create deny-all policy then one bounded consumer; no delete or app writes.
+    """Advance the fixed check or initializer; no delete or application writes.
 
     The existing storage receipt must already own the target claim. Each create
     is preceded by a durable intent. Unknown outcomes never trigger re-creation.
-    Completion proves only this Pod's empty-filesystem check, not PV retention
+    Check completion proves only this Pod's empty-filesystem check, not PV retention
     or migration authority; resume the separate storage operation for Retain.
     """
-    _consumer_plan(plan, storage_plan, expected_plan_sha256)
+    initializing = _initializer(plan)
+    (_initialization_plan if initializing else _consumer_plan)(plan, storage_plan, expected_plan_sha256)
+    if initializing:
+        require(storage_receipt == plan['retainedReceipt'], 'initializer retained receipt changed')
     owned = _pinned_receipt(storage_receipt, expected_storage_receipt_sha256)
     require(owned.get('schemaVersion') == 'roebel_case_review_storage_receipt_v1' and
             owned.get('planSha256') == storage_plan['planSha256'] and owned.get('operationId') == plan['operationId'] and
@@ -397,16 +402,22 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
     state = {'schemaVersion': 'roebel_case_review_binding_consumer_receipt_v1', 'planSha256': plan['planSha256'],
              'storageReceiptSha256': expected_storage_receipt_sha256, 'claimUid': owned['claimUid'],
              'previousReceiptSha256': None, 'status': 'reserved', 'networkPolicyUid': None, 'podUid': None}
+    if initializing:
+        state['schemaVersion'] = 'roebel_case_review_initialization_receipt_v1'
+        state['configMapUid'] = None
+        state['volumeUid'] = owned['volumeUid']
     if prior is not None:
         previous = _pinned_receipt(prior, expected_prior_sha256)
         require(set(previous) == set(state) and all(previous[k] == state[k] for k in
-                ('schemaVersion', 'planSha256', 'storageReceiptSha256', 'claimUid')), 'consumer recovery identity changed')
-        require(previous['status'] in ('reserved', 'policy-intent', 'policy-created', 'pod-intent', 'awaiting-check', 'verified'),
+                ('schemaVersion', 'planSha256', 'storageReceiptSha256', 'claimUid') + (('volumeUid',) if initializing else ())), 'consumer recovery identity changed')
+        require(previous['status'] in ('reserved', 'policy-intent', 'policy-created', 'pod-intent', 'awaiting-check', 'verified') + (('config-intent','config-created') if initializing else ()),
                 'consumer recovery state cannot continue')
-        for key in ('networkPolicyUid', 'podUid'):
+        for key in ('networkPolicyUid', 'podUid') + (('configMapUid',) if initializing else ()):
             require(previous[key] is None or isinstance(previous[key], str) and UUID.fullmatch(previous[key]), 'consumer receipt UID invalid')
         require(previous['status'] in ('reserved', 'policy-intent') or previous['networkPolicyUid'] is not None, 'policy ownership absent')
         require(previous['status'] not in ('awaiting-check', 'verified') or previous['podUid'] is not None, 'Pod ownership absent')
+        if initializing:
+            require(previous['status'] not in ('config-created','pod-intent','awaiting-check','verified') or previous['configMapUid'] is not None, 'initializer config ownership absent')
         state = previous; state['previousReceiptSha256'] = expected_prior_sha256
     else:
         require(expected_prior_sha256 is None, 'unexpected consumer recovery pin')
@@ -439,6 +450,13 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
                 require(old.get('status', {}).get('phase') in ('Failed', 'Succeeded') and
                         all('running' not in item.get('state', {}) for item in old['status'].get('containerStatuses', [])),
                         'predecessor consumer must be terminal before replacement')
+        if initializing:
+            require(claim.get('status',{}).get('phase') == 'Bound' and claim['spec'].get('volumeName') == owned['volumeName'], 'initializer target binding changed')
+            pv = transport.request('GET','/api/v1/persistentvolumes/' + owned['volumeName'],None)
+            require(_volume(storage_plan,claim,pv)['uid'] == owned['volumeUid'] and pv['spec']['persistentVolumeReclaimPolicy'] == 'Retain', 'initializer retained PV changed')
+            for name in (CONSUMER_NAME,CONSUMER_NAME+'-v2'):
+                require(transport.request('GET',f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/pods/{name}",None) is None,
+                        'prior check Pod still exists; separate retirement required')
         return claim
 
     check_source_target()
@@ -446,8 +464,12 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
                 f"/apis/networking.k8s.io/v1/namespaces/{storage_plan['source']['pvcNamespace']}/networkpolicies"),
                ('pod', 'podUid', 'policy-created', 'pod-intent', 'awaiting-check',
                 f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/pods")]
+    if initializing:
+        objects.insert(1,('configMap','configMapUid','policy-created','config-intent','config-created',
+                          f"/api/v1/namespaces/{storage_plan['source']['pvcNamespace']}/configmaps"))
+        objects[2] = ('pod','podUid','config-created','pod-intent','awaiting-check',objects[2][-1])
     if state['status'] == 'reserved':
-        require(transport.request('GET', objects[1][-1] + '/' + plan['pod']['metadata']['name'], None) is None,
+        require(transport.request('GET', objects[-1][-1] + '/' + plan['pod']['metadata']['name'], None) is None,
                 'consumer Pod already exists; do not create its network policy')
     for key, uid_key, start, intent, completed, collection in objects:
         desired = plan[key]; path = collection + '/' + desired['metadata']['name']
@@ -473,24 +495,29 @@ def advance_consumer(plan, storage_plan, *, expected_plan_sha256, storage_receip
         require(state['status'] != 'verified', 'completed consumer regressed')
         return commit('awaiting-check')
     statuses = observed['status'].get('containerStatuses', [])
-    require(len(statuses) == 1 and statuses[0].get('name') == 'check' and statuses[0].get('restartCount') == 0 and
+    require(len(statuses) == 1 and statuses[0].get('name') == ('initialize-target' if initializing else 'check') and statuses[0].get('restartCount') == 0 and
             statuses[0].get('state', {}).get('terminated', {}).get('exitCode') == 0 and
-            statuses[0].get('imageID', '').endswith(CONSUMER_IMAGE.split('@')[1]), 'consumer completion unverified')
+            statuses[0].get('imageID', '').endswith((REVIEW_IMAGE if initializing else CONSUMER_IMAGE).split('@')[1]), 'consumer completion unverified')
     require(check_source_target()['status']['phase'] == 'Bound', 'consumer target binding regressed')
     return commit('verified')
 
 
 class KubectlConsumerTransport:
-    """Only source/target/class reads and the exact consumer/policy GET+POST."""
+    """Bound storage reads and exact check/initializer objects GET+POST only."""
     def __init__(self, runner, snapshot, plan, storage_plan, expected_plan_sha256):
-        _consumer_plan(plan, storage_plan, expected_plan_sha256)
+        (_initialization_plan if _initializer(plan) else _consumer_plan)(plan, storage_plan, expected_plan_sha256)
         self.runner, self.snapshot, self.plan = runner, snapshot, copy.deepcopy(plan)
         self.storage = KubectlStorageTransport(runner, snapshot, storage_plan, storage_plan['planSha256'])
         ns = storage_plan['source']['pvcNamespace']
         self.collections = {f'/api/v1/namespaces/{ns}/pods': 'pod',
                             f'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies': 'networkPolicy'}
 
+        if _initializer(plan):
+            self.collections[f'/api/v1/namespaces/{ns}/configmaps'] = 'configMap'
+
     def request(self, method, path, payload):
+        if _initializer(self.plan) and method == 'GET' and path == '/api/v1/persistentvolumes/' + self.plan['retainedReceipt']['volumeName']:
+            return self.storage.request(method,path,payload)
         if method == 'GET' and payload is None and path in (self.storage.source_path, self.storage.target_path):
             return self.storage.request(method, path, payload)
         base = ['kubectl', '--kubeconfig', str(self.snapshot.path), '--request-timeout=20s']
@@ -498,6 +525,9 @@ class KubectlConsumerTransport:
         predecessor_path = next(collection for collection, key in self.collections.items() if key == 'pod') + '/' + CONSUMER_NAME
         if 'predecessorReceipt' in self.plan:
             known[predecessor_path] = 'predecessor'
+        if _initializer(self.plan):
+            known[predecessor_path] = 'retired'
+            known[predecessor_path+'-v2'] = 'retired'
         if method == 'GET':
             require(payload is None and path in {*known, '/apis/storage.k8s.io/v1/storageclasses/hcloud-volumes'}, 'consumer read outside inventory')
             result = self.runner.run(base + ['get', '--raw', path], timeout=25)
@@ -514,9 +544,130 @@ class KubectlConsumerTransport:
         observed = json.loads(result.out)
         key = known.get(path) if method == 'GET' else self.collections[path]
         if key is not None:
-            if key == 'predecessor':
+            if key == 'retired':
+                raise BootstrapStopped('prior check Pod still exists; separate retirement required')
+            elif key == 'predecessor':
                 require(_consumer_object(observed, build_consumer_plan(self.storage.plan)['pod'])['uid'] == self.plan['predecessorReceipt']['podUid'],
                         'predecessor transport identity changed')
             else:
                 _consumer_object(observed, self.plan[key])
         return observed
+
+
+INITIALIZER_PROGRAM = r'''// The protected Operations caller must verify retained PVC/PV identity,
+// exclusive mount release, image and this program's pin before launching it.
+import {constants as C, openSync,closeSync,fstatSync,lstatSync,realpathSync,readdirSync,statfsSync,mkdirSync,fchmodSync,writeSync,fsyncSync} from 'node:fs';
+import {dirname,join} from 'node:path';
+import {createHash} from 'node:crypto';
+import {verifyStagingCaseControlReviewedBinding,createStagingCaseControlDeploymentProof,createNodeStagingCaseControlStorageObserver} from '/runtime/src/staging-case-control-preflight.ts';
+const canonical=v=>Array.isArray(v)?`[${v.map(canonical).join(',')}]`:v&&typeof v==='object'?`{${Object.keys(v).sort().map(k=>JSON.stringify(k)+':'+canonical(v[k])).join(',')}}`:JSON.stringify(v);
+const hash=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
+function requireFact(ok){if(!ok)throw new Error('review_target_initialization_stopped');}
+export function initialize(binding,pin,markerText){
+ verifyStagingCaseControlReviewedBinding(binding);
+ requireFact(binding.schemaVersion==='staging_case_control_deployment_binding_v2'&&binding.bindingChecksum===pin);
+ const s=binding.storage, parent=dirname(s.rootDir);
+ requireFact(s.uid===process.getuid()&&s.gid===process.getgid()&&s.marker.uid===s.uid&&s.marker.gid===s.gid);
+ requireFact(s.mode==='0700'&&s.marker.mode==='0600'&&s.rootDir===join(parent,'case-control'));
+ const m={};for(const k of ['deploymentEnvironment','municipalityId','workloadName','workload','releaseDigest','operationsTopologyChecksum','deployment'])m[k]=binding[k];
+ Object.assign(m,s);m.schemaVersion='staging_case_control_storage_marker_v1';m.marker={...s.marker};delete m.marker.checksum;
+ requireFact(markerText===canonical(m)+'\n'&&hash(markerText)===s.marker.checksum);
+ requireFact(realpathSync(parent)===parent&&!lstatSync(parent).isSymbolicLink());
+ const fds=[];
+ try{
+  const parentFd=openSync(parent,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);fds.push(parentFd);
+  const parentStat=fstatSync(parentFd),observed=statfsSync(parent,{bigint:true});
+  requireFact(observed.type===BigInt(s.filesystemType)&&observed.bavail*observed.bsize>=BigInt(s.minAvailableBytes));
+  const entries=readdirSync(parent);requireFact(entries.every(n=>n==='lost+found'));
+  if(entries.length){const lost=lstatSync(join(parent,'lost+found'));requireFact(lost.isDirectory()&&!lost.isSymbolicLink());}
+  const fresh=lstatSync(parent);requireFact(fresh.dev===parentStat.dev&&fresh.ino===parentStat.ino);
+  // Create only. Existing or partially initialized targets are retained for
+  // inspection; this program never repairs, overwrites, deletes or retries them.
+  mkdirSync(s.rootDir,{mode:0o700});
+  const rootFd=openSync(s.rootDir,C.O_RDONLY|C.O_DIRECTORY|C.O_NOFOLLOW);fds.push(rootFd);
+  const root=fstatSync(rootFd);requireFact(root.uid===s.uid&&root.gid===s.gid&&root.dev===parentStat.dev);
+  fchmodSync(rootFd,0o700); // clear fsGroup-inherited setgid only on our new root
+  const markerFd=openSync(join(s.rootDir,s.marker.fileName),C.O_WRONLY|C.O_CREAT|C.O_EXCL|C.O_NOFOLLOW,0o600);fds.push(markerFd);
+  const marker=fstatSync(markerFd);requireFact(marker.isFile()&&marker.uid===s.uid&&marker.gid===s.gid&&marker.nlink===1);
+  const bytes=Buffer.from(markerText);let offset=0;
+  while(offset<bytes.length){const n=writeSync(markerFd,bytes,offset,bytes.length-offset);requireFact(n>0);offset+=n;}
+  fsyncSync(markerFd);fsyncSync(rootFd);fsyncSync(parentFd);
+  createStagingCaseControlDeploymentProof({reviewedBinding:binding,expectedBindingChecksum:pin,storageObserver:createNodeStagingCaseControlStorageObserver()});
+  return {status:'target-marker-initialized',bindingChecksum:pin,markerChecksum:s.marker.checksum};
+ }finally{for(const fd of fds.reverse())closeSync(fd);}
+}
+'''
+
+INITIALIZER_NAME = 'roebel-case-review-initialize-v1'
+REVIEW_IMAGE = 'ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60'
+
+
+def build_initialization_plan(storage_plan, retained_receipt, consumer_plan, consumer_receipt):
+    """Inert fixed compiler; linked retained-volume and successful check evidence.
+
+    Old check Pods must subsequently be removed by their separately authorized
+    owner. This operation has no deletion, Secret, source-mount or migration path.
+    Pod absence is not an attestation of physical kubelet mount release.
+    """
+    _validate_plan(storage_plan, storage_plan['planSha256'])
+    _consumer_plan(consumer_plan, storage_plan, consumer_plan['planSha256'])
+    owned = _pinned_receipt(retained_receipt, retained_receipt.get('canonicalSha256'))
+    checked = _pinned_receipt(consumer_receipt, consumer_receipt.get('canonicalSha256'))
+    require(owned.get('schemaVersion') == 'roebel_case_review_storage_receipt_v1' and
+            owned.get('planSha256') == storage_plan['planSha256'] and owned.get('operationId') == storage_plan['operationId'] and
+            owned.get('status') == 'retained' and all(isinstance(owned.get(k), str) and UUID.fullmatch(owned[k]) for k in ('claimUid','volumeUid')) and
+            isinstance(owned.get('volumeName'), str) and re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}', owned['volumeName']) and
+            owned['volumeName'] != storage_plan['source']['pvName'], 'initializer requires retained target identity')
+    require(checked.get('schemaVersion') == 'roebel_case_review_binding_consumer_receipt_v1' and
+            checked.get('planSha256') == consumer_plan['planSha256'] and checked.get('status') == 'verified' and
+            checked.get('claimUid') == owned['claimUid'] and all(isinstance(checked.get(k), str) and UUID.fullmatch(checked[k]) for k in ('podUid','networkPolicyUid')),
+            'initializer requires verified check on the same target')
+    root = Path(__file__).resolve().parent.parent
+    binding = json.loads((root / 'proposals/synthetic-case-runtime/control-binding.json').read_text())
+    binding.pop('bindingChecksum')
+    binding['schemaVersion'] = 'staging_case_control_deployment_binding_v2'
+    binding['releaseDigest'] = REVIEW_IMAGE.split('@')[1]
+    topology = json.loads((root / 'proposals/synthetic-case-runtime/topology.json').read_text())
+    topology['controlImage'] = REVIEW_IMAGE
+    binding['operationsTopologyChecksum'] = canonical_sha256(topology)
+    binding['listeners'].append({'id':'administration-review','port':18090,'bindScope':'pod_network'})
+    binding['storage'].update(rootDir='/var/lib/stadtstack-review/case-control', pvcName=TARGET_NAME,
+                              pvcUid=owned['claimUid'], pvName=owned['volumeName'])
+    marker = {k:binding[k] for k in ('deploymentEnvironment','municipalityId','workloadName','workload','releaseDigest','operationsTopologyChecksum','deployment')}
+    marker.update(copy.deepcopy(binding['storage']))
+    marker['schemaVersion'] = 'staging_case_control_storage_marker_v1'
+    marker['marker'].pop('checksum')
+    marker_text = json.dumps(marker, sort_keys=True, separators=(',',':'), ensure_ascii=False) + '\n'
+    binding['storage']['marker']['checksum'] = 'sha256:' + hashlib.sha256(marker_text.encode()).hexdigest()
+    binding['bindingChecksum'] = canonical_sha256(binding)
+    meta = {'name':INITIALIZER_NAME,'namespace':storage_plan['source']['pvcNamespace'],
+            'labels':{'stadtstack.io/review-storage-initializer':storage_plan['operationId'][:32]},
+            'annotations':{OWNER:storage_plan['operationId']}}
+    config = {'apiVersion':'v1','kind':'ConfigMap','metadata':copy.deepcopy(meta),'immutable':True,
+              'data':{'initialize.mjs':INITIALIZER_PROGRAM,'reviewed-binding.json':json.dumps(binding,sort_keys=True,separators=(',',':')),
+                      'storage-marker.json':marker_text}}
+    pod = copy.deepcopy(consumer_plan['pod']);pod['metadata'] = copy.deepcopy(meta)
+    container = pod['spec']['containers'][0];container['name'] = 'initialize-target';container['image'] = REVIEW_IMAGE
+    container['command'] = ['node','--input-type=module','-e',
+        "import {readFileSync} from 'node:fs';import {initialize} from '/reviewed/initialize.mjs';try{console.log(JSON.stringify(initialize(JSON.parse(readFileSync('/reviewed/reviewed-binding.json','utf8')),'" + binding['bindingChecksum'] + "',readFileSync('/reviewed/storage-marker.json','utf8'))));}catch{console.error('review_target_initialization_stopped');process.exitCode=78;}"]
+    container['volumeMounts'] = [{'name':'target-state','mountPath':'/var/lib/stadtstack-review','readOnly':False},
+                                {'name':'reviewed','mountPath':'/reviewed','readOnly':True}]
+    pod['spec']['volumes'] = [{'name':'target-state','persistentVolumeClaim':{'claimName':TARGET_NAME,'readOnly':False}},
+                             {'name':'reviewed','configMap':{'name':INITIALIZER_NAME,'defaultMode':292}}]
+    policy = {'apiVersion':'networking.k8s.io/v1','kind':'NetworkPolicy','metadata':copy.deepcopy(meta),
+              'spec':{'podSelector':{'matchLabels':meta['labels']},'policyTypes':['Ingress','Egress'],'ingress':[],'egress':[]}}
+    body = {'schemaVersion':'roebel_case_review_initialization_plan_v1','storagePlanSha256':storage_plan['planSha256'],
+            'operationId':storage_plan['operationId'],'retainedReceipt':copy.deepcopy(retained_receipt),
+            'checkedPlan':copy.deepcopy(consumer_plan),'checkedReceipt':copy.deepcopy(consumer_receipt),
+            'targetBinding':binding,'networkPolicy':policy,'configMap':config,'pod':pod}
+    return {**body,'planSha256':canonical_sha256(body)}
+
+
+def _initializer(plan):
+    return plan.get('schemaVersion') == 'roebel_case_review_initialization_plan_v1'
+
+
+def _initialization_plan(plan, storage_plan, pin):
+    require(isinstance(pin,str) and SHA.fullmatch(pin) and plan.get('planSha256') == pin and
+            plan == build_initialization_plan(storage_plan,plan['retainedReceipt'],plan['checkedPlan'],plan['checkedReceipt']),
+            'initialization differs from reviewed compiler')
