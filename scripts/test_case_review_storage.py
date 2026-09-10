@@ -255,21 +255,24 @@ class ConsumerKubernetes:
         self.sc = {'provisioner': 'csi.hetzner.cloud', 'volumeBindingMode': 'WaitForFirstConsumer', 'reclaimPolicy': 'Retain'}
 
     def request(self, method, path, payload):
-        if '/persistentvolumeclaims/' in path:
+        if '/persistentvolumeclaims/' in path or '/persistentvolumes/' in path:
             return self.storage_api.request(method, path, payload)
         if path.endswith('/storageclasses/hcloud-volumes'):
             assert method == 'GET' and payload is None
             return copy.deepcopy(self.sc)
-        key = 'networkPolicy' if '/networkpolicies' in path else 'pod'
+        if storage._initializer(self.plan) and path.endswith(('/'+storage.CONSUMER_NAME,'/'+storage.CONSUMER_NAME+'-v2')):
+            assert method == 'GET' and payload is None
+            return copy.deepcopy(self.predecessor)
+        key = 'networkPolicy' if '/networkpolicies' in path else 'configMap' if '/configmaps' in path else 'pod'
         if key == 'pod' and path.endswith('/' + storage.CONSUMER_NAME) and 'predecessorReceipt' in self.plan:
             assert method == 'GET' and payload is None
             return copy.deepcopy(self.predecessor)
-        assert path.endswith(('/networkpolicies', '/pods', '/' + self.plan[key]['metadata']['name']))
+        assert path.endswith(('/networkpolicies', '/pods', '/configmaps', '/' + self.plan[key]['metadata']['name']))
         if method == 'GET':
             return copy.deepcopy(self.objects.get(key))
         assert method == 'POST' and payload == self.plan[key]
         durable = json.loads(self.receipt.read_text())
-        assert durable['status'] == ('policy-intent' if key == 'networkPolicy' else 'pod-intent')
+        assert durable['status'] == {'networkPolicy':'policy-intent','configMap':'config-intent','pod':'pod-intent'}[key]
         assert key not in self.objects
         self.writes.append(key)
         if self.fault == 'conflict-' + key:
@@ -277,7 +280,7 @@ class ConsumerKubernetes:
         if self.fault == 'missing-' + key:
             raise TimeoutError('untrusted timeout')
         obj = copy.deepcopy(payload)
-        obj['metadata'].update(uid='00000000-0000-4000-8000-00000000000' + ('3' if key == 'networkPolicy' else '4'), resourceVersion='1')
+        obj['metadata'].update(uid='00000000-0000-4000-8000-00000000000' + {'networkPolicy':'3','configMap':'5','pod':'4'}[key], resourceVersion='1')
         if key == 'pod':
             obj['status'] = {'phase': 'Pending'}
         self.objects[key] = obj
@@ -290,7 +293,7 @@ class ConsumerKubernetes:
         self.storage_api.volume['spec']['persistentVolumeReclaimPolicy'] = 'Retain'
         self.objects['pod']['spec']['nodeName'] = 'fixture-node'
         self.objects['pod']['status'] = {'phase': 'Succeeded', 'containerStatuses': [
-            {'name': 'check', 'restartCount': 0, 'imageID': storage.CONSUMER_IMAGE,
+            {'name': 'initialize-target' if storage._initializer(self.plan) else 'check', 'restartCount': 0, 'imageID': storage.REVIEW_IMAGE if storage._initializer(self.plan) else storage.CONSUMER_IMAGE,
              'state': {'terminated': {'exitCode': 0}}}]}
 
 
@@ -517,3 +520,124 @@ class BindingConsumerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewInitializationTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+        self.storage_plan = storage.build_plan(ROOT,'c'*64)
+        initial = ReceiptSink.reserve(self.root/'storage.json')
+        self.storage_api = Kubernetes(self.storage_plan,initial.path)
+        self.owned = storage.advance_storage(self.storage_plan,expected_plan_sha256=self.storage_plan['planSha256'],transport=self.storage_api,sink=initial)
+        check_plan = storage.build_consumer_plan(self.storage_plan)
+        check_sink = ReceiptSink.reserve(self.root/'check.json')
+        check_api = ConsumerKubernetes(self.storage_api,check_plan,check_sink.path)
+        prior = storage.advance_consumer(check_plan,self.storage_plan,expected_plan_sha256=check_plan['planSha256'],storage_receipt=self.owned,
+                  expected_storage_receipt_sha256=self.owned['canonicalSha256'],transport=check_api,sink=check_sink)
+        check_api.complete();check_sink = ReceiptSink.reserve(self.root/'checked.json');check_api.receipt = check_sink.path
+        checked = storage.advance_consumer(check_plan,self.storage_plan,expected_plan_sha256=check_plan['planSha256'],storage_receipt=self.owned,
+                  expected_storage_receipt_sha256=self.owned['canonicalSha256'],transport=check_api,sink=check_sink,prior=prior,expected_prior_sha256=prior['canonicalSha256'])
+        self.plan = storage.build_initialization_plan(self.storage_plan,self.owned,check_plan,checked)
+        self.sink = ReceiptSink.reserve(self.root/'initialize.json')
+        self.api = ConsumerKubernetes(self.storage_api,self.plan,self.sink.path)
+
+    def advance(self,prior=None,sink=None,transport=None):
+        sink = sink or self.sink;self.api.receipt = sink.path
+        return storage.advance_consumer(self.plan,self.storage_plan,expected_plan_sha256=self.plan['planSha256'],storage_receipt=self.owned,
+              expected_storage_receipt_sha256=self.owned['canonicalSha256'],transport=transport or self.api,sink=sink,
+              prior=prior,expected_prior_sha256=prior and prior['canonicalSha256'])
+
+    def resume(self):
+        prior = json.loads(self.api.receipt.read_text())
+        return self.advance(prior,ReceiptSink.reserve(self.root/('resume-'+str(len(list(self.root.iterdir())))+'.json')))
+
+    def test_initialize_order_durable_identities_and_verified_completion(self):
+        source = copy.deepcopy(self.storage_api.source)
+        first = self.advance();self.assertEqual(first['status'],'awaiting-check')
+        self.assertEqual(self.api.writes,['networkPolicy','configMap','pod'])
+        self.api.complete();done = self.resume()
+        self.assertEqual(done['schemaVersion'],'roebel_case_review_initialization_receipt_v1')
+        self.assertEqual(done['status'],'verified');self.assertEqual(done['volumeUid'],VOLUME_UID)
+        self.assertIsNotNone(done['configMapUid']);self.assertEqual(self.storage_api.source,source)
+        self.assertEqual(self.resume()['status'],'verified');self.assertEqual(len(self.api.writes),3)
+
+    def test_old_check_pod_retention_or_changed_pv_stops_before_any_create(self):
+        for fault in ('old-pod','pv-uid','pv-retention','claim-uid'):
+            with self.subTest(fault=fault):
+                self.setUp()
+                if fault=='old-pod':self.api.predecessor = {'status':{'phase':'Succeeded'}}
+                if fault=='pv-uid':self.storage_api.volume['metadata']['uid'] = CLAIM_UID
+                if fault=='pv-retention':self.storage_api.volume['spec']['persistentVolumeReclaimPolicy'] = 'Delete'
+                if fault=='claim-uid':self.storage_api.target['metadata']['uid'] = VOLUME_UID
+                with self.assertRaises(BootstrapStopped):self.advance()
+                self.assertEqual(self.api.writes,[])
+
+    def test_compiler_rejects_unverified_check_and_nonretained_evidence(self):
+        for key in ('checkedReceipt','retainedReceipt'):
+            data = copy.deepcopy(self.plan[key]);data['status']='awaiting-check'
+            data['canonicalSha256']=canonical_sha256({k:v for k,v in data.items() if k!='canonicalSha256'})
+            args = [self.storage_plan,self.plan['retainedReceipt'],self.plan['checkedPlan'],self.plan['checkedReceipt']]
+            args[1 if key=='retainedReceipt' else 3]=data
+            with self.assertRaises(BootstrapStopped):storage.build_initialization_plan(*args)
+
+    def test_changed_marker_program_and_privileged_pod_never_pass_even_when_rehashed(self):
+        for fault in ('program','marker','privilege'):
+            with self.subTest(fault=fault):
+                self.setUp()
+                if fault=='program':self.plan['configMap']['data']['initialize.mjs']='throw 1;'
+                if fault=='marker':self.plan['configMap']['data']['storage-marker.json']='{}'
+                if fault=='privilege':self.plan['pod']['spec']['containers'][0]['securityContext']['privileged']=True
+                self.plan['planSha256']=canonical_sha256({k:v for k,v in self.plan.items() if k!='planSha256'})
+                with self.assertRaises(BootstrapStopped):self.advance()
+                self.assertEqual(self.api.writes,[])
+
+    def test_uncertain_create_recovers_without_duplicate_but_missing_or_conflict_does_not_retry(self):
+        for fault in ('lost-configMap','missing-configMap','conflict-configMap','lost-pod','missing-pod'):
+            with self.subTest(fault=fault):
+                self.setUp();self.api.fault=fault
+                if fault.startswith('lost-'):
+                    self.assertEqual(self.advance()['status'],'awaiting-check')
+                else:
+                    with self.assertRaises(BootstrapStopped):self.advance()
+                    with self.assertRaises(BootstrapStopped):self.resume()
+                self.assertEqual(self.api.writes.count(fault.split('-')[1]),1)
+
+    def test_changed_config_uid_or_injected_data_blocks_resume_without_recreation(self):
+        for fault in ('uid','data'):
+            with self.subTest(fault=fault):
+                self.setUp();self.advance()
+                if fault=='uid':self.api.objects['configMap']['metadata']['uid']=CLAIM_UID
+                else:self.api.objects['configMap']['data']['extra']='injected'
+                with self.assertRaises(BootstrapStopped):self.resume()
+                self.assertEqual(len(self.api.writes),3)
+
+    def test_wrong_completion_digest_exit_or_restart_is_not_verified(self):
+        for fault in ('image','exit','restart'):
+            with self.subTest(fault=fault):
+                self.setUp();self.advance();self.api.complete()
+                status = self.api.objects['pod']['status']['containerStatuses'][0]
+                if fault=='image':status['imageID']=storage.CONSUMER_IMAGE
+                if fault=='exit':status['state']['terminated']['exitCode']=78
+                if fault=='restart':status['restartCount']=1
+                with self.assertRaises(BootstrapStopped):self.resume()
+
+    def test_real_transport_inventory_and_server_defaults(self):
+        calls=[];api=self.api
+        class Runner:
+            def run(_,argv,input_text=None,timeout=None):
+                calls.append(argv);command=argv[4:]
+                if command[:2]==['get','--raw']:value=api.request('GET',command[2],None)
+                elif command[:2]==['create','--raw']:value=api.request('POST',command[2],json.loads(input_text))
+                else:raise AssertionError('unexpected command')
+                if value is None:return SimpleNamespace(code=1,out='',err='Error from server (NotFound): fixture')
+                if value.get('kind')=='Pod':
+                    value['spec']['volumes'][0]['persistentVolumeClaim'].pop('readOnly',None)
+                    value['spec']['containers'][0]['volumeMounts'][0].pop('readOnly',None)
+                return SimpleNamespace(code=0,out=json.dumps(value),err='')
+        transport=storage.KubectlConsumerTransport(Runner(),SimpleNamespace(path='/private/test-config'),self.plan,self.storage_plan,self.plan['planSha256'])
+        for verb,path,payload in [('GET','/api/v1/secrets',None),('DELETE','/api/v1/pods',None),('PATCH','/api/v1/persistentvolumes/pvc-review-fixture',[])]:
+            with self.assertRaises(BootstrapStopped):transport.request(verb,path,payload)
+        self.assertEqual(calls,[])
+        self.assertEqual(self.advance(transport=transport)['status'],'awaiting-check')
+        self.assertEqual([c[4] for c in calls].count('create'),3)

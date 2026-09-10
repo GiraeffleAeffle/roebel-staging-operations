@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, statSync, statfsSync, chownSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -124,4 +124,44 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   assert.throws(() => runReviewMigration(staleRetry.args, runtime), { message: "case_review_migration_stopped" });
   assert.deepEqual(snapshot(targetRoot), reopenedBytes);
   assert.deepEqual(snapshot(originalRoot), originalBytes);
+});
+
+
+test("compiled initializer passes actual filesystem proof and refuses existing or mismatched targets", async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "case-initializer-integration-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const operationsRoot = resolve(new URL("..", import.meta.url).pathname);
+  const program = execFileSync("python3", ["-c", "from scripts.case_review_storage import INITIALIZER_PROGRAM; print(INITIALIZER_PROGRAM,end='')"], { cwd: operationsRoot, encoding: "utf8" });
+  const localProgram = program.replace("'/runtime/src/staging-case-control-preflight.ts'", JSON.stringify(pathToFileURL(join(sourceRoot,"src/staging-case-control-preflight.ts")).href));
+  assert.notEqual(program, localProgram);
+  const modulePath = join(root,"initialize.mjs");writeFileSync(modulePath,localProgram,{mode:0o600,flag:"wx"});
+  const { initialize } = await import(pathToFileURL(modulePath).href);
+  function fixture(name, change = () => {}) {
+    const parent = join(root,name);mkdirSync(parent,{mode:0o700});chownSync(parent,process.getuid(),process.getgid());
+    const {bindingChecksum:_,...binding} = fixtureBinding(join(parent,"case-control"),true,"roebel-mueritz").binding;
+    Object.assign(binding.storage,{uid:process.getuid(),gid:process.getgid(),filesystemType:"0x"+statfsSync(parent,{bigint:true}).type.toString(16)});
+    Object.assign(binding.storage.marker,{uid:process.getuid(),gid:process.getgid()});change(binding);
+    const marker = {};
+    for(const key of ["deploymentEnvironment","municipalityId","workloadName","workload","releaseDigest","operationsTopologyChecksum","deployment"]) marker[key]=binding[key];
+    Object.assign(marker,binding.storage);marker.schemaVersion="staging_case_control_storage_marker_v1";
+    marker.marker={...binding.storage.marker};delete marker.marker.checksum;
+    const text=canonical(marker)+"\n";binding.storage.marker.checksum=hash(text);
+    binding.bindingChecksum=checksum(binding);return {binding,parent,text};
+  }
+  const good=fixture("success");mkdirSync(join(good.parent,"lost+found"));
+  assert.equal(initialize(good.binding,good.binding.bindingChecksum,good.text).status,"target-marker-initialized");
+  assert.equal(statSync(good.binding.storage.rootDir).mode&0o7777,0o700);
+  assert.equal(statSync(join(good.binding.storage.rootDir,good.binding.storage.marker.fileName)).mode&0o7777,0o600);
+  const before=snapshot(good.binding.storage.rootDir);
+  assert.throws(()=>initialize(good.binding,good.binding.bindingChecksum,good.text));
+  assert.deepEqual(snapshot(good.binding.storage.rootDir),before);
+  for(const fault of ["content","pin","marker","filesystem","symlink"]) {
+    const item=fixture(fault,b=>{if(fault==="filesystem") b.storage.filesystemType="0x12345678";});
+    if(fault==="content")writeFileSync(join(item.parent,"preserved"),"evidence");
+    if(fault==="symlink")symlinkSync(root,join(item.parent,"lost+found"));
+    const entries=readdirSync(item.parent);
+    assert.throws(()=>initialize(item.binding,fault==="pin"?hash("wrong"):item.binding.bindingChecksum,fault==="marker"?item.text+" ":item.text));
+    assert.deepEqual(readdirSync(item.parent),entries);
+    if(fault==="content")assert.equal(readFileSync(join(item.parent,"preserved"),"utf8"),"evidence");
+  }
 });

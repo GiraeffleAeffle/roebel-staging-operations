@@ -12,7 +12,7 @@ def main():
     if not sys.flags.isolated or not sys.flags.safe_path:
         raise RuntimeError('isolated Python required')
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=('plan', 'advance', 'consumer-plan', 'consumer-advance'), required=True)
+    parser.add_argument('--mode', choices=('plan', 'advance', 'consumer-plan', 'consumer-advance', 'initialize-plan', 'initialize-advance'), required=True)
     parser.add_argument('--expected-operations-revision', required=True)
     parser.add_argument('--operation-id', required=True)
     parser.add_argument('--expected-plan-sha256')
@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--receipt')
     parser.add_argument('--predecessor-consumer-receipt')
     parser.add_argument('--expected-predecessor-consumer-sha256')
+    parser.add_argument('--checked-consumer-receipt')
+    parser.add_argument('--expected-checked-consumer-sha256')
     parser.add_argument('--storage-receipt')
     parser.add_argument('--expected-storage-receipt-sha256')
     parser.add_argument('--prior-receipt')
@@ -37,7 +39,8 @@ def main():
     from scripts.case_runtime_bootstrap import _verifier
     from scripts.staging_participant_flux_bootstrap import ReceiptSink, load_receipt
     plan = storage.build_plan(root, args.operation_id)
-    consumer = args.mode.startswith('consumer-')
+    initializing = args.mode.startswith('initialize-')
+    consumer = args.mode.startswith('consumer-') or initializing
     storage_plan = plan
     predecessor = None
     if args.predecessor_consumer_receipt or args.expected_predecessor_consumer_sha256:
@@ -47,15 +50,27 @@ def main():
         storage._pinned_receipt(predecessor, args.expected_predecessor_consumer_sha256)
     if consumer:
         plan = storage.build_consumer_plan(storage_plan, predecessor)
-    if args.mode in ('plan', 'consumer-plan'):
-        if any((args.expected_plan_sha256, args.kubeconfig, args.receipt, args.prior_receipt, args.expected_prior_sha256, args.storage_receipt, args.expected_storage_receipt_sha256)):
+    owned = None
+    if initializing:
+        if not all((args.storage_receipt,args.expected_storage_receipt_sha256,args.checked_consumer_receipt,args.expected_checked_consumer_sha256)):
+            raise RuntimeError('initialization requires retained storage and verified check receipts with independent pins')
+        owned = load_receipt(Path(args.storage_receipt))
+        storage._pinned_receipt(owned,args.expected_storage_receipt_sha256)
+        checked = load_receipt(Path(args.checked_consumer_receipt))
+        storage._pinned_receipt(checked,args.expected_checked_consumer_sha256)
+        plan = storage.build_initialization_plan(storage_plan,owned,plan,checked)
+    elif args.checked_consumer_receipt or args.expected_checked_consumer_sha256:
+        raise RuntimeError('checked consumer inputs only apply to initialization')
+    if args.mode in ('plan', 'consumer-plan', 'initialize-plan'):
+        if any((args.expected_plan_sha256, args.kubeconfig, args.receipt, args.prior_receipt, args.expected_prior_sha256)) or (not initializing and any((args.storage_receipt,args.expected_storage_receipt_sha256))):
             raise RuntimeError('plan mode accepts no live inputs')
         print(json.dumps(plan, indent=2)); return
     if args.expected_plan_sha256 != plan['planSha256'] or not args.kubeconfig or not args.receipt or bool(args.prior_receipt) != bool(args.expected_prior_sha256):
         raise RuntimeError('explicit pinned operation, kubeconfig and private receipt required')
     if consumer != bool(args.storage_receipt) or consumer != bool(args.expected_storage_receipt_sha256):
         raise RuntimeError('consumer requires independently pinned existing storage receipt')
-    owned = load_receipt(Path(args.storage_receipt)) if consumer else None
+    if consumer and owned is None:
+        owned = load_receipt(Path(args.storage_receipt))
     policy = _verifier().verify_tree(root)['stagingParticipantGatewayPolicy']
     prior = load_receipt(Path(args.prior_receipt)) if args.prior_receipt else None
     sink = ReceiptSink.reserve(Path(args.receipt))
