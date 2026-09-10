@@ -236,6 +236,59 @@ protected-base PR checks and the corresponding `candidate/scripts` command to
 protected-main checks. No action version, dependency, permission, render or
 existing bootstrap operation changes.
 
+### Ordered review handover and inactive successor compiler
+
+`scripts/case_review_handover.py` contains the separate nine-stage coordinator
+and `compile_review_runtime`. Neither is a live CLI or permission to deploy.
+The compiler reproduces the reviewed initializer, consumes an independently
+pinned provisioning receipt, and creates an inactive successor render. Only the
+control ConfigMap and Deployment change. The proposed reconciler Role gains
+one exact ConfigMap name, with its existing verbs; no Secret permission,
+Service, ingress or review NetworkPolicy is added. The old bootstrap and the
+active render remain unchanged.
+
+`advance_review_handover` requires an independently pinned, time-bounded full
+plan with implementation/render/configuration hashes and actual resource UIDs.
+Before any stage, its trusted Operations Adapter must verify that the complete
+concrete implementation is ready and current stage ownership/fencing holds.
+No partial adapter may approve source shutdown. Stages run in this order:
+
+1. Fence the source Deployment and its reconciler.
+2. Verify API and physical release of source and initializer mounts.
+3. Verify an encrypted Case backup by restoring and comparing its exact files.
+4. Prepare a candidate tied to the original seal, claim and admission.
+5. Activate that candidate and record the target seal and unchanged source hash.
+6. Verify the migration Pod and mounts are released.
+7. Start the exact v2 runtime on the provisioned target and configuration.
+8. Verify all four listeners, clean restart, original admission and source bytes.
+9. Restore GitOps and verify the new render plus both retained volumes.
+
+The Adapter provides `verify_ready`, `observe` and `perform`. It owns the
+concrete Kubernetes compare-and-swap operations, encrypted archive verification,
+pinned runtime invocations and durable stage receipts. `observe` verifies those
+retained receipts; historical steps need not still describe current live state
+(for example, the reconciler is intentionally resumed at the final stage).
+`verify_ready` checks current state appropriate to the completed prefix. Receipt
+summaries are closed and linked across stages; hashes alone do not certify that
+a backup was restored or a mount released. No concrete live Adapter is supplied
+by this source change. Live implementation, full rehearsal and admission of
+the successor render remain required before use.
+
+The coordinator commits intent before each stage. A lost response is checked
+through the same owned stage receipt, never retried as another write. Recovery
+requires a fresh output and independently pinned prior receipt. Pending work
+without evidence returns `awaiting-evidence`; the concrete stage operator must
+resolve it under its own receipt before the coordinator can continue. A failure
+preserves both stores and the source fence; there is no automatic GitOps resume,
+rollback or deletion. A complete receipt is recoverable even if the final
+response was lost. The operation window is at most one hour; a new window or
+changed plan requires separate recovery review, not editing an old receipt.
+
+The coordinator/compiler tests are protected in the existing admission workflow.
+They cover write ordering, lost responses at every stage, incomplete-stage
+recovery, invalid backups/mount proofs, changed identities, stale plans and
+receipt failures. Their success is source evidence, not a live migration claim.
+
 ### Migration and handover
 
 The runner does not provision volumes, manage Secrets, stop workloads, change

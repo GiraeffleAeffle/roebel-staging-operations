@@ -8,6 +8,8 @@ FILES={
     'scripts/case_runtime_bootstrap.py',
     'scripts/case_runtime_configuration.py',
     'scripts/case_runtime_handover.py',
+    'scripts/case_review_handover.py',
+    'scripts/test_case_review_handover.py',
     'scripts/case_runtime_kubernetes.py',
     'scripts/case_runtime_saved_adoption.py',
     'scripts/run-case-runtime.py',
