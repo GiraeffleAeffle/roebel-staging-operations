@@ -1030,6 +1030,68 @@ class PrivateConfigurationPreflightTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):self.verify()
 
 
+class LiveConfigurationObservationTests(unittest.TestCase):
+    def setUp(self):
+        import base64,hashlib,os
+        from . import case_runtime_kubernetes as kube, case_runtime_bootstrap as core
+        self.fixture=PrivateConfigurationPreflightTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
+        self.plan=self.fixture.plan;self.plan['identities']['clusterUid']=kube.CLUSTER_UID
+        self.fds=[];self.receipts={};self.objects={};self.calls=[];self.fail=None;self.change=None
+        for i,(side,name) in enumerate((('source','roebel-case-steward-control-runtime'),('target','roebel-case-steward-review-runtime-v1'))):
+            raw=json.dumps(getattr(self.fixture,side)).encode();path=Path(self.fixture.directory.name)/side
+            path.write_bytes(raw);path.chmod(0o600);fd=os.open(path,os.O_RDONLY);self.fds.append(fd);self.addCleanup(os.close,fd)
+            self.plan['pins'][side+'ConfigurationSha256']='sha256:'+hashlib.sha256(raw).hexdigest()
+            identity=uid(950) if side=='source' else self.plan['identities']['configurationSecretUid']
+            receipt={'schemaVersion':'roebel_case_configuration_receipt_v1','planSha256':sha(side+' provisioning'),
+                'reference':{'namespace':kube.NAMESPACE,'name':name,'key':'application-json'},'configurationSha256':self.plan['pins'][side+'ConfigurationSha256'],
+                'nonce':str(i+1)*64,'status':'provisioned','uid':identity}
+            self.receipts[side]=receipt|{'canonicalSha256':sha(receipt)}
+            self.objects[f'/api/v1/namespaces/{kube.NAMESPACE}/secrets/{name}']={
+                'apiVersion':'v1','kind':'Secret','metadata':{'name':name,'namespace':kube.NAMESPACE,'uid':identity,'resourceVersion':'1',
+                    'annotations':{core.NONCE:receipt['nonce']}},'immutable':True,'type':'Opaque','data':{'application-json':base64.b64encode(raw).decode()}}
+        self.plan['pins']['configurationReceiptSha256']=self.receipts['target']['canonicalSha256']
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        self.objects['/api/v1/namespaces/kube-system']={'metadata':{'uid':kube.CLUSTER_UID}}
+    def request(self,method,path,payload):
+        self.assertEqual((method,payload),('GET',None));self.calls.append(path)
+        if self.fail:raise RuntimeError(self.fail)
+        if self.change:self.change(path)
+        return copy.deepcopy(self.objects.get(path))
+    def observe(self,clock=lambda:NOW):
+        return review.observe_review_configuration(self.plan,expected_plan_sha256=self.plan['planSha256'],source_fd=self.fds[0],target_fd=self.fds[1],
+            source_receipt=self.receipts['source'],expected_source_receipt_sha256=self.receipts['source']['canonicalSha256'],
+            target_receipt=self.receipts['target'],transport=self,clock=clock)
+    def test_checks_both_live_identities_and_bytes_without_disclosing_configuration(self):
+        result=self.observe();self.assertEqual(result['configuration']['grantCount'],4)
+        self.assertEqual(len(self.calls),6);self.assertEqual(result['identities']['source']['uid'],uid(950))
+        self.assertNotIn(self.fixture.token(1),json.dumps(result));self.assertNotIn('example:',json.dumps(result))
+    def test_replaced_terminating_or_changed_secret_is_rejected(self):
+        path=next(p for p in self.objects if p.endswith('review-runtime-v1'));original=copy.deepcopy(self.objects[path])
+        for mutate in (lambda s:s['metadata'].update(uid=uid(999)),lambda s:s['metadata'].update(deletionTimestamp='now'),
+                       lambda s:s.update(immutable=False),lambda s:s['data'].update({'application-json':'e30='})):
+            with self.subTest(mutation=mutate):
+                self.objects[path]=copy.deepcopy(original);mutate(self.objects[path])
+                with self.assertRaises(BootstrapStopped):self.observe()
+    def test_secret_change_during_observation_and_expiry_are_rejected(self):
+        path=next(p for p in self.objects if p.endswith('review-runtime-v1'))
+        def change(p):
+            if p==path and self.calls.count(path)>1:self.objects[path]['metadata']['resourceVersion']='2'
+        self.change=change
+        with self.assertRaises(BootstrapStopped):self.observe()
+        self.change=None;times=iter((NOW,NOW+timedelta(hours=1)))
+        with self.assertRaises(BootstrapStopped):self.observe(clock=lambda:next(times))
+    def test_unpinned_receipt_and_outside_window_fail_before_secret_reads(self):
+        self.receipts['source']['uid']=uid(999)
+        with self.assertRaises(BootstrapStopped):self.observe()
+        self.assertEqual(self.calls,[])
+        with self.assertRaises(BootstrapStopped):self.observe(clock=lambda:NOW+timedelta(hours=1))
+        self.assertEqual(self.calls,[])
+    def test_transport_errors_cannot_disclose_tokens(self):
+        self.fail=self.fixture.token(1)
+        with self.assertRaises(BootstrapStopped) as stopped:self.observe()
+        self.assertNotIn(self.fail,str(stopped.exception));self.assertTrue(stopped.exception.__suppress_context__)
+
+
 class GitOpsTargetProofTests(unittest.TestCase):
     compile=ReviewRuntimeCompilerTests.compile
     worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
@@ -1246,3 +1308,52 @@ class MigrationStageDriverTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):review.observe_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
             receipt=record,expected_receipt_sha256=record['canonicalSha256'],captured=self.captured)
         self.assertEqual(self.stage_actions,before)
+
+
+class PublicPreservationTests(unittest.TestCase):
+    def setUp(self):
+        from . import test_case_runtime_kubernetes as existing
+        from . import case_runtime_kubernetes as kube
+        existing.KubernetesTests.setUpClass()
+        self.addCleanup(existing.KubernetesTests.tearDownClass)
+        self.fixture=existing.KubernetesTests();self.addCleanup(self.fixture.doCleanups)
+        self.adapter,self.api=self.fixture.adapter_environment();self.root=self.adapter.root;self.kube=kube
+        self.plan,evidence=fixture();self.plan['pins']['operationsRevision']=self.adapter.revision
+        resources=json.loads((self.root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+        self.plan['pins']['sourceRenderSha256']=sha(resources);self.plan['identities']['clusterUid']=kube.CLUSTER_UID
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        self.parent=review._state(self.plan,None,None);self.parent['canonicalSha256']=sha(self.parent)
+        self.source_path=f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/deployments/roebel-case-steward-control'
+        self.flux_path=f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{kube.FLUX}/kustomizations/roebel-case-runtime'
+        self.api.objects[self.source_path]={'metadata':{'uid':self.plan['identities']['sourceDeploymentUid']},'spec':{'replicas':1}}
+        self.api.objects[self.flux_path]={'metadata':{'uid':self.plan['identities']['reconcilerUid']},'spec':{'suspend':False}}
+        for i,desired in enumerate(resources['items']):
+            if not desired['metadata']['name'].startswith('roebel-case-public-binding'):continue
+            live=copy.deepcopy(desired);live['metadata'].update(uid=uid(2000+i),resourceVersion='1',generation=1)
+            if live['kind']=='Deployment':
+                live['status']={'observedGeneration':1,**dict.fromkeys(('replicas','updatedReplicas','readyReplicas','availableReplicas'),1)}
+                rsuid=uid(3000);self.api.sets.append({'metadata':{'uid':rsuid,'labels':{'pod-template-hash':'abc123'},'ownerReferences':[{'controller':True,'uid':live['metadata']['uid']}]}})
+                template=live['spec']['template'];pod={'apiVersion':'v1','kind':'Pod','metadata':{**copy.deepcopy(template['metadata']),
+                    'name':'public-reader-fixture','namespace':kube.NAMESPACE,'uid':uid(3001),'resourceVersion':'1','ownerReferences':[{'controller':True,'uid':rsuid}]},
+                    'spec':copy.deepcopy(template['spec']),'status':{'phase':'Running','conditions':[{'type':'Ready','status':'True'}],
+                    'containerStatuses':[{'name':'runtime','ready':True,'restartCount':0,'containerID':'containerd://'+'a'*64,'imageID':template['spec']['containers'][0]['image']}]}}
+                pod['metadata'].setdefault('labels',{})['pod-template-hash']='abc123';self.api.pods.append(pod);self.reader=pod
+            self.api.objects[kube.resource_path({'apiVersion':desired['apiVersion'],'kind':desired['kind'],**{k:desired['metadata'][k] for k in ('name','namespace')}})]=live
+    def observe(self,baseline=None):
+        return review.observe_review_public_preservation(self.root,self.plan,expected_plan_sha256=self.plan['planSha256'],parent_receipt=self.parent,
+            expected_parent_sha256=self.parent['canonicalSha256'],adapter=self.adapter,baseline=baseline,
+            expected_baseline_sha256=baseline['canonicalSha256'] if baseline else None)
+    def test_baseline_remains_verifiable_while_case_writer_is_stopped_without_secret_reads(self):
+        baseline=self.observe();self.api.calls.clear()
+        self.api.objects[self.source_path]['spec']['replicas']=0;self.api.objects[self.flux_path]['spec']['suspend']=True
+        self.assertEqual(self.observe(baseline),baseline)
+        self.assertTrue(all(method=='GET' and '/secrets/' not in path for method,path in self.api.calls))
+        with self.assertRaises(BootstrapStopped):self.observe()
+    def test_reader_restart_injection_and_tracer_drift_are_rejected(self):
+        baseline=self.observe();original=copy.deepcopy(self.reader)
+        self.reader['status']['containerStatuses'][0]['restartCount']=1
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)
+        self.reader.clear();self.reader.update(copy.deepcopy(original));self.reader['spec']['containers'].append({'name':'injected','image':'foreign'})
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)
+        self.reader.clear();self.reader.update(original);self.api.pods[0]['status']['containerStatuses'][0]['restartCount']=1
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)

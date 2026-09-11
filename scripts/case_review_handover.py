@@ -1585,8 +1585,8 @@ def verify_review_private_configuration(plan, *, source_fd, target_fd):
 
     Inputs are owned private descriptors, independently byte-pinned by the plan.
     No credential, actor identifier or raw configuration is returned or logged.
-    The live readiness Adapter must additionally match the cluster Secret UIDs
-    and bytes to these pins before it permits source fencing.
+    observe_review_configuration additionally matches live Secret identities
+    and bytes. Neither check alone proves the full handover is ready.
     """
     import os,stat,hashlib,base64
     validate_plan(plan,plan['planSha256'])
@@ -1647,6 +1647,72 @@ def verify_review_private_configuration(plan, *, source_fd, target_fd):
                 'verifiedThroughUtc':plan['expiresAtUtc']}
     except Exception:
         raise BootstrapStopped('private review configuration preflight failed; source must remain running') from None
+
+
+def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, target_fd,
+        source_receipt, expected_source_receipt_sha256, target_receipt, transport, clock=None):
+    """Read both existing Secrets and bind them to private, provisioned inputs.
+
+    Source identity comes from its separately pinned provisioning receipt; the
+    target receipt and identity are already pinned in the handover plan. Reads
+    use only fixed Secret paths. Payloads and underlying transport errors never
+    appear in the returned evidence or exception. This grants no write access.
+    """
+    import base64, hashlib
+    from . import case_runtime_kubernetes as kube, case_runtime_bootstrap as core
+    try:
+        validate_plan(plan,expected_plan_sha256)
+        clock=clock or (lambda:datetime.now(timezone.utc))
+        def window():
+            now=clock()
+            _require(_utc(plan['notBeforeUtc'])<=now<_utc(plan['expiresAtUtc']), 'configuration observation outside handover window')
+        window()
+        verified=verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd)
+        receipts={}
+        for side,value,pin,name in (
+                ('source',source_receipt,expected_source_receipt_sha256,'roebel-case-steward-control-runtime'),
+                ('target',target_receipt,plan['pins']['configurationReceiptSha256'],'roebel-case-steward-review-runtime-v1')):
+            receipt=storage._pinned_receipt(value,pin)
+            _closed(receipt,{'schemaVersion','planSha256','reference','configurationSha256','nonce','status','uid'},'configuration receipt shape changed')
+            _require(receipt['schemaVersion']=='roebel_case_configuration_receipt_v1' and receipt['status']=='provisioned' and
+                     isinstance(receipt['uid'],str) and UUID.fullmatch(receipt['uid']) and
+                     isinstance(receipt['nonce'],str) and re.fullmatch('[0-9a-f]{64}',receipt['nonce']), 'configuration not provisioned')
+            _sha(receipt['planSha256'])
+            _require(receipt['reference']=={'namespace':kube.NAMESPACE,'name':name,'key':'application-json'} and
+                     receipt['configurationSha256']==plan['pins'][side+'ConfigurationSha256'],'configuration reference changed')
+            receipts[side]=receipt
+        _require(receipts['target']['uid']==plan['identities']['configurationSecretUid'] and
+                 receipts['source']['uid']!=receipts['target']['uid'],'configuration identity mismatch')
+        def read():
+            cluster=transport.request('GET','/api/v1/namespaces/kube-system',None)
+            _require(isinstance(cluster,dict) and cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'configuration cluster changed')
+            identities={}
+            for side,receipt in receipts.items():
+                ref=receipt['reference']
+                secret=transport.request('GET',f"/api/v1/namespaces/{ref['namespace']}/secrets/{ref['name']}",None)
+                _require(isinstance(secret,dict) and secret.get('apiVersion')=='v1' and secret.get('kind')=='Secret','configuration Secret absent')
+                identity=storage._identity(secret);meta=secret['metadata']
+                _require(identity['uid']==receipt['uid'] and meta.get('name')==ref['name'] and meta.get('namespace')==ref['namespace'] and
+                         meta.get('annotations',{}).get(core.NONCE)==receipt['nonce'] and secret.get('type')=='Opaque' and
+                         secret.get('immutable') is True and not secret.get('stringData') and set(secret.get('data',{}))=={ref['key']},'configuration Secret ownership or shape changed')
+                encoded=secret['data'][ref['key']]
+                _require(isinstance(encoded,str) and 0<len(encoded)<=1398104,'configuration Secret payload invalid')
+                raw=base64.b64decode(encoded,validate=True)
+                _require(len(raw)<=1048576 and base64.b64encode(raw).decode()==encoded and
+                         'sha256:'+hashlib.sha256(raw).hexdigest()==receipt['configurationSha256'],'configuration Secret bytes changed')
+                identities[side]=identity
+                del raw,encoded,secret
+            return identities
+        identities=read()
+        _require(verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd)==verified,'private configuration changed during observation')
+        _require(read()==identities,'configuration Secret changed during observation')
+        window()
+        result={'schemaVersion':'roebel_review_configuration_observation_v1','planSha256':expected_plan_sha256,
+                'sourceReceiptSha256':expected_source_receipt_sha256,'targetReceiptSha256':plan['pins']['configurationReceiptSha256'],
+                'identities':identities,'configuration':verified}
+        return result|{'canonicalSha256':canonical_sha256(result)}
+    except Exception:
+        raise BootstrapStopped('live review configuration verification failed; retain the current handover state') from None
 
 
 def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport):
@@ -1991,3 +2057,80 @@ def observe_review_migration_stage(plan, target_binding, *, expected_plan_sha256
         evidence=review_migration_stage_evidence(plan,step,request=request,result=result,previous=previous)
     _require(evidence==state['evidence'],'historical migration completion evidence changed')
     return evidence
+
+
+def observe_review_public_preservation(root, plan, *, expected_plan_sha256, parent_receipt, expected_parent_sha256,
+        adapter, baseline=None, expected_baseline_sha256=None):
+    """Stage-independent GET-only public/tracer preservation observation.
+
+    Establish the baseline before source fencing; later stages require its
+    independently retained receipt. Exact admitted resources and ready workloads
+    are rechecked every time, including the unchanged public Case reader.
+    This is infrastructure preservation, not the original Case HTTP acceptance
+    check or complete migration readiness.
+    """
+    from . import case_runtime_kubernetes as kube
+    from . import case_runtime_bootstrap as core
+    validate_plan(plan,expected_plan_sha256);parent=_state(plan,parent_receipt,expected_parent_sha256)
+    _require(adapter.root==root and adapter.revision==plan['pins']['operationsRevision'],'preservation Operations adapter changed')
+    cluster=adapter._get('/api/v1/namespaces/kube-system')
+    _require(cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'preservation cluster changed')
+    resources=json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+    _require(canonical_sha256(resources)==plan['pins']['sourceRenderSha256'],'preservation source render changed')
+    def before_fence():
+        source=adapter._get(f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/deployments/roebel-case-steward-control')
+        flux=adapter._get(f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{kube.FLUX}/kustomizations/roebel-case-runtime')
+        _require(source.get('metadata',{}).get('uid')==plan['identities']['sourceDeploymentUid'] and source.get('spec',{}).get('replicas')==1 and
+                 flux.get('metadata',{}).get('uid')==plan['identities']['reconcilerUid'] and flux.get('spec',{}).get('suspend') is False,
+                 'public preservation baseline cannot be captured after source fencing')
+    if baseline is None:before_fence()
+    snapshot=adapter.observe_preserved_workloads();reader={}
+    deployment=None
+    for desired in resources['items']:
+        if not desired['metadata']['name'].startswith('roebel-case-public-binding'):continue
+        path=kube.resource_path(core.target(desired));observed=adapter._get(path)
+        identity=_review_transition_exact(observed,desired)
+        _require(not observed['metadata'].get('deletionTimestamp'),'public reader resource terminating')
+        reader[path]=identity['uid']
+        if desired['kind']=='Deployment':
+            deployment=observed;status=observed.get('status',{})
+            _require(status.get('observedGeneration')==observed['metadata']['generation'] and
+                     all(status.get(k,0)==1 for k in ('replicas','updatedReplicas','readyReplicas','availableReplicas')),'public reader deployment not ready')
+    _require(deployment is not None and reader,'public reader inventory absent')
+    def inventory(path):
+        value=adapter._get(path)
+        _require(isinstance(value.get('items'),list) and not value.get('metadata',{}).get('continue') and
+                 value.get('metadata',{}).get('remainingItemCount') in (None,0),'public reader inventory incomplete')
+        return value['items']
+    sets=inventory(f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/replicasets')
+    owners={r['metadata']['uid']:r for r in sets if any(o.get('controller') is True and o.get('uid')==deployment['metadata']['uid'] for o in r.get('metadata',{}).get('ownerReferences',[]))}
+    pods=[p for p in inventory(f'/api/v1/namespaces/{kube.NAMESPACE}/pods') if any(o.get('controller') is True and o.get('uid') in owners for o in p.get('metadata',{}).get('ownerReferences',[]))]
+    _require(len(pods)==1,'public reader ownership is not singular');pod=pods[0];statuses=pod.get('status',{}).get('containerStatuses',[])
+    reference=[o for o in pod['metadata'].get('ownerReferences',[]) if o.get('controller') is True]
+    _require(len(reference)==1 and reference[0]['uid'] in owners,'public reader controller changed')
+    rs=owners[reference[0]['uid']];pod_hash=pod['metadata'].get('labels',{}).get('pod-template-hash')
+    _require(not rs['metadata'].get('deletionTimestamp') and isinstance(pod_hash,str) and re.fullmatch('[a-z0-9]{1,63}',pod_hash) and
+             rs['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'public reader ReplicaSet changed')
+    actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');actual['metadata']['labels'].pop('pod-template-hash')
+    template=deployment['spec']['template'];wanted={'apiVersion':'v1','kind':'Pod','metadata':{
+        **copy.deepcopy(template['metadata']),'name':pod['metadata']['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
+    storage._consumer_object(actual,wanted)
+    _require(not pod['metadata'].get('deletionTimestamp') and pod.get('status',{}).get('phase')=='Running' and
+             any(c.get('type')=='Ready' and c.get('status')=='True' for c in pod['status'].get('conditions',[])) and
+             len(statuses)==1 and statuses[0].get('ready') is True and statuses[0].get('name')=='runtime' and
+             type(statuses[0].get('restartCount')) is int and statuses[0]['restartCount']>=0,'public reader Pod not ready')
+    image=deployment['spec']['template']['spec']['containers'][0]['image']
+    _require(statuses[0].get('imageID','').removeprefix('containerd://').removeprefix('docker-pullable://').split('@')[-1]==image.split('@')[-1], 'public reader image changed')
+    _require(isinstance(statuses[0].get('containerID'),str) and re.fullmatch(r'(?:containerd|docker)://[0-9a-f]{64}',statuses[0]['containerID']), 'public reader container identity invalid')
+    snapshot.update(publicReaderObjects=reader,publicReaderPod={'uid':pod['metadata']['uid'],'spec':pod['spec'],
+        'restartCount':statuses[0]['restartCount'],'containerId':statuses[0].get('containerID'),'imageId':statuses[0]['imageID']})
+    record={'schemaVersion':'roebel_review_public_preservation_v1','planSha256':expected_plan_sha256,
+            'operationsRevision':adapter.revision,'snapshot':snapshot}
+    if baseline is None:
+        _require(expected_baseline_sha256 is None and not parent['completed'] and parent['pending'] in (None,'fence-source') and
+                 parent['status'] in ('reserved','effect-intent'),'public preservation baseline must precede source fencing')
+        before_fence()
+    else:
+        prior=_worker_lifecycle_receipt(baseline,expected_baseline_sha256)
+        _require(prior==record,'public workloads or retained tracer changed during migration')
+    return record|{'canonicalSha256':canonical_sha256(record)}

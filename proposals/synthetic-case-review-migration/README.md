@@ -631,6 +631,27 @@ until their receipts are captured, then clean only that workload's own temporary
 storage. The runner never removes source or target directories, and never
 overwrites an existing result.
 
+## Live preservation observation
+
+`observe_review_public_preservation` reuses the existing Kubernetes workload
+verifier without requiring the Case writer to remain running. Its baseline must
+be captured before source fencing and independently pinned for subsequent
+stages. It checks the admitted public workloads, retained tracer storage and
+unchanged public Case reader, including its actual Pod template, image,
+container identity and restart count. It makes only Kubernetes GET requests.
+
+`observe_review_configuration` joins the existing private-file grant check to
+the two live immutable Secrets. It requires the original source provisioning
+receipt and the target receipt pinned in the handover plan, checks their exact
+UIDs, ownership nonces and bytes, and repeats the observations to detect changes
+during the read. The current time and all grants must cover the handover window.
+Returned evidence contains identities and checksums, never configuration or
+credentials. Transport exceptions are replaced with a fixed error message.
+
+These observations are readiness inputs, not the full live Adapter. They do not
+replace original Case HTTP acceptance, physical mount release, complete stage
+orchestration, independently admitted successor resources or a full rehearsal.
+
 ## Verification
 
 Run descriptor and failure-boundary tests with:
@@ -652,10 +673,11 @@ uses the public synthetic fixture and a simulated storage observation, not live
 accounts or Kubernetes. It checks admission version 3, exact source bytes,
 candidate activation, identical retry, ordinary runtime configuration and
 refusal to replay after the target has reopened. It starts no HTTP listener.
-The same invocation runs all descriptor tests. Seven tests pass locally.
+The same invocation runs all descriptor tests. The dated verification record
+reports observed counts and distinguishes configured from skipped integration.
 
 The storage transaction and its bounded kubectl Adapter are exercised by
-`python3 -m unittest -v scripts.test_case_review_storage`: twenty tests cover
+`python3 -m unittest -v scripts.test_case_review_storage`: these tests cover
 durable intent, delayed binding, lost responses, ownership conflicts, guarded
 retention, exact recovery, changed identities and forbidden transport requests.
 They use synthetic API responses and real private receipt files; they do not

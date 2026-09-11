@@ -179,6 +179,24 @@ class KubernetesAdapter:
             if self.secret_uid is None:self.secret_uid=secret['metadata']['uid']
             core._require(self.secret_uid==secret['metadata']['uid'],'private configuration Secret UID drift')
             del raw,secret
+        workloads=self.observe_preserved_workloads()
+        preserved={
+            'sourceUid':source['metadata']['uid'],'namespaces':namespaces,
+            'pvcUid':pvc['metadata']['uid'], 'pvUid':pv['metadata']['uid'],
+            'pvcSpec':pvc['spec'],'pvSpec':pv['spec'], **workloads,
+        }
+        if self.preservation is None: self.preservation=preserved
+        core._require(self.preservation==preserved,'protected runtime preservation drift')
+
+    def observe_preserved_workloads(self):
+        """Read unchanged public workloads/storage without Case lifecycle gates.
+
+        This still checks the admitted desired render, Flux ownership, actual
+        readiness and exact retained tracer identity. It reads no credential and
+        does not require the Case control writer or migration worker to exist.
+        The caller must pin/compare the returned identity/spec snapshot across
+        migration stages and separately verify cluster/source/Case state.
+        """
         # Verify actual workloads against the admitted render, not a baseline
         # captured from possibly drifted live state.
         existing_uids={}
@@ -206,15 +224,11 @@ class KubernetesAdapter:
         postgres=[p for p in pods if p['metadata']['uid']==POSTGRES_UID]
         core._require(len(postgres)==1 and not postgres[0]['metadata'].get('deletionTimestamp'),'tracer Pod identity changed')
         core._require(postgres[0]['status']['phase']=='Running' and all(c['restartCount']==0 and c['ready'] for c in postgres[0]['status']['containerStatuses']),'tracer readiness/restart drift')
-        preserved={
-            'sourceUid':source['metadata']['uid'],'existingObjectUids':existing_uids,'namespaces':namespaces,
-            'pvcUid':pvc['metadata']['uid'], 'pvUid':pv['metadata']['uid'],
-            'pvcSpec':pvc['spec'],'pvSpec':pv['spec'],
-            'postgresUid':POSTGRES_UID,'postgresSpec':postgres[0]['spec'],
-            'tracerClaim':tracer_claim['spec'],'tracerVolume':tracer_volume['spec'],
-        }
-        if self.preservation is None: self.preservation=preserved
-        core._require(self.preservation==preserved,'protected runtime preservation drift')
+        return copy.deepcopy({
+            'existingObjectUids':existing_uids,'postgresUid':POSTGRES_UID,
+            'postgresSpec':postgres[0]['spec'],'tracerClaim':tracer_claim['spec'],
+            'tracerVolume':tracer_volume['spec'],
+        })
 
     def _pod(self,owned):
         deployment=self.get(owned['target'])
