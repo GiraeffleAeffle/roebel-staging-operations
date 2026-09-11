@@ -1064,3 +1064,161 @@ class GitOpsTargetProofTests(unittest.TestCase):
         self.git('add','README.md',cwd=self.target);self.git('-c','user.name=Local Rehearsal','-c','user.email=rehearsal@example.invalid','commit','--quiet','-m','Unexpected source',cwd=self.target)
         self.revision=self.git('rev-parse','HEAD',cwd=self.target);self.source['status']['artifact']['revision']='main@sha1:'+self.revision
         with self.assertRaises(BootstrapStopped):self.verify()
+
+
+class MigrationStageDriverTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    envelope=WorkerDriverTests.envelope
+    exchange=WorkerDriverTests.exchange
+    new_sink=WorkerDriverTests.new_sink
+    def setUp(self):
+        WorkerDriverTests.setUp(self)
+        self.captured=self.capture;self.stage_actions=[];self.missing=False
+        _,evidence=fixture()
+        for e in evidence.values():
+            for key in e:
+                if key in self.plan['pins']:e[key]=self.plan['pins'][key]
+                if key in self.plan['identities']:e[key]=self.plan['identities'][key]
+        evidence['verify-backup'].update({k:v for k,v in self.facts.items() if k in evidence['verify-backup']})
+        evidence['verify-backup']['restoredFilesSha256']=self.facts['sourceFilesSha256']
+        self.parent['pending']='prepare-migration';self.parent['completed']=[{'step':s,'evidence':evidence[s]} for s in review.STEPS[:3]]
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        self.original_pin=self.parent['canonicalSha256']
+        self.request=review.build_review_worker_request(self.plan,self.binding,'prepare',captured=self.captured)
+        candidate={k:sha(k) for k in ('journalHeadChecksum','sourceConfigFingerprint','targetConfigFingerprint','sourceOptionsFingerprint',
+                                    'targetOptionsFingerprint','preservedTablesChecksum','targetDatabaseSha256')}
+        candidate.update(schemaVersion='synthetic_review_migration_candidate_v1',caseId=self.plan['caseId'],caseVersion=3,
+            admissionReceiptChecksum=self.facts['admissionReceiptChecksum'],sourceSealChecksum=self.facts['sourceSealChecksum'],
+            sourceDatabaseSha256=self.facts['sourceDatabaseSha256'],targetDatabaseByteLength=4096,testOnly=True,authorityBinding='none')
+        candidate['candidateChecksum']=sha(candidate)
+        self.output=self.envelope(self.request,{'candidateRootDir':'/private/synthetic-candidate','receipt':candidate})
+        self.worker_transport=SimpleNamespace(pod_uid=self.pod_uid,exchange=self.stage_exchange)
+    def stage_exchange(self,action,request_bytes,**kwargs):
+        import os,hashlib
+        self.stage_actions.append(action)
+        self.assertEqual(kwargs['expected_parent_sha256'],self.original_pin)
+        self.assertEqual(json.loads(request_bytes),self.request)
+        stage=json.loads(self.sink.path.read_text());child=stage['commands']['prepare']
+        saved=json.loads((self.directory_path/child['receiptFile']).read_text())
+        self.assertTrue(saved['invokeIntent'])
+        if action=='invoke':raise TimeoutError('response lost after preparation')
+        self.assertEqual(action,'result')
+        if self.missing:raise BootstrapStopped('retained result not yet visible')
+        data=json.dumps(self.output,sort_keys=True,separators=(',',':')).encode();os.write(kwargs['output_fd'],data);os.fsync(kwargs['output_fd'])
+        return {'status':'private-output-saved','bytes':len(data),'sha256':'sha256:'+hashlib.sha256(data).hexdigest()}
+    def advance(self,prior=None):
+        return review.advance_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],transport=self.worker_transport,sink=self.sink,
+            artifact_directory=self.directory_path,verify_ready=lambda *args:None,captured=self.captured,prior=prior,
+            expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def resume(self):
+        prior=json.loads(self.sink.path.read_text());self.new_sink();return self.advance(prior)
+    def test_real_worker_operator_composes_preparation_and_recovers_original_parent_intent(self):
+        result=self.advance();self.assertEqual(result['status'],'complete')
+        self.assertEqual(result['evidence']['candidateChecksum'],self.output['result']['receipt']['candidateChecksum'])
+        self.parent['status']='awaiting-evidence';self.parent['previousReceiptSha256']=self.original_pin
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        self.assertNotEqual(self.parent['canonicalSha256'],self.original_pin)
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(self.stage_actions,['invoke','result'])
+    def test_incomplete_child_is_resumed_from_its_checkpoint_without_new_invocation(self):
+        self.missing=True;self.assertEqual(self.advance()['status'],'waiting')
+        self.assertEqual(self.resume()['status'],'waiting')
+        self.missing=False;self.assertEqual(self.resume()['status'],'complete')
+        self.assertEqual(self.stage_actions.count('invoke'),1)
+    def test_lost_stage_completion_reuses_the_newer_child_checkpoint(self):
+        commit=self.sink.commit
+        def fail(value):
+            if value['status']=='complete':raise OSError('stage response lost')
+            commit(value)
+        self.sink.commit=fail
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(self.stage_actions,['invoke','result'])
+    def test_missing_child_checkpoint_never_falls_back_to_reissuing_preparation(self):
+        self.missing=True;result=self.advance()
+        (self.directory_path/result['commands']['prepare']['receiptFile']).unlink()
+        with self.assertRaises(BootstrapStopped):self.resume()
+        self.assertEqual(self.stage_actions,['invoke','result'])
+    def test_changed_parent_prefix_allows_no_new_effect(self):
+        self.missing=True;self.advance();before=list(self.stage_actions)
+        self.parent['completed'][2]['evidence']['sourceDatabaseSha256']=sha('changed')
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        with self.assertRaises(BootstrapStopped):self.resume()
+        self.assertEqual(self.stage_actions,before)
+
+    def test_three_migration_stages_compose_real_encryption_and_controlled_worker_recovery(self):
+        import hashlib,os,shutil,subprocess
+        age=shutil.which('age');keygen=shutil.which('age-keygen')
+        if not age or not keygen:self.skipTest('real age executables not installed')
+        age=str(Path(age).resolve());key=self.directory_path/'disposable-age.key'
+        subprocess.run([keygen,'-o',str(key)],capture_output=True,check=True)
+        recipient=subprocess.check_output([keygen,'-y',str(key)],text=True,stderr=subprocess.PIPE).strip()
+        options={'age_binary':age,'expected_age_sha256':'sha256:'+hashlib.sha256(Path(age).read_bytes()).hexdigest(),
+                 'recipient':recipient,'identity_path':str(key)}
+        def checked(body,key):return body|{key:sha(body)}
+        target_claim=checked({'schemaVersion':'case_durable_deployment_claim_v1','municipalityId':self.binding['municipalityId'],
+            'releaseDigest':self.binding['releaseDigest'],'controlDeploymentBindingChecksum':self.binding['bindingChecksum'],
+            'pvc':{'namespace':self.binding['storage']['pvcNamespace'],'name':self.binding['storage']['pvcName'],'uid':self.binding['storage']['pvcUid']},
+            'pvName':self.binding['storage']['pvName']},'claimChecksum')
+        source_claim=checked({'schemaVersion':'case_durable_deployment_claim_v1','controlDeploymentBindingChecksum':self.plan['pins']['sourceBindingSha256']},'claimChecksum')
+        # Controlled worker result fixtures. Actual runtime/SQLite seal semantics
+        # are exercised by the separate public-source integration suite.
+        source_seal=checked({'deploymentClaimChecksum':source_claim['claimChecksum'],'databaseSha256':self.facts['sourceDatabaseSha256'],
+            'recoveryEvidence':{'syntheticFixture':True}},'sealChecksum')
+        self.facts.update(sourceDeploymentClaimChecksum=source_claim['claimChecksum'],sourceSealChecksum=source_seal['sealChecksum'])
+        self.plan['pins']['targetDeploymentClaimChecksum']=target_claim['claimChecksum']
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        self.parent.update(planSha256=self.plan['planSha256'],pending='verify-backup',completed=self.parent['completed'][:2])
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'});self.original_pin=self.parent['canonicalSha256']
+        requests={};results={};effects=[];uploaded=False;missing=True
+        capture_request=review.build_review_worker_request(self.plan,self.binding,'capture-backup')
+        captured=self.envelope(capture_request,self.facts);requests['capture-backup']=capture_request;results['capture-backup']=captured
+        verification=review.build_review_worker_request(self.plan,self.binding,'verify-backup',captured=captured)
+        requests['verify-backup']=verification;results['verify-backup']=self.envelope(verification,self.facts|{
+            'restoredFilesSha256':self.facts['sourceFilesSha256'],'restoredCandidateChecksum':sha('restored')})
+        def exchange(action,raw,**kwargs):
+            nonlocal uploaded
+            req=json.loads(raw);mode=req['mode'];self.assertEqual(req,requests[mode])
+            self.assertEqual(kwargs['expected_parent_sha256'],self.original_pin)
+            stage=json.loads(self.sink.path.read_text());command=stage['commands'][mode]
+            child=json.loads((self.directory_path/command['receiptFile']).read_text())
+            if action=='upload-archive':
+                self.assertTrue(child['uploadIntent']);self.assertEqual(kwargs['archive_bytes'],self.archive)
+                effects.append((mode,action));uploaded=True;raise TimeoutError('lost upload response')
+            if action=='verify-archive':
+                self.assertTrue(uploaded);return {'status':'private-archive-stored','archiveSha256':self.archive_pin}
+            self.assertTrue(child['invokeIntent'])
+            if action=='invoke':effects.append((mode,action));raise TimeoutError('lost invoke response')
+            if mode=='verify-backup' and missing:raise BootstrapStopped('verification result delayed')
+            data=self.archive if action=='archive' else json.dumps(results[mode],sort_keys=True,separators=(',',':')).encode()
+            os.write(kwargs['output_fd'],data);os.fsync(kwargs['output_fd'])
+            return {'status':'private-output-saved','bytes':len(data),'sha256':'sha256:'+hashlib.sha256(data).hexdigest()}
+        transport=SimpleNamespace(pod_uid=self.pod_uid,exchange=exchange)
+        def advance(prior=None,**inputs):
+            return review.advance_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+                parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],transport=transport,sink=self.sink,
+                artifact_directory=self.directory_path,verify_ready=lambda *args:None,prior=prior,
+                expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW,**inputs)
+        with self.assertRaises(BootstrapStopped):advance(backup_options=options)
+        prior=json.loads(self.sink.path.read_text());cipher=next(self.directory_path.glob('encrypted-*/case-backup.age'));cipher_before=cipher.read_bytes()
+        self.assertNotIn('activate',dict(effects));missing=False;self.new_sink()
+        backup=advance(prior,backup_options=options);self.assertEqual(backup['status'],'complete');self.assertEqual(cipher.read_bytes(),cipher_before)
+        self.parent['completed'].append({'step':'verify-backup','evidence':backup['evidence']});self.parent['pending']='prepare-migration'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'});self.original_pin=self.parent['canonicalSha256']
+        preparation=review.build_review_worker_request(self.plan,self.binding,'prepare',captured=captured)
+        candidate=copy.deepcopy(self.output['result']['receipt']);candidate.update(sourceSealChecksum=source_seal['sealChecksum']);candidate['candidateChecksum']=sha({k:v for k,v in candidate.items() if k!='candidateChecksum'})
+        prepared=self.envelope(preparation,{'candidateRootDir':'/private/synthetic-candidate','receipt':candidate});requests['prepare']=preparation;results['prepare']=prepared
+        self.new_sink();prepared_stage=advance(captured=captured);self.assertEqual(prepared_stage['status'],'complete')
+        self.parent['completed'].append({'step':'prepare-migration','evidence':prepared_stage['evidence']});self.parent['pending']='activate-migration'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'});self.original_pin=self.parent['canonicalSha256']
+        activation=review.build_review_worker_request(self.plan,self.binding,'activate',captured=captured,prepared=prepared)
+        target_seal=checked({'deploymentClaimChecksum':target_claim['claimChecksum'],'databaseSha256':candidate['targetDatabaseSha256'],
+            'databaseByteLength':candidate['targetDatabaseByteLength'],'configFingerprint':candidate['targetConfigFingerprint'],
+            'recoveryEvidence':source_seal['recoveryEvidence'],'closedAtUtc':'2026-09-10T12:00:01.000Z'},'sealChecksum')
+        activated=checked({'schemaVersion':'synthetic_review_migration_activation_v1','planChecksum':activation['migrationPlan']['planChecksum'],
+            'candidate':candidate,'sourceClaim':source_claim,'sourceSeal':source_seal,'targetClaim':target_claim,'targetSeal':target_seal,
+            'startedAtUtc':'2026-09-10T12:00:00.000Z'},'activationChecksum')
+        requests['activate']=activation;results['activate']=self.envelope(activation,activated)
+        self.new_sink();final=advance(captured=captured,prepared=prepared);self.assertEqual(final['status'],'complete')
+        self.assertEqual(final['evidence']['candidateChecksum'],prepared_stage['evidence']['candidateChecksum'])
+        self.assertEqual(effects,[('capture-backup','invoke'),('verify-backup','upload-archive'),('verify-backup','invoke'),('prepare','invoke'),('activate','invoke')])

@@ -1790,3 +1790,143 @@ def _review_migration_result_evidence(plan, step, *, request, result, previous, 
             evidence.update(activationReceiptChecksum=body['activationChecksum'],sourceDatabaseSha256=backup['sourceDatabaseSha256'],targetSealChecksum=target_seal['sealChecksum'])
     _evidence(plan,step,evidence,previous)
     return evidence
+
+
+def _review_private_bytes(path, *, limit=1048576, expected_sha256=None, expected_size=None, allow_empty=False):
+    import os,stat,hashlib
+    from pathlib import Path
+    path=Path(path)
+    _require(path.is_absolute() and path.resolve()==path,'review artifact path changed')
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        before=os.fstat(fd)
+        _require(stat.S_ISREG(before.st_mode) and stat.S_IMODE(before.st_mode)==0o600 and before.st_uid==os.getuid() and before.st_nlink==1 and
+                 (0 if allow_empty else 1)<=before.st_size<=limit,'review artifact ownership or size changed')
+        data=os.pread(fd,limit+1,0);after=os.fstat(fd);named=os.lstat(path)
+        _require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==
+                 (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) and
+                 (named.st_dev,named.st_ino)==(before.st_dev,before.st_ino) and len(data)==before.st_size and
+                 (expected_size is None or len(data)==expected_size) and
+                 (expected_sha256 is None or 'sha256:'+hashlib.sha256(data).hexdigest()==expected_sha256),'review artifact bytes changed')
+        return data
+    finally:os.close(fd)
+
+
+def advance_review_migration_stage(plan, target_binding, *, expected_plan_sha256, parent_receipt, expected_parent_sha256,
+        transport, sink, artifact_directory, verify_ready, captured=None, prepared=None, backup_options=None,
+        prior=None, expected_prior_sha256=None, clock=None):
+    """Compose the middle stages using real worker and encrypted-backup operators.
+
+    The original parent intent is retained across coordinator checkpoints.
+    Each child attempt's path and predecessor are journalled before execution;
+    recovery reads the latest owned child checkpoint, including a result saved
+    after the stage process lost its response. It never drops a child intent.
+    This operator requires an already admitted, mounted worker. Readiness and
+    lifecycle ownership remain the complete live Adapter's responsibility.
+    """
+    import os,stat,secrets
+    from pathlib import Path
+    from .staging_participant_flux_bootstrap import ReceiptSink
+    validate_plan(plan,expected_plan_sha256)
+    parent=_state(plan,parent_receipt,expected_parent_sha256);step=parent['pending']
+    _require(step in ('verify-backup','prepare-migration','activate-migration') and len(parent['completed'])==STEPS.index(step) and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'),'migration stage lacks parent intent')
+    directory=Path(artifact_directory);info=os.lstat(directory)
+    _require(directory.is_absolute() and directory.resolve()==directory and stat.S_ISDIR(info.st_mode) and
+             stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'migration stage requires private directory')
+    mode={'verify-backup':'capture-backup','prepare-migration':'prepare','activate-migration':'activate'}[step]
+    request=build_review_worker_request(plan,target_binding,mode,captured=captured,prepared=prepared)
+    if step=='verify-backup':
+        _closed(backup_options,{'age_binary','expected_age_sha256','recipient','identity_path'},'backup options incomplete')
+    else:_require(backup_options is None,'unexpected backup options')
+    initial={'schemaVersion':'roebel_review_migration_stage_v1','planSha256':expected_plan_sha256,'step':step,
+             'parentIntent':copy.deepcopy(parent_receipt),'workerPodUid':transport.pod_uid,'artifactDirectory':str(directory),
+             'inputSha256':canonical_sha256({'request':request,'captured':captured,'prepared':prepared,'backupOptions':backup_options}),
+             'previousReceiptSha256':None,'status':'reserved','commands':{},'backupReceipt':None,'evidence':None}
+    state=copy.deepcopy(initial)
+    if prior is not None:
+        state=_worker_lifecycle_receipt(prior,expected_prior_sha256);_closed(state,initial,'migration stage recovery shape changed')
+        _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','step','workerPodUid','artifactDirectory','inputSha256')) and
+                 state['status'] in ('reserved','intent','waiting','stopped-preserve-state','complete') and isinstance(state['commands'],dict) and
+                 set(state['commands'])<=({'capture-backup','verify-backup'} if step=='verify-backup' else {mode}), 'migration stage recovery binding changed')
+        original=state['parentIntent'];old=_state(plan,original,original.get('canonicalSha256'))
+        _require(old['completed']==parent['completed'] and old['pending']==step and old['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'), 'original stage intent differs from current coordinator')
+        state['previousReceiptSha256']=expected_prior_sha256
+    else:_require(expected_prior_sha256 is None,'orphan migration stage recovery pin')
+    original=state['parentIntent'];original_pin=original['canonicalSha256']
+    previous={r['step']:r['evidence'] for r in parent['completed']}
+    now=clock or (lambda:datetime.now(timezone.utc))
+    def fresh(*unused):
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'migration stage window closed')
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'migration stage readiness exceeded window')
+    def commit(status):
+        state['status']=status;sink.commit(copy.deepcopy(state));return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+    def path(name):
+        _require(isinstance(name,str) and re.fullmatch('[0-9a-f]{32}-worker.json',name),'migration child path invalid')
+        return directory/name
+    def child(command):
+        _closed(command,{'requestSha256','receiptFile','prior'},'migration child reference changed')
+        value=command['prior']
+        if value is not None:_worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+        file=path(command['receiptFile'])
+        # A missing or empty referenced checkpoint cannot prove that no child
+        # effect happened. Never fall back to an older intent in that case.
+        raw=_review_private_bytes(file)
+        value=json.loads(raw);_worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+        if command['prior'] is not None:
+            _require(value['previousReceiptSha256']==command['prior']['canonicalSha256'],'migration child predecessor changed')
+        return value
+    def artifact(receipt,kind):
+        _require(receipt['status']=='complete','migration worker has not completed')
+        record=receipt['artifacts'][kind];_closed(record,{'name','sha256','bytes'},'migration artifact record changed')
+        _require(isinstance(record['name'],str) and re.fullmatch('[0-9a-f]{32}-'+kind+r'\.private',record['name']),'migration artifact name changed')
+        location=directory/record['name']
+        return location,_review_private_bytes(location,limit=64*1024*1024 if kind=='archive' else 1048576,
+                                              expected_sha256=record['sha256'],expected_size=record['bytes'])
+    def worker(worker_request,archive_bytes=None):
+        fresh();key=worker_request['mode'];pin=canonical_sha256(worker_request);command=state['commands'].get(key)
+        predecessor=None
+        if command is not None:
+            _require(command['requestSha256']==pin,'migration child request changed');predecessor=child(command)
+        name=secrets.token_hex(16)+'-worker.json'
+        state['commands'][key]={'requestSha256':pin,'receiptFile':name,'prior':predecessor};commit('intent')
+        output=ReceiptSink.reserve(path(name))
+        receipt=advance_review_worker_exchange(plan,worker_request,expected_plan_sha256=expected_plan_sha256,
+            parent_receipt=original,expected_parent_sha256=original_pin,transport=transport,sink=output,artifact_directory=directory,
+            verify_ready=fresh,archive_bytes=archive_bytes,prior=predecessor,
+            expected_prior_sha256=predecessor['canonicalSha256'] if predecessor else None)
+        if receipt['status']!='complete':return None
+        _,raw=artifact(receipt,'result');return receipt,json.loads(raw)
+    try:
+        commit(state['status']);fresh();outcome=worker(request)
+        if outcome is None:return commit('waiting')
+        worker_receipt,result=outcome
+        if step=='verify-backup':
+            archive_path,_=artifact(worker_receipt,'archive')
+            verification=build_review_worker_request(plan,target_binding,'verify-backup',captured=result)
+            output=directory/('encrypted-'+original_pin.removeprefix('sha256:'))
+            pending=None;pending_path=output/'backup-pending.json'
+            if output.exists():
+                # An existing directory without the durable encryption checkpoint
+                # is ambiguous. Preserve it; never restart encryption there.
+                pending=json.loads(_review_private_bytes(pending_path))
+                _worker_lifecycle_receipt(pending,pending.get('canonicalSha256'))
+            verified_result=None
+            def verify_restored(restored_path,pin):
+                nonlocal verified_result
+                fresh();data=_review_private_bytes(restored_path,limit=64*1024*1024,expected_sha256=pin)
+                restored=worker(verification,data)
+                _require(restored is not None,'migration restore awaits worker evidence')
+                _,verified_result=restored;return verified_result
+            backup=encrypt_and_verify_case_backup(capture=result,expected_capture_sha256=result['resultSha256'],archive_path=archive_path,
+                output_directory=output,expected_verification_request_sha256=canonical_sha256(verification),verify_restored=verify_restored,
+                pending_receipt=pending,expected_pending_sha256=pending['canonicalSha256'] if pending else None,**backup_options)
+            state['backupReceipt']=backup
+            evidence=review_migration_stage_evidence(plan,step,request=verification,result=verified_result,previous=previous,backup_receipt=backup)
+        else:evidence=review_migration_stage_evidence(plan,step,request=request,result=result,previous=previous)
+        fresh();state['evidence']=evidence;return commit('complete')
+    except Exception:
+        try:commit('stopped-preserve-state')
+        except Exception:pass
+        raise BootstrapStopped('migration stage stopped; recover owned child receipts without repeating effects') from None

@@ -560,6 +560,27 @@ belongs to `example-city`: integration explicitly proves the public guard reject
 it, then tests the internal format translation without relabelling the fixture.
 That is runtime-format evidence, not Röbel admission or a live handover proof.
 
+`advance_review_migration_stage` now composes capture/encrypted restore,
+preparation and activation through the existing fixed worker transport. Each
+stage retains its original parent intent and verifies that later coordinator
+checkpoints have the same completed prefix. Child checkpoint paths and their
+predecessors are recorded before invoking the worker. Recovery reads the latest
+owned child checkpoint even when the enclosing stage did not receive its result.
+Missing, empty, changed or unlinked child checkpoints stop recovery; it never
+falls back to an older intent and repeats an effect.
+
+The backup stage supplies the real encryption operator with a callback that
+resumes the same upload/restore exchange. Completion returns the validated stage
+evidence. This is an advancing operator, not a read-only historical observer;
+it must run only for the coordinator's pending stage with an already admitted,
+mounted worker and complete live readiness checks. Lifecycle creation/retirement
+and historical evidence observation still need composition by the outer driver.
+Tests connect all three stages, real age encryption, delayed restore evidence
+and lost responses with controlled worker results. They verify one invocation
+per command and retained ciphertext; actual SQLite semantics remain covered by
+the separate pinned-runtime integration. The composition test is skipped if age
+and age-keygen are unavailable; the other recovery tests still run.
+
 The remaining integration is the concrete live driver: admission of the exact
 successor, complete stage-aware readiness, original Case/public-service checks,
 and composition/recovery of all private worker, encrypted backup and lifecycle
