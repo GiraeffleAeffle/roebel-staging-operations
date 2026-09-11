@@ -222,7 +222,7 @@ class ReviewRuntimeCompilerTests(unittest.TestCase):
         self.assertEqual(spec['restartPolicy'],'Never');self.assertEqual(spec['nodeSelector'],{'kubernetes.io/hostname':'example-node'})
         self.assertTrue(container['image'].endswith('@'+plan['pins']['migrationImageDigest']))
         self.assertEqual(container['command'],['node','/reviewed/worker-entry.mjs'])
-        self.assertEqual(container['env'],[{'name':'TMPDIR','value':'/work/private'}])
+        self.assertEqual(container['env'],[{'name':'TMPDIR','value':'/work/private'}, {'name':'ROEBEL_REVIEW_WORKER_UID','valueFrom':{'fieldRef':{'apiVersion':'v1','fieldPath':'metadata.uid'}}}])
         self.assertEqual(worker['networkPolicy']['spec']['ingress'],[]);self.assertEqual(worker['networkPolicy']['spec']['egress'],[])
         self.assertEqual(len([v for v in spec['volumes'] if 'persistentVolumeClaim' in v]),2)
         self.assertNotIn('hostPath',json.dumps(worker));self.assertNotIn('application-json',json.dumps(worker['configMap']))
@@ -391,3 +391,134 @@ class MountReleaseTests(unittest.TestCase):
         self.fault=None;self.plan['pins']['sourceBindingSha256']=sha('different binding')
         self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
         with self.assertRaises(BootstrapStopped):self.observe()
+
+
+class WorkerTransportTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        from . import case_runtime_kubernetes as kube
+        from .staging_participant_flux_bootstrap import RawResult
+        from types import SimpleNamespace
+        ReviewRuntimeCompilerTests.setUp(self)
+        self.plan,self.candidate=self.worker_fixture()
+        self.plan['identities']['clusterUid']=kube.CLUSTER_UID
+        self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        self.worker=review.compile_migration_worker(self.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            candidate=self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],node_name='example-node')
+        self.ids=self.plan['identities'];self.pod_uid=uid(777);self.calls=[];self.after_fault=False;self.ready=True
+        ns=kube.NAMESPACE;name='roebel-case-review-migration-v1'
+        def observed(value,number):
+            value=copy.deepcopy(value);value['metadata'].update(uid=uid(number),resourceVersion='10');return value
+        pod=observed(self.worker['pod'],777);pod['spec']['nodeName']='example-node'
+        pod['status']={'phase':'Running','containerStatuses':[{'name':'migration','ready':True,'restartCount':0,
+            'imageID':'containerd://'+self.worker['pod']['spec']['containers'][0]['image']}]}
+        self.pod_path=f'/api/v1/namespaces/{ns}/pods/{name}'
+        self.objects={self.pod_path:pod,'/api/v1/namespaces/kube-system':{'metadata':{'uid':kube.CLUSTER_UID}},
+            '/api/v1/nodes/example-node':{'metadata':{'uid':self.ids['nodeUid']}},
+            f'/api/v1/namespaces/{ns}/configmaps/{name}':observed(self.worker['configMap'],778),
+            f'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies/{name}':observed(self.worker['networkPolicy'],779),
+            f'/apis/apps/v1/namespaces/{ns}/deployments/roebel-case-steward-control':{'metadata':{'uid':self.ids['sourceDeploymentUid']},'spec':{'replicas':0}},
+            '/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/kustomizations/roebel-case-runtime':{'metadata':{'uid':self.ids['reconcilerUid']},'spec':{'suspend':True}},
+            f'/api/v1/namespaces/{ns}/pods':{'items':[pod]}}
+        for side,claim_name in [('source','roebel-case-steward-control-state'),('target','roebel-case-steward-review-state-v1')]:
+            self.objects[f'/api/v1/namespaces/{ns}/persistentvolumeclaims/{claim_name}']={'metadata':{'uid':self.ids[side+'PvcUid']},
+                'spec':{'volumeName':side+'-pv','accessModes':['ReadWriteOncePod']},'status':{'phase':'Bound'}}
+            self.objects['/api/v1/persistentvolumes/'+side+'-pv']={'metadata':{'uid':self.ids[side+'PvUid']},
+                'spec':{'persistentVolumeReclaimPolicy':'Retain','claimRef':{'uid':self.ids[side+'PvcUid']}}}
+        _,evidence=fixture()
+        parent={'schemaVersion':'roebel_review_handover_receipt_v1','planSha256':self.plan['planSha256'],'operationId':self.plan['operationId'],
+            'previousReceiptSha256':None,'status':'effect-intent','completed':[{'step':step,'evidence':evidence[step]} for step in review.STEPS[:2]],'pending':'verify-backup'}
+        self.parent=parent | {'canonicalSha256':sha(parent)}
+        self.request={'schemaVersion':'roebel_case_review_migration_request_v1','sourceRevision':'fdb0b7f36c33d925be141d8e9037b48d17612df8','mode':'capture-backup','caseId':self.plan['caseId'],'sourceRootDir':'/var/lib/stadtstack/case-control',
+            'controlImageDigest':self.plan['pins']['migrationImageDigest'],'targetBinding':{'bindingChecksum':self.plan['pins']['targetBindingSha256']},
+            **{key:self.plan['pins'][key] for key in ('sourceConfigurationSha256','targetConfigurationSha256','admissionReceiptChecksum')}}
+        self.output=json.dumps({'status':'private-archive-captured','resultSha256':sha('result')})
+        def run(args,input_text=None,timeout=None):
+            self.calls.append((args,input_text,timeout))
+            if 'exec' in args:
+                if self.after_fault:self.objects[self.pod_path]['metadata']['uid']=uid(999)
+                return RawResult(out=self.output)
+            return RawResult(out=json.dumps(self.objects[args[-1]]))
+        def ready(*args):
+            if not self.ready:raise RuntimeError('private diagnostics')
+        self.transport=review.KubectlReviewWorkerTransport(self.root,self.plan,self.worker,expected_plan_sha256=self.plan['planSha256'],
+            expected_worker_sha256=self.worker['workerSha256'],pod_uid=self.pod_uid,runner=SimpleNamespace(run=run),snapshot=SimpleNamespace(path='/private/example'),
+            verify_ready=ready,candidate=self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],clock=lambda:NOW)
+    def exchange(self,action='invoke',**kwargs):
+        import hashlib
+        data=json.dumps(self.request).encode()
+        return self.transport.exchange(action,data,request_sha256='sha256:'+hashlib.sha256(data).hexdigest(),
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],**kwargs)
+    def test_fixed_command_has_worker_uid_and_rechecks_ownership(self):
+        self.assertEqual(self.exchange()['status'],'private-archive-captured')
+        calls=[c for c in self.calls if 'exec' in c[0]];self.assertEqual(len(calls),1)
+        command,data,timeout=calls[0];self.assertEqual(command[-2:],['--expected-worker-uid',self.pod_uid]);self.assertIn('-i',command)
+        self.assertNotIn('-t',command);self.assertEqual(timeout,60);self.assertEqual(json.loads(data),self.request)
+        self.assertEqual(sum(c[0][-1]==self.pod_path for c in self.calls),2)
+    def test_cri_digest_identity_and_window_expiring_during_reads(self):
+        self.objects[self.pod_path]['status']['containerStatuses'][0]['imageID']='containerd://'+self.plan['pins']['migrationImageDigest']
+        self.assertEqual(self.exchange()['status'],'private-archive-captured')
+        self.calls=[]
+        self.transport.clock=lambda: review._utc(self.plan['expiresAtUtc']) if self.calls else NOW
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.assertFalse(any('exec' in c[0] for c in self.calls))
+
+    def test_wrong_parent_case_or_incomplete_adapter_cannot_exec(self):
+        self.request['caseId']='other'
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.request['caseId']=self.plan['caseId'];self.ready=False
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.ready=True;self.parent['pending']='activate-migration'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.assertFalse(any('exec' in c[0] for c in self.calls))
+    def test_changed_worker_template_volume_or_source_fence_prevents_exec(self):
+        originals=copy.deepcopy(self.objects)
+        for fault in ('image','sidecar','volume','writer','policy'):
+            self.objects=copy.deepcopy(originals);self.calls=[]
+            if fault=='image':self.objects[self.pod_path]['status']['containerStatuses'][0]['imageID']='changed'
+            if fault=='sidecar':self.objects[self.pod_path]['spec']['containers'].append({'name':'injected'})
+            if fault=='volume':self.objects['/api/v1/persistentvolumes/source-pv']['metadata']['uid']=uid(999)
+            if fault=='writer':next(v for k,v in self.objects.items() if '/deployments/' in k)['spec']['replicas']=1
+            if fault=='policy':next(v for k,v in self.objects.items() if '/networkpolicies/' in k)['spec']['egress']=[{}]
+            with self.subTest(fault=fault),self.assertRaises(BootstrapStopped):self.exchange()
+            self.assertFalse(any('exec' in c[0] for c in self.calls))
+    def test_post_exec_replacement_is_uncertain_and_is_not_retried(self):
+        self.after_fault=True
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.assertEqual(sum('exec' in c[0] for c in self.calls),1)
+    def test_archive_only_writes_verified_bytes_to_fresh_private_descriptor(self):
+        import hashlib,os
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'archive';fd=os.open(path,os.O_CREAT|os.O_EXCL|os.O_RDWR,0o600)
+            try:
+                self.output='private archived Case'
+                pin='sha256:'+hashlib.sha256(self.output.encode()).hexdigest()
+                with self.assertRaises(BootstrapStopped):self.exchange('archive',output_fd=fd,expected_archive_sha256=sha('wrong'))
+                self.assertEqual(path.read_bytes(),b'')
+                result=self.exchange('archive',output_fd=fd,expected_archive_sha256=pin)
+                self.assertEqual(result['sha256'],pin);self.assertEqual(path.read_text(),self.output)
+                self.assertNotIn(self.output,json.dumps(result))
+                with self.assertRaises(BootstrapStopped):self.exchange('archive',output_fd=fd,expected_archive_sha256=pin)
+            finally:os.close(fd)
+
+    def test_activation_must_match_the_prepared_candidate_and_backup_claim(self):
+        _,evidence=fixture()
+        self.parent['completed']=[{'step':step,'evidence':evidence[step]} for step in review.STEPS[:4]]
+        self.parent['pending']='activate-migration'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        migration={'caseId':self.plan['caseId'],'deploymentEnvironment':'staging',
+            'candidateChecksum':evidence['prepare-migration']['candidateChecksum'],
+            'sourceDeploymentClaimChecksum':evidence['verify-backup']['sourceDeploymentClaimChecksum'],
+            'targetDeploymentClaimChecksum':self.plan['pins']['targetDeploymentClaimChecksum'],
+            'notBeforeUtc':self.plan['notBeforeUtc'],'expiresAtUtc':self.plan['expiresAtUtc']}
+        self.request.update(mode='activate',sourceSealChecksum=evidence['verify-backup']['sourceSealChecksum'])
+        self.request['migrationPlan']=migration | {'planChecksum':sha(migration)}
+        self.output=json.dumps({'status':'target-sealed','resultSha256':sha('result')})
+        changed=migration | {'candidateChecksum':sha('other')}
+        self.request['migrationPlan']=changed | {'planChecksum':sha(changed)}
+        with self.assertRaises(BootstrapStopped):self.exchange()
+        self.assertFalse(any('exec' in c[0] for c in self.calls))
+        self.request['migrationPlan']=migration | {'planChecksum':sha(migration)}
+        self.assertEqual(self.exchange()['status'],'target-sealed')

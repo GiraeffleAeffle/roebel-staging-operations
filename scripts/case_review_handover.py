@@ -483,7 +483,8 @@ try {
                         'items':[{'key':ref['key'],'path':'application.json'}]}})
         mounts.append({'name':side+'-configuration','mountPath':'/'+side+'-configuration','readOnly':True})
     container = {'name':'migration','image':storage.REVIEW_IMAGE,'imagePullPolicy':'IfNotPresent',
-                 'command':['node','/reviewed/worker-entry.mjs'],'env':[{'name':'TMPDIR','value':'/work/private'}],
+                 'command':['node','/reviewed/worker-entry.mjs'],'env':[{'name':'TMPDIR','value':'/work/private'},
+                         {'name':'ROEBEL_REVIEW_WORKER_UID','valueFrom':{'fieldRef':{'apiVersion':'v1','fieldPath':'metadata.uid'}}}],
                  'securityContext':copy.deepcopy(old['containers'][0]['securityContext']),
                  'resources':{'requests':{'cpu':'100m','memory':'256Mi'},'limits':{'cpu':'1','memory':'1Gi'}},'volumeMounts':mounts}
     pod = {'apiVersion':'v1','kind':'Pod','metadata':copy.deepcopy(meta), 'spec':{
@@ -680,3 +681,168 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
              'mountObserverPodUid':ids['mountObserverPodUid'],'nodeName':node_name,
              'hostViewSha256':canonical_sha256(view),'observedAtUtc':datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z'),'evidence':evidence}
     return {**receipt,'canonicalSha256':canonical_sha256(receipt)}
+
+
+class KubectlReviewWorkerTransport:
+    """Fixed worker exec, guarded by ordered parent intent and live ownership.
+
+    runner/snapshot are the existing verified executable and kubeconfig ports.
+    verify_ready must verify the complete handover, active stage and private
+    configuration receipts; this transport cannot authorize its own effects.
+    Archive/result output goes only to an owned, empty private descriptor.
+    """
+    def __init__(self, root, plan, worker, *, expected_plan_sha256, expected_worker_sha256,
+                 pod_uid, runner, snapshot, verify_ready, candidate, expected_candidate_sha256, clock=None):
+        validate_plan(plan, expected_plan_sha256)
+        _require(worker.get('workerSha256') == expected_worker_sha256 == canonical_sha256(
+            {k:v for k,v in worker.items() if k != 'workerSha256'}), 'worker compiler pin changed')
+        _require(worker.get('handoverPlanSha256') == expected_plan_sha256 and
+                 worker.get('nodeUid') == plan['identities']['nodeUid'] and UUID.fullmatch(pod_uid), 'worker identity pin invalid')
+        from . import case_runtime_kubernetes as kube
+        _require(worker['pod']['metadata']['namespace'] == kube.NAMESPACE and
+                 worker['pod']['metadata']['name'] == 'roebel-case-review-migration-v1' and
+                 worker['pod']['spec']['containers'][0]['image'].endswith('@'+plan['pins']['migrationImageDigest']), 'worker target changed')
+        _require(worker == compile_migration_worker(root,plan,expected_plan_sha256=expected_plan_sha256,
+                 candidate=candidate,expected_candidate_sha256=expected_candidate_sha256,node_name=worker['nodeName']), 'worker differs from fixed compiler')
+        self.root,self.plan,self.worker = root,copy.deepcopy(plan),copy.deepcopy(worker)
+        self.pod_uid,self.runner,self.snapshot = pod_uid,runner,snapshot
+        self.verify_ready,self.clock = verify_ready,clock or (lambda:datetime.now(timezone.utc))
+        self.base=['kubectl','--kubeconfig',str(snapshot.path),'--request-timeout=20s']
+        self.namespace=kube.NAMESPACE
+
+    def _get(self, path):
+        import json
+        result=self.runner.run(self.base+['get','--raw',path],timeout=25)
+        _require(result.code == 0 and len(result.out.encode()) <= 4*1024*1024,'worker ownership read failed')
+        try:return json.loads(result.out)
+        except (TypeError,ValueError):raise BootstrapStopped('worker ownership response invalid') from None
+
+    def _ownership(self):
+        from . import case_review_storage as storage, case_runtime_kubernetes as kube
+        p,ids=self.plan,self.plan['identities'];ns=self.namespace
+        cluster=self._get('/api/v1/namespaces/kube-system')
+        _require(cluster.get('metadata',{}).get('uid') == ids['clusterUid'] == kube.CLUSTER_UID,'worker cluster changed')
+        node=self._get('/api/v1/nodes/'+self.worker['nodeName'])
+        _require(node.get('metadata',{}).get('uid') == ids['nodeUid'] and not node['metadata'].get('deletionTimestamp'),'worker node changed')
+        desired=self.worker['pod'];name=desired['metadata']['name']
+        pod=self._get(f'/api/v1/namespaces/{ns}/pods/{name}')
+        _require(storage._consumer_object(pod,desired)['uid'] == self.pod_uid and
+                 pod['spec'].get('nodeName') == self.worker['nodeName'] and pod.get('status',{}).get('phase') == 'Running','worker Pod changed')
+        statuses=pod['status'].get('containerStatuses',[])
+        _require(len(statuses)==1 and statuses[0].get('name')=='migration' and statuses[0].get('ready') is True and
+                 statuses[0].get('restartCount') == 0 and statuses[0].get('imageID','').removeprefix('containerd://').removeprefix('docker-pullable://').split('@')[-1] == p['pins']['migrationImageDigest'], 'worker container identity changed')
+        for key,path in [('configMap',f'/api/v1/namespaces/{ns}/configmaps/{name}'),
+                         ('networkPolicy',f'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies/{name}')]:
+            storage._consumer_object(self._get(path),self.worker[key])
+        for side,name in [('source','roebel-case-steward-control-state'),('target','roebel-case-steward-review-state-v1')]:
+            claim=self._get(f'/api/v1/namespaces/{ns}/persistentvolumeclaims/{name}')
+            meta,spec=claim.get('metadata',{}),claim.get('spec',{})
+            _require(meta.get('uid') == ids[side+'PvcUid'] and not meta.get('deletionTimestamp') and
+                     spec.get('accessModes') == ['ReadWriteOncePod'] and claim.get('status',{}).get('phase') == 'Bound','worker claim changed')
+            volume_name=spec.get('volumeName')
+            _require(isinstance(volume_name,str) and re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}',volume_name),'worker PV path invalid')
+            volume=self._get('/api/v1/persistentvolumes/'+volume_name)
+            _require(volume.get('metadata',{}).get('uid') == ids[side+'PvUid'] and not volume['metadata'].get('deletionTimestamp') and
+                     volume.get('spec',{}).get('persistentVolumeReclaimPolicy') == 'Retain' and
+                     volume['spec'].get('claimRef',{}).get('uid') == ids[side+'PvcUid'],'worker retained volume changed')
+        deployment=self._get(f'/apis/apps/v1/namespaces/{ns}/deployments/roebel-case-steward-control')
+        flux=self._get('/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/kustomizations/roebel-case-runtime')
+        _require(deployment.get('metadata',{}).get('uid') == ids['sourceDeploymentUid'] and not deployment['metadata'].get('deletionTimestamp') and
+                 type(deployment.get('spec',{}).get('replicas')) is int and deployment['spec']['replicas']==0 and
+                 flux.get('metadata',{}).get('uid') == ids['reconcilerUid'] and not flux['metadata'].get('deletionTimestamp') and flux.get('spec',{}).get('suspend') is True and
+                 not any(c.get('type')=='Reconciling' and c.get('status')=='True' for c in flux.get('status',{}).get('conditions',[])), 'source fence no longer held')
+        pods=self._get(f'/api/v1/namespaces/{ns}/pods')
+        _require(isinstance(pods.get('items'),list) and not pods.get('metadata',{}).get('continue') and
+                 pods.get('metadata',{}).get('remainingItemCount') in (None,0),'worker Pod inventory incomplete')
+        for item in pods['items']:
+            if item.get('metadata',{}).get('uid') == self.pod_uid:continue
+            _require(item.get('metadata',{}).get('uid') not in (ids['sourcePodUid'],ids['initializerPodUid']) and
+                     not any(v.get('persistentVolumeClaim',{}).get('claimName') in ('roebel-case-steward-control-state','roebel-case-steward-review-state-v1')
+                             for v in item.get('spec',{}).get('volumes',[])), 'another Pod still holds a migration claim')
+        return pod['metadata']['resourceVersion']
+
+    def exchange(self, action, request_bytes, *, request_sha256, parent_receipt,
+                 expected_parent_sha256, archive_bytes=None, output_fd=None, expected_archive_sha256=None):
+        import hashlib,json,os,stat
+        try:
+            _require(action in ('invoke','result','archive','upload-archive') and isinstance(request_bytes,bytes) and
+                     0<len(request_bytes)<=1048576 and 'sha256:'+hashlib.sha256(request_bytes).hexdigest()==request_sha256,'worker request bytes changed')
+            request=json.loads(request_bytes)
+            state=_state(self.plan,parent_receipt,expected_parent_sha256)
+            stage={'capture-backup':'verify-backup','verify-backup':'verify-backup','prepare':'prepare-migration','activate':'activate-migration'}.get(request.get('mode'))
+            _require(stage and state['pending']==stage and len(state['completed'])==STEPS.index(stage) and
+                     state['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'),'worker command lacks ordered parent intent')
+            _require(_utc(self.plan['notBeforeUtc']) <= self.clock() < _utc(self.plan['expiresAtUtc']),'worker handover window expired')
+            _require(request.get('schemaVersion')=='roebel_case_review_migration_request_v1' and request.get('sourceRevision')=='fdb0b7f36c33d925be141d8e9037b48d17612df8','worker source revision changed')
+            for name in ('caseId',):_require(request.get(name)==self.plan[name],'worker Case changed')
+            for name in ('sourceConfigurationSha256','targetConfigurationSha256','admissionReceiptChecksum'):
+                _require(request.get(name)==self.plan['pins'][name],'worker request binding changed')
+            _require(request.get('sourceRootDir')=='/var/lib/stadtstack/case-control' and
+                     request.get('controlImageDigest')==self.plan['pins']['migrationImageDigest'] and
+                     request.get('targetBinding',{}).get('bindingChecksum')==self.plan['pins']['targetBindingSha256'],'worker runtime binding changed')
+            previous={r['step']:r['evidence'] for r in state['completed']}
+            if stage in ('prepare-migration','activate-migration'):
+                _require(request.get('sourceSealChecksum')==previous['verify-backup']['sourceSealChecksum'],'worker source seal changed')
+            if stage=='activate-migration':
+                migration=request.get('migrationPlan',{})
+                _require(migration.get('planChecksum')==canonical_sha256({k:v for k,v in migration.items() if k!='planChecksum'}) and
+                         migration.get('caseId')==self.plan['caseId'] and migration.get('deploymentEnvironment')=='staging' and
+                         migration.get('candidateChecksum')==previous['prepare-migration']['candidateChecksum'] and
+                         migration.get('sourceDeploymentClaimChecksum')==previous['verify-backup']['sourceDeploymentClaimChecksum'] and
+                         migration.get('targetDeploymentClaimChecksum')==self.plan['pins']['targetDeploymentClaimChecksum'] and
+                         _utc(self.plan['notBeforeUtc']) <= _utc(migration.get('notBeforeUtc')) <= self.clock() <
+                         _utc(migration.get('expiresAtUtc')) <= _utc(self.plan['expiresAtUtc']), 'activation request differs from prepared handover')
+            if action=='archive':
+                _require(request['mode']=='capture-backup','archive read outside capture');_sha(expected_archive_sha256)
+            else:_require(expected_archive_sha256 is None,'unexpected archive output pin')
+            if action=='upload-archive':
+                _require(request['mode']=='verify-backup' and isinstance(archive_bytes,bytes) and 0<len(archive_bytes)<=64*1024*1024 and
+                         'sha256:'+hashlib.sha256(archive_bytes).hexdigest()==request.get('archiveSha256'),'restore archive changed')
+            else:_require(archive_bytes is None,'unexpected archive input')
+            output_stat=None
+            if action in ('result','archive'):
+                _require(type(output_fd) is int and output_fd>=3,'private output descriptor required')
+                output_stat=os.fstat(output_fd)
+                _require(stat.S_ISREG(output_stat.st_mode) and stat.S_IMODE(output_stat.st_mode)==0o600 and
+                         output_stat.st_uid==os.getuid() and output_stat.st_nlink==1 and output_stat.st_size==0,'worker output is not fresh/private')
+            else:_require(output_fd is None,'unexpected output descriptor')
+            self.verify_ready(copy.deepcopy(self.plan),copy.deepcopy(state),copy.deepcopy(request))
+            self._ownership()
+            pin=request['archiveSha256'] if action=='upload-archive' else request_sha256
+            input_bytes=request_bytes if action=='invoke' else archive_bytes if action=='upload-archive' else None
+            command=self.base+['exec','-n',self.namespace,'roebel-case-review-migration-v1','-c','migration']
+            if input_bytes is not None:command+=['-i']
+            command+=['--','node','/reviewed/run-case-review-migration.mjs','--worker-'+action,pin,'--expected-worker-uid',self.pod_uid]
+            _require(_utc(self.plan['notBeforeUtc']) <= self.clock() < _utc(self.plan['expiresAtUtc']),'worker handover window expired before exec')
+            result=self.runner.run(command,input_text=input_bytes.decode('utf-8') if input_bytes is not None else None,timeout=60)
+            self._ownership()
+            self.verify_ready(copy.deepcopy(self.plan),copy.deepcopy(state),copy.deepcopy(request))
+            _require(self.clock() < _utc(self.plan['expiresAtUtc']),'worker result arrived after handover window')
+            limit=64*1024*1024 if action=='archive' else 1048576 if action=='result' else 4096
+            _require(result.code==0 and len(result.out.encode())<=limit,'worker outcome unresolved; observe retained result, do not resend')
+            data=result.out.encode('utf-8')
+            if output_stat is not None:
+                current=os.fstat(output_fd)
+                _require((current.st_dev,current.st_ino,current.st_mode,current.st_uid,current.st_nlink,current.st_size)==
+                         (output_stat.st_dev,output_stat.st_ino,output_stat.st_mode,output_stat.st_uid,1,0),'private output descriptor changed')
+                if action=='archive':_require('sha256:'+hashlib.sha256(data).hexdigest()==expected_archive_sha256,'captured archive bytes changed')
+                if action=='result':
+                    record=json.loads(data);body={k:v for k,v in record.items() if k!='resultSha256'}
+                    _require(record.get('resultSha256')==canonical_sha256(body) and record.get('requestSha256')==request_sha256 and
+                             record.get('mode')==request['mode'] and record.get('schemaVersion')=='roebel_case_review_migration_result_v1' and
+                             record.get('controlImageDigest')==request['controlImageDigest'] and
+                             all(record.get(k)==request.get(k) for k in ('sourceRevision','sourceConfigurationSha256','targetConfigurationSha256')),'worker result link changed')
+                offset=0
+                while offset<len(data):
+                    n=os.pwrite(output_fd,data[offset:],offset);_require(n>0,'private output write failed');offset+=n
+                os.fsync(output_fd)
+                return {'status':'private-output-saved','sha256':'sha256:'+hashlib.sha256(data).hexdigest(),'bytes':len(data)}
+            summary=json.loads(data)
+            expected={{'prepare':'candidate-prepared','activate':'target-sealed','capture-backup':'private-archive-captured','verify-backup':'restored-case-verified'}[request['mode']]} if action=='invoke' else {'private-archive-stored'}
+            _require(isinstance(summary,dict) and summary.get('status') in expected and
+                     set(summary)==({'status','resultSha256'} if action=='invoke' else {'status','archiveSha256'}),'worker summary invalid')
+            if action=='upload-archive':_require(summary['archiveSha256']==request['archiveSha256'],'uploaded archive acknowledgement changed')
+            _sha(summary.get('resultSha256') if action=='invoke' else summary.get('archiveSha256'))
+            return summary
+        except Exception:
+            raise BootstrapStopped('review worker exchange stopped; retain stage receipts and private artifacts') from None

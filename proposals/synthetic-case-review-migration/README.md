@@ -379,7 +379,10 @@ separately receipted operation; the helper sends no writes.
 
 The mounted descriptor operator now provides four fixed commands. All run under
 `/work/private` with owned 0700 directories and 0600 regular files. Their only
-argument is a SHA-256 pin; paths and arbitrary executable code are not accepted.
+content argument is a SHA-256 pin. Every command also requires
+`--expected-worker-uid <Pod-UID>`, checked against the Downward API environment
+before reading input or loading runtime code. Paths and arbitrary executable
+code are not accepted.
 
 - `--worker-invoke <request-sha256>` reads at most 1 MiB from stdin, reserves a
   directory for those exact request bytes, opens the existing private source and
@@ -402,18 +405,33 @@ plan must resolve the runtime state; automatic retry after an uncertain effect
 is intentionally absent. A lost transport response with a complete result is
 recoverable through `--worker-result`.
 
-These commands do not verify Kubernetes identities or authorize their own use.
-The parent Adapter still needs exact Pod/image/volume checks, ordered handover
-receipt checks and a bounded exec transport. No command may be invoked on live
-storage until that entire transaction is ready and rehearsed. The compiled
-worker embeds the changed runner; the published runtime image remains unchanged.
+`KubectlReviewWorkerTransport` supplies the fixed exec commands and checks the
+ordered parent receipt, Case/configuration/image pins, prepared candidate and
+migration window. Before and after exec it checks the cluster, node, exact worker
+Pod/template, configuration/policy, retained volume identities, source fence and
+exclusive Pod claim inventory. The worker's own UID check rejects a replacement
+Pod even if its name is reused between the API check and exec. Expiry during
+ownership reads prevents starting the command. Private result/archive bytes are
+verified before writing to a fresh owned 0600 descriptor; diagnostics are not
+returned. The runner captures output before the transport checks its size; worker
+commands also bound their own output. This is not a streaming memory limit.
+
+The parent Adapter must still supply complete readiness and private configuration
+receipt verification. Worker creation/retirement, complete recovery, successor
+admission, restart verification and GitOps restoration remain to be wired and
+rehearsed before source shutdown. The compiler embeds the changed runner; the
+published runtime image remains unchanged.
 
 Local tests exercise private result retrieval, reservation collisions, corrupt
 results, wrong byte pins, archive upload and interruption after a runtime effect.
 The real SQLite test captures an archive through the mailbox, exports it,
 uploads it for verification, restores/replays it and confirms source preservation.
 This validates the command functions; Kubernetes exec and the fixed `/runtime`
-CLI imports have not been executed in a live worker.
+CLI imports have not been executed in a live worker. Seven transport tests use
+a controlled Kubernetes API/exec runner to check the fixed command, replacement
+Pod, changed image/template/volume/fence/policy, stage and candidate mismatch,
+expiry during reads and private archive output. All 66 handover/storage Python
+tests and 13 Node tests pass; the optional real-age test is skipped in this run.
 
 ### Migration and handover
 

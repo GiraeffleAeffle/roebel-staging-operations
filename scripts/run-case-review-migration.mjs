@@ -295,8 +295,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     if (process.env.NODE_OPTIONS || process.env.NODE_PATH || Object.keys(process.env).some((name) => name.startsWith("STADTSTACK_CASE_"))) fail();
     const cli = process.argv.slice(2);
-    const worker = cli.length === 2 && ["--worker-invoke", "--worker-result", "--worker-archive", "--worker-upload-archive"].includes(cli[0]);
-    if (worker) pinName(cli[1]);
+    const worker = cli.length === 4 && cli[2] === "--expected-worker-uid" && ["--worker-invoke", "--worker-result", "--worker-archive", "--worker-upload-archive"].includes(cli[0]);
+    if (worker) {
+      pinName(cli[1]);
+      if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cli[3]) ||
+        process.env.ROEBEL_REVIEW_WORKER_UID !== cli[3]) fail();
+    }
     if (worker && ["--worker-result", "--worker-archive"].includes(cli[0])) {
       process.stdout.write(readWorkerOutput("/work/private", cli[1], cli[0] === "--worker-result" ? "result" : "archive"));
     } else if (worker && cli[0] === "--worker-upload-archive") {
