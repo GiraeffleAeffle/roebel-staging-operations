@@ -8,10 +8,12 @@ that the complete pinned migration and handover implementation is ready.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from datetime import datetime, timezone
 
 from .case_runtime_bootstrap import BootstrapStopped, _require
+from . import case_review_storage as storage
 from .staging_participant_flux_bootstrap import canonical_sha256
 
 
@@ -614,7 +616,7 @@ def advance_source_fence(root, plan, *, expected_plan_sha256, parent_receipt,
         raise BootstrapStopped('source fencing stopped; inspect owned intents without replay or automatic resume') from None
 
 
-def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_filesystem, verify_ready):
+def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_filesystem, verify_ready, migration_pod_uid=None):
     """Read-only API + host filesystem proof for the two released RWOP mounts.
 
     node_filesystem(node_name, node_uid) must use the pinned node transport and
@@ -627,6 +629,9 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
     from . import case_runtime_kubernetes as kube
     validate_plan(plan,expected_plan_sha256)
     ids = plan['identities']
+    _require(migration_pod_uid is None or isinstance(migration_pod_uid,str) and UUID.fullmatch(migration_pod_uid) and
+             migration_pod_uid not in (ids['sourcePodUid'],ids['initializerPodUid'],ids['mountObserverPodUid']), 'migration mount identity invalid')
+    released_uids = [ids['sourcePodUid'],ids['initializerPodUid']] + ([migration_pod_uid] if migration_pod_uid else [])
     binding = json.loads((root/'proposals/synthetic-case-runtime/control-binding.json').read_text())
     body = dict(binding);binding_pin = body.pop('bindingChecksum')
     _require(binding_pin == plan['pins']['sourceBindingSha256'] == canonical_sha256(body), 'mount observation source binding drift')
@@ -655,7 +660,7 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
         for pod in pods['items']:
             pod_uid=pod.get('metadata',{}).get('uid')
             claims={v.get('persistentVolumeClaim',{}).get('claimName') for v in pod.get('spec',{}).get('volumes',[])}
-            if pod_uid in (ids['sourcePodUid'],ids['initializerPodUid']) or claims & {source['pvcName'],'roebel-case-steward-review-state-v1'}:
+            if pod_uid in released_uids or claims & {source['pvcName'],'roebel-case-steward-review-state-v1'}:
                 blocked.append(pod_uid)
         return node_name,blocked
     node_name,blocked=api_observation()
@@ -670,7 +675,7 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
     def mounted(uid):
         return re.search(re.escape(prefix+uid)+r'(?:/|\s)',text) is not None
     _require(mounted(ids['mountObserverPodUid']) and ids['mountObserverPodUid'] in names, 'host mount view has no positive control')
-    if any(mounted(ids[key]) or ids[key] in names for key in ('sourcePodUid','initializerPodUid')):
+    if any(mounted(pod_uid) or pod_uid in names for pod_uid in released_uids):
         return None
     after,blocked=api_observation()
     _require(after == node_name, 'mount observation node changed during read')
@@ -680,6 +685,9 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
     receipt={'schemaVersion':'roebel_review_mount_release_v1','planSha256':expected_plan_sha256,
              'mountObserverPodUid':ids['mountObserverPodUid'],'nodeName':node_name,
              'hostViewSha256':canonical_sha256(view),'observedAtUtc':datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z'),'evidence':evidence}
+    if migration_pod_uid is not None:
+        receipt['schemaVersion'] = 'roebel_review_migration_mount_release_v1'
+        receipt['evidence'] = {'migrationPodUid':migration_pod_uid,'apiAbsent':True,'mountAbsent':True,'positiveControlVerified':True}
     return {**receipt,'canonicalSha256':canonical_sha256(receipt)}
 
 
@@ -846,3 +854,197 @@ class KubectlReviewWorkerTransport:
             return summary
         except Exception:
             raise BootstrapStopped('review worker exchange stopped; retain stage receipts and private artifacts') from None
+
+
+# Worker resource lifecycle: creation and retirement share pinned receipts.
+
+WORKER_RESOURCE_ORDER = ('networkPolicy', 'configMap', 'pod')
+
+
+def _worker_inventory(worker):
+    ns = worker['pod']['metadata']['namespace']
+    return dict(zip(WORKER_RESOURCE_ORDER, (f'/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies',
+                           f'/api/v1/namespaces/{ns}/configmaps', f'/api/v1/namespaces/{ns}/pods')))
+
+
+def _validate_lifecycle_worker(root, plan, worker, candidate):
+    validate_plan(plan, plan['planSha256'])
+    _require(worker == compile_migration_worker(root, plan, expected_plan_sha256=plan['planSha256'],
+             candidate=candidate, expected_candidate_sha256=candidate['candidateSha256'], node_name=worker['nodeName']),
+             'worker lifecycle compiler pin changed')
+
+
+def _worker_lifecycle_receipt(value, pin):
+    body = copy.deepcopy(value); actual = body.pop('canonicalSha256', None)
+    _require(actual == pin == canonical_sha256(body), 'worker lifecycle receipt changed')
+    return body
+
+
+def advance_worker_lifecycle(root, plan, worker, *, candidate, expected_plan_sha256,
+                             expected_worker_sha256, parent_receipt, expected_parent_sha256,
+                             operation, transport, sink, verify_ready, observe_release,
+                             creation_receipt=None, expected_creation_sha256=None,
+                             prior=None, expected_prior_sha256=None, clock=None):
+    """Create fixed resources once, or retire only UIDs in their creation receipt.
+
+    verify_ready(plan,parent,state) checks the *complete* admitted handover,
+    fence, retained bindings and exported backup/migration results at this stage.
+    observe_release(pod_uid) returns an independently verified physical release
+    receipt, or None. Callers must retain its bytes in their private receipt set.
+    Neither callback may be replaced by a success stub for live use.
+    """
+    _validate_lifecycle_worker(root, plan, worker, candidate)
+    _require(plan['planSha256'] == expected_plan_sha256 and worker['workerSha256'] == expected_worker_sha256,
+             'worker lifecycle input pin changed')
+    parent = _state(plan, parent_receipt, expected_parent_sha256)
+    stage = {'create':'verify-backup', 'retire':'release-migration'}.get(operation)
+    _require(stage and parent['pending'] == stage and len(parent['completed']) == STEPS.index(stage) and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'), 'worker lifecycle parent stage invalid')
+    created = None
+    if operation == 'retire':
+        created = _worker_lifecycle_receipt(creation_receipt, expected_creation_sha256)
+        _require(created.get('schemaVersion') == 'roebel_review_worker_lifecycle_v1' and created.get('operation') == 'create' and
+                 created.get('planSha256') == expected_plan_sha256 and created.get('workerSha256') == expected_worker_sha256 and
+                 created.get('status') == 'ready' and set(created.get('records',{})) == set(WORKER_RESOURCE_ORDER) and
+                 all(UUID.fullmatch(r.get('uid','')) and r.get('observed') is True for r in created['records'].values()),
+                 'worker retirement requires completed creation receipt')
+    else:
+        _require(creation_receipt is None and expected_creation_sha256 is None, 'unexpected worker creation link')
+    initial = {'schemaVersion':'roebel_review_worker_lifecycle_v1','operation':operation,
+               'planSha256':expected_plan_sha256,'workerSha256':expected_worker_sha256,
+               'parentIntentSha256':expected_parent_sha256,'creationReceiptSha256':expected_creation_sha256,
+               'previousReceiptSha256':None,'status':'reserved','records':{},'releaseReceiptSha256':None}
+    state = copy.deepcopy(initial)
+    order = WORKER_RESOURCE_ORDER if operation == 'create' else ('pod','configMap','networkPolicy')
+    if prior is not None:
+        state = _worker_lifecycle_receipt(prior, expected_prior_sha256)
+        _closed(state, initial, 'worker lifecycle recovery shape changed')
+        _require(all(state[k] == initial[k] for k in ('schemaVersion','operation','planSha256','workerSha256','parentIntentSha256','creationReceiptSha256')) and
+                 state['status'] in ('reserved','intent','waiting','stopped-preserve-state','ready','retired') and
+                 isinstance(state['records'],dict) and set(state['records']) == set(order[:len(state['records'])]), 'worker lifecycle recovery order changed')
+        for index, key in enumerate(order[:len(state['records'])]):
+            record = state['records'][key]
+            _closed(record, {'uid','resourceVersion','observed'}, 'worker lifecycle intent shape changed')
+            _require(type(record['observed']) is bool and (record['uid'] is None or isinstance(record['uid'],str) and UUID.fullmatch(record['uid'])) and
+                     (record['resourceVersion'] is None or isinstance(record['resourceVersion'],str) and record['resourceVersion'].isdigit()) and
+                     (record['observed'] or index == len(state['records'])-1), 'worker lifecycle intent invalid')
+            if operation == 'retire':
+                _require(record['uid'] == created['records'][key]['uid'] and record['resourceVersion'] is not None, 'worker deletion identity changed')
+            elif record['observed']:
+                _require(record['uid'] is not None and record['resourceVersion'] is not None, 'worker creation identity absent')
+        if state['releaseReceiptSha256'] is not None: _sha(state['releaseReceiptSha256'])
+        _require(state['status'] not in ('ready','retired') or len(state['records']) == 3 and all(r['observed'] for r in state['records'].values()), 'worker completion lacks resources')
+        _require(state['status'] != 'retired' or state['releaseReceiptSha256'] is not None, 'worker retirement lacks physical release')
+        state['previousReceiptSha256'] = expected_prior_sha256
+    else: _require(expected_prior_sha256 is None, 'orphan worker lifecycle recovery pin')
+    now = clock or (lambda: datetime.now(timezone.utc))
+    def fresh():
+        _require(_utc(plan['notBeforeUtc']) <= now() < _utc(plan['expiresAtUtc']), 'worker lifecycle window closed')
+        verify_ready(copy.deepcopy(plan), copy.deepcopy(parent), copy.deepcopy(state))
+        _require(_utc(plan['notBeforeUtc']) <= now() < _utc(plan['expiresAtUtc']), 'worker readiness check outlived handover window')
+    def commit(status):
+        state['status'] = status; sink.commit(copy.deepcopy(state))
+        return copy.deepcopy(state) | {'canonicalSha256':canonical_sha256(state)}
+    def physical_release():
+        proof = observe_release(created['records']['pod']['uid'])
+        if proof is None: return False
+        body = _worker_lifecycle_receipt(proof, proof.get('canonicalSha256'))
+        facts = body.get('evidence', {})
+        _require(body.get('schemaVersion') == 'roebel_review_migration_mount_release_v1' and body.get('planSha256') == expected_plan_sha256 and
+                 facts == {'migrationPodUid':created['records']['pod']['uid'],'apiAbsent':True,'mountAbsent':True,'positiveControlVerified':True}, 'worker physical release proof changed')
+        state['releaseReceiptSha256'] = proof['canonicalSha256']; return True
+    try:
+        commit(state['status']); fresh()
+        paths = _worker_inventory(worker)
+        if operation == 'create' and not state['records']:
+            for key in order:
+                _require(transport.request('GET',paths[key]+'/'+worker[key]['metadata']['name'],None) is None,
+                         'worker inventory already exists before creation')
+        for key in order:
+            fresh()
+            # Keep policy and reviewed code until both worker mount release and
+            # the parent-exported backup/activation results have been verified.
+            if operation == 'retire' and key != 'pod' and not physical_release(): return commit('waiting')
+            desired = worker[key]; collection = paths[key]; path = collection+'/'+desired['metadata']['name']
+            observed = transport.request('GET',path,None)
+            record = state['records'].get(key)
+            if record is None:
+                if operation == 'create':
+                    _require(observed is None, 'worker resource already exists without owned intent')
+                    record = {'uid':None,'resourceVersion':None,'observed':False}
+                else:
+                    _require(observed is not None, 'worker resource disappeared without retirement intent')
+                    identity = storage._consumer_object(observed,desired)
+                    _require(identity['uid'] == created['records'][key]['uid'], 'worker replacement cannot be retired')
+                    record = {'uid':identity['uid'],'resourceVersion':identity['resourceVersion'],'observed':False}
+                state['records'][key] = record; commit('intent'); fresh()
+                try:
+                    if operation == 'create': transport.request('POST',collection,copy.deepcopy(desired))
+                    else: transport.request('DELETE',path,{'apiVersion':'v1','kind':'DeleteOptions',
+                          'preconditions':{'uid':record['uid'],'resourceVersion':record['resourceVersion']}})
+                except Exception: pass  # Observe once; never resend an uncertain request.
+                observed = transport.request('GET',path,None)
+            if operation == 'create':
+                if observed is None:
+                    _require(not record['observed'], 'owned worker resource disappeared')
+                    return commit('waiting')
+                identity = storage._consumer_object(observed,desired)
+                _require(record['uid'] in (None,identity['uid']), 'worker resource UID changed')
+                record.update(uid=identity['uid'],resourceVersion=identity['resourceVersion'],observed=True)
+            else:
+                if observed is not None:
+                    _require(not record['observed'] and observed.get('metadata',{}).get('uid') == record['uid'], 'worker resource replaced after deletion')
+                    return commit('waiting')
+                record['observed'] = True
+            commit('reserved')
+        fresh()
+        if operation == 'retire':
+            if not physical_release(): return commit('waiting')
+            return commit('retired')
+        pod = transport.request('GET',paths['pod']+'/'+worker['pod']['metadata']['name'],None)
+        _require(pod is not None and storage._consumer_object(pod,worker['pod'])['uid'] == state['records']['pod']['uid'], 'worker Pod vanished before readiness')
+        status = pod.get('status',{}); containers = status.get('containerStatuses',[])
+        _require(status.get('phase') not in ('Failed','Succeeded'), 'worker exited before readiness')
+        if status.get('phase') != 'Running' or len(containers) != 1 or containers[0].get('ready') is not True: return commit('waiting')
+        _require(pod['spec'].get('nodeName') == worker['nodeName'] and containers[0].get('name') == 'migration' and
+                 containers[0].get('restartCount') == 0 and containers[0].get('imageID','').removeprefix('containerd://').removeprefix('docker-pullable://').split('@')[-1] == plan['pins']['migrationImageDigest'], 'worker runtime identity changed')
+        return commit('ready')
+    except Exception:
+        try: commit('stopped-preserve-state')
+        except Exception: pass
+        raise BootstrapStopped('worker lifecycle stopped; preserve owned intents and retained volumes') from None
+
+
+class KubectlWorkerLifecycleTransport:
+    """Only the three compiled resources; delete requires the last observed UID/RV."""
+    def __init__(self, worker, *, runner, snapshot):
+        self.worker=copy.deepcopy(worker); self.runner=runner
+        self.base=['kubectl','--kubeconfig',str(snapshot.path),'--request-timeout=20s']
+        self.collections=_worker_inventory(worker)
+        self.paths={collection+'/'+worker[key]['metadata']['name']:key for key,collection in self.collections.items()}
+        self.observed={}
+    def request(self, method, path, payload):
+        _require(method in ('GET','POST','DELETE'), 'worker lifecycle method invalid')
+        if method == 'POST':
+            keys=[key for key,collection in self.collections.items() if path==collection]
+            _require(len(keys)==1 and payload==self.worker[keys[0]], 'worker create outside compiled inventory')
+            args=['create','--raw',path,'-f','-']
+        else:
+            _require(path in self.paths, 'worker lifecycle path outside inventory')
+            if method == 'GET':
+                _require(payload is None, 'worker GET payload invalid');args=['get','--raw',path]
+            else:
+                before=self.observed.get(path)
+                _require(before is not None, 'worker delete requires observed resource')
+                meta=before.get('metadata',{})
+                _require(payload=={'apiVersion':'v1','kind':'DeleteOptions','preconditions':{'uid':meta.get('uid'),'resourceVersion':meta.get('resourceVersion')}} and
+                         isinstance(meta.get('uid'),str) and UUID.fullmatch(meta['uid']) and isinstance(meta.get('resourceVersion'),str) and meta['resourceVersion'].isdigit(), 'worker delete preconditions changed')
+                args=['delete','--raw',path,'-f','-']
+        result=self.runner.run(self.base+args,input_text=None if payload is None else json.dumps(payload,separators=(',',':')),timeout=25)
+        if method == 'GET' and result.code and result.err.startswith('Error from server (NotFound):'):
+            self.observed.pop(path,None);return None
+        _require(result.code==0 and len(result.out.encode())<=4*1024*1024, 'worker lifecycle request failed or unresolved')
+        try: value=json.loads(result.out)
+        except (TypeError,ValueError):raise BootstrapStopped('worker lifecycle response invalid') from None
+        if method == 'GET': self.observed[path]=copy.deepcopy(value)
+        return value

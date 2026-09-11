@@ -417,9 +417,9 @@ returned. The runner captures output before the transport checks its size; worke
 commands also bound their own output. This is not a streaming memory limit.
 
 The parent Adapter must still supply complete readiness and private configuration
-receipt verification. Worker creation/retirement, complete recovery, successor
-admission, restart verification and GitOps restoration remain to be wired and
-rehearsed before source shutdown. The compiler embeds the changed runner; the
+receipt verification. The complete parent sequence, initializer retirement,
+successor admission, restart verification and GitOps restoration remain to be
+wired and rehearsed before source shutdown. The compiler embeds the changed runner; the
 published runtime image remains unchanged.
 
 Local tests exercise private result retrieval, reservation collisions, corrupt
@@ -430,8 +430,32 @@ This validates the command functions; Kubernetes exec and the fixed `/runtime`
 CLI imports have not been executed in a live worker. Seven transport tests use
 a controlled Kubernetes API/exec runner to check the fixed command, replacement
 Pod, changed image/template/volume/fence/policy, stage and candidate mismatch,
-expiry during reads and private archive output. All 66 handover/storage Python
+expiry during reads and private archive output. All 75 handover/storage Python
 tests and 13 Node tests pass; the optional real-age test is skipped in this run.
+
+### Worker resource lifecycle
+
+`advance_worker_lifecycle` now creates the compiled deny-all NetworkPolicy,
+immutable ConfigMap and Pod, in that order. Every create has a synced private
+intent; recovery observes the existing object and pins its UID. An undelivered
+or ambiguous create is never sent again automatically. An existing worker
+inventory without an owned intent blocks creation before any policy change.
+Readiness verifies the exact Pod, node, image and zero restarts.
+
+Retirement requires the completed creation receipt and the parent's verified
+backup and activation stages. It deletes only that worker Pod using both UID
+and resourceVersion preconditions. Policy/code cleanup waits for API absence
+plus the pinned node's physical mount/directory observation with a live positive
+control. The extended `observe_mount_release` supplies this proof. Replacement
+Pods and lingering mounts block progress; no application volume is deleted.
+The fixed `KubectlWorkerLifecycleTransport` exposes only these three resources.
+
+Nine new local lifecycle/mount tests cover lost create/delete responses,
+undelivered requests, preexisting/replaced Pods, wrong parent/readiness,
+delete preconditions, and API absence with mounts still held. These use a
+controlled API runner, not a live cluster. The complete parent Adapter must
+verify source fencing, retained bindings and exported private artifacts before
+allowing lifecycle operations; these functions cannot authorize shutdown.
 
 ### Migration and handover
 

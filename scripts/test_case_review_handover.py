@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 from . import case_review_handover as review
 from .case_runtime_bootstrap import BootstrapStopped
-from .staging_participant_flux_bootstrap import ReceiptSink, canonical_sha256
+from .staging_participant_flux_bootstrap import ReceiptSink, RawResult, canonical_sha256
 
 NOW = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
 sha = lambda value: canonical_sha256(value)
@@ -522,3 +523,132 @@ class WorkerTransportTests(unittest.TestCase):
         self.assertFalse(any('exec' in c[0] for c in self.calls))
         self.request['migrationPlan']=migration | {'planChecksum':sha(migration)}
         self.assertEqual(self.exchange()['status'],'target-sealed')
+
+
+class WorkerLifecycleTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        WorkerTransportTests.setUp(self)
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.index=0;self.effects=[];self.live={};self.lost=None;self.before=None;self.mount_held=False
+        self.collections=review._worker_inventory(self.worker)
+        self.start_parent=copy.deepcopy(self.parent)
+        self.transport=review.KubectlWorkerLifecycleTransport(self.worker,runner=SimpleNamespace(run=self.run_command),snapshot=SimpleNamespace(path='/private/verified-kubeconfig'))
+        self.new_sink()
+    def new_sink(self):
+        self.index+=1;self.sink=ReceiptSink.reserve(Path(self.directory.name)/f'receipt-{self.index}.json')
+    def run_command(self,args,input_text=None,timeout=None):
+        self.assertEqual(timeout,25)
+        method=next(name for name in ('get','create','delete') if name in args)
+        path=args[args.index('--raw')+1]
+        if method=='get':
+            return RawResult(out=json.dumps(self.live[path])) if path in self.live else RawResult(code=1,err='Error from server (NotFound): missing')
+        saved=json.loads(self.sink.path.read_text());self.assertEqual(saved['status'],'intent')
+        self.effects.append((method,path,json.loads(input_text)))
+        if self.before==method:raise TimeoutError('not delivered')
+        if method=='create':
+            value=json.loads(input_text);key=next(k for k,v in self.collections.items() if v==path)
+            value['metadata'].update(uid=uid(800+list(review.WORKER_RESOURCE_ORDER).index(key)),resourceVersion='10')
+            if key=='pod':
+                value['spec']['nodeName']=self.worker['nodeName']
+                value['status']={'phase':'Running','containerStatuses':[{'name':'migration','ready':True,'restartCount':0,'imageID':'containerd://'+self.plan['pins']['migrationImageDigest']}]}
+            self.live[path+'/'+value['metadata']['name']]=value
+        else:
+            value=self.live[path];options=json.loads(input_text)
+            self.assertEqual(options['preconditions'],{k:value['metadata'][k] for k in ('uid','resourceVersion')})
+            del self.live[path]
+        if self.lost==method:raise TimeoutError('response lost')
+        return RawResult(out=json.dumps(value))
+    def lifecycle_ready(self,*args):
+        if not self.ready_flag:raise RuntimeError('incomplete parent')
+    def release(self,pod_uid):
+        if self.mount_held:return None
+        value={'schemaVersion':'roebel_review_migration_mount_release_v1','planSha256':self.plan['planSha256'],
+               'evidence':{'migrationPodUid':pod_uid,'apiAbsent':True,'mountAbsent':True,'positiveControlVerified':True}}
+        return value | {'canonicalSha256':sha(value)}
+    def advance(self,operation='create',prior=None,created=None):
+        self.ready_flag=getattr(self,'ready_flag',True)
+        return review.advance_worker_lifecycle(self.root,self.plan,self.worker,candidate=self.candidate,
+            expected_plan_sha256=self.plan['planSha256'],expected_worker_sha256=self.worker['workerSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],operation=operation,
+            transport=self.transport,sink=self.sink,verify_ready=self.lifecycle_ready,observe_release=self.release,
+            creation_receipt=created,expected_creation_sha256=created['canonicalSha256'] if created else None,
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def resume(self,operation='create',created=None):
+        prior=json.loads(self.sink.path.read_text())
+        self.new_sink();return self.advance(operation,prior,created)
+    def retirement_parent(self):
+        _,evidence=fixture()
+        # Compiler fixtures change some pins; use their current values.
+        for step in evidence:
+            for name in evidence[step]:
+                if name in self.plan['pins']:evidence[step][name]=self.plan['pins'][name]
+                if name in self.plan['identities']:evidence[step][name]=self.plan['identities'][name]
+        self.parent['completed']=[{'step':step,'evidence':evidence[step]} for step in review.STEPS[:5]]
+        self.parent['pending']='release-migration'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+    def test_create_recover_lost_responses_and_revalidate_completed_receipt(self):
+        self.lost='create';result=self.advance()
+        self.assertEqual(result['status'],'ready');self.assertEqual(len(self.effects),3)
+        self.assertEqual(self.resume()['status'],'ready');self.assertEqual(len(self.effects),3)
+        self.assertEqual([entry[2]['kind'] for entry in self.effects],['NetworkPolicy','ConfigMap','Pod'])
+    def test_undelivered_create_is_not_repeated_or_adopted_without_intent(self):
+        self.before='create';self.assertEqual(self.advance()['status'],'waiting')
+        self.before=None;self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(len(self.effects),1)
+        self.new_sink()
+        self.live[self.collections['networkPolicy']+'/'+self.worker['networkPolicy']['metadata']['name']]=copy.deepcopy(self.worker['networkPolicy'])
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(len(self.effects),1)
+    def test_existing_pod_blocks_policy_creation(self):
+        path=self.collections['pod']+'/'+self.worker['pod']['metadata']['name']
+        self.live[path]=copy.deepcopy(self.worker['pod'])
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.effects,[])
+
+    def test_incomplete_readiness_and_wrong_stage_prevent_creation(self):
+        self.ready_flag=False
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.ready_flag=True;self.parent['pending']='prepare-migration';self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.effects,[])
+    def test_retirement_waits_for_physical_release_then_recovers_lost_deletes(self):
+        created=self.advance();self.retirement_parent();self.new_sink();self.mount_held=True;self.lost='delete'
+        result=self.advance('retire',created=created)
+        self.assertEqual(result['status'],'waiting');self.assertEqual(len(self.effects),4)
+        self.assertEqual(self.resume('retire',created)['status'],'waiting');self.assertEqual(len(self.effects),4)
+        self.mount_held=False;result=self.resume('retire',created)
+        self.assertEqual(result['status'],'retired');self.assertEqual(len(self.effects),6);self.assertEqual(self.live,{})
+        self.assertEqual(self.resume('retire',created)['status'],'retired');self.assertEqual(len(self.effects),6)
+    def test_replacement_pod_is_never_deleted(self):
+        created=self.advance();self.retirement_parent();self.new_sink()
+        path=self.collections['pod']+'/'+self.worker['pod']['metadata']['name'];self.live[path]['metadata']['uid']=uid(999)
+        with self.assertRaises(BootstrapStopped):self.advance('retire',created=created)
+        self.assertEqual(len(self.effects),3)
+    def test_delete_transport_rejects_unobserved_or_changed_preconditions_and_other_paths(self):
+        created=self.advance();path=self.collections['pod']+'/'+self.worker['pod']['metadata']['name']
+        self.transport.observed.clear()
+        options={'apiVersion':'v1','kind':'DeleteOptions','preconditions':{'uid':created['records']['pod']['uid'],'resourceVersion':'10'}}
+        with self.assertRaises(BootstrapStopped):self.transport.request('DELETE',path,options)
+        self.transport.request('GET',path,None);options['preconditions']['resourceVersion']='11'
+        with self.assertRaises(BootstrapStopped):self.transport.request('DELETE',path,options)
+        with self.assertRaises(BootstrapStopped):self.transport.request('GET','/api/v1/secrets',None)
+        self.assertEqual(len(self.effects),3)
+
+
+class MigrationMountReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture=MountReleaseTests();self.fixture.setUp();self.addCleanup(self.fixture.doCleanups)
+    def observe(self):
+        f=self.fixture
+        return review.observe_mount_release(f.root,f.plan,expected_plan_sha256=f.plan['planSha256'],transport=f,
+            node_filesystem=f.view,verify_ready=lambda p:None,migration_pod_uid=uid(888))
+    def test_deleted_worker_with_remaining_mount_or_directory_is_not_released(self):
+        f=self.fixture;f.names.append(uid(888));self.assertIsNone(self.observe());f.names.remove(uid(888))
+        original=f.mounts;f.mounts+=f'101 1 1:1 / /var/lib/kubelet/pods/{uid(888)}/volumes/example rw - tmpfs tmpfs rw\n'
+        self.assertIsNone(self.observe());f.mounts=original
+        proof=self.observe();self.assertEqual(proof['schemaVersion'],'roebel_review_migration_mount_release_v1')
+        self.assertEqual(proof['evidence']['migrationPodUid'],uid(888))
+    def test_worker_api_presence_blocks_release_even_without_claim_entries(self):
+        self.fixture.pods.append({'metadata':{'uid':uid(888)},'spec':{}})
+        self.assertIsNone(self.observe())
