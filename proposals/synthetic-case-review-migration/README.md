@@ -102,8 +102,9 @@ Both retained volumes are writable solely because the runtime needs ownership
 locks during activation. Compiling or starting the worker is not permission to
 invoke a migration. The live Adapter still must verify all stage receipts,
 physical mount release, exact Pod/image/node/claim identities and current source
-fencing before any descriptor invocation. Request/response transport, successor
-admission, runtime restart verification and GitOps restoration are not complete.
+fencing before any descriptor invocation. Worker transport and recoverable runtime switch/restart/resume operations are
+implemented locally. Their complete live driver and successor admission remain
+incomplete.
 
 The real SQLite integration includes capture, independent restore/replay,
 source preservation and malformed-archive/descriptor failures. For the additional
@@ -417,9 +418,9 @@ returned. The runner captures output before the transport checks its size; worke
 commands also bound their own output. This is not a streaming memory limit.
 
 The parent Adapter must still supply complete readiness and private configuration
-receipt verification. The complete parent sequence, initializer retirement,
-successor admission, restart verification and GitOps restoration remain to be
-wired and rehearsed before source shutdown. The compiler embeds the changed runner; the
+receipt verification. The initializer retirement and switch/restart/GitOps
+operations below are implemented locally. Their complete live driver, successor
+admission and full source-to-target rehearsal remain before source shutdown. The compiler embeds the changed runner; the
 published runtime image remains unchanged.
 
 Local tests exercise private result retrieval, reservation collisions, corrupt
@@ -430,7 +431,7 @@ This validates the command functions; Kubernetes exec and the fixed `/runtime`
 CLI imports have not been executed in a live worker. Seven transport tests use
 a controlled Kubernetes API/exec runner to check the fixed command, replacement
 Pod, changed image/template/volume/fence/policy, stage and candidate mismatch,
-expiry during reads and private archive output. All 75 handover/storage Python
+expiry during reads and private archive output. All 88 handover/storage Python
 tests and 13 Node tests pass; the optional real-age test is skipped in this run.
 
 ### Worker resource lifecycle
@@ -456,6 +457,49 @@ delete preconditions, and API absence with mounts still held. These use a
 controlled API runner, not a live cluster. The complete parent Adapter must
 verify source fencing, retained bindings and exported private artifacts before
 allowing lifecycle operations; these functions cannot authorize shutdown.
+
+### Successor handover and clean restart
+
+`advance_initializer_retirement` checks the exact verified initialization receipt,
+completed Pod and parent source-fence stage. It sends one UID/resourceVersion
+conditioned delete and recovers by observation. Its completion means API absence;
+physical mount release remains a separate required proof.
+
+`advance_review_runtime_transition` implements two operations. Start creates the
+reviewed target ConfigMap, adds only that name to the existing reconciler Role,
+and changes the existing zero-replica control Deployment to the exact candidate.
+Restore resumes only the Case Kustomization, after the parent's clean-restart
+stage. Each write has a private durable intent and exact preconditions. The
+fixed `KubectlReviewTransitionTransport` cannot widen that resource inventory or
+patch. An uncertain write is observed without another write; known Kubernetes
+defaults are normalized during recovery. A rehashed candidate cannot add other
+Role permissions.
+
+`observe_review_runtime` checks the exact Deployment, owned ReplicaSet/Pod,
+single volume consumer, image and readiness. `advance_review_runtime_restart`
+records the container identity before one SIGTERM through the existing exact-Pod
+transport, then requires the same Pod, one restart, a different container and
+exit code zero. An uncertain signal is never repeated. Verified all-listener,
+original-admission and source/public-service preservation evidence must come
+from the complete parent's `verify_complete` observation before GitOps resumes.
+
+The connected local tail rehearsal starts from six synthetic completed stage
+receipts, runs the actual switch/restart/resume helpers, pauses on an uncertain
+restart, and finishes the same coordinator receipt chain once that restart is
+observed. It verifies that writes/signals are not repeated and GitOps does not
+resume early. This is a controlled Kubernetes rehearsal of the final three
+stages, not a full source-to-target live rehearsal. Separate tests against pinned
+public runtime source exercise actual loopback listeners, role-scoped review,
+original admission preservation, failed-bind cleanup and clean sealed restart.
+All six of those runtime tests pass. Temporary loopback binding required the
+normal local sandbox exception; no staging connection was used.
+
+The remaining integration is the concrete live driver: admission of the exact
+successor, complete stage-aware readiness, retained/exported private artifact
+verification and recovery of every sub-receipt. `verify_ready`/`verify_complete`
+remain mandatory ports, not executable success defaults. Existing tests use
+explicit controlled observations at those ports. No source shutdown is allowed
+until that driver and a full rehearsal are ready.
 
 ### Migration and handover
 

@@ -652,3 +652,246 @@ class MigrationMountReleaseTests(unittest.TestCase):
     def test_worker_api_presence_blocks_release_even_without_claim_entries(self):
         self.fixture.pods.append({'metadata':{'uid':uid(888)},'spec':{}})
         self.assertIsNone(self.observe())
+
+
+class ReviewTransitionTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        WorkerTransportTests.setUp(self)
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.index=0
+        self.effects=[];self.live={};self.lost=False;self.undelivered=False;self.can_run=True;self.complete=True
+        _,self.evidence=fixture()
+        for evidence in self.evidence.values():
+            for key in evidence:
+                if key in self.plan['pins']:evidence[key]=self.plan['pins'][key]
+                if key in self.plan['identities']:evidence[key]=self.plan['identities'][key]
+        self.kube,self.core=kube,core
+        self.set_operation('start');self.new_sink()
+    def new_sink(self):
+        self.index+=1;self.sink=ReceiptSink.reserve(Path(self.directory.name)/f'transition-{self.index}.json')
+    def set_operation(self,operation):
+        self.operation=operation;stage={'start':'start-review-runtime','restore':'restore-gitops'}[operation]
+        self.parent['completed']=[{'step':s,'evidence':self.evidence[s]} for s in review.STEPS[:review.STEPS.index(stage)]]
+        self.parent['pending']=stage;self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        self.changes=review._review_transition_changes(self.root,self.plan,self.candidate,self.candidate['candidateSha256'],operation)
+        for index,(_,before,after,_,fixed_uid) in enumerate(self.changes):
+            if before:
+                value=copy.deepcopy(before);value['metadata'].update(uid=fixed_uid or uid(950+index),resourceVersion='10',generation=1)
+                self.live[self.kube.resource_path(self.core.target(after))]=value
+        self.transport=review.KubectlReviewTransitionTransport(self.root,self.plan,self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],
+            operation=operation,runner=SimpleNamespace(run=self.command),snapshot=SimpleNamespace(path='/private/snapshot'))
+    def command(self,args,input_text=None,timeout=None):
+        self.assertEqual(timeout,25)
+        if 'get' in args:
+            path=args[-1];return RawResult(out=json.dumps(self.live[path])) if path in self.live else RawResult(code=1,err='Error from server (NotFound): missing')
+        self.assertEqual(json.loads(self.sink.path.read_text())['status'],'intent')
+        self.effects.append(args)
+        if self.undelivered or getattr(self,'delay_deployment',False) and 'deployment' in args:raise TimeoutError()
+        if 'create' in args:
+            value=json.loads(input_text);value['metadata'].update(uid=uid(960),resourceVersion='10')
+            self.live[self.kube.resource_path(self.core.target(value))]=value
+        else:
+            after=next(after for _,_,after,_,_ in self.changes if after['metadata']['name']==args[args.index('patch')+2])
+            path=self.kube.resource_path(self.core.target(after));value=self.live[path];patch=json.loads(args[args.index('-p')+1])
+            self.assertEqual(patch[:2],[{'op':'test','path':'/metadata/uid','value':value['metadata']['uid']},
+                                       {'op':'test','path':'/metadata/resourceVersion','value':value['metadata']['resourceVersion']}])
+            field=patch[-1]['path'][1:];self.assertEqual(patch[-2]['value'],value[field]);value[field]=patch[-1]['value']
+            value['metadata']['resourceVersion']=str(int(value['metadata']['resourceVersion'])+1)
+        if self.lost:raise TimeoutError()
+        return RawResult(out=json.dumps(value))
+    def verify(self,*args):
+        if not self.can_run:raise RuntimeError('not admitted')
+    def observed(self,*args):
+        return self.evidence[{'start':'start-review-runtime','restore':'restore-gitops'}[self.operation]] if self.complete else None
+    def advance(self,prior=None):
+        return review.advance_review_runtime_transition(self.root,self.plan,self.candidate,expected_plan_sha256=self.plan['planSha256'],
+            expected_candidate_sha256=self.candidate['candidateSha256'],operation=self.operation,parent_receipt=self.parent,
+            expected_parent_sha256=self.parent['canonicalSha256'],transport=self.transport,sink=self.sink,verify_ready=self.verify,
+            verify_complete=self.observed,prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def resume(self):
+        prior=json.loads(self.sink.path.read_text());self.new_sink();return self.advance(prior)
+    def test_successor_switch_and_gitops_resume_recover_lost_responses(self):
+        self.lost=True;self.assertEqual(self.advance()['status'],'complete');self.assertEqual(len(self.effects),3)
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(len(self.effects),3)
+        self.set_operation('restore');self.new_sink();self.assertEqual(self.advance()['status'],'complete');self.assertEqual(len(self.effects),4)
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(len(self.effects),4)
+    def test_unadmitted_candidate_and_undelivered_create_do_not_progress(self):
+        self.can_run=False
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.effects,[]);self.new_sink();self.can_run=True;self.undelivered=True
+        self.assertEqual(self.advance()['status'],'waiting');self.undelivered=False
+        self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(len(self.effects),1)
+    def test_replacement_and_unreviewed_semantics_block_deployment_patch(self):
+        path=next(path for path in self.live if '/deployments/' in path)
+        self.live[path]['metadata']['uid']=uid(999)
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(len(self.effects),2)
+        self.assertFalse(any('deployment' in args for args in self.effects))
+    def test_readiness_wait_does_not_repeat_writes_or_resume_gitops(self):
+        self.complete=False;self.assertEqual(self.advance()['status'],'waiting');self.assertEqual(len(self.effects),3)
+        self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(len(self.effects),3)
+        self.complete=True;self.assertEqual(self.resume()['status'],'complete');self.assertEqual(len(self.effects),3)
+    def test_even_rehashed_candidate_cannot_widen_the_role(self):
+        self.candidate['targetReconcilerRole']['rules'].append({'apiGroups':[''],'resources':['secrets'],'verbs':['get']})
+        self.candidate['candidateSha256']=sha({k:v for k,v in self.candidate.items() if k!='candidateSha256'})
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.effects,[])
+
+    def test_resume_requires_runtime_verification_parent(self):
+        self.set_operation('restore');self.new_sink();self.parent['completed']=self.parent['completed'][:-1]
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.effects,[])
+
+
+    def test_server_defaulted_deployment_with_lost_patch_stays_pending_without_retry(self):
+        path=next(path for path in self.live if '/deployments/' in path)
+        self.live[path]['spec']['progressDeadlineSeconds']=600
+        self.delay_deployment=True
+        self.assertEqual(self.advance()['status'],'waiting');self.assertEqual(len(self.effects),3)
+        self.delay_deployment=False
+        self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(len(self.effects),3)
+
+
+class InitializerRetirementTests(unittest.TestCase):
+    def setUp(self):
+        from .test_case_review_storage import ReviewInitializationTests
+        self.h=ReviewInitializationTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        self.h.advance();self.h.api.complete();self.receipt=self.h.resume()
+        self.plan,evidence=fixture();self.plan['identities'].update(sourcePvcUid=uid(701),sourcePvUid=uid(702),sourcePodUid=uid(703),mountObserverPodUid=uid(704),initializerPodUid=self.receipt['podUid'],targetPvcUid=self.receipt['claimUid'],targetPvUid=self.receipt['volumeUid'])
+        self.plan['pins']['initializationReceiptSha256']=self.receipt['canonicalSha256'];self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
+        parent={'schemaVersion':'roebel_review_handover_receipt_v1','planSha256':self.plan['planSha256'],'operationId':self.plan['operationId'],
+                'previousReceiptSha256':None,'status':'effect-intent','completed':[{'step':'fence-source','evidence':evidence['fence-source']}],'pending':'release-mounts'}
+        self.parent=parent|{'canonicalSha256':sha(parent)};self.pod=copy.deepcopy(self.h.plan['pod'])
+        self.pod['metadata'].update(uid=self.receipt['podUid'],resourceVersion='10')
+        self.pod['status']={'phase':'Succeeded','containerStatuses':[{'state':{'terminated':{'exitCode':0}}}]}
+        self.deletes=0;self.lost=False;self.sink=ReceiptSink.reserve(self.h.root/'retire-1.json')
+    def request(self,method,path,payload):
+        self.assertTrue(path.endswith('/pods/'+self.h.plan['pod']['metadata']['name']))
+        if method=='GET':return copy.deepcopy(self.pod)
+        self.assertEqual(method,'DELETE');self.assertEqual(json.loads(self.sink.path.read_text())['status'],'intent')
+        self.assertEqual(payload['preconditions'],{'uid':self.receipt['podUid'],'resourceVersion':'10'})
+        self.deletes+=1;self.pod=None
+        if self.lost:raise TimeoutError()
+    def advance(self,prior=None):
+        return review.advance_initializer_retirement(Path(__file__).resolve().parent.parent,self.plan,self.h.plan,self.h.storage_plan,
+            expected_plan_sha256=self.plan['planSha256'],initialization_receipt=self.receipt,expected_initialization_receipt_sha256=self.receipt['canonicalSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],transport=self,sink=self.sink,verify_ready=lambda *args:None,
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def test_owned_completed_initializer_retires_once_after_lost_response(self):
+        self.lost=True;result=self.advance();self.assertEqual(result['status'],'api-absent');self.assertEqual(self.deletes,1)
+        self.sink=ReceiptSink.reserve(self.h.root/'retire-2.json');self.assertEqual(self.advance(result)['status'],'api-absent');self.assertEqual(self.deletes,1)
+        self.assertNotIn('mountAbsent',result)
+    def test_running_or_replaced_initializer_is_not_deleted(self):
+        self.pod['status']['phase']='Running'
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.sink=ReceiptSink.reserve(self.h.root/'retire-2.json');self.pod['status']['phase']='Succeeded';self.pod['metadata']['uid']=uid(999)
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.deletes,0)
+
+
+class ReviewRestartTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        WorkerTransportTests.setUp(self);del self.request
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.index=0
+        _,self.evidence=fixture()
+        for evidence in self.evidence.values():
+            for key in evidence:
+                if key in self.plan['pins']:evidence[key]=self.plan['pins'][key]
+                if key in self.plan['identities']:evidence[key]=self.plan['identities'][key]
+        self.parent['completed']=[{'step':s,'evidence':self.evidence[s]} for s in review.STEPS[:7]];self.parent['pending']='verify-review-runtime'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        self.deployment=copy.deepcopy(next(o for o in self.candidate['resources']['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control'))
+        self.deployment['metadata'].update(uid=self.plan['identities']['sourceDeploymentUid'],resourceVersion='10',generation=2)
+        self.deployment['status']={'observedGeneration':2,**dict.fromkeys(('replicas','updatedReplicas','readyReplicas','availableReplicas'),1)}
+        template=self.deployment['spec']['template'];self.pod={'apiVersion':'v1','kind':'Pod','metadata':{**copy.deepcopy(template['metadata']),
+          'name':'review-control-example','namespace':'stadtstack-roebel-staging-lab','uid':uid(501),'resourceVersion':'11','ownerReferences':[{'controller':True,'uid':uid(970)}]},'spec':copy.deepcopy(template['spec'])}
+        self.pod['metadata']['labels']['pod-template-hash']='abc123';self.pod['spec']['nodeName']='example-node'
+        self.pod['status']={'phase':'Running','conditions':[{'type':'Ready','status':'True'}],
+           'containerStatuses':[{'name':'runtime','ready':True,'imageID':'containerd://'+self.plan['pins']['migrationImageDigest'],
+                                 'containerID':'containerd://'+'a'*64,'restartCount':0}]}
+        self.rs={'metadata':{'uid':uid(970),'labels':{'pod-template-hash':'abc123'},'ownerReferences':[{'controller':True,'uid':self.plan['identities']['sourceDeploymentUid']}]}}
+        self.execs=0;self.lost=False;self.undelivered=False;self.exit_code=0;self.new_sink()
+    def new_sink(self):
+        self.index+=1;self.sink=ReceiptSink.reserve(Path(self.directory.name)/f'restart-{self.index}.json')
+    def request(self,method,path,payload):
+        self.assertEqual(method,'GET')
+        if '/deployments/' in path:return copy.deepcopy(self.deployment)
+        if path.endswith('/replicasets'):return {'items':[copy.deepcopy(self.rs)]}
+        self.assertTrue(path.endswith('/pods'));return {'items':[copy.deepcopy(self.pod)]}
+    def exec_pod(self,namespace,name,pod_uid,container,argv):
+        self.assertEqual((name,pod_uid,container),(self.pod['metadata']['name'],uid(501),'runtime'))
+        self.assertEqual(argv,['node','-e',"process.kill(1, 'SIGTERM')"])
+        self.assertEqual(json.loads(self.sink.path.read_text())['status'],'intent');self.execs+=1
+        if self.undelivered:raise TimeoutError()
+        self.pod['status']['containerStatuses'][0].update(containerID='containerd://'+'b'*64,restartCount=1,lastState={'terminated':{'exitCode':self.exit_code}})
+        if self.lost:raise TimeoutError()
+    def advance(self,prior=None):
+        return review.advance_review_runtime_restart(self.root,self.plan,self.candidate,expected_plan_sha256=self.plan['planSha256'],
+            expected_candidate_sha256=self.candidate['candidateSha256'],parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],
+            transport=self,sink=self.sink,verify_ready=lambda *args:None,verify_complete=lambda *args:self.evidence['verify-review-runtime'],
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def resume(self):
+        prior=json.loads(self.sink.path.read_text());self.new_sink();return self.advance(prior)
+    def test_clean_restart_with_lost_response_recovers_without_second_signal(self):
+        self.lost=True;self.assertEqual(self.advance()['status'],'complete');self.assertEqual(self.execs,1)
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(self.execs,1)
+    def test_uncertain_signal_is_not_repeated(self):
+        self.undelivered=True;self.assertEqual(self.advance()['status'],'waiting')
+        self.undelivered=False;self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(self.execs,1)
+    def test_wrong_pod_or_crashed_restart_cannot_complete(self):
+        self.pod['metadata']['uid']=uid(999)
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.execs,0);self.pod['metadata']['uid']=uid(501);self.new_sink();self.exit_code=137
+        with self.assertRaises(BootstrapStopped):self.advance()
+        self.assertEqual(self.execs,1)
+
+
+class ConnectedRuntimeHandoverTests(unittest.TestCase):
+    def test_switch_restart_and_gitops_share_ordered_receipts_and_recover_without_repeating_writes(self):
+        switch=ReviewTransitionTests();switch.setUp();self.addCleanup(switch.doCleanups)
+        restart=ReviewRestartTests();restart.setUp();self.addCleanup(restart.doCleanups)
+        self.assertEqual(switch.plan,restart.plan)
+        plan=switch.plan;initial=copy.deepcopy(switch.parent);initial.update(status='reserved',pending=None)
+        initial['canonicalSha256']=sha({k:v for k,v in initial.items() if k!='canonicalSha256'})
+        prefix={r['step']:r['evidence'] for r in initial['completed']};outcomes={}
+        signals=[]
+        original_exec=restart.exec_pod
+        def signal(*args):
+            signals.append(args);original_exec(*args)
+        restart.exec_pod=signal;restart.undelivered=True
+        directory=Path(switch.directory.name)
+        class Connected:
+            def verify_ready(self,active,state):
+                if state['pending']=='restore-gitops':
+                    assert outcomes.get('verify-review-runtime',{}).get('evidence',{}).get('cleanRestartVerified') is True
+            def observe(self,active,step,state):
+                if step in prefix:return prefix[step]
+                return outcomes.get(step,{}).get('evidence')
+            def perform(self,active,step,state):
+                parent=state|{'canonicalSha256':sha(state)}
+                if step=='verify-review-runtime':
+                    restart.parent=parent;outcomes[step]=restart.advance()
+                else:
+                    switch.set_operation('start' if step=='start-review-runtime' else 'restore')
+                    switch.parent=parent;switch.new_sink();outcomes[step]=switch.advance()
+        adapter=Connected();sink=ReceiptSink.reserve(directory/'connected-1.json')
+        result=review.advance_review_handover(plan,expected_plan_sha256=plan['planSha256'],adapter=adapter,sink=sink,
+            prior=initial,expected_prior_sha256=initial['canonicalSha256'],clock=lambda:NOW)
+        self.assertEqual(result['status'],'awaiting-evidence');self.assertEqual(result['pending'],'verify-review-runtime')
+        self.assertEqual(len(switch.effects),3);self.assertEqual(len(signals),1)
+        self.assertNotIn('restore-gitops',outcomes)
+        # The first signal's response was inconclusive. Observe its later clean
+        # completion using the same receipt; neither coordinator nor helper resends.
+        restart.pod['status']['containerStatuses'][0].update(containerID='containerd://'+'b'*64,restartCount=1,lastState={'terminated':{'exitCode':0}})
+        outcomes['verify-review-runtime']=restart.resume()
+        self.assertEqual(len(signals),1)
+        prior=json.loads(sink.path.read_text());sink=ReceiptSink.reserve(directory/'connected-2.json')
+        result=review.advance_review_handover(plan,expected_plan_sha256=plan['planSha256'],adapter=adapter,sink=sink,
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'],clock=lambda:NOW)
+        self.assertEqual(result['status'],'complete');self.assertEqual(len(switch.effects),4);self.assertEqual(len(signals),1)
+        self.assertEqual([r['step'] for r in result['completed']],list(review.STEPS))

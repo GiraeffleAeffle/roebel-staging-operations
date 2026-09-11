@@ -1048,3 +1048,332 @@ class KubectlWorkerLifecycleTransport:
         except (TypeError,ValueError):raise BootstrapStopped('worker lifecycle response invalid') from None
         if method == 'GET': self.observed[path]=copy.deepcopy(value)
         return value
+
+
+def _review_transition_changes(root, plan, candidate, expected_candidate_sha256, operation):
+    """Derive the only permitted switch/resume writes from pinned renders."""
+    from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+    validate_plan(plan,plan['planSha256'])
+    _require(candidate.get('candidateSha256') == expected_candidate_sha256 == canonical_sha256(
+             {k:v for k,v in candidate.items() if k!='candidateSha256'}) and
+             candidate.get('schemaVersion')=='roebel_review_runtime_candidate_v1' and
+             candidate.get('sourceRenderSha256')==plan['pins']['sourceRenderSha256'] and
+             candidate.get('targetRenderSha256')==plan['pins']['targetRenderSha256'] and
+             candidate.get('targetBindingSha256')==plan['pins']['targetBindingSha256'] and
+             candidate.get('configurationSecretUid')==plan['identities']['configurationSecretUid'] and
+             canonical_sha256(candidate['resources'])==plan['pins']['targetRenderSha256'], 'review transition candidate changed')
+    core._verifier().verify_tree(root)
+    original=json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
+    _require(canonical_sha256(original)==plan['pins']['sourceRenderSha256'], 'review transition source changed')
+    select=lambda items,kind,name:copy.deepcopy(next(o for o in items if o['kind']==kind and o['metadata']['name']==name))
+    from . import case_runtime_admission as admission
+    verifier=core._verifier()
+    flux=verifier.load_json(root/'proposals/synthetic-case-runtime/flux-bootstrap.json')['items']
+    original_role=next(o for o in admission.flux_bootstrap_objects(verifier,root,flux) if o['kind']=='Role')
+    target_role=copy.deepcopy(original_role)
+    next(rule for rule in target_role['rules'] if rule['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-review-reviewed-v1')
+    _require(candidate['sourceReconcilerRole']==original_role and candidate['targetReconcilerRole']==target_role,
+             'review transition Role exceeds the exact configuration name addition')
+    name='roebel-case-steward-control'
+    if operation=='start':
+        before=select(original['items'],'Deployment',name);before['spec']['replicas']=0
+        after=select(candidate['resources']['items'],'Deployment',name)
+        config=select(candidate['resources']['items'],'ConfigMap','roebel-case-steward-review-reviewed-v1')
+        _require(after['spec']['replicas']==1 and after['spec']['strategy']=={'type':'Recreate'}, 'review Deployment strategy changed')
+        return [('review-config',None,config,None,None),
+                ('review-role',copy.deepcopy(original_role),target_role,'rules',None),
+                ('review-deployment',before,after,'spec',plan['identities']['sourceDeploymentUid'])]
+    _require(operation=='restore', 'unknown review transition')
+    before=copy.deepcopy(core.build_plan(root)['objects'][-1]['desired'])
+    _require(before['kind']=='Kustomization' and before['metadata']['name']=='roebel-case-runtime', 'review reconciler target changed')
+    before['spec']['suspend']=True;after=copy.deepcopy(before);after['spec']['suspend']=False
+    return [('resume-reconciler',before,after,'spec',plan['identities']['reconcilerUid'])]
+
+
+def _review_transition_exact(observed, desired):
+    from . import case_runtime_kubernetes as kube
+    value=copy.deepcopy(observed)
+    labels=value.get('metadata',{}).get('labels',{})
+    for key,expected in [('kustomize.toolkit.fluxcd.io/name','roebel-case-runtime'),
+                         ('kustomize.toolkit.fluxcd.io/namespace','flux-roebel-staging')]:
+        if key in labels:
+            _require(labels[key]==expected,'review transition Flux owner changed');labels.pop(key)
+    if not labels:value['metadata'].pop('labels',None)
+    _require(kube.normalize(value)==kube.normalize(desired),'review transition resource semantics changed')
+    return storage._identity(observed)
+
+
+def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sha256,
+        expected_candidate_sha256, operation, parent_receipt, expected_parent_sha256,
+        transport, sink, verify_ready, verify_complete, prior=None, expected_prior_sha256=None, clock=None):
+    """Start the pinned successor or resume GitOps after parent runtime proof.
+
+    Readiness must verify admission of this exact successor and preservation of
+    other services, private configuration, retained stores and stage artifacts.
+    verify_complete(plan,parent,state) observes runtime readiness or full GitOps
+    reconciliation; None means pending. It returns the independently verified
+    stage evidence defined by _evidence, never an invented success boolean.
+    """
+    from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+    _require(plan['planSha256']==expected_plan_sha256,'review transition plan pin changed')
+    changes=_review_transition_changes(root,plan,candidate,expected_candidate_sha256,operation)
+    parent=_state(plan,parent_receipt,expected_parent_sha256)
+    stage={'start':'start-review-runtime','restore':'restore-gitops'}[operation]
+    _require(parent['pending']==stage and len(parent['completed'])==STEPS.index(stage) and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'),'review transition lacks ordered parent intent')
+    initial={'schemaVersion':'roebel_review_runtime_transition_v1','planSha256':expected_plan_sha256,
+             'candidateSha256':expected_candidate_sha256,'parentIntentSha256':expected_parent_sha256,'operation':operation,
+             'previousReceiptSha256':None,'status':'reserved','changes':[],'evidence':None}
+    state=copy.deepcopy(initial)
+    if prior is not None:
+        state=_worker_lifecycle_receipt(prior,expected_prior_sha256)
+        _closed(state,initial,'review transition recovery shape changed')
+        _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','candidateSha256','parentIntentSha256','operation')) and
+                 state['status'] in ('reserved','intent','waiting','stopped-preserve-state','complete') and
+                 isinstance(state['changes'],list) and len(state['changes'])<=len(changes),'review transition recovery binding changed')
+        for index,record in enumerate(state['changes']):
+            _closed(record,{'step','uid','beforeResourceVersion','observed'},'review transition intent shape changed')
+            _require(record['step']==changes[index][0] and type(record['observed']) is bool and
+                     (record['uid'] is None or isinstance(record['uid'],str) and UUID.fullmatch(record['uid'])) and
+                     (record['beforeResourceVersion'] is None or isinstance(record['beforeResourceVersion'],str) and record['beforeResourceVersion'].isdigit()) and
+                     (record['observed'] or index==len(state['changes'])-1),'review transition intent invalid')
+            _require(changes[index][1] is None or record['uid'] is not None and record['beforeResourceVersion'] is not None,'review transition patch identity absent')
+        _require(state['status']!='complete' or state['evidence'] is not None and len(state['changes'])==len(changes) and all(r['observed'] for r in state['changes']),'review transition completion invalid')
+        state['previousReceiptSha256']=expected_prior_sha256
+    else:_require(expected_prior_sha256 is None,'orphan review transition recovery pin')
+    now=clock or (lambda:datetime.now(timezone.utc))
+    def fresh():
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition window closed')
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition readiness exceeded window')
+    def commit(status):
+        state['status']=status;sink.commit(copy.deepcopy(state))
+        return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+    try:
+        commit(state['status']);fresh()
+        for index,(step,before,after,field,pinned_uid) in enumerate(changes):
+            fresh();path=kube.resource_path(core.target(after));current=transport.request('GET',path,None)
+            record=state['changes'][index] if index<len(state['changes']) else None
+            if record is None:
+                if before is None:
+                    _require(current is None,'review config exists without intent');identity={'uid':None,'resourceVersion':None}
+                else:
+                    _require(current is not None,'review transition resource absent');identity=_review_transition_exact(current,before)
+                    _require(pinned_uid is None or identity['uid']==pinned_uid,'review transition resource replaced')
+                record={'step':step,'uid':identity['uid'],'beforeResourceVersion':identity['resourceVersion'],'observed':False}
+                state['changes'].append(record);commit('intent');fresh()
+                try:
+                    if before is None:transport.request('POST',kube.resource_path(core.target(after),True),copy.deepcopy(after))
+                    else:transport.request('PATCH',path,[{'op':'test','path':'/metadata/uid','value':record['uid']},
+                        {'op':'test','path':'/metadata/resourceVersion','value':record['beforeResourceVersion']},
+                        {'op':'test','path':'/'+field,'value':current[field]}, {'op':'replace','path':'/'+field,'value':after[field]}])
+                except Exception:pass
+                current=transport.request('GET',path,None)
+            if current is None:
+                _require(before is None and not record['observed'],'owned review resource disappeared');return commit('waiting')
+            identity=storage._identity(current)
+            _require(record['uid'] in (None,identity['uid']) and (pinned_uid is None or pinned_uid==identity['uid']),'review resource UID changed')
+            matches_before=False
+            if before is not None:
+                try:_review_transition_exact(current,before);matches_before=True
+                except BootstrapStopped:pass
+            if matches_before:
+                _require(not record['observed'],'completed review transition regressed');return commit('waiting')
+            _review_transition_exact(current,after)
+            record.update(uid=identity['uid'],observed=True);commit('reserved')
+        fresh();evidence=verify_complete(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        if evidence is None:return commit('waiting')
+        _evidence(plan,stage,evidence,{r['step']:r['evidence'] for r in parent['completed']})
+        state['evidence']=copy.deepcopy(evidence);return commit('complete')
+    except Exception:
+        try:commit('stopped-preserve-state')
+        except Exception:pass
+        raise BootstrapStopped('review runtime transition stopped; preserve source, target and receipts') from None
+
+
+class KubectlReviewTransitionTransport:
+    """Fixed candidate ConfigMap create and Role/Deployment/Flux JSON patches."""
+    def __init__(self,root,plan,candidate,*,expected_candidate_sha256,operation,runner,snapshot):
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        self.changes=_review_transition_changes(root,plan,candidate,expected_candidate_sha256,operation)
+        self.paths={kube.resource_path(core.target(after)):(before,after,field) for _,before,after,field,_ in self.changes}
+        self.collections={kube.resource_path(core.target(after),True):after for _,before,after,_,_ in self.changes if before is None}
+        self.runner=runner;self.base=['kubectl','--kubeconfig',str(snapshot.path),'--request-timeout=20s'];self.observed={}
+    def request(self,method,path,payload):
+        _require(method in ('GET','POST','PATCH'),'review transition method outside inventory')
+        if method=='POST':
+            _require(path in self.collections and payload==self.collections[path],'review transition create changed');args=['create','--raw',path,'-f','-']
+        else:
+            _require(path in self.paths,'review transition path outside inventory')
+            if method=='GET':_require(payload is None,'review transition GET payload');args=['get','--raw',path]
+            else:
+                before,after,field=self.paths[path];current=self.observed.get(path)
+                _require(before is not None and current is not None,'review patch lacks observation')
+                identity=_review_transition_exact(current,before)
+                expected=[{'op':'test','path':'/metadata/uid','value':identity['uid']},
+                          {'op':'test','path':'/metadata/resourceVersion','value':identity['resourceVersion']},
+                          {'op':'test','path':'/'+field,'value':current[field]}, {'op':'replace','path':'/'+field,'value':after[field]}]
+                _require(payload==expected,'review patch differs from exact transition')
+                target=after['metadata'];args=['patch',after['kind'].lower(),target['name'],'-n',target['namespace'],'--type=json','-p',json.dumps(payload,separators=(',',':')),'-o','json']
+        result=self.runner.run(self.base+args,input_text=json.dumps(payload,separators=(',',':')) if method=='POST' else None,timeout=25)
+        if method=='GET' and result.code and result.err.startswith('Error from server (NotFound):'):
+            self.observed.pop(path,None);return None
+        _require(result.code==0 and len(result.out.encode())<=4*1024*1024,'review transition outcome unresolved')
+        try:value=json.loads(result.out)
+        except (TypeError,ValueError):raise BootstrapStopped('review transition response invalid') from None
+        if method=='GET':self.observed[path]=copy.deepcopy(value)
+        return value
+
+
+def advance_initializer_retirement(root, plan, initialization_plan, storage_plan, *,
+        expected_plan_sha256, initialization_receipt, expected_initialization_receipt_sha256,
+        parent_receipt, expected_parent_sha256, transport, sink, verify_ready,
+        prior=None, expected_prior_sha256=None, clock=None):
+    """Retire the completed initializer Pod only; mount release is a later proof."""
+    from . import case_runtime_kubernetes as kube
+    validate_plan(plan,expected_plan_sha256)
+    storage._initialization_plan(initialization_plan,storage_plan,initialization_plan['planSha256'])
+    receipt=storage._pinned_receipt(initialization_receipt,expected_initialization_receipt_sha256)
+    _require(expected_initialization_receipt_sha256==plan['pins']['initializationReceiptSha256'] and
+             receipt.get('schemaVersion')=='roebel_case_review_initialization_receipt_v1' and receipt.get('status')=='verified' and
+             receipt.get('planSha256')==initialization_plan['planSha256'] and receipt.get('podUid')==plan['identities']['initializerPodUid'] and
+             receipt.get('claimUid')==plan['identities']['targetPvcUid'] and receipt.get('volumeUid')==plan['identities']['targetPvUid'], 'initializer retirement receipt changed')
+    parent=_state(plan,parent_receipt,expected_parent_sha256)
+    _require(parent['pending']=='release-mounts' and len(parent['completed'])==1 and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'),'initializer retirement parent stage invalid')
+    initial={'schemaVersion':'roebel_review_initializer_retirement_v1','planSha256':expected_plan_sha256,
+             'parentIntentSha256':expected_parent_sha256,'initializationReceiptSha256':expected_initialization_receipt_sha256,
+             'podUid':receipt['podUid'],'beforeResourceVersion':None,'previousReceiptSha256':None,'status':'reserved'}
+    state=copy.deepcopy(initial)
+    if prior is not None:
+        state=_worker_lifecycle_receipt(prior,expected_prior_sha256);_closed(state,initial,'initializer retirement recovery shape changed')
+        _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','parentIntentSha256','initializationReceiptSha256','podUid')) and
+                 state['status'] in ('reserved','intent','waiting','api-absent','stopped-preserve-state') and
+                 (state['beforeResourceVersion'] is None or isinstance(state['beforeResourceVersion'],str) and state['beforeResourceVersion'].isdigit()),'initializer recovery identity changed')
+        _require(state['status'] not in ('intent','waiting','api-absent') or state['beforeResourceVersion'] is not None,'initializer retirement intent missing')
+        state['previousReceiptSha256']=expected_prior_sha256
+    else:_require(expected_prior_sha256 is None,'orphan initializer retirement pin')
+    now=clock or (lambda:datetime.now(timezone.utc))
+    def fresh():
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'initializer retirement window closed')
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'initializer readiness exceeded window')
+    def commit(status):
+        state['status']=status;sink.commit(copy.deepcopy(state));return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+    desired=initialization_plan['pod'];path=f"/api/v1/namespaces/{kube.NAMESPACE}/pods/{desired['metadata']['name']}"
+    try:
+        commit(state['status']);fresh();current=transport.request('GET',path,None)
+        if state['beforeResourceVersion'] is None:
+            _require(current is not None,'initializer disappeared without retirement intent')
+            identity=storage._consumer_object(current,desired)
+            statuses=current.get('status',{}).get('containerStatuses',[])
+            _require(identity['uid']==receipt['podUid'] and current.get('status',{}).get('phase')=='Succeeded' and
+                     len(statuses)==1 and statuses[0].get('state',{}).get('terminated',{}).get('exitCode')==0,'initializer is not the completed owned Pod')
+            state['beforeResourceVersion']=identity['resourceVersion'];commit('intent');fresh()
+            try:transport.request('DELETE',path,{'apiVersion':'v1','kind':'DeleteOptions',
+                'preconditions':{'uid':state['podUid'],'resourceVersion':state['beforeResourceVersion']}})
+            except Exception:pass
+            current=transport.request('GET',path,None)
+        if current is not None:
+            _require(state['status']!='api-absent' and current.get('metadata',{}).get('uid')==state['podUid'],'initializer Pod replaced after retirement')
+            return commit('waiting')
+        fresh();return commit('api-absent')
+    except Exception:
+        try:commit('stopped-preserve-state')
+        except Exception:pass
+        raise BootstrapStopped('initializer retirement stopped; retain storage and receipts') from None
+
+
+def observe_review_runtime(root, plan, candidate, *, expected_candidate_sha256, transport):
+    """Observe exact successor Deployment/ReplicaSet/Pod ownership and readiness."""
+    from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+    changes=_review_transition_changes(root,plan,candidate,expected_candidate_sha256,'start')
+    desired=changes[-1][2];deployment=transport.request('GET',kube.resource_path(core.target(desired)),None)
+    _require(deployment is not None and _review_transition_exact(deployment,desired)['uid']==plan['identities']['sourceDeploymentUid'],'review runtime Deployment changed')
+    status=deployment.get('status',{})
+    if status.get('observedGeneration')!=deployment['metadata'].get('generation') or any(status.get(k,0)!=1 for k in ('replicas','updatedReplicas','readyReplicas','availableReplicas')):return None
+    def inventory(path):
+        result=transport.request('GET',path,None)
+        _require(isinstance(result,dict) and isinstance(result.get('items'),list) and not result.get('metadata',{}).get('continue') and
+                 result.get('metadata',{}).get('remainingItemCount') in (None,0),'review runtime inventory incomplete')
+        return result['items']
+    replicasets=inventory(f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/replicasets')
+    owners={r['metadata']['uid']:r for r in replicasets if any(o.get('controller') is True and o.get('uid')==plan['identities']['sourceDeploymentUid'] for o in r.get('metadata',{}).get('ownerReferences',[]))}
+    pods=inventory(f'/api/v1/namespaces/{kube.NAMESPACE}/pods')
+    matching=[p for p in pods if any(o.get('controller') is True and o.get('uid') in owners for o in p.get('metadata',{}).get('ownerReferences',[]))]
+    if len(matching)!=1:return None
+    pod=matching[0];meta=pod['metadata'];status=pod.get('status',{})
+    if meta.get('deletionTimestamp') or status.get('phase')!='Running' or not any(c.get('type')=='Ready' and c.get('status')=='True' for c in status.get('conditions',[])):return None
+    reference=[o for o in meta['ownerReferences'] if o.get('controller') is True]
+    _require(len(reference)==1 and reference[0]['uid'] in owners,'review Pod controller changed')
+    rs=owners[reference[0]['uid']];pod_hash=meta.get('labels',{}).get('pod-template-hash')
+    _require(not rs['metadata'].get('deletionTimestamp') and isinstance(pod_hash,str) and re.fullmatch('[a-z0-9]{1,63}',pod_hash) and
+             rs['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'review ReplicaSet identity changed')
+    actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');actual['metadata']['labels'].pop('pod-template-hash')
+    template=desired['spec']['template'];wanted={'apiVersion':'v1','kind':'Pod',
+             'metadata':{**copy.deepcopy(template['metadata']),'name':meta['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
+    storage._consumer_object(actual,wanted)
+    _require(not any(p['metadata'].get('uid')!=meta['uid'] and any(v.get('persistentVolumeClaim',{}).get('claimName')=='roebel-case-steward-review-state-v1' for v in p.get('spec',{}).get('volumes',[])) for p in pods),'overlapping review volume consumers')
+    containers=status.get('containerStatuses',[])
+    _require(len(containers)==1 and containers[0].get('name')=='runtime' and containers[0].get('ready') is True and
+             containers[0].get('imageID','').removeprefix('containerd://').removeprefix('docker-pullable://').split('@')[-1]==plan['pins']['migrationImageDigest'],'review runtime image changed')
+    container=containers[0]
+    _require(type(container.get('restartCount')) is int and container['restartCount']>=0 and isinstance(container.get('containerID'),str) and
+             re.fullmatch(r'(?:containerd|docker)://[0-9a-f]{64}',container['containerID']),'review runtime container identity invalid')
+    return {'podUid':meta['uid'],'podName':meta['name'],'containerId':container['containerID'],'restartCount':container['restartCount'],
+            'lastExitCode':container.get('lastState',{}).get('terminated',{}).get('exitCode')}
+
+
+def advance_review_runtime_restart(root, plan, candidate, *, expected_plan_sha256, expected_candidate_sha256,
+        parent_receipt, expected_parent_sha256, transport, sink, verify_ready, verify_complete,
+        prior=None, expected_prior_sha256=None, clock=None):
+    """One owned SIGTERM, then observe a clean same-Pod restart; no blind replay."""
+    from . import case_runtime_kubernetes as kube
+    validate_plan(plan,expected_plan_sha256);parent=_state(plan,parent_receipt,expected_parent_sha256)
+    _require(parent['pending']=='verify-review-runtime' and len(parent['completed'])==7 and
+             parent['status'] in ('effect-intent','awaiting-evidence','stopped-preserve-state'),'review restart parent intent missing')
+    initial={'schemaVersion':'roebel_review_runtime_restart_v1','planSha256':expected_plan_sha256,
+             'parentIntentSha256':expected_parent_sha256,'candidateSha256':expected_candidate_sha256,
+             'previousReceiptSha256':None,'status':'reserved','before':None,'after':None,'evidence':None}
+    state=copy.deepcopy(initial)
+    if prior is not None:
+        state=_worker_lifecycle_receipt(prior,expected_prior_sha256);_closed(state,initial,'review restart receipt shape changed')
+        _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','parentIntentSha256','candidateSha256')) and
+                 state['status'] in ('reserved','intent','waiting','stopped-preserve-state','complete'),'review restart recovery binding changed')
+        _require(state['status'] not in ('intent','complete') or state['before'] is not None,'restart receipt lacks intent')
+        _require(state['status']!='complete' or state['after'] is not None and state['evidence'] is not None,'restart completion lacks evidence')
+        state['previousReceiptSha256']=expected_prior_sha256
+    else:_require(expected_prior_sha256 is None,'orphan review restart pin')
+    now=clock or (lambda:datetime.now(timezone.utc))
+    def fresh():
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review restart window closed')
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review restart readiness exceeded window')
+    def commit(status):
+        state['status']=status;sink.commit(copy.deepcopy(state));return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+    def observe():return observe_review_runtime(root,plan,candidate,expected_candidate_sha256=expected_candidate_sha256,transport=transport)
+    try:
+        commit(state['status']);fresh();current=observe()
+        if current is None:return commit('waiting')
+        expected_uid=parent['completed'][-1]['evidence']['runtimePodUid']
+        _require(current['podUid']==expected_uid,'review restart Pod differs from start receipt')
+        if state['before'] is None:
+            state['before']=current;commit('intent');fresh()
+            try:transport.exec_pod(kube.NAMESPACE,current['podName'],current['podUid'],'runtime',['node','-e',"process.kill(1, 'SIGTERM')"])
+            except Exception:pass
+            current=observe()
+            if current is None:return commit('waiting')
+        before=state['before']
+        _require(current['podUid']==before['podUid'] and current['podName']==before['podName'],'review restart Pod replaced')
+        if current['restartCount']==before['restartCount']:
+            _require(current['containerId']==before['containerId'] and state['after'] is None,'review restart count regressed');return commit('waiting')
+        _require(current['restartCount']==before['restartCount']+1 and current['containerId']!=before['containerId'] and current['lastExitCode']==0,'review runtime restart not clean')
+        state['after']=current;fresh();evidence=verify_complete(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        if evidence is None:return commit('waiting')
+        _evidence(plan,'verify-review-runtime',evidence,{r['step']:r['evidence'] for r in parent['completed']})
+        _require(evidence['runtimePodUid']==current['podUid'],'review restart completion Pod changed')
+        state['evidence']=copy.deepcopy(evidence);return commit('complete')
+    except Exception:
+        try:commit('stopped-preserve-state')
+        except Exception:pass
+        raise BootstrapStopped('review restart stopped; preserve runtime and receipts without repeating SIGTERM') from None
