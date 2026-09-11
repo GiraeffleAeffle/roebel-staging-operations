@@ -1348,6 +1348,21 @@ def advance_initializer_retirement(root, plan, initialization_plan, storage_plan
         raise BootstrapStopped('initializer retirement stopped; retain storage and receipts') from None
 
 
+def _listed_replica_pod(pod,replicaset):
+    """Normalize only metadata supplied by the pinned Pod list/ReplicaSet."""
+    actual=copy.deepcopy(pod)
+    # Typed Kubernetes list items may omit these envelope fields. An explicit
+    # conflicting type is retained so the normal semantic verifier rejects it.
+    actual.setdefault('apiVersion','v1');actual.setdefault('kind','Pod')
+    metadata=actual['metadata'];generated=metadata.get('generateName')
+    if generated is not None:
+        _require(isinstance(replicaset.get('metadata',{}).get('name'),str) and generated==replicaset['metadata']['name']+'-' and
+                 metadata['name'].startswith(generated),'listed Pod generated owner name changed')
+        metadata.pop('generateName')
+    metadata.pop('ownerReferences');metadata['labels'].pop('pod-template-hash')
+    return actual
+
+
 def observe_review_runtime(root, plan, candidate, *, expected_candidate_sha256, transport):
     """Observe exact successor Deployment/ReplicaSet/Pod ownership and readiness."""
     from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
@@ -1373,7 +1388,7 @@ def observe_review_runtime(root, plan, candidate, *, expected_candidate_sha256, 
     rs=owners[reference[0]['uid']];pod_hash=meta.get('labels',{}).get('pod-template-hash')
     _require(not rs['metadata'].get('deletionTimestamp') and isinstance(pod_hash,str) and re.fullmatch('[a-z0-9]{1,63}',pod_hash) and
              rs['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'review ReplicaSet identity changed')
-    actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');actual['metadata']['labels'].pop('pod-template-hash')
+    actual=_listed_replica_pod(pod,rs)
     template=desired['spec']['template'];wanted={'apiVersion':'v1','kind':'Pod',
              'metadata':{**copy.deepcopy(template['metadata']),'name':meta['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
     storage._consumer_object(actual,wanted)
@@ -2135,7 +2150,7 @@ def observe_review_public_preservation(root, plan, *, expected_plan_sha256, pare
     rs=owners[reference[0]['uid']];pod_hash=pod['metadata'].get('labels',{}).get('pod-template-hash')
     _require(not rs['metadata'].get('deletionTimestamp') and isinstance(pod_hash,str) and re.fullmatch('[a-z0-9]{1,63}',pod_hash) and
              rs['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'public reader ReplicaSet changed')
-    actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');actual['metadata']['labels'].pop('pod-template-hash')
+    actual=_listed_replica_pod(pod,rs)
     template=deployment['spec']['template'];wanted={'apiVersion':'v1','kind':'Pod','metadata':{
         **copy.deepcopy(template['metadata']),'name':pod['metadata']['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
     storage._consumer_object(actual,wanted)
@@ -2585,8 +2600,9 @@ class ReviewLiveChecks:
             selected=[r for r in sets['items'] if r['metadata'].get('uid')==owners[0].get('uid') and not r['metadata'].get('deletionTimestamp') and
                       any(o.get('controller') is True and o.get('uid')==self.plan['identities']['sourceDeploymentUid'] for o in r['metadata'].get('ownerReferences',[]))]
             _require(len(selected)==1,'review consumer ReplicaSet changed')
-            actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');pod_hash=actual['metadata'].get('labels',{}).pop('pod-template-hash',None)
+            pod_hash=pod['metadata'].get('labels',{}).get('pod-template-hash')
             _require(isinstance(pod_hash,str) and selected[0]['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'review consumer hash changed')
+            actual=_listed_replica_pod(pod,selected[0])
             template=next(o for o in self.candidate['resources']['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')['spec']['template']
             wanted={'apiVersion':'v1','kind':'Pod','metadata':{**copy.deepcopy(template['metadata']),'name':pod['metadata']['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
             storage._consumer_object(actual,wanted)

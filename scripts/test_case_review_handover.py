@@ -1634,3 +1634,15 @@ class PublicPreservationTests(unittest.TestCase):
         self.assertEqual(observe(),baseline)
         self.api.objects[self.flux_path]['spec']['suspend']=False
         with self.assertRaises(BootstrapStopped):observe()
+
+    def test_listed_pod_type_omission_and_generated_name_keep_exact_owner(self):
+        baseline=self.observe();owner=self.reader['metadata']['ownerReferences'][0]['uid']
+        rs=next(r for r in self.api.sets if r['metadata']['uid']==owner)
+        rs['metadata']['name']='public-reader'
+        self.reader['metadata']['generateName']='public-reader-'
+        self.reader.pop('kind');self.reader.pop('apiVersion')
+        self.assertEqual(self.observe(baseline),baseline)
+        self.reader['metadata']['generateName']='foreign-'
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)
+        self.reader['metadata']['generateName']='public-reader-';self.reader['kind']='Secret'
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)
