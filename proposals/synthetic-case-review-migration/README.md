@@ -98,6 +98,19 @@ Ciphertext and the completion receipt are retained; the host's temporary decrypt
 archive is removed on success or failure. The caller still owns and must clean up
 its original plaintext capture after securely retaining verified ciphertext.
 
+The host persists `backup-pending.json` after syncing the ciphertext and before
+restore verification. Recovery explicitly supplies that retained receipt and
+its independent checksum; it verifies the same capture, recipient, executable,
+verification request, directory and ciphertext. It never encrypts again. Each
+attempt decrypts into a fresh private file, leaving any file orphaned by a
+process crash untouched. Its own temporary plaintext is removed on return.
+The `verify_restored` callback must recover the existing worker exchange and
+retrieve its retained result, not issue another restore invocation. A completed
+backup receipt can also be reverified without replacement. Missing/unpinned
+pending records or changed retained ciphertext remain stopped recovery states.
+The real-age integration simulates a lost verification response, repeats recovery,
+checks unchanged ciphertext bytes/inode/mtime and rejects altered recovery pins.
+
 `compile_migration_worker` produces an **inactive** ConfigMap, deny-all policy and
 one Pod using the existing published runtime image. It binds source/target
 claims, the successor candidate, node identity, and the two exact configuration
@@ -536,6 +549,16 @@ extra tree changes, dirty checkout or an expired window prevent unsuspension.
 This is separate from successor admission. Tests use actual disposable Git
 commits and controlled source-controller responses; the connected tail uses a
 controlled source-proof observation and is still not a full live rehearsal.
+
+`review_migration_stage_evidence` translates owned runtime results into the
+coordinator's backup/preparation/activation evidence. It verifies the encrypted
+backup link, complete candidate checksum, original admission and source hash,
+source/target deployment claims, activation window and matching recovery history.
+Even recomputed outer checksums cannot join unrelated nested results. Its public
+entry point still requires a valid Röbel handover plan. The real SQLite fixture
+belongs to `example-city`: integration explicitly proves the public guard rejects
+it, then tests the internal format translation without relabelling the fixture.
+That is runtime-format evidence, not Röbel admission or a live handover proof.
 
 The remaining integration is the concrete live driver: admission of the exact
 successor, complete stage-aware readiness, original Case/public-service checks,

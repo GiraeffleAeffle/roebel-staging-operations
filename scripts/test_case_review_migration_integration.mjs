@@ -97,6 +97,7 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   assert.equal(candidate.receipt.caseVersion, 3);
   assert.equal(candidate.receipt.admissionReceiptChecksum, admitted.receiptChecksum);
   assert.deepEqual(snapshot(originalRoot), originalBytes);
+  let backupIntegration;
   await t.test("backup round trip replays the restored real Case and preserves every source file", async (t) => {
     const capture = files(t, { mode: "capture-backup", source, target, request: { ...request,
       sourceDeploymentClaimChecksum: seal.deploymentClaimChecksum } });
@@ -128,6 +129,7 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
     assert.equal(runReviewMigration({ ...verify.args, archiveFd }, runtime).status, "restored-case-verified");
     assert.equal(verify.result().result.restoredFilesSha256, capture.result().result.sourceFilesSha256);
     assert.equal(verify.result().result.admissionReceiptChecksum, admitted.receiptChecksum);
+    backupIntegration={capture:capture.result(),request:verify.request,result:verify.result()};
     assert.deepEqual(snapshot(originalRoot), originalBytes);
 
     await t.test("worker mailbox captures and restores actual SQLite through pinned private inputs", () => {
@@ -191,7 +193,7 @@ kwargs=dict(capture=s['capture'],expected_capture_sha256=s['capture']['resultSha
 result=encrypt_and_verify_case_backup(**kwargs)
 out=pathlib.Path(s['output'])
 assert (out/'case-backup.age').is_file() and (out/'backup-verified.json').is_file()
-assert not (out/'restored.archive').exists()
+assert not list(out.glob('*restored.archive'))
 assert result['restoredFilesSha256']==s['capture']['result']['sourceFilesSha256']
 assert result['encryptedArchiveSha256']!=result['archiveSha256']
 for fault in ('wrong-key','wrong-capture','wrong-binary','existing-output','cipher-replaced'):
@@ -212,12 +214,54 @@ for fault in ('wrong-key','wrong-capture','wrong-binary','existing-output','ciph
     if fault!='existing-output':
         failed=pathlib.Path(changed['output_directory'])
         assert not (failed/'backup-verified.json').exists()
-        assert not (failed/'restored.archive').exists()
+        assert not list(failed.glob('*restored.archive'))
 assert (out/'backup-verified.json').is_file()
-print(json.dumps({'status':'encrypted-backup-restored-and-replayed','negativeCases':5}))
+# Simulate loss after real verification has committed its private result. The
+# worker recovery callback reads that result; it must not rerun the SQLite step.
+recover=kwargs | {'output_directory':s['output']+'-recover'}
+calls=[]
+def lost_result(path,pin):
+    calls.append('lost')
+    # The real verification above already produced this same exact request's
+    # retained result. Treat it as a response lost in the worker exchange.
+    assert pathlib.Path(path).read_bytes()==pathlib.Path(s['archivePath']).read_bytes()
+    raise TimeoutError('private response lost')
+recover['verify_restored']=lost_result
+try: encrypt_and_verify_case_backup(**recover)
+except BootstrapStopped: pass
+else: raise AssertionError('missing verification accepted')
+recovery_out=pathlib.Path(recover['output_directory'])
+pending=json.loads((recovery_out/'backup-pending.json').read_text())
+cipher=recovery_out/'case-backup.age';before=cipher.stat();cipher_bytes=cipher.read_bytes()
+assert not (recovery_out/'backup-verified.json').exists()
+recover |= dict(pending_receipt=pending,expected_pending_sha256=pending['canonicalSha256'])
+def retained_result(path,pin):
+    calls.append('retrieve')
+    assert pathlib.Path(path).read_bytes()==pathlib.Path(s['archivePath']).read_bytes()
+    return json.loads((pathlib.Path(s['verifyDirectory'])/'result').read_text())
+recover['verify_restored']=retained_result
+for attempt in range(2):
+    recovered=encrypt_and_verify_case_backup(**recover)
+    assert recovered['archiveSha256']==result['archiveSha256']
+    assert cipher.read_bytes()==cipher_bytes
+    assert (cipher.stat().st_ino,cipher.stat().st_mtime_ns)==(before.st_ino,before.st_mtime_ns)
+    assert not list(recovery_out.glob('*restored.archive'))
+assert calls==['lost','retrieve','retrieve']
+for fault in ('wrong-pending','changed-request','changed-cipher'):
+    changed=recover.copy()
+    if fault=='wrong-pending':changed['expected_pending_sha256']='sha256:'+'0'*64
+    if fault=='changed-request':changed['expected_verification_request_sha256']='sha256:'+'0'*64
+    if fault=='changed-cipher':cipher.write_bytes(b'changed')
+    count=len(calls)
+    try: encrypt_and_verify_case_backup(**changed)
+    except BootstrapStopped:pass
+    else:raise AssertionError('backup recovery fault accepted')
+    assert len(calls)==count
+print(json.dumps({'status':'encrypted-backup-restored-and-replayed','negativeCases':8,'ciphertextReused':True,'backupReceipt':result}))
 `;
       const result = JSON.parse(execFileSync("python3", ["-c", script, specPath], { encoding: "utf8", stdio: "pipe" }));
       assert.equal(result.status, "encrypted-backup-restored-and-replayed");
+      backupIntegration.backupReceipt=result.backupReceipt;
       assert.deepEqual(snapshot(originalRoot), originalBytes);
     });
 
@@ -279,6 +323,56 @@ print(json.dumps({'status':'encrypted-backup-restored-and-replayed','negativeCas
   const activation = files(t, { mode: "activate", source, target, request: { ...request, migrationPlan } });
   assert.equal(runReviewMigration(activation.args, runtime).status, "target-sealed");
   assert.deepEqual(snapshot(originalRoot), originalBytes);
+  await t.test("real example-city runtime results translate to stage evidence behind the Röbel-only guard", {skip:!backupIntegration?.backupReceipt}, () => {
+    const input=join(temporaryRoot,"stage-evidence.private.json");
+    writeFileSync(input,canonical({backup:backupIntegration,sourceBinding:old.binding,
+      preparation:{request:prepare.request,result:prepare.result()},activation:{request:activation.request,result:activation.result()}}),{mode:0o600});
+    const script=`import copy,json,pathlib,sys
+from scripts.case_review_handover import review_migration_stage_evidence, _review_migration_result_evidence, BootstrapStopped
+from scripts.test_case_review_handover import fixture,sha
+s=json.loads(pathlib.Path(sys.argv[1]).read_text());plan,_=fixture()
+a=s['activation']['request'];plan['caseId']=a['caseId'];plan['notBeforeUtc']=a['migrationPlan']['notBeforeUtc'];plan['expiresAtUtc']=a['migrationPlan']['expiresAtUtc']
+plan['pins'].update(sourceBindingSha256=s['sourceBinding']['bindingChecksum'],targetBindingSha256=a['targetBinding']['bindingChecksum'],
+    targetDeploymentClaimChecksum=a['migrationPlan']['targetDeploymentClaimChecksum'],migrationImageDigest=a['controlImageDigest'],
+    sourceConfigurationSha256=a['sourceConfigurationSha256'],targetConfigurationSha256=a['targetConfigurationSha256'],admissionReceiptChecksum=a['admissionReceiptChecksum'])
+plan['identities']['targetPvcUid']=a['targetBinding']['storage']['pvcUid'];plan['planSha256']=sha({k:v for k,v in plan.items() if k!='planSha256'})
+# The public entry point must keep rejecting this foreign-municipality fixture.
+try:review_migration_stage_evidence(plan,'verify-backup',request=s['backup']['request'],result=s['backup']['result'],previous={},backup_receipt=s['backup']['backupReceipt'])
+except BootstrapStopped:pass
+else:raise AssertionError('foreign municipality admitted')
+previous={}
+for step,source in [('verify-backup','backup'),('prepare-migration','preparation'),('activate-migration','activation')]:
+    item=s[source];args=dict(request=item['request'],result=item['result'],previous=previous)
+    if step=='verify-backup':args['backup_receipt']=item['backupReceipt']
+    previous[step]=_review_migration_result_evidence(plan,step,**args)
+assert previous['activate-migration']['candidateChecksum']==previous['prepare-migration']['candidateChecksum']
+assert previous['activate-migration']['sourceDatabaseSha256']==previous['verify-backup']['sourceDatabaseSha256']
+# Rehashing a forged envelope or nested receipt must not break the links.
+for fault in ('foreign-request','foreign-candidate','foreign-claim','foreign-recovery','changed-backup','expired-seal'):
+    step='activate-migration';item=copy.deepcopy(s['activation']);extra={}
+    if fault=='foreign-request':item['request']['caseId']+='-foreign'
+    if fault=='foreign-candidate':
+        c=item['result']['result']['candidate'];c['admissionReceiptChecksum']=sha('foreign');c['candidateChecksum']=sha({k:v for k,v in c.items() if k!='candidateChecksum'})
+    if fault=='foreign-claim':
+        c=item['result']['result']['targetClaim'];c['pvc']['uid']='00000000-0000-4000-8000-000000009999';c['claimChecksum']=sha({k:v for k,v in c.items() if k!='claimChecksum'})
+    if fault in ('foreign-recovery','expired-seal'):
+        c=item['result']['result']['targetSeal']
+        if fault=='foreign-recovery':c['recoveryEvidence']={'changed':True}
+        else:c['closedAtUtc']=plan['expiresAtUtc']
+        c['sealChecksum']=sha({k:v for k,v in c.items() if k!='sealChecksum'})
+    if fault=='changed-backup':
+        step='verify-backup';item=copy.deepcopy(s['backup']);b=item['backupReceipt'];b['sourceDatabaseSha256']=sha('foreign');b['receiptSha256']=sha({k:v for k,v in b.items() if k!='receiptSha256'});extra={'backup_receipt':b}
+    else:
+        body=item['result']['result'];body['activationChecksum']=sha({k:v for k,v in body.items() if k!='activationChecksum'})
+    item['result']['requestSha256']=sha(item['request']);item['result']['resultSha256']=sha({k:v for k,v in item['result'].items() if k!='resultSha256'})
+    try:_review_migration_result_evidence(plan,step,request=item['request'],result=item['result'],previous=previous,**extra)
+    except BootstrapStopped:pass
+    else:raise AssertionError('changed stage evidence accepted')
+print(json.dumps({'status':'real-backup-prepare-activation-linked','negativeCases':6}))
+`;
+    const result=JSON.parse(execFileSync("python3",["-c",script,input],{encoding:"utf8",stdio:"pipe"}));
+    assert.equal(result.status,"real-backup-prepare-activation-linked");
+  });
   const targetBytes = snapshot(targetRoot);
   assert.equal(Object.hasOwn(targetBytes, "synthetic-review-migration-intent-v1.json"), false);
   const retry = files(t, { mode: "activate", source, target, request: { ...request, migrationPlan } });

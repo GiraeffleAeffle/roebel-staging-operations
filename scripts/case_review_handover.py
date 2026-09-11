@@ -20,13 +20,15 @@ from .staging_participant_flux_bootstrap import canonical_sha256
 def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_path,
                                    output_directory, age_binary, expected_age_sha256,
                                    recipient, identity_path, expected_verification_request_sha256,
-                                   verify_restored):
+                                   verify_restored, pending_receipt=None, expected_pending_sha256=None):
     """Encrypt an owned capture and verify a *decrypted* restore with the runtime.
 
     verify_restored(path, archive_sha256) invokes the fixed-image descriptor
     operator's verify-backup mode and returns its private result envelope. It
     must bind the independently pinned verification request and actual image.
-    This host operation only writes a fresh local directory. It cannot stop a
+    Initial execution writes a fresh local directory. Recovery requires the
+    pinned pending receipt persisted after encryption, reuses that ciphertext,
+    and calls the verifier through its retained-result recovery path. It cannot stop a
     workload, mount a volume, import a Case or manufacture runtime validation.
     Ciphertext and a private completion receipt are retained. The temporary
     decrypted archive is removed even on failure; caller owns the input archive.
@@ -36,6 +38,7 @@ def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_
     from pathlib import Path
     import stat
     import subprocess
+    import secrets
     from .staging_participant_flux_bootstrap import ReceiptSink
 
     limit = 64 * 1024 * 1024
@@ -65,13 +68,13 @@ def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_
              'sha256:'+hashlib.sha256(binary.read_bytes()).hexdigest() == expected_age_sha256,
              'backup age binary pin mismatch')
 
-    def private_file(path):
+    def private_file(path, max_bytes=limit):
         path = Path(path)
         _require(path.is_absolute() and path.resolve() == path, 'backup private path is not canonical')
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         info = os.fstat(fd)
         if not (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and
-                info.st_uid == os.getuid() and info.st_nlink == 1 and 0 < info.st_size <= limit):
+                info.st_uid == os.getuid() and info.st_nlink == 1 and 0 < info.st_size <= max_bytes):
             os.close(fd)
             raise BootstrapStopped('backup private input invalid')
         return fd
@@ -99,10 +102,33 @@ def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_
         _require(file_hash(archive_fd) == facts['archiveSha256'], 'backup captured archive changed')
         output = Path(output_directory)
         _require(output.is_absolute() and output.parent.resolve() == output.parent, 'backup output parent is not canonical')
-        output.mkdir(mode=0o700, exist_ok=False)
         cipher = output/'case-backup.age'
-        decrypted = output/'restored.archive'
-        cipher_fd = os.open(cipher, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); descriptors.append(cipher_fd)
+        pending_path = output/'backup-pending.json'
+        binding = {'schemaVersion':'roebel_encrypted_case_backup_pending_v1',
+                   'captureResultSha256':expected_capture_sha256,'archiveSha256':facts['archiveSha256'],
+                   'verificationRequestSha256':expected_verification_request_sha256,'ageBinarySha256':expected_age_sha256,
+                   'recipientSha256':'sha256:'+hashlib.sha256(recipient.encode()).hexdigest(),
+                   'outputDirectory':str(output)}
+        def saved(path):
+            fd=private_file(path,1048576);descriptors.append(fd)
+            value=json.loads(os.pread(fd,1048577,0));retained(path,fd)
+            pin=value.pop('canonicalSha256',None)
+            _require(pin==canonical_sha256(value),'backup retained receipt checksum changed')
+            return value,pin
+        if pending_receipt is None:
+            _require(expected_pending_sha256 is None,'orphan backup recovery pin')
+            output.mkdir(mode=0o700, exist_ok=False)
+            cipher_fd = os.open(cipher, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        else:
+            _sha(expected_pending_sha256)
+            info=os.lstat(output)
+            _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'backup recovery directory changed')
+            pending,pin=saved(pending_path)
+            _closed(pending,set(binding)|{'encryptedArchiveSha256','encryptedArchiveBytes'},'backup pending receipt shape changed')
+            _require(pending_receipt==pending|{'canonicalSha256':pin} and pin==expected_pending_sha256 and
+                     all(pending[k]==v for k,v in binding.items()),'backup recovery binding changed')
+            cipher_fd=private_file(cipher,limit+1024*1024)
+        descriptors.append(cipher_fd)
         def run(arguments, source_fd, target_fd, pass_fds=()):
             _require('sha256:'+hashlib.sha256(binary.read_bytes()).hexdigest() == expected_age_sha256, 'backup age binary changed')
             result = subprocess.run([str(binary), *arguments], stdin=source_fd, stdout=target_fd,
@@ -110,9 +136,18 @@ def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_
                                     env={'PATH':'/usr/bin:/bin','LC_ALL':'C'}, check=False)
             _require(result.returncode == 0, 'backup encryption or decryption failed')
             os.fsync(target_fd); os.lseek(target_fd, 0, os.SEEK_SET)
-        run(['--encrypt','--recipient',recipient], archive_fd, cipher_fd)
+        if pending_receipt is None:
+            run(['--encrypt','--recipient',recipient], archive_fd, cipher_fd)
         encrypted_sha = file_hash(cipher_fd)
         _require(os.fstat(cipher_fd).st_size > 0 and encrypted_sha != facts['archiveSha256'], 'backup ciphertext missing')
+        if pending_receipt is None:
+            pending=binding|{'encryptedArchiveSha256':encrypted_sha,'encryptedArchiveBytes':os.fstat(cipher_fd).st_size}
+            ReceiptSink.reserve(pending_path).commit(pending)
+        else:
+            _require(encrypted_sha==pending['encryptedArchiveSha256'] and os.fstat(cipher_fd).st_size==pending['encryptedArchiveBytes'],'backup recovery ciphertext changed')
+        # A process crash can leave an old decrypted file. Never overwrite or
+        # consume it; decrypt the retained ciphertext into a new private file.
+        decrypted = output/(secrets.token_hex(16)+'-restored.archive')
         restored_fd = os.open(decrypted, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600); descriptors.append(restored_fd)
         run(['--decrypt','--identity',f'/dev/fd/{identity_fd}'], cipher_fd, restored_fd, (identity_fd,))
         _require(file_hash(restored_fd) == facts['archiveSha256'] == file_hash(archive_fd), 'backup decrypt did not reproduce capture')
@@ -131,8 +166,11 @@ def encrypt_and_verify_case_backup(*, capture, expected_capture_sha256, archive_
         record = {'schemaVersion':'roebel_encrypted_case_backup_receipt_v1', 'ageBinarySha256':expected_age_sha256,
                   'captureResultSha256':expected_capture_sha256,'verificationResultSha256':verified['resultSha256'],
                   'encryptedArchiveSha256':encrypted_sha, **restored}
-        sink = ReceiptSink.reserve(output/'backup-verified.json')
-        sink.commit(record)
+        completed=output/'backup-verified.json'
+        if pending_receipt is not None and completed.exists():
+            existing,_=saved(completed)
+            _require(existing==record,'backup completion receipt changed')
+        else:ReceiptSink.reserve(completed).commit(record)
         return record | {'receiptSha256':canonical_sha256(record)}
     except Exception:
         raise BootstrapStopped('Case backup stopped; retain the source and owned encrypted artifacts') from None
@@ -1655,3 +1693,100 @@ def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expec
              any(c.get('type')=='Ready' and c.get('status')=='True' for c in source['status'].get('conditions',[])) and
              not any(c.get('type') in ('Reconciling','Stalled') and c.get('status')=='True' for c in source['status'].get('conditions',[])), 'GitOps has not observed the exact successor revision')
     return {'status':'gitops-successor-observed','operationsRevision':expected_target_revision,'targetRenderSha256':plan['pins']['targetRenderSha256']}
+
+
+def review_migration_stage_evidence(plan, step, *, request, result, previous, backup_receipt=None):
+    """Project retained runtime results into the coordinator's closed evidence.
+
+    The caller must read owned, byte-verified worker/backup artifacts and retain
+    their sub-receipts. This checks cross-language receipt semantics; it does
+    not establish cluster ownership, mount release or successor admission.
+    """
+    validate_plan(plan,plan['planSha256'])
+    return _review_migration_result_evidence(plan,step,request=request,result=result,previous=previous,backup_receipt=backup_receipt)
+
+
+def _review_migration_result_evidence(plan, step, *, request, result, previous, backup_receipt=None):
+    """Runtime-format translation behind the public Röbel plan validation.
+
+    Kept separate to exercise the pinned public runtime's example-city fixture
+    without weakening the Röbel-only entry point or relabelling its Case.
+    """
+    mode={'verify-backup':'verify-backup','prepare-migration':'prepare','activate-migration':'activate'}.get(step)
+    _require(mode is not None,'migration evidence stage invalid')
+    _closed(result,{'schemaVersion','mode','requestSha256','sourceRevision','controlImageDigest','sourceConfigurationSha256',
+                    'targetConfigurationSha256','result','resultSha256'},'migration result envelope invalid')
+    _require(result['schemaVersion']=='roebel_case_review_migration_result_v1' and result['mode']==mode==request.get('mode') and
+             result['resultSha256']==canonical_sha256({k:v for k,v in result.items() if k!='resultSha256'}) and
+             result['requestSha256']==canonical_sha256(request) and
+             request.get('schemaVersion')=='roebel_case_review_migration_request_v1' and request.get('caseId')==plan['caseId'] and
+             request.get('admissionReceiptChecksum')==plan['pins']['admissionReceiptChecksum'] and
+             result['sourceRevision']==request.get('sourceRevision')=='fdb0b7f36c33d925be141d8e9037b48d17612df8' and
+             all(result[k]==request.get(k)==plan['pins'][p] for k,p in [('controlImageDigest','migrationImageDigest'),
+                 ('sourceConfigurationSha256','sourceConfigurationSha256'),('targetConfigurationSha256','targetConfigurationSha256')]),
+             'migration result request or implementation changed')
+    def checked(value,key):
+        _require(isinstance(value,dict) and value.get(key)==canonical_sha256({k:v for k,v in value.items() if k!=key}), 'migration nested receipt checksum changed')
+        return value
+    binding=checked(request['targetBinding'],'bindingChecksum')
+    _require(binding['bindingChecksum']==plan['pins']['targetBindingSha256'] and binding.get('schemaVersion')=='staging_case_control_deployment_binding_v2' and
+             binding.get('releaseDigest')==plan['pins']['migrationImageDigest'] and binding['storage']['pvcUid']==plan['identities']['targetPvcUid'], 'migration evidence target changed')
+    body=result['result']
+    if step=='verify-backup':
+        _require(isinstance(backup_receipt,dict),'retained encrypted backup receipt required')
+        checksum_key='receiptSha256' if 'receiptSha256' in backup_receipt else 'canonicalSha256'
+        backup=checked(backup_receipt,checksum_key)
+        facts={'sourceSealChecksum','sourceDeploymentClaimChecksum','sourceDatabaseSha256','sourceFilesSha256','caseId','caseVersion',
+               'admissionReceiptChecksum','archiveSha256','restoredFilesSha256','restoredCandidateChecksum'}
+        _closed(body,facts,'restored worker evidence changed')
+        _closed(backup,facts|{'schemaVersion','ageBinarySha256','captureResultSha256','verificationResultSha256','encryptedArchiveSha256',checksum_key},'encrypted backup receipt shape changed')
+        _require(backup['schemaVersion']=='roebel_encrypted_case_backup_receipt_v1' and backup['verificationResultSha256']==result['resultSha256'] and
+                 all(backup[k]==body[k] for k in facts) and body['sourceSealChecksum']==request['sourceSealChecksum'] and
+                 body['sourceDeploymentClaimChecksum']==request['sourceDeploymentClaimChecksum'] and body['archiveSha256']==request['archiveSha256'],
+                 'encrypted backup is not this verified restore')
+        evidence={k:backup[k] for k in ('sourceSealChecksum','sourceDeploymentClaimChecksum','sourceDatabaseSha256','encryptedArchiveSha256',
+                                      'restoredFilesSha256','sourceFilesSha256','caseId','caseVersion','admissionReceiptChecksum')}
+        evidence['receiptSha256']=backup[checksum_key]
+    else:
+        backup=previous['verify-backup']
+        _evidence(plan,'verify-backup',backup,{})
+        if step=='activate-migration':_evidence(plan,'prepare-migration',previous['prepare-migration'],previous)
+        _require(request['sourceSealChecksum']==backup['sourceSealChecksum'],'migration request source seal changed')
+        candidate=checked(body.get('receipt') if step=='prepare-migration' else body.get('candidate'),'candidateChecksum')
+        _closed(candidate,{'schemaVersion','caseId','caseVersion','journalHeadChecksum','admissionReceiptChecksum','sourceSealChecksum',
+            'sourceDatabaseSha256','sourceConfigFingerprint','targetConfigFingerprint','sourceOptionsFingerprint','targetOptionsFingerprint',
+            'preservedTablesChecksum','targetDatabaseSha256','targetDatabaseByteLength','testOnly','authorityBinding','candidateChecksum'}, 'migration candidate shape changed')
+        _require(candidate['schemaVersion']=='synthetic_review_migration_candidate_v1' and candidate['caseId']==plan['caseId'] and
+                 type(candidate['caseVersion']) is int and candidate['caseVersion']==3 and candidate['testOnly'] is True and candidate['authorityBinding']=='none' and
+                 all(candidate[k]==backup[k] for k in ('sourceSealChecksum','sourceDatabaseSha256','admissionReceiptChecksum')), 'prepared migration lost original Case')
+        evidence={'receiptSha256':result['resultSha256'],'candidateChecksum':candidate['candidateChecksum'],
+                  'sourceSealChecksum':backup['sourceSealChecksum'],'sourceDeploymentClaimChecksum':backup['sourceDeploymentClaimChecksum'],
+                  'targetDeploymentClaimChecksum':plan['pins']['targetDeploymentClaimChecksum']}
+        if step=='prepare-migration':
+            _closed(body,{'candidateRootDir','receipt'},'prepared result shape changed')
+            evidence['admissionReceiptChecksum']=candidate['admissionReceiptChecksum']
+        else:
+            _closed(body,{'schemaVersion','planChecksum','candidate','sourceClaim','sourceSeal','targetClaim','targetSeal','startedAtUtc','activationChecksum'},'activation shape changed')
+            checked(body,'activationChecksum');migration=checked(request['migrationPlan'],'planChecksum')
+            source_claim=checked(body['sourceClaim'],'claimChecksum');target_claim=checked(body['targetClaim'],'claimChecksum')
+            source_seal=checked(body['sourceSeal'],'sealChecksum');target_seal=checked(body['targetSeal'],'sealChecksum')
+            target_claim_body={'schemaVersion':'case_durable_deployment_claim_v1','municipalityId':binding['municipalityId'],
+                'releaseDigest':binding['releaseDigest'],'controlDeploymentBindingChecksum':binding['bindingChecksum'],
+                'pvc':{'namespace':binding['storage']['pvcNamespace'],'name':binding['storage']['pvcName'],'uid':binding['storage']['pvcUid']},'pvName':binding['storage']['pvName']}
+            _require(body['schemaVersion']=='synthetic_review_migration_activation_v1' and body['planChecksum']==migration['planChecksum'] and
+                     migration=={'schemaVersion':'staging_synthetic_review_migration_plan_v1','deploymentEnvironment':'staging','municipalityId':binding['municipalityId'],
+                         'caseId':plan['caseId'],'sourceDeploymentClaimChecksum':backup['sourceDeploymentClaimChecksum'],
+                         'targetDeploymentClaimChecksum':plan['pins']['targetDeploymentClaimChecksum'],'candidateChecksum':candidate['candidateChecksum'],
+                         'notBeforeUtc':plan['notBeforeUtc'],'expiresAtUtc':plan['expiresAtUtc'],'planChecksum':migration['planChecksum']} and
+                     source_claim.get('controlDeploymentBindingChecksum')==plan['pins']['sourceBindingSha256'] and source_claim['claimChecksum']==backup['sourceDeploymentClaimChecksum'] and
+                     target_claim==target_claim_body|{'claimChecksum':plan['pins']['targetDeploymentClaimChecksum']} and
+                     source_seal['sealChecksum']==backup['sourceSealChecksum'] and source_seal.get('databaseSha256')==backup['sourceDatabaseSha256'] and
+                     source_seal.get('deploymentClaimChecksum')==source_claim['claimChecksum'] and
+                     target_seal.get('deploymentClaimChecksum')==target_claim['claimChecksum'] and target_seal.get('databaseSha256')==candidate['targetDatabaseSha256'] and
+                     target_seal.get('databaseByteLength')==candidate['targetDatabaseByteLength'] and target_seal.get('configFingerprint')==candidate['targetConfigFingerprint'] and
+                     target_seal.get('recoveryEvidence')==source_seal.get('recoveryEvidence') and
+                     _utc(plan['notBeforeUtc'])<=_utc(body['startedAtUtc'])<=_utc(target_seal['closedAtUtc'])<_utc(plan['expiresAtUtc']),
+                     'activation does not preserve the prepared Case and exact deployment')
+            evidence.update(activationReceiptChecksum=body['activationChecksum'],sourceDatabaseSha256=backup['sourceDatabaseSha256'],targetSealChecksum=target_seal['sealChecksum'])
+    _evidence(plan,step,evidence,previous)
+    return evidence
