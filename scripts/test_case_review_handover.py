@@ -1222,3 +1222,27 @@ class MigrationStageDriverTests(unittest.TestCase):
         self.new_sink();final=advance(captured=captured,prepared=prepared);self.assertEqual(final['status'],'complete')
         self.assertEqual(final['evidence']['candidateChecksum'],prepared_stage['evidence']['candidateChecksum'])
         self.assertEqual(effects,[('capture-backup','invoke'),('verify-backup','upload-archive'),('verify-backup','invoke'),('prepare','invoke'),('activate','invoke')])
+        # Reverify history after the worker/identity are no longer available.
+        key.unlink()
+        from unittest.mock import patch
+        with patch('subprocess.run',side_effect=AssertionError('historical observation must not execute')):
+            for record,inputs in [(backup,{'backup_options':options}),(prepared_stage,{'captured':captured}),(final,{'captured':captured,'prepared':prepared})]:
+                observed=review.observe_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+                    receipt=record,expected_receipt_sha256=record['canonicalSha256'],**inputs)
+                self.assertEqual(observed,record['evidence'])
+        cipher.write_bytes(b'corrupted')
+        with self.assertRaises(BootstrapStopped):review.observe_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+            receipt=backup,expected_receipt_sha256=backup['canonicalSha256'],backup_options=options)
+
+
+
+    def test_historical_observer_rechecks_retained_result_without_transport(self):
+        record=self.advance();before=list(self.stage_actions)
+        observed=review.observe_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+            receipt=record,expected_receipt_sha256=record['canonicalSha256'],captured=self.captured)
+        self.assertEqual(observed,record['evidence']);self.assertEqual(self.stage_actions,before)
+        command=record['commands']['prepare'];child=json.loads((self.directory_path/command['receiptFile']).read_text())
+        (self.directory_path/child['artifacts']['result']['name']).write_bytes(b'altered')
+        with self.assertRaises(BootstrapStopped):review.observe_review_migration_stage(self.plan,self.binding,expected_plan_sha256=self.plan['planSha256'],
+            receipt=record,expected_receipt_sha256=record['canonicalSha256'],captured=self.captured)
+        self.assertEqual(self.stage_actions,before)

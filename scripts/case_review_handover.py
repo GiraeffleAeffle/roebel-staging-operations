@@ -1930,3 +1930,64 @@ def advance_review_migration_stage(plan, target_binding, *, expected_plan_sha256
         try:commit('stopped-preserve-state')
         except Exception:pass
         raise BootstrapStopped('migration stage stopped; recover owned child receipts without repeating effects') from None
+
+
+def observe_review_migration_stage(plan, target_binding, *, expected_plan_sha256, receipt, expected_receipt_sha256,
+        captured=None, prepared=None, backup_options=None):
+    """Read-only verification after the worker has been retired.
+
+    Reconstruct evidence from owned retained child outputs and ciphertext. No
+    worker, age process, credential read or live request is issued. The outer
+    driver separately rechecks current lifecycle state and admission.
+    """
+    from pathlib import Path
+    import os,stat
+    validate_plan(plan,expected_plan_sha256)
+    state=_worker_lifecycle_receipt(receipt,expected_receipt_sha256)
+    _closed(state,{'schemaVersion','planSha256','step','parentIntent','workerPodUid','artifactDirectory','inputSha256',
+                  'previousReceiptSha256','status','commands','backupReceipt','evidence'},'historical migration stage shape changed')
+    _require(state['schemaVersion']=='roebel_review_migration_stage_v1' and state['planSha256']==expected_plan_sha256 and
+             state['status']=='complete' and UUID.fullmatch(state['workerPodUid']),'historical migration stage incomplete')
+    original=state['parentIntent'];parent=_state(plan,original,original.get('canonicalSha256'));step=state['step']
+    mode={'verify-backup':'capture-backup','prepare-migration':'prepare','activate-migration':'activate'}.get(step)
+    _require(mode and parent['pending']==step and len(parent['completed'])==STEPS.index(step),'historical migration parent changed')
+    request=build_review_worker_request(plan,target_binding,mode,captured=captured,prepared=prepared)
+    _require(state['inputSha256']==canonical_sha256({'request':request,'captured':captured,'prepared':prepared,'backupOptions':backup_options}), 'historical migration inputs changed')
+    directory=Path(state['artifactDirectory']);info=os.lstat(directory)
+    _require(directory.is_absolute() and directory.resolve()==directory and stat.S_ISDIR(info.st_mode) and
+             stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'historical migration directory changed')
+    previous={r['step']:r['evidence'] for r in parent['completed']}
+    _require(set(state['commands'])==({'capture-backup','verify-backup'} if step=='verify-backup' else {mode}),'historical migration commands incomplete')
+    def output(req,kind='result'):
+        command=state['commands'][req['mode']];_closed(command,{'requestSha256','receiptFile','prior'},'historical worker reference changed')
+        _require(command['requestSha256']==canonical_sha256(req) and re.fullmatch('[0-9a-f]{32}-worker.json',command['receiptFile']), 'historical worker request changed')
+        child=json.loads(_review_private_bytes(directory/command['receiptFile']));body=_worker_lifecycle_receipt(child,child.get('canonicalSha256'))
+        _closed(body,{'schemaVersion','planSha256','parentIntentSha256','requestSha256','mode','workerPodUid','artifactDirectory',
+                      'previousReceiptSha256','status','uploadIntent','invokeIntent','artifacts'},'historical worker receipt shape changed')
+        predecessor=command['prior']
+        if predecessor is not None:_worker_lifecycle_receipt(predecessor,predecessor.get('canonicalSha256'))
+        _require(body['schemaVersion']=='roebel_review_worker_exchange_v1' and body['status']=='complete' and body['invokeIntent'] is True and
+                 (req['mode']!='verify-backup' or body['uploadIntent'] is True) and body['planSha256']==expected_plan_sha256 and
+                 body['parentIntentSha256']==original['canonicalSha256'] and body['requestSha256']==command['requestSha256'] and body['mode']==req['mode'] and
+                 body['workerPodUid']==state['workerPodUid'] and body['artifactDirectory']==state['artifactDirectory'] and
+                 body['previousReceiptSha256']==(predecessor['canonicalSha256'] if predecessor else None), 'historical worker provenance changed')
+        artifact=body['artifacts'][kind];_closed(artifact,{'name','sha256','bytes'},'historical worker artifact shape changed')
+        _require(re.fullmatch('[0-9a-f]{32}-'+kind+r'\.private',artifact['name']),'historical worker artifact name changed')
+        raw=_review_private_bytes(directory/artifact['name'],limit=64*1024*1024 if kind=='archive' else 1048576,
+                                  expected_sha256=artifact['sha256'],expected_size=artifact['bytes'])
+        return raw if kind=='archive' else json.loads(raw)
+    result=output(request)
+    if step=='verify-backup':
+        verification=build_review_worker_request(plan,target_binding,'verify-backup',captured=result)
+        import hashlib
+        _require('sha256:'+hashlib.sha256(output(request,'archive')).hexdigest()==result['result']['archiveSha256'],'historical captured archive changed')
+        result=output(verification);backup=state['backupReceipt'];directory=directory/('encrypted-'+original['canonicalSha256'].removeprefix('sha256:'))
+        saved=json.loads(_review_private_bytes(directory/'backup-verified.json'));saved_body=_worker_lifecycle_receipt(saved,saved.get('canonicalSha256'))
+        _require(backup==saved_body|{'receiptSha256':saved['canonicalSha256']},'historical encrypted backup receipt changed')
+        _review_private_bytes(directory/'case-backup.age',limit=65*1024*1024,expected_sha256=backup['encryptedArchiveSha256'])
+        evidence=review_migration_stage_evidence(plan,step,request=verification,result=result,previous=previous,backup_receipt=backup)
+    else:
+        _require(state['backupReceipt'] is None,'unexpected historical backup receipt')
+        evidence=review_migration_stage_evidence(plan,step,request=request,result=result,previous=previous)
+    _require(evidence==state['evidence'],'historical migration completion evidence changed')
+    return evidence

@@ -581,6 +581,14 @@ per command and retained ciphertext; actual SQLite semantics remain covered by
 the separate pinned-runtime integration. The composition test is skipped if age
 and age-keygen are unavailable; the other recovery tests still run.
 
+`observe_review_migration_stage` supplies read-only historical verification for
+those completed stages. It verifies the original parent, child predecessor
+chain, owned artifact bytes, encrypted backup receipt/ciphertext and reconstructed
+evidence without contacting a worker, executing age or reading the private key.
+Tests remove the disposable identity before observing all three stages; altered
+retained result or ciphertext bytes are rejected. Outer lifecycle and current
+live-state checks remain separate from this historical verification.
+
 The remaining integration is the concrete live driver: admission of the exact
 successor, complete stage-aware readiness, original Case/public-service checks,
 and composition/recovery of all private worker, encrypted backup and lifecycle
