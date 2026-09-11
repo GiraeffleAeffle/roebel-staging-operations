@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { configurations, files, hash } from "./test_case_review_migration.mjs";
-import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration } from "./run-case-review-migration.mjs";
+import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, invokeWorkerRequest, readWorkerOutput, uploadWorkerArchive } from "./run-case-review-migration.mjs";
 
 const sourceRoot = process.env.CASE_REVIEW_TEST_SOURCE_ROOT;
 if (!sourceRoot || sourceRoot !== resolve(sourceRoot)) throw new Error("Set the absolute pinned public source checkout for this integration test.");
@@ -112,6 +112,25 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
     assert.equal(verify.result().result.restoredFilesSha256, capture.result().result.sourceFilesSha256);
     assert.equal(verify.result().result.admissionReceiptChecksum, admitted.receiptChecksum);
     assert.deepEqual(snapshot(originalRoot), originalBytes);
+
+    await t.test("worker mailbox captures and restores actual SQLite through pinned private inputs", () => {
+      const mailbox = join(temporaryRoot, "worker-mailbox"); mkdirSync(mailbox,{mode:0o700});
+      writeFileSync(join(mailbox,"source.json"),canonical(source),{mode:0o600});
+      writeFileSync(join(mailbox,"target.json"),canonical(target),{mode:0o600});
+      const captureBytes=Buffer.from(canonical(capture.request)), capturePin=hash(captureBytes);
+      const outcome=invokeWorkerRequest(mailbox,captureBytes,capturePin,runtime);
+      const result=JSON.parse(readWorkerOutput(mailbox,capturePin));
+      assert.equal(outcome.resultSha256,result.resultSha256);
+      const exported=readWorkerOutput(mailbox,capturePin,"archive");
+      assert.equal(hash(exported),result.result.archiveSha256);
+      uploadWorkerArchive(mailbox,hash(exported),exported);
+      const verifyBytes=Buffer.from(canonical({...verify.request,archiveSha256:hash(exported)})),verifyPin=hash(verifyBytes);
+      assert.equal(invokeWorkerRequest(mailbox,verifyBytes,verifyPin,runtime).status,"restored-case-verified");
+      const restored=JSON.parse(readWorkerOutput(mailbox,verifyPin));
+      assert.equal(restored.result.restoredFilesSha256,result.result.sourceFilesSha256);
+      assert.deepEqual(snapshot(originalRoot),originalBytes);
+      assert.throws(()=>invokeWorkerRequest(mailbox,captureBytes,capturePin,runtime));
+    });
 
     await t.test("real age encryption restores and replays the Case through the host backup operator", {
       skip: !process.env.CASE_REVIEW_TEST_AGE_BIN || !process.env.CASE_REVIEW_TEST_AGE_KEYGEN_BIN,

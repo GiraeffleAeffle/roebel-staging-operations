@@ -3,7 +3,7 @@
  * This program never connects to a cluster, submits an adoption or binds HTTP.
  */
 import { createHash } from "node:crypto";
-import { fstatSync, fsyncSync, readSync, writeSync } from "node:fs";
+import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { captureSealedCase, verifyRestoredCase, MAX_ARCHIVE_BYTES } from "./case_review_backup.mjs";
@@ -196,6 +196,86 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
   } catch { fail(); }
 }
 
+/** Fixed worker mailbox. The caller must still verify live fencing, Pod/image
+ * identity and ordered parent receipts before invoking any effect. A reserved
+ * invocation is never executed twice, even when its result is missing. */
+function workerRoot(root) {
+  if (typeof root !== "string" || realpathSync(root) !== root) fail();
+  const stat = lstatSync(root);
+  if (!stat.isDirectory() || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o700) fail();
+}
+function pinName(pin) { if (typeof pin !== "string" || !SHA256.test(pin)) fail(); return pin.slice(7); }
+function openPrivate(path, create = false) {
+  return openSync(path, (create ? constants.O_CREAT | constants.O_EXCL | constants.O_RDWR : constants.O_RDONLY) | constants.O_NOFOLLOW, 0o600);
+}
+function syncDirectory(path) { const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); try { fsyncSync(fd); } finally { closeSync(fd); } }
+function storePrivate(path, bytes) { const fd = openPrivate(path, true); try { writePrivate(fd, bytes); } finally { closeSync(fd); } }
+
+export function uploadWorkerArchive(root, pin, bytes) {
+  try {
+    workerRoot(root); pinName(pin);
+    if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > MAX_ARCHIVE_BYTES || digest(bytes) !== pin) fail();
+    storePrivate(`${root}/archive-${pinName(pin)}`, bytes); syncDirectory(root);
+    return { status: "private-archive-stored", archiveSha256: pin };
+  } catch { fail(); }
+}
+
+export function invokeWorkerRequest(root, requestBytes, expectedRequestSha256, runtime) {
+  const opened = [];
+  try {
+    workerRoot(root); const name = pinName(expectedRequestSha256);
+    if (!Buffer.isBuffer(requestBytes) || !requestBytes.length || requestBytes.length > MAX_BYTES || digest(requestBytes) !== expectedRequestSha256) fail();
+    const request = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(requestBytes));
+    if (!["prepare", "activate", "capture-backup", "verify-backup"].includes(request.mode)) fail();
+    // This durable reservation remains on all failures. Never unlink or reuse it.
+    const invocation = `${root}/request-${name}`;
+    mkdirSync(invocation, {mode:0o700}); syncDirectory(root);
+    storePrivate(`${invocation}/request.json`, requestBytes);
+    const open = (path, create = false) => { const fd = openPrivate(path, create); opened.push(fd); return fd; };
+    const args = { requestFd: open(`${invocation}/request.json`), expectedRequestSha256,
+      sourceConfigFd: open(`${root}/source.json`), targetConfigFd: open(`${root}/target.json`), resultFd: open(`${invocation}/result.json`, true) };
+    if (request.mode === "capture-backup") args.archiveFd = open(`${invocation}/archive`, true);
+    if (request.mode === "verify-backup") args.archiveFd = open(`${root}/archive-${pinName(request.archiveSha256)}`);
+    syncDirectory(invocation);
+    const result = runReviewMigration(args, runtime);
+    syncDirectory(invocation);
+    return result;
+  } catch { fail(); }
+  finally { for (const fd of opened) closeSync(fd); }
+}
+
+export function readWorkerOutput(root, requestPin, kind = "result") {
+  const opened = [];
+  try {
+    workerRoot(root); const invocation = `${root}/request-${pinName(requestPin)}`; workerRoot(invocation);
+    if (!["result", "archive"].includes(kind)) fail();
+    const open = path => { const fd = openPrivate(path); opened.push(fd); return fd; };
+    const request = pinnedJson(open(`${invocation}/request.json`), requestPin);
+    const resultFd = open(`${invocation}/result.json`), stat = privateDescriptor(resultFd);
+    const bytes = Buffer.alloc(Number(stat.size));
+    let offset = 0;
+    while(offset < bytes.length) { const n=readSync(resultFd,bytes,offset,bytes.length-offset,offset); if(n<1)fail(); offset+=n; }
+    const result = JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
+    const {resultSha256, ...body} = result;
+    if (resultSha256 !== digest(canonical(body)) || body.schemaVersion !== "roebel_case_review_migration_result_v1" ||
+      body.requestSha256 !== requestPin || body.mode !== request.mode || body.sourceRevision !== SOURCE_REVISION ||
+      body.controlImageDigest !== CONTROL_IMAGE_DIGEST || body.sourceConfigurationSha256 !== request.sourceConfigurationSha256 ||
+      body.targetConfigurationSha256 !== request.targetConfigurationSha256) fail();
+    // Re-read and pin complete bytes, including inode metadata, before export.
+    const verified = pinnedBytes(resultFd, digest(bytes));
+    if (kind === "result") return verified;
+    if (request.mode !== "capture-backup") fail();
+    return pinnedBytes(open(`${invocation}/archive`), body.result.archiveSha256, MAX_ARCHIVE_BYTES);
+  } catch { fail(); }
+  finally { for (const fd of opened) closeSync(fd); }
+}
+
+async function boundedInput(limit) {
+  const chunks = []; let length = 0;
+  for await (const chunk of process.stdin) { length += chunk.length; if(length > limit)fail(); chunks.push(chunk); }
+  if (!length) fail(); return Buffer.concat(chunks, length);
+}
+
 function parseArguments(args) {
   const names = ["request-fd", "expected-request-sha256", "source-config-fd", "target-config-fd", "result-fd", "archive-fd"];
   if (![10, 12].includes(args.length)) fail();
@@ -214,17 +294,28 @@ function parseArguments(args) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     if (process.env.NODE_OPTIONS || process.env.NODE_PATH || Object.keys(process.env).some((name) => name.startsWith("STADTSTACK_CASE_"))) fail();
-    const args = parseArguments(process.argv.slice(2));
-    const adapter = await import("file:///runtime/src/adapters/sqlite-atomic-topic-case-admission.ts");
-    const control = await import("file:///runtime/src/staging-case-control-runtime.ts");
-    const authentication = await import("file:///runtime/src/staging-administration-authenticator.ts");
-    const seal = await import("file:///runtime/src/case-shutdown-seal.ts");
-    process.stdout.write(`${JSON.stringify(runReviewMigration(args, {
-      prepare: adapter.prepareSyntheticDepartmentReviewMigration,
-      activate: control.activateOperationsBoundSyntheticReviewMigration,
-      validateGrants: authentication.createStagingAdministrationAuthenticator,
-      verifySeal: seal.verifyCaseShutdownSeal,
-    }))}\n`);
+    const cli = process.argv.slice(2);
+    const worker = cli.length === 2 && ["--worker-invoke", "--worker-result", "--worker-archive", "--worker-upload-archive"].includes(cli[0]);
+    if (worker) pinName(cli[1]);
+    if (worker && ["--worker-result", "--worker-archive"].includes(cli[0])) {
+      process.stdout.write(readWorkerOutput("/work/private", cli[1], cli[0] === "--worker-result" ? "result" : "archive"));
+    } else if (worker && cli[0] === "--worker-upload-archive") {
+      process.stdout.write(`${JSON.stringify(uploadWorkerArchive("/work/private", cli[1], await boundedInput(MAX_ARCHIVE_BYTES)))}\n`);
+    } else {
+      const args = worker ? null : parseArguments(cli);
+      const adapter = await import("file:///runtime/src/adapters/sqlite-atomic-topic-case-admission.ts");
+      const control = await import("file:///runtime/src/staging-case-control-runtime.ts");
+      const authentication = await import("file:///runtime/src/staging-administration-authenticator.ts");
+      const seal = await import("file:///runtime/src/case-shutdown-seal.ts");
+      const runtime = {
+        prepare: adapter.prepareSyntheticDepartmentReviewMigration,
+        activate: control.activateOperationsBoundSyntheticReviewMigration,
+        validateGrants: authentication.createStagingAdministrationAuthenticator,
+        verifySeal: seal.verifyCaseShutdownSeal,
+      };
+      const result = worker ? invokeWorkerRequest("/work/private", await boundedInput(MAX_BYTES), cli[1], runtime) : runReviewMigration(args, runtime);
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    }
   } catch {
     process.stderr.write("Case review migration stopped; preserve source, target and private receipts.\n");
     process.exitCode = 78;

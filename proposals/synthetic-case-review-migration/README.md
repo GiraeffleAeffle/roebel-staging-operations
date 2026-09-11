@@ -375,6 +375,46 @@ certify release. The returned private receipt contains a timestamp, evidence
 and the host-view hash, without raw mount output. Pod retirement remains a
 separately receipted operation; the helper sends no writes.
 
+### Fixed worker command interface
+
+The mounted descriptor operator now provides four fixed commands. All run under
+`/work/private` with owned 0700 directories and 0600 regular files. Their only
+argument is a SHA-256 pin; paths and arbitrary executable code are not accepted.
+
+- `--worker-invoke <request-sha256>` reads at most 1 MiB from stdin, reserves a
+  directory for those exact request bytes, opens the existing private source and
+  target configurations and fresh result/archive descriptors, then calls the
+  same reviewed operator. The reservation is synced before runtime effects.
+- `--worker-result <request-sha256>` reads the retained result, checking its
+  request/configuration/image links and checksum. It does not rerun anything.
+- `--worker-archive <capture-request-sha256>` exports only the captured archive
+  linked by that verified result. Output must go directly to the parent's
+  owned private file/pipe; never print it into a tool transcript or public log.
+- `--worker-upload-archive <archive-sha256>` accepts at most 64 MiB of stdin into
+  a fresh content-addressed private file for independent restore verification.
+  It never overwrites an existing archive.
+
+Requests and result files remain private on failure. If a runtime effect happened
+but no complete result was retained, the mailbox refuses another invocation of
+those request bytes. This is a stopped recovery condition, not permission to
+remove the reservation or try a new identity. A separately reviewed recovery
+plan must resolve the runtime state; automatic retry after an uncertain effect
+is intentionally absent. A lost transport response with a complete result is
+recoverable through `--worker-result`.
+
+These commands do not verify Kubernetes identities or authorize their own use.
+The parent Adapter still needs exact Pod/image/volume checks, ordered handover
+receipt checks and a bounded exec transport. No command may be invoked on live
+storage until that entire transaction is ready and rehearsed. The compiled
+worker embeds the changed runner; the published runtime image remains unchanged.
+
+Local tests exercise private result retrieval, reservation collisions, corrupt
+results, wrong byte pins, archive upload and interruption after a runtime effect.
+The real SQLite test captures an archive through the mailbox, exports it,
+uploads it for verification, restores/replays it and confirms source preservation.
+This validates the command functions; Kubernetes exec and the fixed `/runtime`
+CLI imports have not been executed in a live worker.
+
 ### Migration and handover
 
 The runner does not provision volumes, manage Secrets, stop workloads, change

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, fchmodSync, ftruncateSync, linkSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fchmodSync, ftruncateSync, linkSync, mkdtempSync, openSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, SOURCE_REVISION } from "./run-case-review-migration.mjs";
+import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, invokeWorkerRequest, readWorkerOutput, uploadWorkerArchive, SOURCE_REVISION } from "./run-case-review-migration.mjs";
 
 export const hash = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 export const departments = ["planning", "traffic", "environment", "finance", "legal", "public-order", "social-affairs", "public-works"];
@@ -123,4 +123,51 @@ test("runtime failures and accidental acceptance lookup expose only a fixed erro
   runtime.prepare = (input) => { preparation = input; return { candidate: true }; };
   runReviewMigration(h.args, runtime);
   await assert.rejects(preparation.sourceConfig.syntheticAdoption.acceptance.resolve(), { message: "case_review_migration_stopped" });
+});
+
+
+test("worker mailbox reserves once and recovers a result without repeating runtime effects", t => {
+  const h=files(t), root=realpathSync(h.root), effects=[];
+  writeFileSync(join(root,"source.json"),canonical(h.source),{mode:0o600});
+  writeFileSync(join(root,"target.json"),canonical(h.target),{mode:0o600});
+  const bytes=Buffer.from(canonical(h.request)), pin=hash(bytes);
+  const result=invokeWorkerRequest(root,bytes,pin,fakeRuntime(effects));
+  assert.equal(result.status,"candidate-prepared");assert.equal(effects.length,1);
+  const recovered=readWorkerOutput(root,pin);
+  assert.equal(JSON.parse(recovered).resultSha256,result.resultSha256);
+  stopped(()=>invokeWorkerRequest(root,bytes,pin,fakeRuntime(effects)));
+  assert.equal(effects.length,1);assert.deepEqual(readWorkerOutput(root,pin),recovered);
+  const path=join(root,`request-${pin.slice(7)}`,"result.json");
+  writeFileSync(path,"private corruption must not escape");
+  stopped(()=>readWorkerOutput(root,pin));
+});
+
+test("worker rejects wrong bytes and unsafe private inputs; an interrupted reservation stays reserved", t => {
+  const h=files(t), root=realpathSync(h.root), effects=[];
+  const bytes=Buffer.from(canonical(h.request)),pin=hash(bytes);
+  stopped(()=>invokeWorkerRequest(root,bytes,hash("wrong"),fakeRuntime(effects)));
+  // Missing configuration leaves a reserved invocation, never a retryable one.
+  stopped(()=>invokeWorkerRequest(root,bytes,pin,fakeRuntime(effects)));
+  writeFileSync(join(root,"source.json"),canonical(h.source),{mode:0o600});
+  writeFileSync(join(root,"target.json"),canonical(h.target),{mode:0o600});
+  stopped(()=>invokeWorkerRequest(root,bytes,pin,fakeRuntime(effects)));
+  stopped(()=>readWorkerOutput(root,pin)); assert.equal(effects.length,0);
+  const archive=Buffer.from("private restore input"),archivePin=hash(archive);
+  stopped(()=>uploadWorkerArchive(root,hash("wrong"),archive));
+  assert.equal(uploadWorkerArchive(root,archivePin,archive).status,"private-archive-stored");
+  stopped(()=>uploadWorkerArchive(root,archivePin,archive));
+  assert.deepEqual(readFileSync(join(root,`archive-${archivePin.slice(7)}`)),archive);
+  stopped(()=>readWorkerOutput(root,pin,"../../source.json"));
+});
+
+
+test("a worker failure after a runtime effect preserves the reservation and forbids blind replay", t => {
+  const h=files(t),root=realpathSync(h.root),effects=[];
+  writeFileSync(join(root,"source.json"),canonical(h.source),{mode:0o600});
+  writeFileSync(join(root,"target.json"),canonical(h.target),{mode:0o600});
+  const bytes=Buffer.from(canonical(h.request)),pin=hash(bytes),runtime=fakeRuntime(effects);
+  runtime.prepare = input => {effects.push(input);throw Error("uncertain effect with private diagnostic");};
+  stopped(()=>invokeWorkerRequest(root,bytes,pin,runtime));assert.equal(effects.length,1);
+  stopped(()=>readWorkerOutput(root,pin));
+  stopped(()=>invokeWorkerRequest(root,bytes,pin,fakeRuntime(effects)));assert.equal(effects.length,1);
 });
