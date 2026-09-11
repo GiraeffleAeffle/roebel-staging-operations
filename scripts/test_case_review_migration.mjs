@@ -4,7 +4,7 @@ import { closeSync, fchmodSync, ftruncateSync, linkSync, mkdtempSync, openSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, invokeWorkerRequest, readWorkerOutput, uploadWorkerArchive, SOURCE_REVISION } from "./run-case-review-migration.mjs";
+import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, invokeWorkerRequest, readWorkerOutput, uploadWorkerArchive, verifyWorkerArchive, SOURCE_REVISION } from "./run-case-review-migration.mjs";
 
 export const hash = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 export const departments = ["planning", "traffic", "environment", "finance", "legal", "public-order", "social-affairs", "public-works"];
@@ -156,6 +156,8 @@ test("worker rejects wrong bytes and unsafe private inputs; an interrupted reser
   stopped(()=>uploadWorkerArchive(root,hash("wrong"),archive));
   assert.equal(uploadWorkerArchive(root,archivePin,archive).status,"private-archive-stored");
   stopped(()=>uploadWorkerArchive(root,archivePin,archive));
+  assert.deepEqual(verifyWorkerArchive(root,archivePin),{status:"private-archive-stored",archiveSha256:archivePin});
+  stopped(()=>verifyWorkerArchive(root,hash("missing")));
   assert.deepEqual(readFileSync(join(root,`archive-${archivePin.slice(7)}`)),archive);
   stopped(()=>readWorkerOutput(root,pin,"../../source.json"));
 });

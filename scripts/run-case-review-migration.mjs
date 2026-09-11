@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { captureSealedCase, verifyRestoredCase, MAX_ARCHIVE_BYTES } from "./case_review_backup.mjs";
+import { captureSealedCase, captureNewlySealedCase, verifyRestoredCase, MAX_ARCHIVE_BYTES } from "./case_review_backup.mjs";
 
 export const SOURCE_REVISION = "fdb0b7f36c33d925be141d8e9037b48d17612df8";
 export const CONTROL_IMAGE_DIGEST = "sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60";
@@ -123,6 +123,7 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
       const request = pinnedJson(requestFd, expectedRequestSha256);
       const fields = ["schemaVersion", "mode", "sourceRevision", "controlImageDigest", "sourceRootDir", "caseId", "sourceSealChecksum",
         "admissionReceiptChecksum", "sourceConfigurationSha256", "targetConfigurationSha256", "targetBinding"];
+      if (request.mode === "capture-backup" && request.sourceSealChecksum === null) fields.push("sourceBindingChecksum");
       if (request.mode === "activate") fields.push("migrationPlan");
       if (["capture-backup", "verify-backup"].includes(request.mode)) fields.push("sourceDeploymentClaimChecksum");
       if (request.mode === "verify-backup") fields.push("archiveSha256");
@@ -131,7 +132,8 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
         request.sourceRevision !== SOURCE_REVISION || request.controlImageDigest !== CONTROL_IMAGE_DIGEST ||
         typeof request.sourceRootDir !== "string" || request.sourceRootDir !== resolve(request.sourceRootDir) ||
         typeof request.caseId !== "string" || !request.caseId.startsWith("urn:stadtstack:synthetic-case:municipality:") ||
-        !SHA256.test(request.sourceSealChecksum) || !SHA256.test(request.admissionReceiptChecksum) ||
+        !(SHA256.test(request.sourceSealChecksum) || request.mode === "capture-backup" && request.sourceSealChecksum === null &&
+          request.sourceDeploymentClaimChecksum === null && typeof request.sourceBindingChecksum === "string" && SHA256.test(request.sourceBindingChecksum)) || !SHA256.test(request.admissionReceiptChecksum) ||
         request.targetBinding?.schemaVersion !== "staging_case_control_deployment_binding_v2" ||
         request.targetBinding.releaseDigest !== CONTROL_IMAGE_DIGEST || !SHA256.test(request.targetBinding.bindingChecksum)) fail();
       return request;
@@ -140,7 +142,8 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
     const backup = ["capture-backup", "verify-backup"].includes(request.mode);
     let archiveStat, archiveWritten = false, capturedArchiveSha256;
     if (backup) {
-      if (typeof request.sourceDeploymentClaimChecksum !== "string" || !SHA256.test(request.sourceDeploymentClaimChecksum)) fail();
+      if (!(request.mode === "capture-backup" && request.sourceSealChecksum === null) &&
+        (typeof request.sourceDeploymentClaimChecksum !== "string" || !SHA256.test(request.sourceDeploymentClaimChecksum))) fail();
       archiveStat = privateDescriptor(archiveFd, { empty: request.mode === "capture-backup", maxBytes: MAX_ARCHIVE_BYTES });
       if (descriptors.includes(archiveFd) || stats.some((stat) => identity(stat) === identity(archiveStat))) fail();
     } else if (archiveFd !== undefined) fail();
@@ -166,7 +169,9 @@ export function runReviewMigration({ requestFd, expectedRequestSha256, sourceCon
     fresh();
     let result;
     if (request.mode === "capture-backup") {
-      const captured = captureSealedCase(preparation, request.sourceDeploymentClaimChecksum, runtime.verifySeal);
+      const captured = request.sourceSealChecksum === null
+        ? captureNewlySealedCase(preparation, request.sourceBindingChecksum, runtime.verifySeal)
+        : captureSealedCase(preparation, request.sourceDeploymentClaimChecksum, runtime.verifySeal);
       fresh();
       writePrivate(archiveFd, captured.bytes);
       capturedArchiveSha256 = captured.archiveSha256; archiveWritten = true;
@@ -218,6 +223,16 @@ export function uploadWorkerArchive(root, pin, bytes) {
     storePrivate(`${root}/archive-${pinName(pin)}`, bytes); syncDirectory(root);
     return { status: "private-archive-stored", archiveSha256: pin };
   } catch { fail(); }
+}
+
+export function verifyWorkerArchive(root, pin) {
+  let fd;
+  try {
+    workerRoot(root); fd = openPrivate(`${root}/archive-${pinName(pin)}`);
+    pinnedBytes(fd, pin, MAX_ARCHIVE_BYTES);
+    return { status: "private-archive-stored", archiveSha256: pin };
+  } catch { fail(); }
+  finally { if (fd !== undefined) closeSync(fd); }
 }
 
 export function invokeWorkerRequest(root, requestBytes, expectedRequestSha256, runtime) {
@@ -295,7 +310,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   try {
     if (process.env.NODE_OPTIONS || process.env.NODE_PATH || Object.keys(process.env).some((name) => name.startsWith("STADTSTACK_CASE_"))) fail();
     const cli = process.argv.slice(2);
-    const worker = cli.length === 4 && cli[2] === "--expected-worker-uid" && ["--worker-invoke", "--worker-result", "--worker-archive", "--worker-upload-archive"].includes(cli[0]);
+    const worker = cli.length === 4 && cli[2] === "--expected-worker-uid" && ["--worker-invoke", "--worker-result", "--worker-archive", "--worker-upload-archive", "--worker-verify-archive"].includes(cli[0]);
     if (worker) {
       pinName(cli[1]);
       if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(cli[3]) ||
@@ -303,6 +318,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     }
     if (worker && ["--worker-result", "--worker-archive"].includes(cli[0])) {
       process.stdout.write(readWorkerOutput("/work/private", cli[1], cli[0] === "--worker-result" ? "result" : "archive"));
+    } else if (worker && cli[0] === "--worker-verify-archive") {
+      process.stdout.write(`${JSON.stringify(verifyWorkerArchive("/work/private", cli[1]))}\n`);
     } else if (worker && cli[0] === "--worker-upload-archive") {
       process.stdout.write(`${JSON.stringify(uploadWorkerArchive("/work/private", cli[1], await boundedInput(MAX_ARCHIVE_BYTES)))}\n`);
     } else {

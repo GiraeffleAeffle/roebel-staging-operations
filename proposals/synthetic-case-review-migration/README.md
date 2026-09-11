@@ -61,6 +61,12 @@ failure. The parent must retain and link the private result before handover.
 Backup is part of the same descriptor operator, using the same pinned source
 and target configurations. `capture-backup` additionally requires the separately
 pinned `sourceDeploymentClaimChecksum` and a new empty private `--archive-fd`.
+For the first capture after shutdown, both seal/claim checksums may instead be
+null with the additional pinned `sourceBindingChecksum`. This explicit discovery
+mode reads the claim and seal from two matching bounded source snapshots,
+verifies the binding, seal, Case and original admission, and returns the observed
+checksums. It never opens the source as SQLite or changes source files. Other
+modes require concrete seal and claim pins.
 `verify-backup` requires that claim, `archiveSha256` from the capture result, and
 an archive descriptor containing the decrypted bytes. Prepare/activate reject
 an unexpected archive descriptor. The archive descriptor must be readable too,
@@ -378,7 +384,7 @@ separately receipted operation; the helper sends no writes.
 
 ### Fixed worker command interface
 
-The mounted descriptor operator now provides four fixed commands. All run under
+The mounted descriptor operator now provides five fixed commands. All run under
 `/work/private` with owned 0700 directories and 0600 regular files. Their only
 content argument is a SHA-256 pin. Every command also requires
 `--expected-worker-uid <Pod-UID>`, checked against the Downward API environment
@@ -397,6 +403,9 @@ code are not accepted.
 - `--worker-upload-archive <archive-sha256>` accepts at most 64 MiB of stdin into
   a fresh content-addressed private file for independent restore verification.
   It never overwrites an existing archive.
+- `--worker-verify-archive <archive-sha256>` reads and hashes the retained upload
+  without writing or loading runtime code. A lost upload response must be
+  resolved here before invoking restore; uploading the archive again is forbidden.
 
 Requests and result files remain private on failure. If a runtime effect happened
 but no complete result was retained, the mailbox refuses another invocation of
@@ -494,9 +503,44 @@ original admission preservation, failed-bind cleanup and clean sealed restart.
 All six of those runtime tests pass. Temporary loopback binding required the
 normal local sandbox exception; no staging connection was used.
 
+### Private worker driver and preflight
+
+`build_review_worker_request` connects capture, restored-backup verification,
+preparation and activation requests. Each next request verifies the preceding
+result envelope and original Case/admission/configuration/image pins. The
+activation uses the prepared candidate and discovered source seal/claim, within
+the complete handover window.
+
+`advance_review_worker_exchange` retains invocation intent before exec and
+exports results/archives into fresh private files. Its durable receipt records
+file names, sizes and hashes only; recovery rechecks their bytes, ownership and
+mode. A lost response retrieves the existing result, never reinvokes a runtime
+effect. Restore upload has its own intent and read-only verification. Missing
+or late uploads/results pause the exchange; changed retained bytes cannot
+complete it. The fixed Kubernetes transport still verifies each operation's
+stage and actual worker identity. Driver tests exercise lost responses, late
+delivery and altered retained artifacts using controlled worker responses.
+
+`verify_review_private_configuration` reads separately pinned private source and
+target descriptors before shutdown. It requires the complete scoped role set,
+preserved source settings and distinct tokens; every review grant must cover
+the entire handover window. It returns only hashes/counts, never grant contents.
+The live readiness Adapter must additionally verify the corresponding cluster
+Secret identities and bytes; local files alone are not that observation.
+
+GitOps restore now also requires `verify_review_gitops_target`: a clean pinned
+Operations checkout must differ from the implementation commit only in the
+exact successor runtime resource file, preserving its file mode. The fixed
+source controller must report that same main revision as ready. Old source,
+extra tree changes, dirty checkout or an expired window prevent unsuspension.
+This is separate from successor admission. Tests use actual disposable Git
+commits and controlled source-controller responses; the connected tail uses a
+controlled source-proof observation and is still not a full live rehearsal.
+
 The remaining integration is the concrete live driver: admission of the exact
-successor, complete stage-aware readiness, retained/exported private artifact
-verification and recovery of every sub-receipt. `verify_ready`/`verify_complete`
+successor, complete stage-aware readiness, original Case/public-service checks,
+and composition/recovery of all private worker, encrypted backup and lifecycle
+receipts. `verify_ready`/`verify_complete`
 remain mandatory ports, not executable success defaults. Existing tests use
 explicit controlled observations at those ports. No source shutdown is allowed
 until that driver and a full rehearsal are ready.

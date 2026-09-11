@@ -88,6 +88,25 @@ export function captureSealedCase(preparation, expectedClaimChecksum, verifySeal
   return { bytes, evidence: facts, archiveSha256: hash(bytes) };
 }
 
+/** Discover the seal produced by this shutdown while checking its fixed
+ * deployment binding, Case and original admission. This remains a read-only
+ * two-snapshot capture; discovered pins become inputs to independent restore. */
+export function captureNewlySealedCase(preparation, expectedSourceBindingChecksum, verifySeal) {
+  requireFact(typeof expectedSourceBindingChecksum === "string" && /^sha256:[0-9a-f]{64}$/.test(expectedSourceBindingChecksum));
+  const files = snapshot(preparation.sourceRootDir);
+  const decode = (name) => {
+    const file = files.find((entry) => entry.name === name); requireFact(file);
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(file.base64, "base64")));
+  };
+  const seal = verifySeal(decode(SEAL)), claim = decode(CLAIM);
+  requireFact(claim.controlDeploymentBindingChecksum === expectedSourceBindingChecksum);
+  const facts = evidence(files, { ...preparation, expectedSourceSealChecksum: seal.sealChecksum }, claim.claimChecksum, verifySeal);
+  requireFact(canonical(snapshot(preparation.sourceRootDir)) === canonical(files));
+  const bytes = Buffer.from(canonical({ schemaVersion: "roebel_sealed_case_archive_v1", evidence: facts, files }) + "\n");
+  requireFact(bytes.length <= MAX_ARCHIVE_BYTES);
+  return { bytes, evidence: facts, archiveSha256: hash(bytes) };
+}
+
 /** Decrypted bytes are independently pinned by the capture receipt. Restore
  * only into a new private temporary directory, then replay via the fixed
  * runtime's real migration preparation. The ordinary runtime never opens the

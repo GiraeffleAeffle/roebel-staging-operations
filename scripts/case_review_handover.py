@@ -773,7 +773,7 @@ class KubectlReviewWorkerTransport:
                  expected_parent_sha256, archive_bytes=None, output_fd=None, expected_archive_sha256=None):
         import hashlib,json,os,stat
         try:
-            _require(action in ('invoke','result','archive','upload-archive') and isinstance(request_bytes,bytes) and
+            _require(action in ('invoke','result','archive','upload-archive','verify-archive') and isinstance(request_bytes,bytes) and
                      0<len(request_bytes)<=1048576 and 'sha256:'+hashlib.sha256(request_bytes).hexdigest()==request_sha256,'worker request bytes changed')
             request=json.loads(request_bytes)
             state=_state(self.plan,parent_receipt,expected_parent_sha256)
@@ -788,6 +788,9 @@ class KubectlReviewWorkerTransport:
             _require(request.get('sourceRootDir')=='/var/lib/stadtstack/case-control' and
                      request.get('controlImageDigest')==self.plan['pins']['migrationImageDigest'] and
                      request.get('targetBinding',{}).get('bindingChecksum')==self.plan['pins']['targetBindingSha256'],'worker runtime binding changed')
+            if request.get('sourceSealChecksum') is None:
+                _require(request.get('mode')=='capture-backup' and request.get('sourceDeploymentClaimChecksum') is None and
+                         request.get('sourceBindingChecksum')==self.plan['pins']['sourceBindingSha256'], 'source seal discovery binding changed')
             previous={r['step']:r['evidence'] for r in state['completed']}
             if stage in ('prepare-migration','activate-migration'):
                 _require(request.get('sourceSealChecksum')==previous['verify-backup']['sourceSealChecksum'],'worker source seal changed')
@@ -816,7 +819,8 @@ class KubectlReviewWorkerTransport:
             else:_require(output_fd is None,'unexpected output descriptor')
             self.verify_ready(copy.deepcopy(self.plan),copy.deepcopy(state),copy.deepcopy(request))
             self._ownership()
-            pin=request['archiveSha256'] if action=='upload-archive' else request_sha256
+            _require(action!='verify-archive' or request['mode']=='verify-backup','archive verification outside restore')
+            pin=request['archiveSha256'] if action in ('upload-archive','verify-archive') else request_sha256
             input_bytes=request_bytes if action=='invoke' else archive_bytes if action=='upload-archive' else None
             command=self.base+['exec','-n',self.namespace,'roebel-case-review-migration-v1','-c','migration']
             if input_bytes is not None:command+=['-i']
@@ -849,7 +853,7 @@ class KubectlReviewWorkerTransport:
             expected={{'prepare':'candidate-prepared','activate':'target-sealed','capture-backup':'private-archive-captured','verify-backup':'restored-case-verified'}[request['mode']]} if action=='invoke' else {'private-archive-stored'}
             _require(isinstance(summary,dict) and summary.get('status') in expected and
                      set(summary)==({'status','resultSha256'} if action=='invoke' else {'status','archiveSha256'}),'worker summary invalid')
-            if action=='upload-archive':_require(summary['archiveSha256']==request['archiveSha256'],'uploaded archive acknowledgement changed')
+            if action in ('upload-archive','verify-archive'):_require(summary['archiveSha256']==request['archiveSha256'],'uploaded archive acknowledgement changed')
             _sha(summary.get('resultSha256') if action=='invoke' else summary.get('archiveSha256'))
             return summary
         except Exception:
@@ -1105,7 +1109,8 @@ def _review_transition_exact(observed, desired):
 
 def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sha256,
         expected_candidate_sha256, operation, parent_receipt, expected_parent_sha256,
-        transport, sink, verify_ready, verify_complete, prior=None, expected_prior_sha256=None, clock=None):
+        transport, sink, verify_ready, verify_complete, target_checkout=None, expected_target_revision=None,
+        prior=None, expected_prior_sha256=None, clock=None):
     """Start the pinned successor or resume GitOps after parent runtime proof.
 
     Readiness must verify admission of this exact successor and preservation of
@@ -1146,6 +1151,9 @@ def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sh
         _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition window closed')
         verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
         _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition readiness exceeded window')
+        if operation=='restore':verify_review_gitops_target(root,plan,candidate,target_checkout=target_checkout,
+            expected_target_revision=expected_target_revision,transport=transport)
+        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition source proof exceeded window')
     def commit(status):
         state['status']=status;sink.commit(copy.deepcopy(state))
         return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
@@ -1204,7 +1212,8 @@ class KubectlReviewTransitionTransport:
         if method=='POST':
             _require(path in self.collections and payload==self.collections[path],'review transition create changed');args=['create','--raw',path,'-f','-']
         else:
-            _require(path in self.paths,'review transition path outside inventory')
+            source_paths={'/api/v1/namespaces/kube-system','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations'}
+            _require(path in self.paths or method=='GET' and path in source_paths,'review transition path outside inventory')
             if method=='GET':_require(payload is None,'review transition GET payload');args=['get','--raw',path]
             else:
                 before,after,field=self.paths[path];current=self.observed.get(path)
@@ -1377,3 +1386,272 @@ def advance_review_runtime_restart(root, plan, candidate, *, expected_plan_sha25
         try:commit('stopped-preserve-state')
         except Exception:pass
         raise BootstrapStopped('review restart stopped; preserve runtime and receipts without repeating SIGTERM') from None
+
+
+def build_review_worker_request(plan, target_binding, mode, *, captured=None, prepared=None):
+    """Build driver requests only from pinned bindings and verified prior outputs."""
+    validate_plan(plan,plan['planSha256'])
+    _require(mode in ('capture-backup','verify-backup','prepare','activate'),'driver worker mode invalid')
+    binding_body={k:v for k,v in target_binding.items() if k!='bindingChecksum'}
+    _require(target_binding.get('bindingChecksum')==plan['pins']['targetBindingSha256']==canonical_sha256(binding_body) and
+             target_binding.get('schemaVersion')=='staging_case_control_deployment_binding_v2' and
+             target_binding.get('releaseDigest')==plan['pins']['migrationImageDigest'] and
+             target_binding.get('storage',{}).get('rootDir')=='/var/lib/stadtstack-review/case-control' and
+             target_binding['storage'].get('pvcUid')==plan['identities']['targetPvcUid'],'driver target binding changed')
+    request={'schemaVersion':'roebel_case_review_migration_request_v1','mode':mode,
+             'sourceRevision':'fdb0b7f36c33d925be141d8e9037b48d17612df8','controlImageDigest':plan['pins']['migrationImageDigest'],
+             'sourceRootDir':'/var/lib/stadtstack/case-control','caseId':plan['caseId'],'sourceSealChecksum':None,
+             'admissionReceiptChecksum':plan['pins']['admissionReceiptChecksum'],'sourceConfigurationSha256':plan['pins']['sourceConfigurationSha256'],
+             'targetConfigurationSha256':plan['pins']['targetConfigurationSha256'],'targetBinding':copy.deepcopy(target_binding)}
+    def result(value,expected_mode,expected_request):
+        _closed(value,{'schemaVersion','mode','requestSha256','sourceRevision','controlImageDigest','sourceConfigurationSha256','targetConfigurationSha256','result','resultSha256'},'driver worker result shape changed')
+        _require(value['schemaVersion']=='roebel_case_review_migration_result_v1' and value['mode']==expected_mode and
+                 value['resultSha256']==canonical_sha256({k:v for k,v in value.items() if k!='resultSha256'}) and
+                 value['requestSha256']==canonical_sha256(expected_request) and
+                 all(value[k]==request[k] for k in ('sourceRevision','controlImageDigest','sourceConfigurationSha256','targetConfigurationSha256')),'driver result link changed')
+        return value['result']
+    if mode=='capture-backup':
+        _require(captured is None and prepared is None,'discovery requires no guessed prior results')
+        request.update(sourceDeploymentClaimChecksum=None,sourceBindingChecksum=plan['pins']['sourceBindingSha256']);return request
+    capture_request=build_review_worker_request(plan,target_binding,'capture-backup')
+    facts=result(captured,'capture-backup',capture_request)
+    _closed(facts,{'sourceSealChecksum','sourceDeploymentClaimChecksum','sourceDatabaseSha256','sourceFilesSha256','caseId','caseVersion','admissionReceiptChecksum','archiveSha256'},'driver capture facts changed')
+    for key,value in facts.items():
+        if key.endswith(('Sha256','Checksum')):_sha(value)
+    _require(facts['caseId']==plan['caseId'] and type(facts['caseVersion']) is int and facts['caseVersion']==3 and
+             facts['admissionReceiptChecksum']==plan['pins']['admissionReceiptChecksum'],'driver capture Case changed')
+    request['sourceSealChecksum']=facts['sourceSealChecksum']
+    if mode=='verify-backup':request.update(sourceDeploymentClaimChecksum=facts['sourceDeploymentClaimChecksum'],archiveSha256=facts['archiveSha256'])
+    if mode!='activate':
+        _require(prepared is None,'unexpected prepared result');return request
+    preparation_request=build_review_worker_request(plan,target_binding,'prepare',captured=captured)
+    candidate=result(prepared,'prepare',preparation_request).get('receipt',{})
+    _require(candidate.get('caseId')==plan['caseId'] and candidate.get('caseVersion')==3 and candidate.get('testOnly') is True and
+             candidate.get('authorityBinding')=='none' and candidate.get('sourceSealChecksum')==facts['sourceSealChecksum'] and
+             candidate.get('sourceDatabaseSha256')==facts['sourceDatabaseSha256'] and
+             candidate.get('admissionReceiptChecksum')==facts['admissionReceiptChecksum'],'driver prepared Case changed')
+    _sha(candidate.get('candidateChecksum'))
+    migration={'schemaVersion':'staging_synthetic_review_migration_plan_v1','deploymentEnvironment':'staging',
+               'municipalityId':target_binding['municipalityId'],'caseId':plan['caseId'],
+               'sourceDeploymentClaimChecksum':facts['sourceDeploymentClaimChecksum'],
+               'targetDeploymentClaimChecksum':plan['pins']['targetDeploymentClaimChecksum'],'candidateChecksum':candidate['candidateChecksum'],
+               'notBeforeUtc':plan['notBeforeUtc'],'expiresAtUtc':plan['expiresAtUtc']}
+    request['migrationPlan']=migration|{'planChecksum':canonical_sha256(migration)}
+    return request
+
+
+def advance_review_worker_exchange(plan, request, *, expected_plan_sha256, parent_receipt, expected_parent_sha256,
+        transport, sink, artifact_directory, verify_ready, archive_bytes=None, prior=None, expected_prior_sha256=None):
+    """Driver's durable invoke/export transaction, using private file descriptors.
+
+    Restore uploads have a separate durable intent and a read-only verification
+    command; a lost upload is observed before any restore invocation.
+    Request reservation precedes exec; recovery only retrieves the retained
+    result. Orphaned output files are retained and never overwritten. Completion
+    references owned private files, not just an in-memory success summary.
+    """
+    import os,stat,hashlib,secrets
+    from pathlib import Path
+    validate_plan(plan,expected_plan_sha256)
+    parent=_state(plan,parent_receipt,expected_parent_sha256)
+    if request.get('mode')=='verify-backup':
+        _require(isinstance(archive_bytes,bytes) and 0<len(archive_bytes)<=64*1024*1024 and
+                 'sha256:'+hashlib.sha256(archive_bytes).hexdigest()==request.get('archiveSha256'),'driver restore archive changed')
+    else:_require(archive_bytes is None,'unexpected driver archive input')
+    directory=Path(artifact_directory)
+    _require(directory.is_absolute() and directory.resolve()==directory,'worker artifact directory is not canonical')
+    info=os.lstat(directory)
+    _require(stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'worker artifacts require owned private directory')
+    request_bytes=json.dumps(request,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+    request_pin='sha256:'+hashlib.sha256(request_bytes).hexdigest()
+    initial={'schemaVersion':'roebel_review_worker_exchange_v1','planSha256':expected_plan_sha256,'parentIntentSha256':expected_parent_sha256,
+             'requestSha256':request_pin,'mode':request.get('mode'),'workerPodUid':transport.pod_uid,
+             'artifactDirectory':str(directory),'previousReceiptSha256':None,'status':'reserved','uploadIntent':False,'invokeIntent':False,'artifacts':{}}
+    state=copy.deepcopy(initial)
+    if prior is not None:
+        state=_worker_lifecycle_receipt(prior,expected_prior_sha256);_closed(state,initial,'worker exchange recovery shape changed')
+        _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','parentIntentSha256','requestSha256','mode','workerPodUid','artifactDirectory')) and
+                 state['status'] in ('reserved','intent','waiting','stopped-preserve-state','complete') and type(state['invokeIntent']) is bool and type(state['uploadIntent']) is bool and
+                 isinstance(state['artifacts'],dict) and set(state['artifacts'])<=({'result','archive'} if request['mode']=='capture-backup' else {'result'}), 'worker exchange recovery binding changed')
+        _require(not state['artifacts'] or state['invokeIntent'],'worker artifacts lack invoke intent')
+        state['previousReceiptSha256']=expected_prior_sha256
+    else:_require(expected_prior_sha256 is None,'orphan worker exchange recovery pin')
+    def commit(status):
+        state['status']=status;sink.commit(copy.deepcopy(state));return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+    def read(kind):
+        record=state['artifacts'][kind];_closed(record,{'name','sha256','bytes'},'worker artifact record changed');_sha(record['sha256'])
+        _require(isinstance(record['name'],str) and re.fullmatch(r'[0-9a-f]{32}-'+kind+r'\.private',record['name']),'worker artifact path invalid')
+        fd=os.open(directory/record['name'],os.O_RDONLY|os.O_NOFOLLOW)
+        try:
+            before=os.fstat(fd);limit=64*1024*1024 if kind=='archive' else 1048576
+            _require(stat.S_ISREG(before.st_mode) and stat.S_IMODE(before.st_mode)==0o600 and before.st_uid==os.getuid() and before.st_nlink==1 and
+                     0<before.st_size==record['bytes']<=limit,'worker retained artifact changed')
+            data=os.pread(fd,limit+1,0);after=os.fstat(fd)
+            _require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==
+                     (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) and len(data)==record['bytes'] and
+                     'sha256:'+hashlib.sha256(data).hexdigest()==record['sha256'],'worker artifact bytes changed')
+            return data
+        finally:os.close(fd)
+    def result():
+        value=json.loads(read('result'));body={k:v for k,v in value.items() if k!='resultSha256'}
+        _require(value.get('resultSha256')==canonical_sha256(body) and value.get('schemaVersion')=='roebel_case_review_migration_result_v1' and
+                 value.get('mode')==request['mode'] and value.get('requestSha256')==request_pin and
+                 all(value.get(k)==request.get(k) for k in ('sourceRevision','controlImageDigest','sourceConfigurationSha256','targetConfigurationSha256')),'worker retained result link changed')
+        return value
+    def exchange(action,**kwargs):
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        return transport.exchange(action,request_bytes,request_sha256=request_pin,parent_receipt=parent_receipt,
+                                  expected_parent_sha256=expected_parent_sha256,**kwargs)
+    def collect(kind,**kwargs):
+        if kind in state['artifacts']:return read(kind)
+        name=secrets.token_hex(16)+'-'+kind+'.private';fd=os.open(directory/name,os.O_CREAT|os.O_EXCL|os.O_RDWR|os.O_NOFOLLOW,0o600)
+        try:record=exchange(kind,output_fd=fd,**kwargs)
+        finally:os.close(fd)
+        directory_fd=os.open(directory,os.O_RDONLY|os.O_NOFOLLOW)
+        try:os.fsync(directory_fd)
+        finally:os.close(directory_fd)
+        _require(record.get('status')=='private-output-saved','worker artifact export unresolved')
+        state['artifacts'][kind]={'name':name,'sha256':record['sha256'],'bytes':record['bytes']};commit('intent')
+        return read(kind)
+    try:
+        commit(state['status']);verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
+        if request['mode']=='verify-backup':
+            if not state['uploadIntent']:
+                state['uploadIntent']=True;commit('intent')
+                try:exchange('upload-archive',archive_bytes=archive_bytes)
+                except Exception:pass
+            try:verified=exchange('verify-archive')
+            except BootstrapStopped:return commit('waiting')
+            _require(verified=={'status':'private-archive-stored','archiveSha256':request['archiveSha256']},'restore upload not verified')
+        if not state['invokeIntent']:
+            state['invokeIntent']=True;commit('intent')
+            try:exchange('invoke')
+            except Exception:pass  # retained result observation is the only recovery
+        try:collect('result')
+        except BootstrapStopped:return commit('waiting')
+        value=result()
+        if request['mode']=='capture-backup':
+            archive_pin=value.get('result',{}).get('archiveSha256');_sha(archive_pin)
+            try:archive=collect('archive',expected_archive_sha256=archive_pin)
+            except BootstrapStopped:return commit('waiting')
+            _require('sha256:'+hashlib.sha256(archive).hexdigest()==archive_pin,'worker retained capture changed')
+        verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state));return commit('complete')
+    except Exception:
+        try:commit('stopped-preserve-state')
+        except Exception:pass
+        raise BootstrapStopped('worker exchange stopped; retain artifacts and never repeat the invocation') from None
+
+
+def verify_review_private_configuration(plan, *, source_fd, target_fd):
+    """Driver preflight: preserve source settings and cover the whole grant window.
+
+    Inputs are owned private descriptors, independently byte-pinned by the plan.
+    No credential, actor identifier or raw configuration is returned or logged.
+    The live readiness Adapter must additionally match the cluster Secret UIDs
+    and bytes to these pins before it permits source fencing.
+    """
+    import os,stat,hashlib,base64
+    validate_plan(plan,plan['planSha256'])
+    def read(fd,pin):
+        _require(type(fd) is int and fd>=3,'private configuration descriptor required')
+        before=os.fstat(fd)
+        _require(stat.S_ISREG(before.st_mode) and stat.S_IMODE(before.st_mode)==0o600 and before.st_uid==os.getuid() and
+                 before.st_nlink==1 and 0<before.st_size<=1048576,'private configuration descriptor invalid')
+        raw=os.pread(fd,1048577,0);after=os.fstat(fd)
+        _require((before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)==
+                 (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns) and
+                 len(raw)==before.st_size and 'sha256:'+hashlib.sha256(raw).hexdigest()==pin,'private configuration bytes changed')
+        def unique(pairs):
+            obj={}
+            for key,value in pairs:
+                _require(key not in obj,'duplicate private configuration key');obj[key]=value
+            return obj
+        return json.loads(raw,object_pairs_hook=unique),(before.st_dev,before.st_ino)
+    try:
+        source,a=read(source_fd,plan['pins']['sourceConfigurationSha256']);target,b=read(target_fd,plan['pins']['targetConfigurationSha256'])
+        _require(a!=b,'private configuration descriptor alias')
+        fields={'municipalityId','policyVersion','actorRegistry','allowedSignerPubkeys','allowedAgentPubkeys','syntheticAdoption','credentials',
+                'admissionAllowedHosts','outboxAllowedHosts','probeAllowedHosts','drainTimeoutMs'}
+        _closed(source,fields,'source private configuration shape changed')
+        _closed(target,fields|{'requiredDepartmentIds','administrationReview'},'target private configuration shape changed')
+        _require(all(source[k]==target[k] for k in fields-{'actorRegistry'}),'target changes preserved source configuration')
+        actors=target['actorRegistry'];old=source['actorRegistry']
+        _require(isinstance(actors,list) and isinstance(old,list) and len(actors)<=128 and
+                 all(isinstance(a,dict) and isinstance(a.get('actorId'),str) for a in actors),'review actor registry invalid')
+        by_id={a['actorId']:a for a in actors};_require(len(by_id)==len(actors) and all(by_id.get(a['actorId'])==a for a in old),'source actor replaced or duplicated')
+        departments=target['requiredDepartmentIds'];_require(isinstance(departments,list) and 1<=len(departments)<=32 and
+                  all(isinstance(d,str) and re.fullmatch('[a-z][a-z0-9-]{0,63}',d) for d in departments) and len(set(departments))==len(departments),'review departments invalid')
+        for role in ('case_steward','administration','public'):
+            _require(sum(a.get('actorClass')==role for a in actors)==1,'review global role ambiguous')
+        for department in departments:
+            for role in ('department_agent','department_reviewer'):
+                _require(sum(a.get('actorClass')==role and a.get('departmentId')==department for a in actors)==1,'review department role ambiguous')
+        review=target['administrationReview'];_closed(review,{'caseId','grants','allowedHosts'},'private review shape invalid')
+        _require(review['caseId']==plan['caseId'] and isinstance(review['grants'],list) and 1<=len(review['grants'])<=64 and
+                 isinstance(review['allowedHosts'],list) and bool(review['allowedHosts']),'review grant context changed')
+        allowed={'case_steward','administration','department_agent','department_reviewer'}
+        needed={a['actorId'] for a in actors if a.get('actorClass') in allowed}
+        tokens=set();granted=set();start=int(_utc(plan['notBeforeUtc']).timestamp()*1000);end=int(_utc(plan['expiresAtUtc']).timestamp()*1000)
+        for grant in review['grants']:
+            _closed(grant,{'actor','caseId','notBefore','expiresAt','token'},'review grant shape invalid')
+            _closed(grant['actor'],{'actorId','actorClass'},'review grant actor invalid')
+            actor=by_id.get(grant['actor']['actorId']);token=grant['token']
+            _require(actor is not None and actor.get('actorClass')==grant['actor']['actorClass'] and actor.get('actorClass') in allowed and
+                     grant['caseId']==plan['caseId'] and type(grant['notBefore']) is int and type(grant['expiresAt']) is int and
+                     0<=grant['notBefore']<=start<end<=grant['expiresAt'],'review grant does not cover the handover window')
+            _require(isinstance(token,str) and re.fullmatch('[A-Za-z0-9_-]{43}',token) and
+                     base64.urlsafe_b64encode(base64.urlsafe_b64decode(token+'=')).decode().rstrip('=')==token and token not in tokens and
+                     all(token!=credential['token'] for credential in source['credentials']) and actor['actorId'] not in granted,'review credential reused or ambiguous')
+            tokens.add(token);granted.add(actor['actorId'])
+        _require(granted==needed,'review roles lack complete grants')
+        return {'status':'configuration-window-verified','sourceConfigurationSha256':plan['pins']['sourceConfigurationSha256'],
+                'targetConfigurationSha256':plan['pins']['targetConfigurationSha256'],'departmentCount':len(departments),'grantCount':len(granted),
+                'verifiedThroughUtc':plan['expiresAtUtc']}
+    except Exception:
+        raise BootstrapStopped('private review configuration preflight failed; source must remain running') from None
+
+
+def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport):
+    """Never unsuspend GitOps against the old source render.
+
+    The clean target commit must differ from the pinned implementation tree
+    only by the exact candidate resource file. The source controller must have
+    observed that same main revision. This is separate from admission checks.
+    """
+    from pathlib import Path
+    import subprocess
+    from . import case_runtime_kubernetes as kube
+    _require(isinstance(expected_target_revision,str) and re.fullmatch('[0-9a-f]{40}',expected_target_revision), 'target Operations revision required before GitOps resume')
+    _require(target_checkout is not None,'target Operations checkout required before GitOps resume')
+    target=Path(target_checkout)
+    _require(target.is_absolute() and target.resolve()==target and target.is_dir(),'target Operations checkout invalid')
+    def git(directory,*args):
+        result=subprocess.run(['git','-C',str(directory),*args],capture_output=True,text=True,timeout=15,check=False)
+        _require(result.returncode==0 and len(result.stdout.encode())<=4*1024*1024,'target Operations Git proof unavailable')
+        return result.stdout.strip()
+    _require(git(root,'rev-parse','HEAD')==plan['pins']['operationsRevision'],'implementation Operations revision changed')
+    _require(git(target,'rev-parse','HEAD')==expected_target_revision and not git(target,'status','--porcelain','--untracked-files=all') and
+             git(target,'remote','get-url','origin')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git', 'target Operations checkout is not the pinned clean repository')
+    path='reviewed-render/roebel-staging/case-runtime/resources.json'
+    # Compare complete trees, including executable modes; no unreviewed source,
+    # workflow, RBAC, dependency or other city change can ride this transition.
+    def tree(directory,revision):
+        result={}
+        for entry in git(directory,'ls-tree','-r',revision).splitlines():
+            fields,name=entry.split('\t',1);result[name]=fields
+        return result
+    before=tree(root,plan['pins']['operationsRevision']);after=tree(target,expected_target_revision)
+    _require(set(before)==set(after) and {name for name in before if before[name]!=after[name]}=={path}, 'target Operations tree exceeds the exact runtime render change')
+    _require(before[path].split()[:2]==after[path].split()[:2], 'target runtime render file mode changed')
+    resource=json.loads(git(target,'show',expected_target_revision+':'+path))
+    _require(resource==candidate['resources'] and canonical_sha256(resource)==plan['pins']['targetRenderSha256'],'GitOps target revision does not contain the exact successor')
+    cluster=transport.request('GET','/api/v1/namespaces/kube-system',None)
+    _require(cluster and cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'GitOps source cluster changed')
+    source=transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
+    _require(source and not source.get('metadata',{}).get('deletionTimestamp') and source.get('spec',{}).get('url')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git' and
+             source['spec'].get('ref')=={'branch':'main'} and not source['spec'].get('suspend',False) and
+             source.get('status',{}).get('observedGeneration')==source['metadata'].get('generation') and
+             source['status'].get('artifact',{}).get('revision')=='main@sha1:'+expected_target_revision and
+             any(c.get('type')=='Ready' and c.get('status')=='True' for c in source['status'].get('conditions',[])) and
+             not any(c.get('type') in ('Reconciling','Stalled') and c.get('status')=='True' for c in source['status'].get('conditions',[])), 'GitOps has not observed the exact successor revision')
+    return {'status':'gitops-successor-observed','operationsRevision':expected_target_revision,'targetRenderSha256':plan['pins']['targetRenderSha256']}

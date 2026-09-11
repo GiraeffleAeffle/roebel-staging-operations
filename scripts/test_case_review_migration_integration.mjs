@@ -104,6 +104,23 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
     t.after(() => closeSync(archiveFd));
     const captured = runReviewMigration({ ...capture.args, archiveFd }, runtime);
     assert.equal(captured.status, "private-archive-captured");
+    await t.test("fresh shutdown seal discovery captures the exact pinned Case without prior seal knowledge", () => {
+      const discovered = files(t, { mode: "capture-backup", source, target, request: { ...request,
+        sourceSealChecksum: null, sourceDeploymentClaimChecksum: null, sourceBindingChecksum: old.binding.bindingChecksum } });
+      const path = join(temporaryRoot, "discovered.archive"), fd = openSync(path, "wx+", 0o600); t.after(() => closeSync(fd));
+      runReviewMigration({ ...discovered.args, archiveFd: fd }, runtime);
+      assert.deepEqual(discovered.result().result, capture.result().result);
+      assert.deepEqual(readFileSync(path), readFileSync(archivePath));
+      for (const changed of [ { sourceBindingChecksum: hash("foreign-binding") }, { caseId: admitted.caseId + "-foreign" },
+                              { admissionReceiptChecksum: hash("foreign-admission") } ]) {
+        const bad = files(t, { mode: "capture-backup", source, target, request: { ...request,
+          sourceSealChecksum: null, sourceDeploymentClaimChecksum: null, sourceBindingChecksum: old.binding.bindingChecksum, ...changed } });
+        const output = join(bad.root,"archive"), outputFd = openSync(output,"wx+",0o600); t.after(() => closeSync(outputFd));
+        assert.throws(() => runReviewMigration({ ...bad.args, archiveFd: outputFd }, runtime));
+        assert.equal(readFileSync(output).length,0);
+      }
+      assert.deepEqual(snapshot(originalRoot), originalBytes);
+    });
     const archive = readFileSync(archivePath), archiveSha256 = hash(archive);
     assert.equal(capture.result().result.archiveSha256, archiveSha256);
     const verify = files(t, { mode: "verify-backup", source, target, request: { ...request,

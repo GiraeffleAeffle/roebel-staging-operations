@@ -431,7 +431,7 @@ class WorkerTransportTests(unittest.TestCase):
         parent={'schemaVersion':'roebel_review_handover_receipt_v1','planSha256':self.plan['planSha256'],'operationId':self.plan['operationId'],
             'previousReceiptSha256':None,'status':'effect-intent','completed':[{'step':step,'evidence':evidence[step]} for step in review.STEPS[:2]],'pending':'verify-backup'}
         self.parent=parent | {'canonicalSha256':sha(parent)}
-        self.request={'schemaVersion':'roebel_case_review_migration_request_v1','sourceRevision':'fdb0b7f36c33d925be141d8e9037b48d17612df8','mode':'capture-backup','caseId':self.plan['caseId'],'sourceRootDir':'/var/lib/stadtstack/case-control',
+        self.request={'schemaVersion':'roebel_case_review_migration_request_v1','sourceRevision':'fdb0b7f36c33d925be141d8e9037b48d17612df8','mode':'capture-backup','sourceSealChecksum':sha('seal'),'caseId':self.plan['caseId'],'sourceRootDir':'/var/lib/stadtstack/case-control',
             'controlImageDigest':self.plan['pins']['migrationImageDigest'],'targetBinding':{'bindingChecksum':self.plan['pins']['targetBindingSha256']},
             **{key:self.plan['pins'][key] for key in ('sourceConfigurationSha256','targetConfigurationSha256','admissionReceiptChecksum')}}
         self.output=json.dumps({'status':'private-archive-captured','resultSha256':sha('result')})
@@ -659,6 +659,9 @@ class ReviewTransitionTests(unittest.TestCase):
     worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
     def setUp(self):
         WorkerTransportTests.setUp(self)
+        from unittest.mock import patch
+        mocked=patch.object(review,'verify_review_gitops_target',return_value={'status':'gitops-successor-observed'})
+        mocked.start();self.addCleanup(mocked.stop)
         from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
         self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.index=0
         self.effects=[];self.live={};self.lost=False;self.undelivered=False;self.can_run=True;self.complete=True
@@ -895,3 +898,169 @@ class ConnectedRuntimeHandoverTests(unittest.TestCase):
             prior=prior,expected_prior_sha256=prior['canonicalSha256'],clock=lambda:NOW)
         self.assertEqual(result['status'],'complete');self.assertEqual(len(switch.effects),4);self.assertEqual(len(signals),1)
         self.assertEqual([r['step'] for r in result['completed']],list(review.STEPS))
+
+
+class WorkerDriverTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        WorkerTransportTests.setUp(self)
+        self.binding=json.loads(next(o for o in self.candidate['resources']['items'] if o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-review-reviewed-v1')['data']['reviewed-binding.json'])
+        self.request=review.build_review_worker_request(self.plan,self.binding,'capture-backup')
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.directory_path=Path(self.directory.name).resolve()
+        self.index=0;self.actions=[];self.lost=True;self.missing=False
+        self.archive=b'private synthetic archived bytes'
+        import hashlib
+        self.archive_pin='sha256:'+hashlib.sha256(self.archive).hexdigest()
+        self.facts={'sourceSealChecksum':sha('seal'),'sourceDeploymentClaimChecksum':sha('claim'),'sourceDatabaseSha256':sha('db'),
+            'sourceFilesSha256':sha('files'),'caseId':self.plan['caseId'],'caseVersion':3,
+            'admissionReceiptChecksum':self.plan['pins']['admissionReceiptChecksum'],'archiveSha256':self.archive_pin}
+        self.capture=self.envelope(self.request,self.facts)
+        self.new_sink()
+        self.worker_transport=SimpleNamespace(pod_uid=self.pod_uid,exchange=self.exchange)
+    def envelope(self,request,result):
+        body={'schemaVersion':'roebel_case_review_migration_result_v1','mode':request['mode'],'requestSha256':sha(request),
+              **{k:request[k] for k in ('sourceRevision','controlImageDigest','sourceConfigurationSha256','targetConfigurationSha256')},'result':result}
+        return body|{'resultSha256':sha(body)}
+    def new_sink(self):
+        self.index+=1;self.sink=ReceiptSink.reserve(self.directory_path/f'driver-{self.index}.json')
+    def exchange(self,action,request_bytes,**kwargs):
+        import os,hashlib
+        self.actions.append(action)
+        self.assertEqual(json.loads(request_bytes),self.request)
+        self.assertTrue(json.loads(self.sink.path.read_text())['uploadIntent' if action in ('upload-archive','verify-archive') else 'invokeIntent'])
+        if action=='upload-archive':
+            if not getattr(self,'drop_upload',False):self.uploaded=True
+            raise BootstrapStopped('upload response lost')
+        if action=='verify-archive':
+            if not getattr(self,'uploaded',False):raise BootstrapStopped('upload missing')
+            return {'status':'private-archive-stored','archiveSha256':self.archive_pin}
+        if action=='invoke':
+            if self.lost:raise TimeoutError('lost response')
+            return {'status':'private-archive-captured','resultSha256':self.capture['resultSha256']}
+        if self.missing:raise BootstrapStopped('missing retained result')
+        data=json.dumps(self.capture,sort_keys=True,separators=(',',':')).encode() if action=='result' else self.archive
+        if action=='archive':self.assertEqual(kwargs['expected_archive_sha256'],self.archive_pin)
+        os.write(kwargs['output_fd'],data);os.fsync(kwargs['output_fd'])
+        return {'status':'private-output-saved','bytes':len(data),'sha256':'sha256:'+hashlib.sha256(data).hexdigest()}
+    def advance(self,prior=None):
+        return review.advance_review_worker_exchange(self.plan,self.request,expected_plan_sha256=self.plan['planSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],transport=self.worker_transport,sink=self.sink,
+            artifact_directory=self.directory_path,verify_ready=lambda *args:None,archive_bytes=self.archive if self.request['mode']=='verify-backup' else None,prior=prior,
+            expected_prior_sha256=prior['canonicalSha256'] if prior else None)
+    def resume(self):
+        prior=json.loads(self.sink.path.read_text());self.new_sink();return self.advance(prior)
+    def test_lost_invoke_response_recovers_private_result_and_archive_without_reinvoking(self):
+        result=self.advance();self.assertEqual(result['status'],'complete');self.assertEqual(self.actions,['invoke','result','archive'])
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(self.actions,['invoke','result','archive'])
+        self.assertEqual(set(result['artifacts']),{'result','archive'})
+        self.assertNotIn(self.archive.decode(),json.dumps(result))
+    def test_missing_result_recovery_never_repeats_worker_invocation(self):
+        self.missing=True;self.assertEqual(self.advance()['status'],'waiting');self.assertEqual(self.resume()['status'],'waiting')
+        self.missing=False;self.assertEqual(self.resume()['status'],'complete')
+        self.assertEqual(self.actions.count('invoke'),1)
+    def test_modified_retained_archive_cannot_complete_again(self):
+        result=self.advance();path=self.directory_path/result['artifacts']['archive']['name'];path.write_bytes(b'changed')
+        self.assertNotEqual(self.resume()['status'],'complete');self.assertEqual(self.actions.count('invoke'),1)
+    def test_request_builder_carries_discovered_pins_and_prepared_candidate_into_activation(self):
+        self.assertIsNone(self.request['sourceSealChecksum'])
+        self.assertEqual(self.request['sourceBindingChecksum'],self.plan['pins']['sourceBindingSha256'])
+        verified=review.build_review_worker_request(self.plan,self.binding,'verify-backup',captured=self.capture)
+        self.assertEqual(verified['sourceSealChecksum'],self.facts['sourceSealChecksum']);self.assertEqual(verified['archiveSha256'],self.archive_pin)
+        prepare=review.build_review_worker_request(self.plan,self.binding,'prepare',captured=self.capture)
+        prepared=self.envelope(prepare,{'receipt':{**{k:self.facts[k] for k in ('caseId','caseVersion','sourceSealChecksum','sourceDatabaseSha256','admissionReceiptChecksum')},
+            'testOnly':True,'authorityBinding':'none','candidateChecksum':sha('candidate')}})
+        activate=review.build_review_worker_request(self.plan,self.binding,'activate',captured=self.capture,prepared=prepared)
+        self.assertEqual(activate['migrationPlan']['candidateChecksum'],sha('candidate'))
+        self.assertEqual(activate['migrationPlan']['sourceDeploymentClaimChecksum'],self.facts['sourceDeploymentClaimChecksum'])
+        prepared['result']['receipt']['sourceSealChecksum']=sha('foreign-seal');prepared['resultSha256']=sha({k:v for k,v in prepared.items() if k!='resultSha256'})
+        with self.assertRaises(BootstrapStopped):review.build_review_worker_request(self.plan,self.binding,'activate',captured=self.capture,prepared=prepared)
+    def test_restore_upload_is_verified_after_lost_response_and_never_repeated(self):
+        self.request=review.build_review_worker_request(self.plan,self.binding,'verify-backup',captured=self.capture)
+        self.capture=self.envelope(self.request,self.facts|{'restoredFilesSha256':self.facts['sourceFilesSha256'],'restoredCandidateChecksum':sha('restored')})
+        self.drop_upload=True
+        self.assertEqual(self.advance()['status'],'waiting');self.assertNotIn('invoke',self.actions)
+        self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(self.actions.count('upload-archive'),1)
+        # Late delivery becomes observable; it is never resent to the worker.
+        self.uploaded=True
+        self.assertEqual(self.resume()['status'],'complete');self.assertEqual(self.actions.count('upload-archive'),1)
+        self.assertEqual(self.actions.count('invoke'),1);self.assertNotIn('archive',self.actions)
+
+
+
+class PrivateConfigurationPreflightTests(unittest.TestCase):
+    def setUp(self):
+        import base64,os
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.plan,_=fixture();self.token=lambda i:base64.urlsafe_b64encode(bytes([i])*32).decode().rstrip('=')
+        self.source={'municipalityId':'roebel-mueritz','policyVersion':'synthetic-v1','actorRegistry':[{'actorId':'example:steward','actorClass':'case_steward'}],
+            'allowedSignerPubkeys':[],'allowedAgentPubkeys':[],'syntheticAdoption':{},'credentials':[{'token':self.token(250)}],
+            'admissionAllowedHosts':['admission.internal'],'outboxAllowedHosts':['outbox.internal'],'probeAllowedHosts':['127.0.0.1'],'drainTimeoutMs':5000}
+        self.target=copy.deepcopy(self.source);self.target['requiredDepartmentIds']=['planning']
+        self.target['actorRegistry'] += [{'actorId':'example:admin','actorClass':'administration'},{'actorId':'example:public','actorClass':'public'},
+            {'actorId':'example:agent','actorClass':'department_agent','departmentId':'planning'},
+            {'actorId':'example:reviewer','actorClass':'department_reviewer','departmentId':'planning'}]
+        self.target['administrationReview']={'caseId':self.plan['caseId'],'allowedHosts':['review.internal'],'grants':[
+            {'actor':{k:a[k] for k in ('actorId','actorClass')},'caseId':self.plan['caseId'],'notBefore':int(NOW.timestamp()*1000)-120000,
+             'expiresAt':int(NOW.timestamp()*1000)+7200000,'token':self.token(i+1)} for i,a in enumerate(self.target['actorRegistry']) if a['actorClass']!='public']}
+    def verify(self):
+        import os,hashlib
+        fds=[]
+        try:
+            for side,value in [('source',self.source),('target',self.target)]:
+                path=Path(self.directory.name)/side;raw=json.dumps(value).encode();path.write_bytes(raw);path.chmod(0o600)
+                fds.append(os.open(path,os.O_RDONLY));self.plan['pins'][side+'ConfigurationSha256']='sha256:'+hashlib.sha256(raw).hexdigest()
+            self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+            return review.verify_review_private_configuration(self.plan,source_fd=fds[0],target_fd=fds[1])
+        finally:
+            for fd in fds:os.close(fd)
+    def test_all_review_roles_cover_the_entire_handover_window(self):
+        result=self.verify();self.assertEqual(result['status'],'configuration-window-verified');self.assertEqual(result['grantCount'],4)
+        self.assertNotIn(self.token(1),json.dumps(result));self.assertNotIn('example:',json.dumps(result))
+    def test_mid_handover_expiry_and_missing_role_fail_before_source_shutdown(self):
+        grants=self.target['administrationReview']['grants'];original=copy.deepcopy(grants)
+        grants[0]['expiresAt']=int(NOW.timestamp()*1000)+1000
+        with self.assertRaises(BootstrapStopped):self.verify()
+        self.target['administrationReview']['grants']=original[:-1]
+        with self.assertRaises(BootstrapStopped):self.verify()
+    def test_changed_source_policy_or_reused_admission_credential_is_rejected(self):
+        self.target['policyVersion']='changed'
+        with self.assertRaises(BootstrapStopped):self.verify()
+        self.target['policyVersion']=self.source['policyVersion'];self.target['administrationReview']['grants'][0]['token']=self.token(250)
+        with self.assertRaises(BootstrapStopped):self.verify()
+
+
+class GitOpsTargetProofTests(unittest.TestCase):
+    compile=ReviewRuntimeCompilerTests.compile
+    worker_fixture=ReviewRuntimeCompilerTests.worker_fixture
+    def setUp(self):
+        import subprocess
+        WorkerTransportTests.setUp(self);del self.request
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.target=Path(self.directory.name).resolve()/'target'
+        def run(*args,cwd=None):return subprocess.check_output(['git',*args],cwd=cwd,text=True,stderr=subprocess.PIPE).strip()
+        self.git=run;run('clone','--shared','--quiet',str(self.root),str(self.target))
+        run('remote','set-url','origin','https://github.com/GiraeffleAeffle/roebel-staging-operations.git',cwd=self.target)
+        self.plan['pins']['operationsRevision']=run('rev-parse','HEAD',cwd=self.root)
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        path=self.target/'reviewed-render/roebel-staging/case-runtime/resources.json';path.write_text(json.dumps(self.candidate['resources'],indent=2)+'\n')
+        run('add',str(path),cwd=self.target);run('-c','user.name=Local Rehearsal','-c','user.email=rehearsal@example.invalid','commit','--quiet','-m','Synthetic exact successor',cwd=self.target)
+        self.revision=run('rev-parse','HEAD',cwd=self.target)
+        self.source={'metadata':{'generation':1},'spec':{'url':'https://github.com/GiraeffleAeffle/roebel-staging-operations.git','ref':{'branch':'main'}},
+           'status':{'observedGeneration':1,'artifact':{'revision':'main@sha1:'+self.revision},'conditions':[{'type':'Ready','status':'True'}]}}
+    def request(self,method,path,payload):
+        self.assertEqual(method,'GET')
+        if path.endswith('/kube-system'):return {'metadata':{'uid':self.plan['identities']['clusterUid']}}
+        return self.source
+    def verify(self):
+        return review.verify_review_gitops_target(self.root,self.plan,self.candidate,target_checkout=self.target,expected_target_revision=self.revision,transport=self)
+    def test_only_exact_successor_commit_observed_by_flux_can_resume(self):
+        self.assertEqual(self.verify()['status'],'gitops-successor-observed')
+        self.source['status']['artifact']['revision']='main@sha1:'+self.plan['pins']['operationsRevision']
+        with self.assertRaises(BootstrapStopped):self.verify()
+    def test_extra_source_change_and_dirty_checkout_are_rejected(self):
+        path=self.target/'README.md';path.write_text(path.read_text()+'\nUnexpected change\n')
+        with self.assertRaises(BootstrapStopped):self.verify()
+        self.git('add','README.md',cwd=self.target);self.git('-c','user.name=Local Rehearsal','-c','user.email=rehearsal@example.invalid','commit','--quiet','-m','Unexpected source',cwd=self.target)
+        self.revision=self.git('rev-parse','HEAD',cwd=self.target);self.source['status']['artifact']['revision']='main@sha1:'+self.revision
+        with self.assertRaises(BootstrapStopped):self.verify()
