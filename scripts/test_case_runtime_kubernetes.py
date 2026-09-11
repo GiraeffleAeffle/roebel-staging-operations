@@ -118,6 +118,16 @@ class KubernetesTests(unittest.TestCase):
                 with self.assertRaises(core.BootstrapStopped):adapter.verify_preconditions(adapter.plan)
                 self.assertFalse(any(c[0]=='POST' for c in api.calls))
 
+    def test_preserved_workload_observation_does_not_require_case_source_or_secret(self):
+        adapter,api=self.adapter_environment()
+        expected=adapter.observe_preserved_workloads()
+        api.calls.clear();del api.objects[api.secret_path]
+        api.objects['/apis/source.toolkit.fluxcd.io/v1/namespaces/'+kube.FLUX+'/gitrepositories/roebel-staging-operations']['status']['artifact']['revision']='main@sha1:'+'f'*40
+        self.assertEqual(adapter.observe_preserved_workloads(),expected)
+        self.assertTrue(all(method=='GET' and '/secrets/' not in path and '/gitrepositories/' not in path for method,path in api.calls))
+        api.pods[0]['status']['containerStatuses'][0]['restartCount']=1
+        with self.assertRaises(core.BootstrapStopped):adapter.observe_preserved_workloads()
+
     def test_unclean_restart_prevents_public_creation(self):
         sink,_=self.environment();adapter,api=self.adapter_environment();api.exec_failure=True
         with self.assertRaises(core.BootstrapStopped):core.run_bootstrap(self.root,adapter=adapter,sink=sink)

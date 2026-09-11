@@ -7075,7 +7075,8 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     base_root: Path = base["root"]
     changed_files = changed_repository_files(candidate_root, base_root)
     CASE_PROPOSAL.verify_transition(citizen_status_interface(), candidate_root, base_root)
-    CASE_RUNTIME.verify_transition(citizen_status_interface(), candidate_root, base_root)
+    if CASE_RUNTIME.verify_transition(citizen_status_interface(), candidate_root, base_root):
+        return
     if CASE_RUNTIME.verify_web_transition(citizen_status_interface(),candidate,base):
         return
     require(not changed_files & CITIZEN_STATUS.POLICY_FILES, "citizen status promotion changed protected policy files")

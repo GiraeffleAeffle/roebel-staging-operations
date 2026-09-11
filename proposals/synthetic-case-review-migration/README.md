@@ -1,14 +1,15 @@
-# Offline administration-review migration operator
+# Administration-review migration and handover
 
-Status: source implementation and offline verification only. This directory is
-not included by any Kustomization or live operator. CI runs its offline tests. The existing
-19-object bootstrap and active reviewed render keep their existing meaning.
+Status: integrated Operations driver with an inactive, independently pinned
+successor render. The active render remains on the original runtime until the
+separately authorized migration and exact forward rollout. CI runs the migration
+and recovery tests; the existing bootstrap is unchanged.
 
 `scripts/run-case-review-migration.mjs` bridges private Operations files to the
 already published Stadtstack PR 70 runtime. It uses the exact source revision
 `fdb0b7f36c33d925be141d8e9037b48d17612df8` and control image
 `ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60`.
-The CLI imports three fixed modules from `/runtime/src`; it cannot select an
+The CLI imports fixed modules from `/runtime/src`; it cannot select an
 alternative runtime through its request. Selecting and attesting the actual
 container image remains the responsibility of the protected Operations caller.
 
@@ -20,7 +21,7 @@ inputs for reading and a **new, empty** result for writing, passing inherited
 descriptor numbers of at least 3. No configuration or credential goes into
 arguments, environment, stdout, stderr or public receipts.
 
-The five CLI arguments are `--request-fd`, `--expected-request-sha256`,
+The five base CLI arguments are `--request-fd`, `--expected-request-sha256`,
 `--source-config-fd`, `--target-config-fd` and `--result-fd`. The independently
 reviewed request hash must come from the protected Operations plan. Computing a
 hash from arbitrary user input at invocation does not establish authorization.
@@ -32,7 +33,7 @@ The request is a closed JSON object with these fields:
 | Field | Meaning |
 | --- | --- |
 | `schemaVersion` | `roebel_case_review_migration_request_v1` |
-| `mode` | `prepare` or `activate` |
+| `mode` | `prepare`, `activate`, `capture-backup` or `verify-backup` |
 | `sourceRevision`, `controlImageDigest` | Exact constants above |
 | `sourceRootDir`, `caseId` | Canonical mounted source path and the admitted synthetic Case |
 | `sourceSealChecksum`, `admissionReceiptChecksum` | Observed clean source seal and original immutable admission |
@@ -55,6 +56,83 @@ candidate or linked activation receipt and a checksum of the result envelope;
 it is written and fsynced only to the private result descriptor. Stdout contains
 only status and result checksum. A fixed error and exit 78 preserve privacy on
 failure. The parent must retain and link the private result before handover.
+
+## Encrypted Case backup and fixed migration worker
+
+Backup is part of the same descriptor operator, using the same pinned source
+and target configurations. `capture-backup` additionally requires the separately
+pinned `sourceDeploymentClaimChecksum` and a new empty private `--archive-fd`.
+For the first capture after shutdown, both seal/claim checksums may instead be
+null with the additional pinned `sourceBindingChecksum`. This explicit discovery
+mode reads the claim and seal from two matching bounded source snapshots,
+verifies the binding, seal, Case and original admission, and returns the observed
+checksums. It never opens the source as SQLite or changes source files. Other
+modes require concrete seal and claim pins.
+`verify-backup` requires that claim, `archiveSha256` from the capture result, and
+an archive descriptor containing the decrypted bytes. Prepare/activate reject
+an unexpected archive descriptor. The archive descriptor must be readable too,
+because its contents are checked after writing; the other descriptor constraints
+remain unchanged. The archive limit is 64 MiB, with at most 32 flat files and
+32 MiB total decoded data. Larger stores need a separately reviewed limit or
+streaming implementation before shutdown.
+
+The archive preserves exact bytes and modes (0600/0640/0644) of owned regular
+files inside the private 0700 Case root, including the storage marker and owner
+SQLite file. It does not claim to preserve filesystem timestamps or group IDs.
+It rejects symbolic/hard links, traversal, duplicate names, nonempty journal
+sidecars and active transition markers. Public runtime seal verification binds
+the closed database and original admission. Two source snapshots must agree.
+Archive JSON/base64 is **plaintext**, never a public receipt or log payload.
+
+`encrypt_and_verify_case_backup` on the Operations host consumes the independently
+pinned capture result and owned archive. It runs a byte-pinned age executable
+with one explicit X25519 recipient, saves ciphertext in a new private directory,
+then decrypts through a private descriptor using the separately supplied identity.
+No identity or configuration bytes appear in command arguments. Its verifier
+must invoke the fixed-image `verify-backup` command against that decrypted file,
+using the independently pinned verification request. That command restores into
+a new private directory and runs the real runtime's full history/receipt replay
+and migration preparation. It compares the restored files and rechecks the
+original source, then removes only its throwaway restore/candidate directories.
+The host rechecks both archives and records success only after runtime validation.
+Ciphertext and the completion receipt are retained; the host's temporary decrypted
+archive is removed on success or failure. The caller still owns and must clean up
+its original plaintext capture after securely retaining verified ciphertext.
+
+The host persists `backup-pending.json` after syncing the ciphertext and before
+restore verification. Recovery explicitly supplies that retained receipt and
+its independent checksum; it verifies the same capture, recipient, executable,
+verification request, directory and ciphertext. It never encrypts again. Each
+attempt decrypts into a fresh private file, leaving any file orphaned by a
+process crash untouched. Its own temporary plaintext is removed on return.
+The `verify_restored` callback must recover the existing worker exchange and
+retrieve its retained result, not issue another restore invocation. A completed
+backup receipt can also be reverified without replacement. Missing/unpinned
+pending records or changed retained ciphertext remain stopped recovery states.
+The real-age integration simulates a lost verification response, repeats recovery,
+checks unchanged ciphertext bytes/inode/mtime and rejects altered recovery pins.
+
+`compile_migration_worker` produces an **inactive** ConfigMap, deny-all policy and
+one Pod using the existing published runtime image. It binds source/target
+claims, the successor candidate, node identity, and the two exact configuration
+references/hashes. It has no service-account token, service links, ingress,
+egress, host mount or application listener. It copies the two pinned Secret
+files into 0600 tmpfs files and waits for the protected operator's commands.
+Both retained volumes are writable solely because the runtime needs ownership
+locks during activation. Compiling or starting the worker is not permission to
+invoke a migration. The live Adapter still must verify all stage receipts,
+physical mount release, exact Pod/image/node/claim identities and current source
+fencing before any descriptor invocation. Worker transport and recoverable runtime switch/restart/resume operations are
+connected by `ReviewHandoverDriver` and the live session factory below.
+
+The real SQLite integration includes capture, independent restore/replay,
+source preservation and malformed-archive/descriptor failures. For the additional
+real age host round trip (which also rejects a wrong identity, altered pins and
+an existing output directory), set `CASE_REVIEW_TEST_AGE_BIN` and
+`CASE_REVIEW_TEST_AGE_KEYGEN_BIN` to local absolute executable paths before running
+`test_case_review_migration_integration.mjs`. Test keys are disposable; no live
+identity or Case is used. Without those variables only the age-specific test is
+skipped; SQLite capture/restore still runs in CI.
 
 ## Recovery and remaining Operations work
 
@@ -236,6 +314,315 @@ protected-base PR checks and the corresponding `candidate/scripts` command to
 protected-main checks. No action version, dependency, permission, render or
 existing bootstrap operation changes.
 
+### Ordered review handover and inactive successor compiler
+
+`scripts/case_review_handover.py` contains the separate nine-stage coordinator
+and `compile_review_runtime`. Neither is a live CLI or permission to deploy.
+The compiler reproduces the reviewed initializer, consumes an independently
+pinned provisioning receipt, and creates an inactive successor render. Only the
+control ConfigMap and Deployment change. The proposed reconciler Role gains
+one exact ConfigMap name, with its existing verbs; no Secret permission,
+Service, ingress or review NetworkPolicy is added. The old bootstrap and the
+active render remain unchanged.
+
+`advance_review_handover` requires an independently pinned, time-bounded full
+plan with implementation/render/configuration hashes and actual resource UIDs.
+Before any stage, its trusted Operations Adapter must verify that the complete
+concrete implementation is ready and current stage ownership/fencing holds.
+No partial adapter may approve source shutdown. Stages run in this order:
+
+1. Fence the source Deployment and its reconciler.
+2. Verify API and physical release of source and initializer mounts.
+3. Verify an encrypted Case backup by restoring and comparing its exact files.
+4. Prepare a candidate tied to the original seal, claim and admission.
+5. Activate that candidate and record the target seal and unchanged source hash.
+6. Verify the migration Pod and mounts are released.
+7. Start the exact v2 runtime on the provisioned target and configuration.
+8. Verify all four listeners, clean restart, original admission and source bytes.
+9. Restore GitOps and verify the new render plus both retained volumes.
+
+The Adapter provides `verify_ready`, `observe` and `perform`. It owns the
+concrete Kubernetes compare-and-swap operations, encrypted archive verification,
+pinned runtime invocations and durable stage receipts. `observe` verifies those
+retained receipts; historical steps need not still describe current live state
+(for example, the reconciler is intentionally resumed at the final stage).
+`verify_ready` checks current state appropriate to the completed prefix. Receipt
+summaries are closed and linked across stages; hashes alone do not certify that
+a backup was restored or a mount released. No concrete live Adapter is supplied
+by this source change. Live implementation, full rehearsal and admission of
+the successor render remain required before use.
+
+The coordinator commits intent before each stage. A lost response is checked
+through the same owned stage receipt, never retried as another write. Recovery
+requires a fresh output and independently pinned prior receipt. Pending work
+without evidence returns `awaiting-evidence`; the concrete stage operator must
+resolve it under its own receipt before the coordinator can continue. A failure
+preserves both stores and the source fence; there is no automatic GitOps resume,
+rollback or deletion. A complete receipt is recoverable even if the final
+response was lost. The operation window is at most one hour; a new window or
+changed plan requires separate recovery review, not editing an old receipt.
+
+The coordinator/compiler tests are protected in the existing admission workflow.
+They cover write ordering, lost responses at every stage, incomplete-stage
+recovery, invalid backups/mount proofs, changed identities, stale plans and
+receipt failures. Their success is source evidence, not a live migration claim.
+
+The concrete `advance_source_fence` helper implements the first stage using
+only GET and two UID/resourceVersion-guarded JSON patches: suspend the existing
+Case Kustomization, then scale the existing control Deployment from one to zero.
+It requires the parent coordinator's independently pinned intent, reproduces
+the original render, and invokes the full prerequisite verifier with the current
+sub-stage state before each write. It waits while Flux reports reconciliation
+in progress. An unresolved patch is observed on recovery and never resent;
+a changed UID, generation, owner or workload specification stops the stage.
+Its linked sub-receipt never resumes Flux, deletes a Pod or changes RBAC.
+
+This helper verifies desired fencing state only. [Flux suspension](https://fluxcd.io/flux/components/kustomize/kustomizations/#suspend)
+pauses reconciliation; it is not a filesystem lock or proof of termination.
+`release-mounts` must subsequently prove that no source writer remains and that
+both RWOP mounts are physically released before migration. Current stage
+fencing must be rechecked throughout import and handover. The complete live
+Adapter remains unfinished, so this helper must not be invoked in staging yet.
+
+`observe_mount_release` supplies the read-only part of the next stage. It
+checks the original binding and claim identities, rejects incomplete Pod lists
+or any Pod using either claim, and observes host mountinfo plus kubelet Pod
+directories through the pinned node transport. `mountObserverPodUid` names a
+separate ready Pod on the same pinned node; it must differ from both Pods being
+retired. Its mount and directory must be visible, and its API identity/readiness
+is checked again after the host read. Empty, wrong-node or stale views cannot
+certify release. The returned private receipt contains a timestamp, evidence
+and the host-view hash, without raw mount output. Pod retirement remains a
+separately receipted operation; the helper sends no writes.
+
+### Fixed worker command interface
+
+The mounted descriptor operator now provides five fixed commands. All run under
+`/work/private` with owned 0700 directories and 0600 regular files. Their only
+content argument is a SHA-256 pin. Every command also requires
+`--expected-worker-uid <Pod-UID>`, checked against the Downward API environment
+before reading input or loading runtime code. Paths and arbitrary executable
+code are not accepted.
+
+- `--worker-invoke <request-sha256>` reads at most 1 MiB from stdin, reserves a
+  directory for those exact request bytes, opens the existing private source and
+  target configurations and fresh result/archive descriptors, then calls the
+  same reviewed operator. The reservation is synced before runtime effects.
+- `--worker-result <request-sha256>` reads the retained result, checking its
+  request/configuration/image links and checksum. It does not rerun anything.
+- `--worker-archive <capture-request-sha256>` exports only the captured archive
+  linked by that verified result. Output must go directly to the parent's
+  owned private file/pipe; never print it into a tool transcript or public log.
+- `--worker-upload-archive <archive-sha256>` accepts at most 64 MiB of stdin into
+  a fresh content-addressed private file for independent restore verification.
+  It never overwrites an existing archive.
+- `--worker-verify-archive <archive-sha256>` reads and hashes the retained upload
+  without writing or loading runtime code. A lost upload response must be
+  resolved here before invoking restore; uploading the archive again is forbidden.
+
+Requests and result files remain private on failure. If a runtime effect happened
+but no complete result was retained, the mailbox refuses another invocation of
+those request bytes. This is a stopped recovery condition, not permission to
+remove the reservation or try a new identity. A separately reviewed recovery
+plan must resolve the runtime state; automatic retry after an uncertain effect
+is intentionally absent. A lost transport response with a complete result is
+recoverable through `--worker-result`.
+
+`KubectlReviewWorkerTransport` supplies the fixed exec commands and checks the
+ordered parent receipt, Case/configuration/image pins, prepared candidate and
+migration window. Before and after exec it checks the cluster, node, exact worker
+Pod/template, configuration/policy, retained volume identities, source fence and
+exclusive Pod claim inventory. The worker's own UID check rejects a replacement
+Pod even if its name is reused between the API check and exec. Expiry during
+ownership reads prevents starting the command. Private result/archive bytes are
+verified before writing to a fresh owned 0600 descriptor; diagnostics are not
+returned. The runner captures output before the transport checks its size; worker
+commands also bound their own output. This is not a streaming memory limit.
+
+The parent Adapter must still supply complete readiness and private configuration
+receipt verification. The initializer retirement and switch/restart/GitOps
+operations below are connected by the live driver. An admitted implementation,
+prepared successor checkout and live preflight are required before source shutdown. The compiler embeds the changed runner; the
+published runtime image remains unchanged.
+
+Local tests exercise private result retrieval, reservation collisions, corrupt
+results, wrong byte pins, archive upload and interruption after a runtime effect.
+The real SQLite test captures an archive through the mailbox, exports it,
+uploads it for verification, restores/replays it and confirms source preservation.
+This validates the command functions; Kubernetes exec and the fixed `/runtime`
+CLI imports have not been executed in a live worker. Seven transport tests use
+a controlled Kubernetes API/exec runner to check the fixed command, replacement
+Pod, changed image/template/volume/fence/policy, stage and candidate mismatch,
+expiry during reads and private archive output. All 88 handover/storage Python
+tests and 13 Node tests pass; the optional real-age test is skipped in this run.
+
+### Worker resource lifecycle
+
+`advance_worker_lifecycle` now creates the compiled deny-all NetworkPolicy,
+immutable ConfigMap and Pod, in that order. Every create has a synced private
+intent; recovery observes the existing object and pins its UID. An undelivered
+or ambiguous create is never sent again automatically. An existing worker
+inventory without an owned intent blocks creation before any policy change.
+Readiness verifies the exact Pod, node, image and zero restarts.
+
+Retirement requires the completed creation receipt and the parent's verified
+backup and activation stages. It deletes only that worker Pod using both UID
+and resourceVersion preconditions. Policy/code cleanup waits for API absence
+plus the pinned node's physical mount/directory observation with a live positive
+control. The extended `observe_mount_release` supplies this proof. Replacement
+Pods and lingering mounts block progress; no application volume is deleted.
+The fixed `KubectlWorkerLifecycleTransport` exposes only these three resources.
+
+Nine new local lifecycle/mount tests cover lost create/delete responses,
+undelivered requests, preexisting/replaced Pods, wrong parent/readiness,
+delete preconditions, and API absence with mounts still held. These use a
+controlled API runner, not a live cluster. The complete parent Adapter must
+verify source fencing, retained bindings and exported private artifacts before
+allowing lifecycle operations; these functions cannot authorize shutdown.
+
+### Successor handover and clean restart
+
+`advance_initializer_retirement` checks the exact verified initialization receipt,
+completed Pod and parent source-fence stage. It sends one UID/resourceVersion
+conditioned delete and recovers by observation. Its completion means API absence;
+physical mount release remains a separate required proof.
+
+`advance_review_runtime_transition` implements two operations. Start creates the
+reviewed target ConfigMap, adds only that name to the existing reconciler Role,
+and changes the existing zero-replica control Deployment to the exact candidate.
+Restore resumes only the Case Kustomization, after the parent's clean-restart
+stage. Each write has a private durable intent and exact preconditions. The
+fixed `KubectlReviewTransitionTransport` cannot widen that resource inventory or
+patch. An uncertain write is observed without another write; known Kubernetes
+defaults are normalized during recovery. A rehashed candidate cannot add other
+Role permissions.
+
+`observe_review_runtime` checks the exact Deployment, owned ReplicaSet/Pod,
+single volume consumer, image and readiness. `advance_review_runtime_restart`
+records the container identity before one SIGTERM through the existing exact-Pod
+transport, then requires the same Pod, one restart, a different container and
+exit code zero. An uncertain signal is never repeated. Verified all-listener,
+original-admission and source/public-service preservation evidence must come
+from the complete parent's `verify_complete` observation before GitOps resumes.
+
+The connected local tail rehearsal starts from six synthetic completed stage
+receipts, runs the actual switch/restart/resume helpers, pauses on an uncertain
+restart, and finishes the same coordinator receipt chain once that restart is
+observed. It verifies that writes/signals are not repeated and GitOps does not
+resume early. This is a controlled Kubernetes rehearsal of the final three
+stages, not a full source-to-target live rehearsal. Separate tests against pinned
+public runtime source exercise actual loopback listeners, role-scoped review,
+original admission preservation, failed-bind cleanup and clean sealed restart.
+All six of those runtime tests pass. Temporary loopback binding required the
+normal local sandbox exception; no staging connection was used.
+
+### Private worker driver and preflight
+
+`build_review_worker_request` connects capture, restored-backup verification,
+preparation and activation requests. Each next request verifies the preceding
+result envelope and original Case/admission/configuration/image pins. The
+activation uses the prepared candidate and discovered source seal/claim, within
+the complete handover window.
+
+`advance_review_worker_exchange` retains invocation intent before exec and
+exports results/archives into fresh private files. Its durable receipt records
+file names, sizes and hashes only; recovery rechecks their bytes, ownership and
+mode. A lost response retrieves the existing result, never reinvokes a runtime
+effect. Restore upload has its own intent and read-only verification. Missing
+or late uploads/results pause the exchange; changed retained bytes cannot
+complete it. The fixed Kubernetes transport still verifies each operation's
+stage and actual worker identity. Driver tests exercise lost responses, late
+delivery and altered retained artifacts using controlled worker responses.
+
+`verify_review_private_configuration` reads separately pinned private source and
+target descriptors before shutdown. It requires the complete scoped role set,
+preserved source settings and distinct tokens; every review grant must cover
+the entire handover window. It returns only hashes/counts, never grant contents.
+The live readiness Adapter must additionally verify the corresponding cluster
+Secret identities and bytes; local files alone are not that observation.
+
+GitOps restore now also requires `verify_review_gitops_target`: a clean pinned
+Operations checkout must differ from the implementation commit only in the
+exact successor runtime resource file, preserving its file mode. The fixed
+source controller must report that same main revision as ready. Old source,
+extra tree changes, dirty checkout or an expired window prevent unsuspension.
+This is separate from successor admission. Tests use actual disposable Git
+commits and controlled source-controller responses; the connected tail uses a
+controlled source-proof observation and is still not a full live rehearsal.
+
+`review_migration_stage_evidence` translates owned runtime results into the
+coordinator's backup/preparation/activation evidence. It verifies the encrypted
+backup link, complete candidate checksum, original admission and source hash,
+source/target deployment claims, activation window and matching recovery history.
+Even recomputed outer checksums cannot join unrelated nested results. Its public
+entry point still requires a valid Röbel handover plan. The real SQLite fixture
+belongs to `example-city`: integration explicitly proves the public guard rejects
+it, then tests the internal format translation without relabelling the fixture.
+That is runtime-format evidence, not Röbel admission or a live handover proof.
+
+`advance_review_migration_stage` now composes capture/encrypted restore,
+preparation and activation through the existing fixed worker transport. Each
+stage retains its original parent intent and verifies that later coordinator
+checkpoints have the same completed prefix. Child checkpoint paths and their
+predecessors are recorded before invoking the worker. Recovery reads the latest
+owned child checkpoint even when the enclosing stage did not receive its result.
+Missing, empty, changed or unlinked child checkpoints stop recovery; it never
+falls back to an older intent and repeats an effect.
+
+The backup stage supplies the real encryption operator with a callback that
+resumes the same upload/restore exchange. Completion returns the validated stage
+evidence. This is an advancing operator, not a read-only historical observer;
+it must run only for the coordinator's pending stage with an already admitted,
+mounted worker and complete live readiness checks. The outer driver composes
+lifecycle creation/retirement and historical evidence observation.
+Tests connect all three stages, real age encryption, delayed restore evidence
+and lost responses with controlled worker results. They verify one invocation
+per command and retained ciphertext; actual SQLite semantics remain covered by
+the separate pinned-runtime integration. The composition test is skipped if age
+and age-keygen are unavailable; the other recovery tests still run.
+
+`observe_review_migration_stage` supplies read-only historical verification for
+those completed stages. It verifies the original parent, child predecessor
+chain, owned artifact bytes, encrypted backup receipt/ciphertext and reconstructed
+evidence without contacting a worker, executing age or reading the private key.
+Tests remove the disposable identity before observing all three stages; altered
+retained result or ciphertext bytes are rejected. Outer lifecycle and current
+live-state checks remain separate from this historical verification.
+
+`create_review_handover_session` connects all nine stages to the existing bound
+kubectl/Talos transport, private configuration descriptors, retained initializer
+and configuration receipts, and one durable `ReviewHandoverDriver` journal.
+The journal records each child checkpoint before invocation and resumes the same
+owned operation after delayed readiness or a lost response. Missing child
+checkpoints stop recovery instead of repeating effects. The session constructor
+does not write to the cluster; `verify_ready` runs preflight and `advance`
+performs the separately authorized transaction.
+
+`ReviewLiveChecks` requires a clean pinned implementation already observed on
+main by Flux, the exact prepared successor checkout, unchanged original public
+admission and public workloads, both configuration Secrets and role windows,
+retained volume identities, and the permitted writer/reconciler state at each
+stage. Talos reads the pinned node's complete mount and kubelet directory lists
+before and after retirement. An existing mounted system Pod can serve as the
+independently pinned positive control; static-Pod hash directories are retained
+in the observation. Every runtime completion uses the fixed authenticated HTTP
+probe, and clean restart must add exactly one successful termination.
+
+The inactive `review-resources.json` is pinned to
+`sha256:f7e156d67cf7209d9f8f887d5a091b8f88f85065f781393008120ed83b0a69e7`.
+Admission permits only the standalone forward resource-file switch and the
+corresponding existing reconciler Role's ConfigMap name addition. The source
+implementation is admitted first. The target render is merged while the Case
+reconciler is fenced, after runtime verification; GitOps resumes only when its
+source controller observes that exact target revision.
+
+Tests cover all nine connected stages, real age encryption, the actual bounded
+kubectl transport, live writer gates and delayed/lost response recovery. Their
+Kubernetes and migration result fixtures are controlled. A separate pinned-runtime
+test captures, decrypts, restores and migrates actual SQLite, starts all four
+ordinary runtime listeners and runs the same authenticated read probe against
+the original example-city Case. These tests do not claim a live Röbel migration.
+
 ### Migration and handover
 
 The runner does not provision volumes, manage Secrets, stop workloads, change
@@ -270,6 +657,27 @@ until their receipts are captured, then clean only that workload's own temporary
 storage. The runner never removes source or target directories, and never
 overwrites an existing result.
 
+## Live preservation observation
+
+`observe_review_public_preservation` reuses the existing Kubernetes workload
+verifier without requiring the Case writer to remain running. Its baseline must
+be captured before source fencing and independently pinned for subsequent
+stages. It checks the admitted public workloads, retained tracer storage and
+unchanged public Case reader, including its actual Pod template, image,
+container identity and restart count. It makes only Kubernetes GET requests.
+
+`observe_review_configuration` joins the existing private-file grant check to
+the two live immutable Secrets. It requires the original source provisioning
+receipt and the target receipt pinned in the handover plan, checks their exact
+UIDs, ownership nonces and bytes, and repeats the observations to detect changes
+during the read. The current time and all grants must cover the handover window.
+Returned evidence contains identities and checksums, never configuration or
+credentials. Transport exceptions are replaced with a fixed error message.
+
+These observations are readiness inputs, not the full live Adapter. They do not
+replace original Case HTTP acceptance, physical mount release, complete stage
+orchestration, independently admitted successor resources or a full rehearsal.
+
 ## Verification
 
 Run descriptor and failure-boundary tests with:
@@ -291,10 +699,11 @@ uses the public synthetic fixture and a simulated storage observation, not live
 accounts or Kubernetes. It checks admission version 3, exact source bytes,
 candidate activation, identical retry, ordinary runtime configuration and
 refusal to replay after the target has reopened. It starts no HTTP listener.
-The same invocation runs all descriptor tests. Seven tests pass locally.
+The same invocation runs all descriptor tests. The dated verification record
+reports observed counts and distinguishes configured from skipped integration.
 
 The storage transaction and its bounded kubectl Adapter are exercised by
-`python3 -m unittest -v scripts.test_case_review_storage`: twenty tests cover
+`python3 -m unittest -v scripts.test_case_review_storage`: these tests cover
 durable intent, delayed binding, lost responses, ownership conflicts, guarded
 retention, exact recovery, changed identities and forbidden transport requests.
 They use synthetic API responses and real private receipt files; they do not
