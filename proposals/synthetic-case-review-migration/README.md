@@ -1,8 +1,9 @@
-# Offline administration-review migration operator
+# Administration-review migration and handover
 
-Status: source implementation and offline verification only. This directory is
-not included by any Kustomization or live operator. CI runs its offline tests. The existing
-19-object bootstrap and active reviewed render keep their existing meaning.
+Status: integrated Operations driver with an inactive, independently pinned
+successor render. The active render remains on the original runtime until the
+separately authorized migration and exact forward rollout. CI runs the migration
+and recovery tests; the existing bootstrap is unchanged.
 
 `scripts/run-case-review-migration.mjs` bridges private Operations files to the
 already published Stadtstack PR 70 runtime. It uses the exact source revision
@@ -122,8 +123,7 @@ locks during activation. Compiling or starting the worker is not permission to
 invoke a migration. The live Adapter still must verify all stage receipts,
 physical mount release, exact Pod/image/node/claim identities and current source
 fencing before any descriptor invocation. Worker transport and recoverable runtime switch/restart/resume operations are
-implemented locally. Their complete live driver and successor admission remain
-incomplete.
+connected by `ReviewHandoverDriver` and the live session factory below.
 
 The real SQLite integration includes capture, independent restore/replay,
 source preservation and malformed-archive/descriptor failures. For the additional
@@ -441,8 +441,8 @@ commands also bound their own output. This is not a streaming memory limit.
 
 The parent Adapter must still supply complete readiness and private configuration
 receipt verification. The initializer retirement and switch/restart/GitOps
-operations below are implemented locally. Their complete live driver, successor
-admission and full source-to-target rehearsal remain before source shutdown. The compiler embeds the changed runner; the
+operations below are connected by the live driver. An admitted implementation,
+prepared successor checkout and live preflight are required before source shutdown. The compiler embeds the changed runner; the
 published runtime image remains unchanged.
 
 Local tests exercise private result retrieval, reservation collisions, corrupt
@@ -573,8 +573,8 @@ The backup stage supplies the real encryption operator with a callback that
 resumes the same upload/restore exchange. Completion returns the validated stage
 evidence. This is an advancing operator, not a read-only historical observer;
 it must run only for the coordinator's pending stage with an already admitted,
-mounted worker and complete live readiness checks. Lifecycle creation/retirement
-and historical evidence observation still need composition by the outer driver.
+mounted worker and complete live readiness checks. The outer driver composes
+lifecycle creation/retirement and historical evidence observation.
 Tests connect all three stages, real age encryption, delayed restore evidence
 and lost responses with controlled worker results. They verify one invocation
 per command and retained ciphertext; actual SQLite semantics remain covered by
@@ -589,13 +589,39 @@ Tests remove the disposable identity before observing all three stages; altered
 retained result or ciphertext bytes are rejected. Outer lifecycle and current
 live-state checks remain separate from this historical verification.
 
-The remaining integration is the concrete live driver: admission of the exact
-successor, complete stage-aware readiness, original Case/public-service checks,
-and composition/recovery of all private worker, encrypted backup and lifecycle
-receipts. `verify_ready`/`verify_complete`
-remain mandatory ports, not executable success defaults. Existing tests use
-explicit controlled observations at those ports. No source shutdown is allowed
-until that driver and a full rehearsal are ready.
+`create_review_handover_session` connects all nine stages to the existing bound
+kubectl/Talos transport, private configuration descriptors, retained initializer
+and configuration receipts, and one durable `ReviewHandoverDriver` journal.
+The journal records each child checkpoint before invocation and resumes the same
+owned operation after delayed readiness or a lost response. Missing child
+checkpoints stop recovery instead of repeating effects. The session constructor
+does not write to the cluster; `verify_ready` runs preflight and `advance`
+performs the separately authorized transaction.
+
+`ReviewLiveChecks` requires a clean pinned implementation already observed on
+main by Flux, the exact prepared successor checkout, unchanged original public
+admission and public workloads, both configuration Secrets and role windows,
+retained volume identities, and the permitted writer/reconciler state at each
+stage. Talos reads the pinned node's complete mount and kubelet directory lists
+before and after retirement. An existing mounted system Pod can serve as the
+independently pinned positive control; static-Pod hash directories are retained
+in the observation. Every runtime completion uses the fixed authenticated HTTP
+probe, and clean restart must add exactly one successful termination.
+
+The inactive `review-resources.json` is pinned to
+`sha256:f7e156d67cf7209d9f8f887d5a091b8f88f85065f781393008120ed83b0a69e7`.
+Admission permits only the standalone forward resource-file switch and the
+corresponding existing reconciler Role's ConfigMap name addition. The source
+implementation is admitted first. The target render is merged while the Case
+reconciler is fenced, after runtime verification; GitOps resumes only when its
+source controller observes that exact target revision.
+
+Tests cover all nine connected stages, real age encryption, the actual bounded
+kubectl transport, live writer gates and delayed/lost response recovery. Their
+Kubernetes and migration result fixtures are controlled. A separate pinned-runtime
+test captures, decrypts, restores and migrates actual SQLite, starts all four
+ordinary runtime listeners and runs the same authenticated read probe against
+the original example-city Case. These tests do not claim a live Röbel migration.
 
 ### Migration and handover
 

@@ -393,6 +393,56 @@ class MountReleaseTests(unittest.TestCase):
         self.plan.pop('planSha256');self.plan['planSha256']=sha(self.plan)
         with self.assertRaises(BootstrapStopped):self.observe()
 
+    def test_system_positive_control_and_static_pod_directories(self):
+        original=self.request
+        self.names.append('a'*32)
+        def request(method,path,payload):
+            if path=='/api/v1/pods':return {'items':[self.observer]}
+            if path.endswith('/pods'):return {'items':[]}
+            return original(method,path,payload)
+        self.request=request
+        self.assertTrue(self.observe()['evidence']['positiveControlVerified'])
+        self.observer['metadata']['deletionTimestamp']='2026-09-10T12:00:00Z'
+        with self.assertRaises(BootstrapStopped):self.observe()
+
+
+class TalosMountTransportTests(unittest.TestCase):
+    def test_fixed_reads_keep_all_entries_and_recheck_node_identity(self):
+        node={'metadata':{'uid':uid(10)},'status':{'addresses':[{'type':'InternalIP','address':'10.42.0.11'}]}}
+        commands=[]
+        listing=f'NODE NAME\n10.42.0.11 .\n10.42.0.11 {uid(11)}\n10.42.0.11 '+('a'*32)+'\n'
+        def run(command):commands.append(command);return 'mounts' if command[0]=='read' else listing
+        observe=review.TalosReviewMountObserver(transport=SimpleNamespace(request=lambda *args:node),run=run,node_name='example-node',node_uid=uid(10),node_ip='10.42.0.11')
+        self.assertEqual(observe('example-node',uid(10))['podDirectoryNames'],[uid(11),'a'*32])
+        self.assertEqual(commands,[['read','/proc/1/mountinfo'],['ls','/var/lib/kubelet/pods']])
+        for value in ('NODE NAME\n10.42.0.12 .\n','NODE NAME\n10.42.0.11 ../bad\n','NODE NAME\n10.42.0.11 .\n10.42.0.11 .\n'):
+            listing=value
+            with self.assertRaises(BootstrapStopped):observe('example-node',uid(10))
+        listing=f'NODE NAME\n10.42.0.11 .\n10.42.0.11 {uid(11)}\n'
+        def changed(command):node['metadata']['uid']=uid(12);return run(command)
+        observe.run=changed
+        with self.assertRaises(BootstrapStopped):observe('example-node',uid(10))
+
+
+class ReviewAdmissionTests(unittest.TestCase):
+    def test_only_exact_forward_render_is_admitted(self):
+        import shutil
+        from . import case_runtime_bootstrap as core,case_runtime_admission as admission
+        verifier=core._verifier();base=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            target=Path(directory)/'candidate'
+            shutil.copytree(base,target,ignore=shutil.ignore_patterns('.git','__pycache__'))
+            path=target/'reviewed-render/roebel-staging/case-runtime/resources.json'
+            path.write_bytes((target/admission.REVIEW_RESOURCES).read_bytes())
+            verifier.verify(target,base)
+            with self.assertRaises(verifier.VerificationError):verifier.verify(base,target)
+            extra=target/'unexpected.txt';extra.write_text('unexpected\n')
+            with self.assertRaises(verifier.VerificationError):verifier.verify(target,base)
+            extra.unlink();value=json.loads(path.read_text())
+            next(o for o in value['items'] if o['kind']=='Deployment')['spec']['replicas']=2
+            path.write_text(json.dumps(value,indent=2)+'\n')
+            with self.assertRaises(verifier.VerificationError):verifier.verify(target,base)
+
 
 class WorkerTransportTests(unittest.TestCase):
     compile=ReviewRuntimeCompilerTests.compile
@@ -1310,6 +1360,215 @@ class MigrationStageDriverTests(unittest.TestCase):
         self.assertEqual(self.stage_actions,before)
 
 
+class IntegratedDriverTests(unittest.TestCase):
+    """Real orchestration/operations/age; Kubernetes and runtime outputs controlled."""
+    envelope=WorkerDriverTests.envelope
+    def setUp(self):
+        import hashlib,shutil,subprocess
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        from unittest.mock import patch
+        self.h=WorkerDriverTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        self.root,self.plan,self.candidate=self.h.root,self.h.plan,self.h.candidate
+        self.directory=self.h.directory_path;self.binding=self.h.binding;self.kube,self.core=kube,core
+        self.h.storage.advance();self.h.storage.api.complete();self.initialized=self.h.storage.resume()
+        self.plan['pins']['initializationReceiptSha256']=self.initialized['canonicalSha256']
+        self.plan['identities'].update(initializerPodUid=self.initialized['podUid'],targetPvcUid=self.initialized['claimUid'],targetPvUid=self.initialized['volumeUid'])
+        self.plan['identities'].update(sourcePvUid=uid(702),sourcePodUid=uid(703),mountObserverPodUid=uid(704))
+        self.age=shutil.which('age');keygen=shutil.which('age-keygen')
+        if not self.age or not keygen:self.skipTest('real age executables not installed')
+        self.age=str(Path(self.age).resolve());key=self.directory/'fixture-age.key'
+        subprocess.run([keygen,'-o',str(key)],capture_output=True,check=True)
+        self.backup={'age_binary':self.age,'expected_age_sha256':'sha256:'+hashlib.sha256(Path(self.age).read_bytes()).hexdigest(),
+                    'recipient':subprocess.check_output([keygen,'-y',str(key)],text=True,stderr=subprocess.PIPE).strip(),'identity_path':str(key)}
+        def checked(body,key):return body|{key:sha(body)}
+        self.checked=checked
+        self.source_claim=checked({'schemaVersion':'case_durable_deployment_claim_v1','controlDeploymentBindingChecksum':self.plan['pins']['sourceBindingSha256']},'claimChecksum')
+        self.target_claim=checked({'schemaVersion':'case_durable_deployment_claim_v1','municipalityId':self.binding['municipalityId'],
+            'releaseDigest':self.binding['releaseDigest'],'controlDeploymentBindingChecksum':self.binding['bindingChecksum'],
+            'pvc':{'namespace':self.binding['storage']['pvcNamespace'],'name':self.binding['storage']['pvcName'],'uid':self.binding['storage']['pvcUid']},
+            'pvName':self.binding['storage']['pvName']},'claimChecksum')
+        self.plan['pins']['targetDeploymentClaimChecksum']=self.target_claim['claimChecksum']
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        self.facts=copy.deepcopy(self.h.facts);self.source_seal=checked({'deploymentClaimChecksum':self.source_claim['claimChecksum'],
+            'databaseSha256':self.facts['sourceDatabaseSha256'],'recoveryEvidence':{'syntheticFixture':True}},'sealChecksum')
+        self.facts.update(sourceDeploymentClaimChecksum=self.source_claim['claimChecksum'],sourceSealChecksum=self.source_seal['sealChecksum'])
+        self.migration_candidate={k:sha(k) for k in ('journalHeadChecksum','sourceConfigFingerprint','targetConfigFingerprint','sourceOptionsFingerprint',
+            'targetOptionsFingerprint','preservedTablesChecksum','targetDatabaseSha256')}
+        self.migration_candidate.update(schemaVersion='synthetic_review_migration_candidate_v1',caseId=self.plan['caseId'],caseVersion=3,
+            admissionReceiptChecksum=self.plan['pins']['admissionReceiptChecksum'],sourceSealChecksum=self.facts['sourceSealChecksum'],
+            sourceDatabaseSha256=self.facts['sourceDatabaseSha256'],targetDatabaseByteLength=4096,testOnly=True,authorityBinding='none')
+        self.migration_candidate=checked(self.migration_candidate,'candidateChecksum')
+        self.effects=[];self.results={};self.ready=True;self.pause_restart=False;self.pause_worker=False;self.counter=8000;self.driver=None
+        self.objects={};self.pods=[];self.sets=[]
+        def live(desired,identity=None):
+            value=copy.deepcopy(desired);self.counter+=1;value['metadata'].update(uid=identity or uid(self.counter),resourceVersion='10',generation=1)
+            self.objects[kube.resource_path(core.target(value))]=value;return value
+        self.live=live
+        source=core.build_plan(self.root)
+        self.flux=live(source['objects'][-1]['desired'],self.plan['identities']['reconcilerUid']);self.flux['spec']['suspend']=False
+        self.control=live(next(r['desired'] for r in source['objects'] if r['target']['name']=='roebel-case-steward-control' and r['target']['kind']=='Deployment'),self.plan['identities']['sourceDeploymentUid'])
+        live(self.candidate['sourceReconcilerRole'])
+        self.initializer=copy.deepcopy(self.h.storage.plan['pod']);self.initializer['metadata'].update(uid=self.initialized['podUid'],resourceVersion='10')
+        self.initializer['status']={'phase':'Succeeded','containerStatuses':[{'state':{'terminated':{'exitCode':0}}}]};self.pods.append(self.initializer)
+        self.observer={'metadata':{'uid':self.plan['identities']['mountObserverPodUid']},'spec':{'nodeName':'example-node'},
+            'status':{'phase':'Running','conditions':[{'type':'Ready','status':'True'}]}};self.pods.append(self.observer)
+        mocked=patch.object(review,'verify_review_gitops_target',return_value={'status':'gitops-successor-observed'})
+        mocked.start();self.addCleanup(mocked.stop)
+        self.index=0;self.new_driver()
+    def new_driver(self,prior=None):
+        self.index+=1;self.journal_sink=ReceiptSink.reserve(self.directory/f'full-driver-{self.index}.json')
+        self.driver=review.ReviewHandoverDriver(self.root,self.plan,self.candidate,expected_plan_sha256=self.plan['planSha256'],
+            storage_plan=self.h.storage.storage_plan,initialization_plan=self.h.storage.plan,initialization_receipt=self.initialized,node_name='example-node',
+            transport=self,worker_transport_factory=lambda identity,ready:SimpleNamespace(pod_uid=identity,exchange=self.exchange),checks=self,
+            backup_options=self.backup,artifact_directory=self.directory,sink=self.journal_sink,prior=prior,
+            expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=lambda:NOW)
+    def recover(self):
+        prior=json.loads(self.journal_sink.path.read_text());self.new_driver(prior)
+        return self.driver.advance()
+    def request(self,method,path,payload):
+        if method=='GET':
+            if path.endswith('/kube-system'):return {'metadata':{'uid':self.plan['identities']['clusterUid']}}
+            if path.startswith('/api/v1/nodes/'):return {'metadata':{'uid':self.plan['identities']['nodeUid']}}
+            if '/persistentvolumeclaims/' in path:
+                side='target' if path.endswith('roebel-case-steward-review-state-v1') else 'source'
+                return {'metadata':{'uid':self.plan['identities'][side+'PvcUid']},'spec':{'accessModes':['ReadWriteOncePod']},'status':{'phase':'Bound'}}
+            if path.endswith('/pods'):return {'items':copy.deepcopy(self.pods)}
+            if path.endswith('/replicasets'):return {'items':copy.deepcopy(self.sets)}
+            if '/pods/' in path:return copy.deepcopy(next((p for p in self.pods if p['metadata'].get('name')==path.rsplit('/',1)[-1]),None))
+            return copy.deepcopy(self.objects.get(path))
+        self.effects.append((method,path))
+        if method=='PATCH':
+            value=self.objects[path]
+            for op in payload:
+                parts=op['path'].strip('/').split('/');location=value
+                for part in parts[:-1]:location=location[part]
+                if op['op']=='test':self.assertEqual(location[parts[-1]],op['value'])
+                else:location[parts[-1]]=copy.deepcopy(op['value'])
+            value['metadata']['resourceVersion']=str(int(value['metadata']['resourceVersion'])+1);value['metadata']['generation']+=1
+            if value['kind']=='Deployment' and payload[-1]['path']=='/spec':self.start_runtime()
+            raise TimeoutError('controlled response lost after patch')
+        if method=='POST':
+            if payload['kind']=='Pod':
+                pod=copy.deepcopy(payload);pod['metadata'].update(uid=uid(777),resourceVersion='10')
+                pod['spec']['nodeName']='example-node'
+                pod['status']={'phase':'Pending' if self.pause_worker else 'Running','containerStatuses':[{'name':'migration','ready':not self.pause_worker,'restartCount':0,
+                    'imageID':'containerd://'+self.plan['pins']['migrationImageDigest']}]};self.pods.append(pod)
+            else:self.live(payload)
+            raise TimeoutError('controlled response lost after create')
+        self.assertEqual(method,'DELETE')
+        value=self.request('GET',path,None);self.assertEqual(payload['preconditions'],{k:value['metadata'][k] for k in ('uid','resourceVersion')})
+        if '/pods/' in path:self.pods=[p for p in self.pods if p['metadata']['uid']!=value['metadata']['uid']]
+        else:del self.objects[path]
+        raise TimeoutError('controlled response lost after delete')
+    def start_runtime(self):
+        self.control['status']={'observedGeneration':self.control['metadata']['generation'],**{k:1 for k in ('replicas','updatedReplicas','readyReplicas','availableReplicas')}}
+        template=self.control['spec']['template'];pod={'apiVersion':'v1','kind':'Pod','metadata':copy.deepcopy(template['metadata']), 'spec':copy.deepcopy(template['spec'])}
+        pod['metadata'].update(name='synthetic-review-runtime',namespace=self.kube.NAMESPACE,uid=uid(8500),resourceVersion='10',
+            ownerReferences=[{'uid':uid(8501),'controller':True}]);pod['metadata'].setdefault('labels',{})['pod-template-hash']='abc123'
+        pod['status']={'phase':'Running','conditions':[{'type':'Ready','status':'True'}],'containerStatuses':[{'name':'runtime','ready':True,
+            'restartCount':0,'containerID':'containerd://'+'a'*64,'imageID':'containerd://'+self.plan['pins']['migrationImageDigest']}]}
+        self.runtime=pod;self.pods.append(pod);self.sets=[{'metadata':{'uid':uid(8501),'labels':{'pod-template-hash':'abc123'},
+            'ownerReferences':[{'controller':True,'uid':self.plan['identities']['sourceDeploymentUid']}]}}]
+    def exec_pod(self,namespace,name,identity,container,args):
+        self.assertEqual((identity,container,args),(uid(8500),'runtime',['node','-e',"process.kill(1, 'SIGTERM')"]))
+        self.effects.append(('SIGTERM',identity))
+        if not self.pause_restart:self.complete_restart()
+        raise TimeoutError('controlled signal response lost')
+    def complete_restart(self):
+        self.runtime['status']['containerStatuses'][0].update(restartCount=1,containerID='containerd://'+'b'*64,lastState={'terminated':{'exitCode':0}})
+    def verify_ready(self,plan,parent,driver):
+        if not self.ready:raise BootstrapStopped('fixture preflight unavailable')
+        if parent['completed'] and parent['pending']!='restore-gitops' and len(parent['completed'])<9:
+            self.assertTrue(self.flux['spec']['suspend'])
+        if len(parent['completed'])<6:self.assertEqual(self.control['spec']['replicas'],0 if parent['completed'] else self.control['spec']['replicas'])
+    def observe_release(self,plan,parent,driver,pod_uid):
+        identity=plan['identities']['mountObserverPodUid']
+        return review.observe_mount_release(self.root,plan,expected_plan_sha256=plan['planSha256'],transport=self,verify_ready=lambda p:None,
+            node_filesystem=lambda *args:{'podDirectoryNames':[identity],'mountInfo':f'10 1 1:1 / /var/lib/kubelet/pods/{identity}/volumes/fixture rw - tmpfs tmpfs rw\n'},migration_pod_uid=pod_uid)
+    def verify_complete(self,plan,parent,child,driver):
+        step=parent['pending'];previous={r['step']:r['evidence'] for r in parent['completed']}
+        runtime=review.observe_review_runtime(self.root,plan,self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],transport=self)
+        if runtime is None:return None
+        if step=='start-review-runtime':
+            result={k:plan['identities'][k] for k in ('sourceDeploymentUid','targetPvcUid','configurationSecretUid')}
+            result.update({k:plan['pins'][k] for k in ('targetBindingSha256','migrationImageDigest')});result['runtimePodUid']=runtime['podUid']
+        elif step=='verify-review-runtime':
+            result={'runtimePodUid':runtime['podUid'],'admissionReceiptChecksum':plan['pins']['admissionReceiptChecksum'],
+                'allFourListenersReady':True,'cleanRestartVerified':True,'sourceDatabaseSha256':previous['verify-backup']['sourceDatabaseSha256'],'publicServicesPreserved':True}
+        else:result={'reconcilerUid':plan['identities']['reconcilerUid'],'reconcilerSuspended':self.flux['spec']['suspend'],
+            'targetRenderSha256':plan['pins']['targetRenderSha256'],'reconciled':True,'sourceRetained':True,'targetRetained':True}
+        return result|{'receiptSha256':sha(result)}
+    def exchange(self,action,raw,**kwargs):
+        import os,hashlib
+        request=json.loads(raw);mode=request['mode'];pin=sha(request)
+        if action in ('invoke','upload-archive'):self.effects.append((mode,action))
+        if action=='upload-archive':self.assertEqual(kwargs['archive_bytes'],self.h.archive);return {'status':'private-archive-stored','archiveSha256':self.h.archive_pin}
+        if action=='verify-archive':return {'status':'private-archive-stored','archiveSha256':self.h.archive_pin}
+        if action=='invoke':
+            if mode=='capture-backup':result=self.facts
+            elif mode=='verify-backup':result=self.facts|{'restoredFilesSha256':self.facts['sourceFilesSha256'],'restoredCandidateChecksum':sha('restored')}
+            elif mode=='prepare':result={'candidateRootDir':'/private/synthetic-candidate','receipt':self.migration_candidate}
+            else:
+                seal=self.checked({'deploymentClaimChecksum':self.target_claim['claimChecksum'],'databaseSha256':self.migration_candidate['targetDatabaseSha256'],
+                    'databaseByteLength':4096,'configFingerprint':self.migration_candidate['targetConfigFingerprint'],'recoveryEvidence':self.source_seal['recoveryEvidence'],
+                    'closedAtUtc':'2026-09-10T12:00:01.000Z'},'sealChecksum')
+                result=self.checked({'schemaVersion':'synthetic_review_migration_activation_v1','planChecksum':request['migrationPlan']['planChecksum'],
+                    'candidate':self.migration_candidate,'sourceClaim':self.source_claim,'sourceSeal':self.source_seal,'targetClaim':self.target_claim,'targetSeal':seal,
+                    'startedAtUtc':'2026-09-10T12:00:00.000Z'},'activationChecksum')
+            self.results[pin]=self.envelope(request,result);raise TimeoutError('controlled worker response lost')
+        data=self.h.archive if action=='archive' else json.dumps(self.results[pin],sort_keys=True,separators=(',',':')).encode()
+        os.write(kwargs['output_fd'],data);os.fsync(kwargs['output_fd'])
+        return {'status':'private-output-saved','bytes':len(data),'sha256':'sha256:'+hashlib.sha256(data).hexdigest()}
+    def test_all_nine_stages_connect_and_recovery_repeats_no_effect(self):
+        result=self.driver.advance();self.assertEqual(result['status'],'complete')
+        self.assertEqual([r['step'] for r in result['completed']],list(review.STEPS))
+        effects=list(self.effects);self.assertEqual(self.recover()['status'],'complete');self.assertEqual(self.effects,effects)
+        self.assertEqual([e for e in effects if e[0]=='SIGTERM'],[('SIGTERM',uid(8500))])
+        self.assertFalse(self.flux['spec']['suspend']);self.assertTrue(list(self.directory.glob('encrypted-*/case-backup.age')))
+    def test_delayed_worker_and_restart_resume_without_manual_child_calls(self):
+        self.pause_worker=True
+        self.assertEqual(self.driver.advance()['pending'],'verify-backup')
+        pod=next(p for p in self.pods if p['metadata'].get('name')=='roebel-case-review-migration-v1')
+        pod['status']['phase']='Running';pod['status']['containerStatuses'][0]['ready']=True
+        self.pause_restart=True;self.assertEqual(self.recover()['pending'],'verify-review-runtime')
+        self.complete_restart();self.assertEqual(self.recover()['status'],'complete')
+        self.assertEqual(sum(e[0]=='SIGTERM' for e in self.effects),1)
+        self.assertEqual(sum(e[0]=='capture-backup' and e[1]=='invoke' for e in self.effects),1)
+    def test_preflight_failure_cannot_fence_source(self):
+        self.ready=False
+        with self.assertRaises(BootstrapStopped):self.driver.advance()
+        self.assertEqual(self.effects,[]);self.assertEqual(self.control['spec']['replicas'],1)
+    def test_missing_owned_child_checkpoint_never_restarts_the_stage(self):
+        self.pause_worker=True;self.driver.advance();ref=self.driver.journal['children']['worker-create']
+        (self.directory/ref['file']).unlink();before=list(self.effects)
+        with self.assertRaises(BootstrapStopped):self.recover()
+        self.assertEqual(self.effects,before)
+
+    def test_all_stages_use_bounded_kubectl_transport_and_live_writer_gates(self):
+        def run(args,input_text=None,timeout=None):
+            if 'get' in args:return RawResult(out=json.dumps(self.request('GET',args[-1],None)))
+            if 'create' in args:return RawResult(out=json.dumps(self.request('POST',args[args.index('--raw')+1],json.loads(input_text))))
+            if 'delete' in args:return RawResult(out=json.dumps(self.request('DELETE',args[args.index('--raw')+1],json.loads(input_text))))
+            if 'patch' in args:
+                index=args.index('patch');kind,name=args[index+1:index+3]
+                paths=[path for path,value in self.objects.items() if value['kind'].lower()==kind.lower() and value['metadata']['name']==name]
+                self.assertEqual(len(paths),1)
+                return RawResult(out=json.dumps(self.request('PATCH',paths[0],json.loads(args[args.index('-p')+1]))))
+            self.assertIn('exec',args);self.exec_pod(self.kube.NAMESPACE,args[args.index('-n')+2],uid(8500),'runtime',['node','-e',"process.kill(1, 'SIGTERM')"])
+            return RawResult(out='')
+        # The fixture API deliberately loses every write response after apply.
+        # The actual transport and stage gates must recover those observations.
+        self.driver.transport=review.KubectlReviewHandoverTransport(self.root,self.plan,self.candidate,self.driver.worker,self.h.storage.plan,
+            runner=SimpleNamespace(run=run),snapshot=SimpleNamespace(path='/private/test-kubeconfig'))
+        gate=object.__new__(review.ReviewLiveChecks);gate.root=self.root;gate.plan=self.plan;gate.candidate=self.candidate
+        gate.source=self.core.build_plan(self.root);gate.transport=self.driver.transport
+        before=self.verify_ready
+        def ready(plan,parent,driver):before(plan,parent,driver);gate._objects(parent,driver)
+        self.verify_ready=ready
+        result=self.driver.advance();self.assertEqual(result['status'],'complete')
+        self.assertEqual([r['step'] for r in result['completed']],list(review.STEPS))
+
+
 class PublicPreservationTests(unittest.TestCase):
     def setUp(self):
         from . import test_case_runtime_kubernetes as existing
@@ -1357,3 +1616,21 @@ class PublicPreservationTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
         self.reader.clear();self.reader.update(original);self.api.pods[0]['status']['containerStatuses'][0]['restartCount']=1
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
+
+    def test_cached_reader_can_be_unready_only_during_the_owned_fence(self):
+        baseline=self.observe();_,evidence=fixture()
+        evidence['fence-source'].update({k:self.plan['identities'][k] for k in ('sourceDeploymentUid','reconcilerUid')})
+        self.parent['completed']=[{'step':'fence-source','evidence':evidence['fence-source']}]
+        self.parent['pending']='release-mounts';self.parent['status']='effect-intent'
+        self.parent['canonicalSha256']=sha({k:v for k,v in self.parent.items() if k!='canonicalSha256'})
+        self.api.objects[self.source_path]['spec']['replicas']=0;self.api.objects[self.flux_path]['spec']['suspend']=True
+        self.reader['status']['conditions'][0]['status']='False';self.reader['status']['containerStatuses'][0]['ready']=False
+        path=f'/apis/apps/v1/namespaces/{self.kube.NAMESPACE}/deployments/roebel-case-public-binding'
+        self.api.objects[path]['status'].update(readyReplicas=0,availableReplicas=0)
+        with self.assertRaises(BootstrapStopped):self.observe(baseline)
+        def observe():return review.observe_review_public_preservation(self.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],adapter=self.adapter,
+            baseline=baseline,expected_baseline_sha256=baseline['canonicalSha256'],allow_reader_degraded=True)
+        self.assertEqual(observe(),baseline)
+        self.api.objects[self.flux_path]['spec']['suspend']=False
+        with self.assertRaises(BootstrapStopped):observe()

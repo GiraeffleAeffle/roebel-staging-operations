@@ -21,6 +21,7 @@ FILES={
     'scripts/test_case_review_migration.mjs',
     'scripts/test_case_review_migration_integration.mjs',
     'proposals/synthetic-case-review-migration/README.md',
+    'proposals/synthetic-case-review-migration/review-resources.json',
     'scripts/test_case_runtime_bootstrap.py',
     'scripts/test_case_runtime_configuration.py',
     'scripts/test_case_runtime_handover.py',
@@ -33,6 +34,19 @@ FILES={
 
 PUBLIC_READER_HOST = 'roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local'
 PUBLIC_READER_CONFIG = 'roebel-case-public-binding-reviewed'
+REVIEW_RESOURCES = 'proposals/synthetic-case-review-migration/review-resources.json'
+REVIEW_RENDER_SHA256 = 'sha256:f7e156d67cf7209d9f8f887d5a091b8f88f85065f781393008120ed83b0a69e7'
+
+
+def review_resources(v, root):
+    """One inactive, independently pinned successor; no arbitrary render input."""
+    import hashlib
+    path=root/REVIEW_RESOURCES
+    v.require(path.is_file() and not path.is_symlink(),'review successor must be a regular file')
+    value=v.load_json(path)
+    raw=json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()
+    v.require('sha256:'+hashlib.sha256(raw).hexdigest()==REVIEW_RENDER_SHA256,'review successor pin changed')
+    return value
 
 
 def public_host_resources(original):
@@ -57,24 +71,37 @@ def flux_bootstrap_objects(v,root,original):
         role=next(o for o in expected if o['kind']=='Role')
         rule=next(r for r in role['rules'] if r['resources']==['configmaps'])
         rule['resourceNames'].append(PUBLIC_READER_CONFIG+'-v2')
+    if any(o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-review-reviewed-v1' for o in runtime):
+        role=next(o for o in expected if o['kind']=='Role')
+        next(r for r in role['rules'] if r['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-review-reviewed-v1')
     return expected
 
 
 def verify(v,root):
     # The protected proposal checker has already verified independent byte pins.
+    successor=(json.dumps(review_resources(v,root),indent=2)+'\n').encode()
     for name in ('resources.json','kustomization.yaml'):
         active=root/'reviewed-render/roebel-staging/case-runtime'/name
         proposed=root/'proposals/synthetic-case-runtime'/name
         v.require(active.is_file() and not active.is_symlink(),'Case runtime render requires regular files')
         expected=proposed.read_bytes()
         repaired=(json.dumps(public_host_resources(json.loads(expected)),indent=2)+'\n').encode() if name=='resources.json' else expected
-        v.require(active.read_bytes() in (expected,repaired),'Case runtime render differs from independently pinned proposal or exact public Host repair')
+        allowed=(expected,repaired,successor) if name=='resources.json' else (expected,repaired)
+        v.require(active.read_bytes() in allowed,'Case runtime render differs from independently pinned source, exact public Host repair or review successor')
     return {'bootstrapImplementationPresent':True,'automaticActivation':False,
             'webConnectionIncluded':False,'restoreActivation':False}
 
 
 def verify_transition(v,candidate,base):
-    v.require(not v.changed_repository_files(candidate,base)&FILES,'promotion changed protected Case bootstrap implementation or render')
+    changed=v.changed_repository_files(candidate,base)
+    path='reviewed-render/roebel-staging/case-runtime/resources.json'
+    if changed=={path}:
+        successor=(json.dumps(review_resources(v,base),indent=2)+'\n').encode()
+        v.require((candidate/path).read_bytes()==successor and (base/path).read_bytes()!=successor,'review activation is not the exact forward transition')
+        verify(v,candidate);verify(v,base)
+        return True
+    v.require(not changed&FILES,'promotion changed protected Case bootstrap implementation or render')
+    return False
 
 
 def connection(v,root):

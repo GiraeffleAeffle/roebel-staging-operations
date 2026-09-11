@@ -1,9 +1,10 @@
 /** Explicit offline integration against the pinned public source checkout.
- * No cluster, real account, listener or mounted-volume attestation is used.
+ * No cluster, real account or mounted-volume attestation is used. One test
+ * starts the ordinary runtime's four local listeners against disposable data.
  * CASE_REVIEW_TEST_SOURCE_ROOT=/path/to/pinned/source node --test this-file
  */
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync, statSync, statfsSync, chownSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -84,6 +85,8 @@ test("descriptor operator prepares, activates and retries the actual sealed Case
   for (const [key, value] of Object.entries(source)) if (key !== "actorRegistry") target[key] = structuredClone(value);
   target.administrationReview.caseId = admitted.caseId;
   target.administrationReview.grants[0].caseId = admitted.caseId;
+  target.administrationReview.grants.push({ ...target.administrationReview.grants[0],
+    actor: { actorId: "example:administration", actorClass: "administration" }, token: Buffer.alloc(32,3).toString("base64url") });
   const request = { sourceRootDir: originalRoot, caseId: admitted.caseId, sourceSealChecksum: seal.sealChecksum,
     admissionReceiptChecksum: admitted.receiptChecksum, targetBinding: next.binding };
   const runtime = { prepare: adapter.prepareSyntheticDepartmentReviewMigration,
@@ -380,12 +383,35 @@ print(json.dumps({'status':'real-backup-prepare-activation-linked','negativeCase
   assert.deepEqual(retry.result().result, activation.result().result);
   assert.deepEqual(snapshot(targetRoot), targetBytes);
   assert.deepEqual(snapshot(originalRoot), originalBytes);
-  // Opening the ordinary runtime proves the captured private application has
-  // the same fingerprints as the migrated target; no listeners are started.
+  // The exact deployed read probe runs against the ordinary migrated runtime.
+  // Only its private fixture pathname and local file owner differ from a Pod.
   const ordinary = control.createOperationsBoundStagingCaseControlRuntime({
     reviewedBindingSource: { read: () => next.binding }, bindingPinSource: { read: () => next.binding.bindingChecksum },
     storageObserver: next.storageObserver, application: target });
   t.after(() => ordinary.close());
+  await t.test("four real listeners return the original migrated Case through the fixed authenticated read probe", async () => {
+    await ordinary.start();
+    const python = process.env.CASE_REVIEW_TEST_PYTHON || "python3";
+    const script=execFileSync(python,["-c","from scripts.case_review_handover import REVIEW_RUNTIME_READ_JS; print(REVIEW_RUNTIME_READ_JS)"],
+      {cwd:resolve(import.meta.dirname,".."),encoding:"utf8"})
+      .replace("'/run/stadtstack-control/private/application.json'",JSON.stringify(join(prepare.root,"target")))
+      .replace("st.uid!==1000",`st.uid!==${process.getuid()}`);
+    const probe=(pins)=>new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,["--input-type=module","-e",script],{stdio:["pipe","pipe","pipe"]});let out="",err="";
+      const timer=setTimeout(()=>{child.kill();reject(Error("fixture probe timeout"));},30000);
+      child.stdout.on("data",chunk=>out+=chunk);child.stderr.on("data",chunk=>err+=chunk);
+      child.on("error",reject);child.on("close",code=>{clearTimeout(timer);resolve({code,out,err});});
+      child.stdin.end(JSON.stringify(pins));
+    });
+    const pins={caseId:admitted.caseId,configurationSha256:hash(readFileSync(join(prepare.root,"target")))};
+    const observed=await probe(pins);assert.equal(observed.code,0,observed.err);
+    const value=JSON.parse(observed.out);assert.equal(value.caseId,admitted.caseId);assert.equal(value.caseVersion,3);
+    assert.equal(value.allFourListenersReady,true);assert.equal(value.departmentPackageCount,0);
+    assert.equal(observed.out.includes(target.administrationReview.grants[1].token),false);
+    const wrong=await probe({...pins,caseId:admitted.caseId+"-foreign"});assert.equal(wrong.code,1);
+    assert.equal(wrong.err,"review runtime read verification unavailable\n");assert.equal(wrong.out,"");
+    assert.deepEqual(snapshot(originalRoot),originalBytes);
+  });
   await ordinary.close();
   const reopenedBytes = snapshot(targetRoot);
   const staleRetry = files(t, { mode: "activate", source, target, request: { ...request, migrationPlan } });

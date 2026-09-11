@@ -183,6 +183,8 @@ STEPS = ('fence-source', 'release-mounts', 'verify-backup', 'prepare-migration',
          'verify-review-runtime', 'restore-gitops')
 SHA = re.compile(r'sha256:[0-9a-f]{64}')
 UUID = re.compile(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+# Kubelet also retains static-Pod configuration hashes as directory names.
+POD_DIRECTORY_NAME = re.compile(r'(?:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{32})')
 PINS = {'operationsRevision', 'implementationSha256', 'sourceRenderSha256',
         'targetRenderSha256', 'sourceBindingSha256', 'targetBindingSha256',
         'sourceConfigurationSha256', 'targetConfigurationSha256',
@@ -364,6 +366,13 @@ def advance_review_handover(plan, *, expected_plan_sha256, adapter, sink, prior=
                     observed = adapter.observe(copy.deepcopy(plan), step, copy.deepcopy(state))
             else:
                 observed = adapter.observe(copy.deepcopy(plan), step, copy.deepcopy(state))
+                # A concrete driver can resume its journalled child operation.
+                # This is deliberately separate from perform: an owned child
+                # intent must be recovered, never started again from scratch.
+                resume = getattr(adapter, 'resume', None)
+                if observed is None and callable(resume):
+                    resume(copy.deepcopy(plan), step, copy.deepcopy(state))
+                    observed = adapter.observe(copy.deepcopy(plan), step, copy.deepcopy(state))
             if observed is None:
                 state['status'] = 'awaiting-evidence'
                 sink.commit(state)
@@ -541,7 +550,7 @@ try {
 
 def advance_source_fence(root, plan, *, expected_plan_sha256, parent_receipt,
                          expected_parent_sha256, transport, sink, verify_ready,
-                         prior=None, expected_prior_sha256=None):
+                         prior=None, expected_prior_sha256=None, clock=None):
     """Concrete GET/JSON-Patch adapter for the coordinator's first stage.
 
     Only suspend this Case Kustomization and scale its existing control
@@ -603,8 +612,9 @@ def advance_source_fence(root, plan, *, expected_plan_sha256, parent_receipt,
                     _require(labels.pop(key) == wanted, 'source fence Flux ownership drift')
         _require(kube.normalize(clean) == kube.normalize(expected), 'source fence workload semantics changed')
         return current
+    now = clock or (lambda:datetime.now(timezone.utc))
     def fresh():
-        _require(_utc(plan['notBeforeUtc']) <= datetime.now(timezone.utc) < _utc(plan['expiresAtUtc']), 'source fence window closed')
+        _require(_utc(plan['notBeforeUtc']) <= now() < _utc(plan['expiresAtUtc']), 'source fence window closed')
         verify_ready(copy.deepcopy(plan), copy.deepcopy(state))
         cluster = transport.request('GET','/api/v1/namespaces/kube-system',None)
         _require(cluster and cluster.get('metadata',{}).get('uid') == plan['identities']['clusterUid'] == kube.CLUSTER_UID, 'source fence cluster mismatch')
@@ -686,6 +696,13 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
         pods=transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/pods',None)
         _require(isinstance(pods,dict) and isinstance(pods.get('items'),list) and not pods.get('metadata',{}).get('continue') and pods.get('metadata',{}).get('remainingItemCount') in (None,0), 'mount observation Pod list invalid')
         observer=[p for p in pods['items'] if p.get('metadata',{}).get('uid') == ids['mountObserverPodUid']]
+        if not observer:
+            # A pinned, existing system Pod can prove the same host mount view
+            # when no unaffected staging Pod on this node owns a mount.
+            all_pods=transport.request('GET','/api/v1/pods',None)
+            _require(isinstance(all_pods,dict) and isinstance(all_pods.get('items'),list) and not all_pods.get('metadata',{}).get('continue') and
+                     all_pods.get('metadata',{}).get('remainingItemCount') in (None,0),'mount observation global Pod list invalid')
+            observer=[p for p in all_pods['items'] if p.get('metadata',{}).get('uid')==ids['mountObserverPodUid']]
         _require(len(observer) == 1, 'mount observation positive control missing')
         observer=observer[0]
         _require(observer.get('status',{}).get('phase') == 'Running' and not observer['metadata'].get('deletionTimestamp') and
@@ -708,7 +725,7 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
     text,names=view['mountInfo'],view['podDirectoryNames']
     _require(isinstance(text,str) and 0 < len(text.encode()) <= 4*1024*1024 and
              isinstance(names,list) and len(names) <= 10000 and
-             all(isinstance(n,str) and UUID.fullmatch(n) for n in names) and len(names) == len(set(names)), 'host mount observation invalid')
+             all(isinstance(n,str) and POD_DIRECTORY_NAME.fullmatch(n) for n in names) and len(names) == len(set(names)), 'host mount observation invalid')
     prefix='/var/lib/kubelet/pods/'
     def mounted(uid):
         return re.search(re.escape(prefix+uid)+r'(?:/|\s)',text) is not None
@@ -1715,13 +1732,8 @@ def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, targe
         raise BootstrapStopped('live review configuration verification failed; retain the current handover state') from None
 
 
-def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport):
-    """Never unsuspend GitOps against the old source render.
-
-    The clean target commit must differ from the pinned implementation tree
-    only by the exact candidate resource file. The source controller must have
-    observed that same main revision. This is separate from admission checks.
-    """
+def verify_review_gitops_checkout(root, plan, candidate, *, target_checkout, expected_target_revision):
+    """Prove the complete successor checkout before any source shutdown."""
     from pathlib import Path
     import subprocess
     from . import case_runtime_kubernetes as kube
@@ -1749,6 +1761,12 @@ def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expec
     _require(before[path].split()[:2]==after[path].split()[:2], 'target runtime render file mode changed')
     resource=json.loads(git(target,'show',expected_target_revision+':'+path))
     _require(resource==candidate['resources'] and canonical_sha256(resource)==plan['pins']['targetRenderSha256'],'GitOps target revision does not contain the exact successor')
+
+
+def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport):
+    """Unsuspend only after the source controller observes the exact successor."""
+    from . import case_runtime_kubernetes as kube
+    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision)
     cluster=transport.request('GET','/api/v1/namespaces/kube-system',None)
     _require(cluster and cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'GitOps source cluster changed')
     source=transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
@@ -2060,7 +2078,7 @@ def observe_review_migration_stage(plan, target_binding, *, expected_plan_sha256
 
 
 def observe_review_public_preservation(root, plan, *, expected_plan_sha256, parent_receipt, expected_parent_sha256,
-        adapter, baseline=None, expected_baseline_sha256=None):
+        adapter, baseline=None, expected_baseline_sha256=None, allow_reader_degraded=False):
     """Stage-independent GET-only public/tracer preservation observation.
 
     Establish the baseline before source fencing; later stages require its
@@ -2077,6 +2095,11 @@ def observe_review_public_preservation(root, plan, *, expected_plan_sha256, pare
     _require(cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'preservation cluster changed')
     resources=json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())
     _require(canonical_sha256(resources)==plan['pins']['sourceRenderSha256'],'preservation source render changed')
+    if allow_reader_degraded:
+        _require(baseline is not None and 1<=len(parent['completed'])<=8,'reader maintenance tolerance outside fenced handover')
+        flux=adapter._get(f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{kube.FLUX}/kustomizations/roebel-case-runtime')
+        _require(flux['metadata']['uid']==plan['identities']['reconcilerUid'] and flux['spec']['suspend'] is True,
+                 'reader maintenance tolerance requires the owned fence')
     def before_fence():
         source=adapter._get(f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/deployments/roebel-case-steward-control')
         flux=adapter._get(f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{kube.FLUX}/kustomizations/roebel-case-runtime')
@@ -2095,7 +2118,8 @@ def observe_review_public_preservation(root, plan, *, expected_plan_sha256, pare
         if desired['kind']=='Deployment':
             deployment=observed;status=observed.get('status',{})
             _require(status.get('observedGeneration')==observed['metadata']['generation'] and
-                     all(status.get(k,0)==1 for k in ('replicas','updatedReplicas','readyReplicas','availableReplicas')),'public reader deployment not ready')
+                     all(status.get(k,0)==1 for k in ('replicas','updatedReplicas')) and
+                     all(status.get(k,0) in ((0,1) if allow_reader_degraded else (1,)) for k in ('readyReplicas','availableReplicas')),'public reader deployment not ready')
     _require(deployment is not None and reader,'public reader inventory absent')
     def inventory(path):
         value=adapter._get(path)
@@ -2116,8 +2140,8 @@ def observe_review_public_preservation(root, plan, *, expected_plan_sha256, pare
         **copy.deepcopy(template['metadata']),'name':pod['metadata']['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
     storage._consumer_object(actual,wanted)
     _require(not pod['metadata'].get('deletionTimestamp') and pod.get('status',{}).get('phase')=='Running' and
-             any(c.get('type')=='Ready' and c.get('status')=='True' for c in pod['status'].get('conditions',[])) and
-             len(statuses)==1 and statuses[0].get('ready') is True and statuses[0].get('name')=='runtime' and
+             any(c.get('type')=='Ready' and c.get('status') in (('True','False') if allow_reader_degraded else ('True',)) for c in pod['status'].get('conditions',[])) and
+             len(statuses)==1 and type(statuses[0].get('ready')) is bool and (statuses[0]['ready'] or allow_reader_degraded) and statuses[0].get('name')=='runtime' and
              type(statuses[0].get('restartCount')) is int and statuses[0]['restartCount']>=0,'public reader Pod not ready')
     image=deployment['spec']['template']['spec']['containers'][0]['image']
     _require(statuses[0].get('imageID','').removeprefix('containerd://').removeprefix('docker-pullable://').split('@')[-1]==image.split('@')[-1], 'public reader image changed')
@@ -2134,3 +2158,558 @@ def observe_review_public_preservation(root, plan, *, expected_plan_sha256, pare
         prior=_worker_lifecycle_receipt(baseline,expected_baseline_sha256)
         _require(prior==record,'public workloads or retained tracer changed during migration')
     return record|{'canonicalSha256':canonical_sha256(record)}
+
+
+class ReviewHandoverDriver:
+    """Connect every handover stage through one owned, recoverable journal.
+
+    The journal records the next child checkpoint before invoking that child.
+    A restarted process reads that checkpoint, including a lost response, and
+    resumes the same operation with its original parent intent. Observation is
+    read-only; only resume/perform may advance an incomplete operation. Concrete
+    checks and transports remain mandatory and are shared across all stages.
+    """
+    CHILDREN={'fence','initializer','worker-create','verify-backup','prepare-migration',
+              'activate-migration','worker-retire','start','restart','restore'}
+
+    def __init__(self, root, plan, candidate, *, expected_plan_sha256, storage_plan,
+            initialization_plan, initialization_receipt, node_name, transport,
+            worker_transport_factory, checks, backup_options, artifact_directory,
+            sink, target_checkout=None, expected_target_revision=None, prior=None,
+            expected_prior_sha256=None, clock=None):
+        import os,stat
+        from pathlib import Path
+        validate_plan(plan,expected_plan_sha256)
+        directory=Path(artifact_directory);info=os.lstat(directory)
+        _require(directory.is_absolute() and directory.resolve()==directory and stat.S_ISDIR(info.st_mode) and
+                 stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'driver requires owned private directory')
+        storage._initialization_plan(initialization_plan,storage_plan,initialization_plan['planSha256'])
+        initialized=storage._pinned_receipt(initialization_receipt,plan['pins']['initializationReceiptSha256'])
+        _require(initialized.get('status')=='verified' and initialized.get('planSha256')==initialization_plan['planSha256'] and
+                 initialized.get('podUid')==plan['identities']['initializerPodUid'],'driver initializer receipt changed')
+        worker=compile_migration_worker(root,plan,expected_plan_sha256=expected_plan_sha256,candidate=candidate,
+            expected_candidate_sha256=candidate['candidateSha256'],node_name=node_name)
+        for method in ('verify_ready','observe_release','verify_complete'):
+            _require(callable(getattr(checks,method,None)),'driver concrete readiness implementation incomplete')
+        _require(callable(worker_transport_factory),'driver worker transport absent')
+        self.root,self.plan,self.candidate=root,copy.deepcopy(plan),copy.deepcopy(candidate)
+        self.storage_plan,self.initialization_plan,self.initialization_receipt=storage_plan,initialization_plan,initialization_receipt
+        self.worker,self.transport,self.worker_transport_factory=worker,transport,worker_transport_factory
+        self.checks,self.backup_options,self.directory,self.sink=checks,backup_options,directory,sink
+        self.target_checkout,self.expected_target_revision=target_checkout,expected_target_revision
+        self.clock=clock or (lambda:datetime.now(timezone.utc))
+        initial={'schemaVersion':'roebel_review_driver_v1','planSha256':expected_plan_sha256,
+                 'candidateSha256':candidate['candidateSha256'],'workerSha256':worker['workerSha256'],
+                 'artifactDirectory':str(directory),'previousReceiptSha256':None,'parent':None,'children':{},'releases':{},'publicBaseline':None}
+        self.journal=copy.deepcopy(initial)
+        if prior is not None:
+            self.journal=_worker_lifecycle_receipt(prior,expected_prior_sha256)
+            _closed(self.journal,initial,'driver recovery shape changed')
+            _require(all(self.journal[k]==initial[k] for k in ('schemaVersion','planSha256','candidateSha256','workerSha256','artifactDirectory')) and
+                     isinstance(self.journal['children'],dict) and set(self.journal['children'])<=self.CHILDREN and
+                     isinstance(self.journal['releases'],dict) and set(self.journal['releases'])<={'source','migration'},'driver recovery inputs changed')
+            self.journal['previousReceiptSha256']=expected_prior_sha256
+            for ref in self.journal['children'].values():self._read(ref)
+            if self.journal['parent'] is not None:self._read(self.journal['parent'])
+        else:_require(expected_prior_sha256 is None,'driver orphan recovery pin')
+        self._commit()
+
+    def _commit(self):
+        self.sink.commit(copy.deepcopy(self.journal))
+
+    def _read(self,ref):
+        _closed(ref,{'file','prior','parentIntent'},'driver checkpoint reference changed')
+        _require(isinstance(ref['file'],str) and re.fullmatch('[0-9a-f]{32}-checkpoint.json',ref['file']),'driver checkpoint path changed')
+        try:value=json.loads(_review_private_bytes(self.directory/ref['file']))
+        except Exception:raise BootstrapStopped('owned driver checkpoint is missing or unreadable; preserve state') from None
+        body=_worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+        previous=ref['prior']
+        if previous is not None:_worker_lifecycle_receipt(previous,previous.get('canonicalSha256'))
+        _require(body.get('planSha256')==self.plan['planSha256'] and
+                 body.get('previousReceiptSha256')==(previous['canonicalSha256'] if previous else None),'driver child predecessor changed')
+        return value
+
+    def _allocate(self,prior,parent):
+        import secrets
+        return {'file':secrets.token_hex(16)+'-checkpoint.json','prior':copy.deepcopy(prior),'parentIntent':copy.deepcopy(parent)}
+
+    def _child(self,name,parent,invoke):
+        from .staging_participant_flux_bootstrap import ReceiptSink
+        _require(name in self.CHILDREN,'driver child outside inventory')
+        ref=self.journal['children'].get(name);previous=None
+        if ref is not None:
+            previous=self._read(ref);original=ref['parentIntent']
+            before=_state(self.plan,original,original.get('canonicalSha256'))
+            current=_state(self.plan,parent,parent.get('canonicalSha256'))
+            _require(before['completed']==current['completed'] and before['pending']==current['pending'],'driver child parent changed')
+            parent=original
+        ref=self._allocate(previous,parent);self.journal['children'][name]=ref;self._commit()
+        output=ReceiptSink.reserve(self.directory/ref['file'])
+        invoke(parent,output,previous)
+        return self._read(ref)
+
+    def child(self,name):
+        ref=self.journal['children'].get(name)
+        return self._read(ref) if ref is not None else None
+
+    def _result(self,stage,mode):
+        receipt=self.child(stage)
+        _require(receipt is not None and receipt['status']=='complete','driver migration input incomplete')
+        command=receipt['commands'][mode]
+        _require(re.fullmatch('[0-9a-f]{32}-worker.json',command['receiptFile']),'driver worker checkpoint path changed')
+        child=json.loads(_review_private_bytes(self.directory/command['receiptFile']))
+        _worker_lifecycle_receipt(child,child.get('canonicalSha256'))
+        artifact=child['artifacts']['result']
+        _require(re.fullmatch('[0-9a-f]{32}-result.private',artifact['name']),'driver migration result path changed')
+        return json.loads(_review_private_bytes(self.directory/artifact['name'],expected_sha256=artifact['sha256'],expected_size=artifact['bytes']))
+
+    def verify_ready(self,plan,state):
+        _require(plan==self.plan,'driver plan changed')
+        _require(_utc(plan['notBeforeUtc'])<=self.clock()<_utc(plan['expiresAtUtc']),'driver handover window closed')
+        self.checks.verify_ready(plan,state,self)
+
+    def _release(self,side,parent,pod_uid=None):
+        proof=self.checks.observe_release(self.plan,parent,self,pod_uid)
+        if proof is not None:
+            _worker_lifecycle_receipt(proof,proof.get('canonicalSha256'))
+            _require(proof.get('planSha256')==self.plan['planSha256'],'driver mount proof changed')
+            self.journal['releases'][side]=copy.deepcopy(proof);self._commit()
+        return proof
+
+    def observe(self,plan,step,state):
+        _require(plan==self.plan and step in STEPS,'driver observation outside plan')
+        if step in ('verify-backup','prepare-migration','activate-migration'):
+            value=self.child(step)
+            if value is None or value['status']!='complete':return None
+            return observe_review_migration_stage(plan,self.initialization_plan['targetBinding'],expected_plan_sha256=plan['planSha256'],
+                receipt=value,expected_receipt_sha256=value['canonicalSha256'],
+                captured=self._result('verify-backup','capture-backup') if step!='verify-backup' else None,
+                prepared=self._result('prepare-migration','prepare') if step=='activate-migration' else None,
+                backup_options=self.backup_options if step=='verify-backup' else None)
+        if step in ('release-mounts','release-migration'):
+            side='source' if step=='release-mounts' else 'migration'
+            value=self.journal['releases'].get(side)
+            child=self.child('initializer' if side=='source' else 'worker-retire')
+            if value is None or child is None or child['status']!=('api-absent' if side=='source' else 'retired'):return None
+            _worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+            if side=='migration':_require(child['releaseReceiptSha256']==value['canonicalSha256'],'driver worker release link changed')
+            return value['evidence']|{'receiptSha256':value['canonicalSha256']}
+        name={'fence-source':'fence','start-review-runtime':'start','verify-review-runtime':'restart','restore-gitops':'restore'}[step]
+        value=self.child(name)
+        if value is None or value['status']!=('source-fenced' if name=='fence' else 'complete'):return None
+        if name=='fence':
+            _require(len(value['changes'])==2 and all(r['observedResourceVersion'] for r in value['changes']),'driver fence incomplete')
+            return {'sourceDeploymentUid':plan['identities']['sourceDeploymentUid'],'reconcilerUid':plan['identities']['reconcilerUid'],
+                    'sourceReplicas':0,'reconcilerSuspended':True,'receiptSha256':value['canonicalSha256']}
+        return copy.deepcopy(value['evidence'])
+
+    def perform(self,plan,step,state):
+        _require(not any(ref['parentIntent'] and ref['parentIntent']['pending']==step for ref in self.journal['children'].values()),
+                 'driver stage already has a child; recover its parent instead')
+        self.resume(plan,step,state)
+
+    def resume(self,plan,step,state):
+        _require(plan==self.plan and state['pending']==step and len(state['completed'])==STEPS.index(step),'driver resume stage changed')
+        self.verify_ready(plan,state)
+        parent=copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+        def ready(*unused):self.verify_ready(plan,state)
+        def run(name,function,**arguments):
+            return self._child(name,parent,lambda original,sink,prior:function(
+                expected_plan_sha256=plan['planSha256'],parent_receipt=original,expected_parent_sha256=original['canonicalSha256'],
+                sink=sink,prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,verify_ready=ready,**arguments))
+        common={'root':self.root,'plan':plan,'transport':self.transport}
+        if step=='fence-source':
+            run('fence',advance_source_fence,**common,clock=self.clock)
+        elif step=='release-mounts':
+            receipt=run('initializer',advance_initializer_retirement,**common,initialization_plan=self.initialization_plan,
+                storage_plan=self.storage_plan,initialization_receipt=self.initialization_receipt,
+                expected_initialization_receipt_sha256=plan['pins']['initializationReceiptSha256'],clock=self.clock)
+            if receipt['status']=='api-absent':self._release('source',parent)
+        elif step in ('verify-backup','prepare-migration','activate-migration'):
+            if step=='verify-backup':
+                created=self.child('worker-create')
+                if created is None or created['status']!='ready':
+                    created=run('worker-create',advance_worker_lifecycle,**common,worker=self.worker,candidate=self.candidate,
+                        expected_worker_sha256=self.worker['workerSha256'],operation='create',observe_release=lambda uid:None,clock=self.clock)
+                if created['status']!='ready':return
+            created=self.child('worker-create');_require(created and created['status']=='ready','driver lacks owned migration worker')
+            worker=self.worker_transport_factory(created['records']['pod']['uid'],ready)
+            run(step,advance_review_migration_stage,plan=plan,target_binding=self.initialization_plan['targetBinding'],transport=worker,
+                artifact_directory=self.directory,captured=self._result('verify-backup','capture-backup') if step!='verify-backup' else None,
+                prepared=self._result('prepare-migration','prepare') if step=='activate-migration' else None,
+                backup_options=self.backup_options if step=='verify-backup' else None,clock=self.clock)
+        elif step=='release-migration':
+            created=self.child('worker-create');_require(created is not None,'driver worker creation receipt missing')
+            run('worker-retire',advance_worker_lifecycle,**common,worker=self.worker,candidate=self.candidate,
+                expected_worker_sha256=self.worker['workerSha256'],operation='retire',creation_receipt=created,
+                expected_creation_sha256=created['canonicalSha256'],observe_release=lambda uid:self._release('migration',parent,uid),clock=self.clock)
+        else:
+            def complete(p,original,child):return self.checks.verify_complete(p,original,child,self)
+            common.update(candidate=self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],clock=self.clock,verify_complete=complete)
+            if step=='verify-review-runtime':run('restart',advance_review_runtime_restart,**common)
+            else:run('start' if step=='start-review-runtime' else 'restore',advance_review_runtime_transition,**common,
+                operation='start' if step=='start-review-runtime' else 'restore',target_checkout=self.target_checkout,expected_target_revision=self.expected_target_revision)
+
+    def advance(self):
+        """Advance/resume the parent using the newest owned checkpoint."""
+        from .staging_participant_flux_bootstrap import ReceiptSink
+        ref=self.journal['parent'];prior=self._read(ref) if ref else None
+        ref=self._allocate(prior,None);self.journal['parent']=ref;self._commit()
+        output=ReceiptSink.reserve(self.directory/ref['file'])
+        advance_review_handover(self.plan,expected_plan_sha256=self.plan['planSha256'],adapter=self,sink=output,
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=self.clock)
+        return self._read(ref)
+
+
+class TalosReviewMountObserver:
+    """Two fixed Talos filesystem reads on the separately pinned worker node.
+
+    run(command) is the existing executable-bound Talos session, with its fixed
+    endpoint, node IP, private configuration and transport environment. The
+    Kubernetes node identity/IP is checked on both sides of the host reads.
+    """
+    def __init__(self, *, transport, run, node_name, node_uid, node_ip):
+        import ipaddress
+        _require(isinstance(node_name,str) and re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}',node_name) and
+                 UUID.fullmatch(node_uid) and ipaddress.ip_address(node_ip).version==4,'mount observer node binding invalid')
+        self.transport,self.run,self.node_name,self.node_uid,self.node_ip=transport,run,node_name,node_uid,node_ip
+    def __call__(self,node_name,node_uid):
+        _require((node_name,node_uid)==(self.node_name,self.node_uid),'mount observer target changed')
+        def node():
+            value=self.transport.request('GET','/api/v1/nodes/'+node_name,None)
+            _require(value and value.get('metadata',{}).get('uid')==node_uid and not value['metadata'].get('deletionTimestamp') and
+                     [a.get('address') for a in value.get('status',{}).get('addresses',[]) if a.get('type')=='InternalIP']==[self.node_ip], 'mount observer node identity/IP changed')
+        def read(command):
+            value=self.run(command)
+            _require(isinstance(value,str) and 0<len(value.encode())<=4*1024*1024,'mount observer response empty or oversized')
+            return value
+        node();mounts=read(['read','/proc/1/mountinfo']);listing=read(['ls','/var/lib/kubelet/pods'])
+        rows=listing.splitlines();_require(rows and rows[0].split()==['NODE','NAME'],'mount observer listing header changed')
+        names=[];root=False
+        for row in rows[1:]:
+            if not row.strip():continue
+            parts=row.split();_require(len(parts)==2 and parts[0]==self.node_ip,'mount observer listing is mixed or incomplete')
+            name=parts[1]
+            if name=='.':_require(not root,'mount observer duplicate directory root');root=True
+            else:_require(POD_DIRECTORY_NAME.fullmatch(name) and name not in names,'mount observer directory entry invalid');names.append(name)
+        _require(root and len(names)<=10000,'mount observer root absent');node()
+        return {'mountInfo':mounts,'podDirectoryNames':names}
+
+
+REVIEW_RUNTIME_READ_JS = r"""
+import fs from 'node:fs';import http from 'node:http';import crypto from 'node:crypto';import net from 'node:net';
+const digest=b=>'sha256:'+crypto.createHash('sha256').update(b).digest('hex');
+const canonical=v=>JSON.stringify(v&&typeof v==='object'?Array.isArray(v)?v.map(x=>JSON.parse(canonical(x))):Object.fromEntries(Object.keys(v).sort().map(k=>[k,JSON.parse(canonical(v[k]))])):v);
+const request=(port,path,host,authorization)=>new Promise((resolve,reject)=>{
+ const q=http.request({hostname:'127.0.0.1',port,path,method:'GET',headers:{host,...(authorization?{authorization}:{})},timeout:10000},r=>{
+  let bytes=0,chunks=[];r.on('data',c=>{bytes+=c.length;if(bytes>262144){r.destroy();reject(Error());}else chunks.push(c);});
+  r.on('end',()=>resolve({status:r.statusCode,body:Buffer.concat(chunks).toString('utf8')}));r.on('error',reject);
+ });q.on('timeout',()=>q.destroy(Error()));q.on('error',reject);q.end();
+});
+try{
+ const input=fs.readFileSync(0);if(input.length>4096)throw Error();const pins=JSON.parse(input);
+ const fd=fs.openSync('/run/stadtstack-control/private/application.json',fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);let raw;
+ try{const st=fs.fstatSync(fd);if(!st.isFile()||st.uid!==1000||st.nlink!==1||(st.mode&0o7777)!==0o600||st.size>1048576)throw Error();raw=fs.readFileSync(fd);}finally{fs.closeSync(fd);}
+ if(digest(raw)!==pins.configurationSha256)throw Error();const config=JSON.parse(raw);
+ const health=await request(18088,'/readyz',config.probeAllowedHosts[0]);if(health.status!==200||health.body!=='ok\n')throw Error();
+ const admission=await request(18085,'/v1/nostr/suggestions/admit',config.admissionAllowedHosts[0]);if(admission.status!==405)throw Error();
+ await new Promise((resolve,reject)=>{const socket=net.connect({host:'127.0.0.1',port:18087});socket.setTimeout(10000);socket.once('connect',()=>{socket.destroy();resolve();});socket.once('error',reject);socket.once('timeout',()=>{socket.destroy();reject(Error());});});
+ const grants=config.administrationReview.grants;const admins=grants.filter(g=>g.actor.actorClass==='administration');if(admins.length!==1)throw Error();
+ const response=await request(18090,'/v1/staging/administration/review',config.administrationReview.allowedHosts[0],'Bearer '+admins[0].token);
+ if(response.status!==200)throw Error();const view=JSON.parse(response.body);
+ if(view.schemaVersion!=='administration_case_view_v1'||view.caseId!==pins.caseId||view.caseVersion!==3||view.caseKind!=='synthetic_case'||view.testOnly!==true||view.authorityBinding!=='none'||view.actingAs.actorClass!=='administration'||!Array.isArray(view.departmentPackages))throw Error();
+ process.stdout.write(JSON.stringify({schemaVersion:'roebel_review_runtime_http_observation_v1',caseId:view.caseId,caseVersion:view.caseVersion,
+  configurationSha256:pins.configurationSha256,allFourListenersReady:true,administrationViewSha256:digest(canonical(view)),departmentPackageCount:view.departmentPackages.length}));
+}catch{process.stderr.write('review runtime read verification unavailable\n');process.exitCode=1;}
+"""
+
+
+class KubectlReviewHandoverTransport:
+    """Compose the existing bounded mutation transports, plus fixed read probes."""
+    def __init__(self,root,plan,candidate,worker,initialization_plan,*,runner,snapshot):
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        self.root,self.plan,self.runner,self.snapshot=root,plan,runner,snapshot
+        self.base=['kubectl','--kubeconfig',str(snapshot.path),'--request-timeout=20s']
+        self.read=kube.KubectlTransport(runner,snapshot,core.build_plan(root))
+        self.worker=KubectlWorkerLifecycleTransport(worker,runner=runner,snapshot=snapshot)
+        self.transitions={op:KubectlReviewTransitionTransport(root,plan,candidate,expected_candidate_sha256=candidate['candidateSha256'],operation=op,runner=runner,snapshot=snapshot) for op in ('start','restore')}
+        self.initializer_path=f"/api/v1/namespaces/{kube.NAMESPACE}/pods/{initialization_plan['pod']['metadata']['name']}"
+        self.observed={}
+    def request(self,method,path,payload):
+        from . import case_runtime_kubernetes as kube
+        if method=='GET':
+            result=self.read.request(method,path,payload);self.observed[path]=copy.deepcopy(result)
+            self.worker.observed[path]=copy.deepcopy(result)
+            for item in self.transitions.values():item.observed[path]=copy.deepcopy(result)
+            return result
+        if method=='POST':
+            if path in self.worker.collections.values() and payload in self.worker.worker.values():return self.worker.request(method,path,payload)
+            return self.transitions['start'].request(method,path,payload)
+        if method=='DELETE':
+            if path!=self.initializer_path:return self.worker.request(method,path,payload)
+            before=self.observed.get(path);_require(before is not None,'initializer delete lacks observation')
+            identity=storage._identity(before)
+            _require(identity['uid']==self.plan['identities']['initializerPodUid'] and payload=={'apiVersion':'v1','kind':'DeleteOptions','preconditions':identity},'initializer delete target changed')
+            result=self.runner.run(self.base+['delete','--raw',path,'-f','-'],input_text=json.dumps(payload,separators=(',',':')),timeout=25)
+        elif method=='PATCH' and payload[-1]['path'] in ('/spec/suspend','/spec/replicas'):
+            field=payload[-1]['path'].rsplit('/',1)[-1];current=self.observed.get(path)
+            names={'suspend':('kustomization','roebel-case-runtime',kube.FLUX,'reconcilerUid',False,True),
+                   'replicas':('deployment','roebel-case-steward-control',kube.NAMESPACE,'sourceDeploymentUid',1,0)}
+            kind,name,namespace,key,before,after=names[field]
+            expected_path=(f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{namespace}/kustomizations/' if field=='suspend' else f'/apis/apps/v1/namespaces/{namespace}/deployments/')+name
+            _require(path==expected_path and current is not None,'source fence target changed');identity=storage._identity(current)
+            _require(identity['uid']==self.plan['identities'][key] and payload==[
+                {'op':'test','path':'/metadata/uid','value':identity['uid']},{'op':'test','path':'/metadata/resourceVersion','value':identity['resourceVersion']},
+                {'op':'test','path':'/spec/'+field,'value':before},{'op':'replace','path':'/spec/'+field,'value':after}], 'source fence patch changed')
+            result=self.runner.run(self.base+['patch',kind,name,'-n',namespace,'--type=json','-p',json.dumps(payload,separators=(',',':')),'-o','json'],timeout=25)
+        elif method=='PATCH':return self.transitions['restore' if path in self.transitions['restore'].paths else 'start'].request(method,path,payload)
+        else:raise BootstrapStopped('handover transport operation outside inventory')
+        _require(result.code==0 and len(result.out.encode())<=4*1024*1024,'handover mutation outcome unresolved')
+        try:return json.loads(result.out)
+        except Exception:raise BootstrapStopped('handover mutation response invalid') from None
+    def exec_pod(self,*args):return self.read.exec_pod(*args)
+    def exec_case_request(self,*args):return self.read.exec_case_request(*args)
+    def observe_review_http(self,pod):
+        from . import case_runtime_kubernetes as kube
+        path=f"/api/v1/namespaces/{kube.NAMESPACE}/pods/{pod['podName']}"
+        def bound():
+            current=self.request('GET',path,None)
+            _require(current and current.get('metadata',{}).get('uid')==pod['podUid'] and not current['metadata'].get('deletionTimestamp') and
+                     current['status']['containerStatuses'][0].get('containerID')==pod['containerId'],'review HTTP Pod changed')
+        bound();pins={'caseId':self.plan['caseId'],'configurationSha256':self.plan['pins']['targetConfigurationSha256']}
+        result=self.runner.run(self.base+['exec','-i','-n',kube.NAMESPACE,pod['podName'],'-c','runtime','--','node','--input-type=module','-e',REVIEW_RUNTIME_READ_JS],
+            input_text=json.dumps(pins,separators=(',',':')),timeout=55)
+        bound();_require(result.code==0 and len(result.out.encode())<=4096,'review HTTP observation unavailable')
+        try:value=json.loads(result.out)
+        except Exception:raise BootstrapStopped('review HTTP observation invalid') from None
+        _closed(value,{'schemaVersion','caseId','caseVersion','configurationSha256','allFourListenersReady','administrationViewSha256','departmentPackageCount'},'review HTTP evidence changed')
+        _require(value['schemaVersion']=='roebel_review_runtime_http_observation_v1' and value['caseId']==pins['caseId'] and
+                 value['configurationSha256']==pins['configurationSha256'] and value['caseVersion']==3 and value['allFourListenersReady'] is True and
+                 type(value['departmentPackageCount']) is int and value['departmentPackageCount']>=0,'review HTTP identity changed')
+        _sha(value['administrationViewSha256']);return value
+
+
+class ReviewLiveChecks:
+    """Shared live preflight and completion checks for the integrated driver.
+
+    Full preservation/configuration checks run at every parent state boundary
+    and again before completion. Between a child's guarded writes, the exact
+    writer/reconciler state and time window are still checked on every call.
+    Child transports additionally check their own UID/RV, storage and exec
+    ownership. No success stubs, application mutations or credential exports.
+    """
+    def __init__(self, root, plan, candidate, *, adapter, node_filesystem,
+            source_fd, target_fd, source_configuration_receipt,
+            expected_source_configuration_receipt_sha256, target_configuration_receipt,
+            admission_receipt, clock=None):
+        from . import case_runtime_bootstrap as core, case_runtime_admission as admission, case_runtime_saved_adoption as saved
+        validate_plan(plan,plan['planSha256'])
+        _require(candidate['resources']==admission.review_resources(core._verifier(),root),'live driver successor is not independently admitted')
+        _require(canonical_sha256({k:v for k,v in candidate.items() if k!='candidateSha256'})==candidate['candidateSha256'] and
+                 candidate['sourceRenderSha256']==plan['pins']['sourceRenderSha256'] and candidate['targetRenderSha256']==plan['pins']['targetRenderSha256'], 'live driver candidate pin changed')
+        self.root,self.plan,self.candidate,self.adapter=root,plan,candidate,adapter
+        self.transport,self.node_filesystem=adapter.transport,node_filesystem
+        self.source_fd,self.target_fd=source_fd,target_fd
+        self.source_receipt,self.source_receipt_pin=source_configuration_receipt,expected_source_configuration_receipt_sha256
+        self.target_receipt=target_configuration_receipt
+        self.admission=saved.check_receipt(copy.deepcopy(admission_receipt))
+        _require(self.admission['receiptChecksum']==plan['pins']['admissionReceiptChecksum'] and self.admission['caseId']==plan['caseId'] and self.admission['caseVersion']==3,'live driver original Case changed')
+        self.clock=clock or (lambda:datetime.now(timezone.utc));self.last_boundary=None
+        self.source=core.build_plan(root)
+
+    def _objects(self,parent,driver):
+        from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
+        completed=len(parent['completed']);pending=parent['pending'];plan=self.plan
+        def get(desired):return self.transport.request('GET',kube.resource_path(core.target(desired)),None)
+        source=next(r['desired'] for r in self.source['objects'] if r['target']['kind']=='Deployment' and r['target']['name']=='roebel-case-steward-control')
+        current=get(source);_require(current and current['metadata'].get('uid')==plan['identities']['sourceDeploymentUid'],'live driver writer replaced')
+        start=driver.child('start');start_intent=bool(start and any(r['step']==_review_transition_changes(self.root,plan,self.candidate,self.candidate['candidateSha256'],'start')[-1][0] for r in start['changes']))
+        if completed>=7 or start_intent:
+            target=next(o for o in self.candidate['resources']['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')
+            if completed<7 and current['spec']['replicas']==0:
+                expected=copy.deepcopy(source);expected['spec']['replicas']=0
+            else:expected=target
+        else:
+            expected=copy.deepcopy(source)
+            if completed or (driver.child('fence') and any(r['step']=='scale-zero' for r in driver.child('fence')['changes'])):
+                expected['spec']['replicas']=current['spec']['replicas'] if not completed else 0
+                _require(type(expected['spec']['replicas']) is int and expected['spec']['replicas'] in (0,1),'live driver invalid source scale')
+        _review_transition_exact(current,expected)
+        flux=copy.deepcopy(self.source['objects'][-1]['desired']);observed=get(flux)
+        _require(observed and observed['metadata'].get('uid')==plan['identities']['reconcilerUid'],'live driver reconciler replaced')
+        fence=driver.child('fence');restore=driver.child('restore')
+        restore_intent=bool(restore and restore['changes'])
+        allowed=[False] if not fence or not fence['changes'] else [False,True] if completed==0 or restore_intent else [True]
+        if completed==9:allowed=[False]
+        suspend=observed.get('spec',{}).get('suspend')
+        _require(type(suspend) is bool and suspend in allowed,'live driver reconciler fence changed')
+        flux['spec']['suspend']=suspend;_review_transition_exact(observed,flux)
+        if completed and completed<8:_require(suspend is True,'live driver lost source fence')
+        return current,observed
+
+    def _stores(self,driver):
+        from . import case_runtime_kubernetes as kube
+        storage._source(driver.storage_plan,self.transport)
+        for side,name in (('source',driver.storage_plan['source']['pvcName']),('target',storage.TARGET_NAME)):
+            claim=self.transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/persistentvolumeclaims/{name}',None)
+            _require(claim and storage._identity(claim)['uid']==self.plan['identities'][side+'PvcUid'] and
+                     claim.get('status',{}).get('phase')=='Bound' and claim['spec'].get('accessModes')==['ReadWriteOncePod'],'live driver retained claim changed')
+            volume=self.transport.request('GET','/api/v1/persistentvolumes/'+claim['spec']['volumeName'],None)
+            _require(volume and storage._identity(volume)['uid']==self.plan['identities'][side+'PvUid'] and
+                     volume['spec'].get('persistentVolumeReclaimPolicy')=='Retain' and volume['spec'].get('claimRef',{}).get('uid')==claim['metadata']['uid'],'live driver retained volume changed')
+            if side=='target':
+                storage._claim(claim,driver.storage_plan['target'],owned=True);storage._volume(driver.storage_plan,claim,volume)
+        pods=self.transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/pods',None)
+        _require(pods and isinstance(pods.get('items'),list) and not pods.get('metadata',{}).get('continue') and pods.get('metadata',{}).get('remainingItemCount') in (None,0),'live driver Pod inventory incomplete')
+        owned={self.plan['identities']['sourcePodUid'],self.plan['identities']['initializerPodUid']}
+        created=driver.child('worker-create')
+        if created:
+            record=created['records'].get('pod')
+            if record and record.get('uid'):owned.add(record['uid'])
+            elif record:
+                matching=[p for p in pods['items'] if p['metadata']['name']==driver.worker['pod']['metadata']['name']]
+                for pod in matching:owned.add(storage._consumer_object(pod,driver.worker['pod'])['uid'])
+        start=driver.child('start')
+        start_intent=bool(start and any(r['step']==_review_transition_changes(self.root,self.plan,self.candidate,self.candidate['candidateSha256'],'start')[-1][0] for r in start['changes']))
+        # Validate successor ownership and complete template even while Pending.
+        # Readiness is a separate completion gate, never an ownership shortcut.
+        for pod in pods['items']:
+            claims={v.get('persistentVolumeClaim',{}).get('claimName') for v in pod.get('spec',{}).get('volumes',[])}
+            if not claims & {driver.storage_plan['source']['pvcName'],storage.TARGET_NAME}:continue
+            if pod['metadata']['uid'] in owned:continue
+            _require(start_intent and claims=={storage.TARGET_NAME},'unexpected retained-volume consumer')
+            sets=self.transport.request('GET',f'/apis/apps/v1/namespaces/{kube.NAMESPACE}/replicasets',None)
+            _require(sets and isinstance(sets.get('items'),list) and not sets.get('metadata',{}).get('continue') and sets.get('metadata',{}).get('remainingItemCount') in (None,0),'review consumer owner inventory incomplete')
+            owners=[o for o in pod['metadata'].get('ownerReferences',[]) if o.get('controller') is True]
+            _require(len(owners)==1,'review consumer controller ambiguous')
+            selected=[r for r in sets['items'] if r['metadata'].get('uid')==owners[0].get('uid') and not r['metadata'].get('deletionTimestamp') and
+                      any(o.get('controller') is True and o.get('uid')==self.plan['identities']['sourceDeploymentUid'] for o in r['metadata'].get('ownerReferences',[]))]
+            _require(len(selected)==1,'review consumer ReplicaSet changed')
+            actual=copy.deepcopy(pod);actual['metadata'].pop('ownerReferences');pod_hash=actual['metadata'].get('labels',{}).pop('pod-template-hash',None)
+            _require(isinstance(pod_hash,str) and selected[0]['metadata'].get('labels',{}).get('pod-template-hash')==pod_hash,'review consumer hash changed')
+            template=next(o for o in self.candidate['resources']['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')['spec']['template']
+            wanted={'apiVersion':'v1','kind':'Pod','metadata':{**copy.deepcopy(template['metadata']),'name':pod['metadata']['name'],'namespace':kube.NAMESPACE},'spec':copy.deepcopy(template['spec'])}
+            storage._consumer_object(actual,wanted)
+
+    def _public(self,driver):
+        from . import case_runtime_kubernetes as kube,case_runtime_saved_adoption as saved
+        baseline=driver.journal['publicBaseline'];identity=baseline['snapshot']['publicReaderPod']['uid']
+        pods=self.transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/pods',None)
+        selected=[p for p in pods['items'] if p['metadata'].get('uid')==identity]
+        _require(len(selected)==1,'public reader observation lost')
+        response=self.transport.exec_case_request(selected[0]['metadata']['name'],identity,'public')
+        _require(response.get('found') is True and saved.check_receipt(response.get('receipt'))==self.admission,'original public Case admission changed')
+
+    def verify_ready(self,plan,parent,driver):
+        _require(plan==self.plan and _utc(plan['notBeforeUtc'])<=self.clock()<_utc(plan['expiresAtUtc']),'live driver input or window changed')
+        boundary=(len(parent['completed']),parent['pending'],parent['status'])
+        if boundary==self.last_boundary:
+            self._objects(parent,driver);return
+        verify_review_implementation(self.root,plan)
+        verify_review_gitops_checkout(self.root,plan,self.candidate,target_checkout=driver.target_checkout,
+            expected_target_revision=driver.expected_target_revision)
+        self._objects(parent,driver)
+        from . import case_runtime_bootstrap as core,case_runtime_admission as admission
+        core._verifier().verify_tree(self.root)
+        _require(admission.review_resources(core._verifier(),self.root)==self.candidate['resources'],'admitted successor changed')
+        receipt=parent|{'canonicalSha256':canonical_sha256(parent)}
+        baseline=driver.journal['publicBaseline']
+        if baseline is None:
+            # The complete driver must already be the main revision observed
+            # by Flux. Local compilation alone cannot authorize source fencing.
+            self.adapter.verify_preconditions(self.source,require_secret=False)
+            ids=plan['identities'];pods=self.transport.request('GET','/api/v1/pods',None)
+            _require(pods and isinstance(pods.get('items'),list) and not pods.get('metadata',{}).get('continue') and
+                     pods.get('metadata',{}).get('remainingItemCount') in (None,0),'preflight Pod inventory incomplete')
+            for identity in ('sourcePodUid','mountObserverPodUid'):
+                selected=[p for p in pods['items'] if p['metadata'].get('uid')==ids[identity]]
+                _require(len(selected)==1 and selected[0].get('spec',{}).get('nodeName')==driver.worker['nodeName'] and
+                         not selected[0]['metadata'].get('deletionTimestamp') and selected[0].get('status',{}).get('phase')=='Running' and
+                         any(c.get('type')=='Ready' and c.get('status')=='True' for c in selected[0]['status'].get('conditions',[])),
+                         'preflight source or mount control is unavailable')
+            view=self.node_filesystem(driver.worker['nodeName'],ids['nodeUid'])
+            for identity in ('sourcePodUid','mountObserverPodUid'):
+                _require(ids[identity] in view['podDirectoryNames'] and
+                         re.search(re.escape('/var/lib/kubelet/pods/'+ids[identity])+r'(?:/|\s)',view['mountInfo']),
+                         'preflight host view does not prove source and control mounts')
+        proof=observe_review_public_preservation(self.root,plan,expected_plan_sha256=plan['planSha256'],parent_receipt=receipt,
+            expected_parent_sha256=receipt['canonicalSha256'],adapter=self.adapter,baseline=baseline,expected_baseline_sha256=baseline['canonicalSha256'] if baseline else None,
+            allow_reader_degraded=1<=len(parent['completed'])<=8 and self._objects(parent,driver)[1]['spec']['suspend'] is True)
+        if baseline is None:driver.journal['publicBaseline']=proof;driver._commit()
+        observe_review_configuration(plan,expected_plan_sha256=plan['planSha256'],source_fd=self.source_fd,target_fd=self.target_fd,
+            source_receipt=self.source_receipt,expected_source_receipt_sha256=self.source_receipt_pin,target_receipt=self.target_receipt,transport=self.transport,clock=self.clock)
+        self._stores(driver);self._public(driver);self.last_boundary=boundary
+
+    def observe_release(self,plan,parent,driver,pod_uid):
+        return observe_mount_release(self.root,plan,expected_plan_sha256=plan['planSha256'],transport=self.transport,
+            node_filesystem=self.node_filesystem,verify_ready=lambda p:self.verify_ready(p,{k:v for k,v in parent.items() if k!='canonicalSha256'},driver),migration_pod_uid=pod_uid)
+
+    def verify_complete(self,plan,parent,child,driver):
+        from . import case_runtime_kubernetes as kube
+        step=parent['pending'];plain={k:v for k,v in parent.items() if k!='canonicalSha256'}
+        self.last_boundary=None;self.verify_ready(plan,plain,driver)
+        pods=self.transport.request('GET',f'/api/v1/namespaces/{kube.NAMESPACE}/pods',None)
+        reader=[p for p in pods['items'] if p['metadata'].get('uid')==driver.journal['publicBaseline']['snapshot']['publicReaderPod']['uid']]
+        if len(reader)!=1 or not any(c.get('type')=='Ready' and c.get('status')=='True' for c in reader[0].get('status',{}).get('conditions',[])):return None
+        runtime=observe_review_runtime(self.root,plan,self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],transport=self.transport)
+        if runtime is None:return None
+        http=self.transport.observe_review_http(runtime);previous={r['step']:r['evidence'] for r in parent['completed']}
+        if step=='start-review-runtime':
+            evidence={k:plan['identities'][k] for k in ('sourceDeploymentUid','targetPvcUid','configurationSecretUid')}
+            evidence.update({k:plan['pins'][k] for k in ('targetBindingSha256','migrationImageDigest')});evidence['runtimePodUid']=runtime['podUid']
+        elif step=='verify-review-runtime':
+            _require(child.get('after')==runtime and child['after']['restartCount']==child['before']['restartCount']+1 and runtime['lastExitCode']==0,'live driver clean restart not proven')
+            evidence={'runtimePodUid':runtime['podUid'],'admissionReceiptChecksum':plan['pins']['admissionReceiptChecksum'],'allFourListenersReady':True,
+                'cleanRestartVerified':True,'sourceDatabaseSha256':previous['verify-backup']['sourceDatabaseSha256'],'publicServicesPreserved':True}
+        else:
+            _,flux=self._objects(plain,driver)
+            if flux.get('status',{}).get('lastAppliedRevision')!='main@sha1:'+driver.expected_target_revision or flux['metadata'].get('generation')!=flux.get('status',{}).get('observedGeneration') or not any(c.get('type')=='Ready' and c.get('status')=='True' for c in flux.get('status',{}).get('conditions',[])):return None
+            evidence={'reconcilerUid':plan['identities']['reconcilerUid'],'reconcilerSuspended':False,'targetRenderSha256':plan['pins']['targetRenderSha256'],
+                'reconciled':True,'sourceRetained':True,'targetRetained':True}
+        return evidence|{'receiptSha256':canonical_sha256({'evidence':evidence,'http':http,'publicBaselineSha256':driver.journal['publicBaseline']['canonicalSha256']})}
+
+
+def verify_review_implementation(root,plan):
+    """Bind the running driver to the explicitly pinned clean Operations tree."""
+    import subprocess
+    validate_plan(plan,plan['planSha256'])
+    def git(*args):
+        result=subprocess.run(['git','-C',str(root),*args],capture_output=True,text=True,timeout=15,check=False)
+        _require(result.returncode==0 and len(result.stdout.encode())<=4*1024*1024,'review implementation Git proof unavailable')
+        return result.stdout.strip()
+    _require(git('rev-parse','HEAD')==plan['pins']['operationsRevision'] and not git('status','--porcelain','--untracked-files=all') and
+             git('remote','get-url','origin')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git','review implementation is not the exact clean Operations checkout')
+    _require(canonical_sha256(git('ls-tree','-r','HEAD'))==plan['pins']['implementationSha256'],'review implementation tree pin changed')
+
+
+def create_review_handover_session(root, plan, candidate, *, runner, snapshot, talos_run,
+        storage_plan, initialization_plan, initialization_receipt, node_name, node_ip,
+        source_fd, target_fd, source_configuration_receipt, expected_source_configuration_receipt_sha256,
+        target_configuration_receipt, admission_receipt, backup_options, artifact_directory,
+        sink, target_checkout, expected_target_revision, prior=None, expected_prior_sha256=None, clock=None):
+    """Wire the admitted driver to an existing executable-bound private session.
+
+    Construction performs no cluster writes. Call verify_ready for a read-only
+    preflight, then advance for the separately authorized handover. The caller
+    owns transport/descriptor lifetime and retains the journal for recovery.
+    """
+    from . import case_runtime_kubernetes as kube
+    verify_review_implementation(root,plan)
+    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision)
+    worker=compile_migration_worker(root,plan,expected_plan_sha256=plan['planSha256'],candidate=candidate,
+        expected_candidate_sha256=candidate['candidateSha256'],node_name=node_name)
+    transport=KubectlReviewHandoverTransport(root,plan,candidate,worker,initialization_plan,runner=runner,snapshot=snapshot)
+    adapter=kube.KubernetesAdapter(root,plan['pins']['operationsRevision'],transport)
+    mount=TalosReviewMountObserver(transport=transport,run=talos_run,node_name=node_name,node_uid=plan['identities']['nodeUid'],node_ip=node_ip)
+    checks=ReviewLiveChecks(root,plan,candidate,adapter=adapter,node_filesystem=mount,source_fd=source_fd,target_fd=target_fd,
+        source_configuration_receipt=source_configuration_receipt,expected_source_configuration_receipt_sha256=expected_source_configuration_receipt_sha256,
+        target_configuration_receipt=target_configuration_receipt,admission_receipt=admission_receipt,clock=clock)
+    def worker_transport(identity,ready):
+        return KubectlReviewWorkerTransport(root,plan,worker,expected_plan_sha256=plan['planSha256'],expected_worker_sha256=worker['workerSha256'],
+            pod_uid=identity,runner=runner,snapshot=snapshot,verify_ready=ready,candidate=candidate,
+            expected_candidate_sha256=candidate['candidateSha256'],clock=clock)
+    return ReviewHandoverDriver(root,plan,candidate,expected_plan_sha256=plan['planSha256'],storage_plan=storage_plan,
+        initialization_plan=initialization_plan,initialization_receipt=initialization_receipt,node_name=node_name,transport=transport,
+        worker_transport_factory=worker_transport,checks=checks,backup_options=backup_options,artifact_directory=artifact_directory,
+        sink=sink,target_checkout=target_checkout,expected_target_revision=expected_target_revision,prior=prior,
+        expected_prior_sha256=expected_prior_sha256,clock=clock)
