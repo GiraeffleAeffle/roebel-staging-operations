@@ -1165,7 +1165,7 @@ def _review_transition_exact(observed, desired):
 def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sha256,
         expected_candidate_sha256, operation, parent_receipt, expected_parent_sha256,
         transport, sink, verify_ready, verify_complete, target_checkout=None, expected_target_revision=None,
-        prior=None, expected_prior_sha256=None, clock=None):
+        prior=None, expected_prior_sha256=None, clock=None, recovery_implementation=None):
     """Start the pinned successor or resume GitOps after parent runtime proof.
 
     Readiness must verify admission of this exact successor and preservation of
@@ -1207,7 +1207,7 @@ def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sh
         verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
         _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition readiness exceeded window')
         if operation=='restore':verify_review_gitops_target(root,plan,candidate,target_checkout=target_checkout,
-            expected_target_revision=expected_target_revision,transport=transport)
+            expected_target_revision=expected_target_revision,transport=transport,recovery_implementation=recovery_implementation)
         _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition source proof exceeded window')
     def commit(status):
         state['status']=status;sink.commit(copy.deepcopy(state))
@@ -1747,7 +1747,7 @@ def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, targe
         raise BootstrapStopped('live review configuration verification failed; retain the current handover state') from None
 
 
-def verify_review_gitops_checkout(root, plan, candidate, *, target_checkout, expected_target_revision):
+def verify_review_gitops_checkout(root, plan, candidate, *, target_checkout, expected_target_revision, recovery_implementation=None):
     """Prove the complete successor checkout before any source shutdown."""
     from pathlib import Path
     import subprocess
@@ -1760,7 +1760,10 @@ def verify_review_gitops_checkout(root, plan, candidate, *, target_checkout, exp
         result=subprocess.run(['git','-C',str(directory),*args],capture_output=True,text=True,timeout=15,check=False)
         _require(result.returncode==0 and len(result.stdout.encode())<=4*1024*1024,'target Operations Git proof unavailable')
         return result.stdout.strip()
-    _require(git(root,'rev-parse','HEAD')==plan['pins']['operationsRevision'],'implementation Operations revision changed')
+    if recovery_implementation is not None:
+        verify_review_implementation(root,plan,recovery_implementation=recovery_implementation)
+    else:
+        _require(git(root,'rev-parse','HEAD')==plan['pins']['operationsRevision'],'implementation Operations revision changed')
     _require(git(target,'rev-parse','HEAD')==expected_target_revision and not git(target,'status','--porcelain','--untracked-files=all') and
              git(target,'remote','get-url','origin')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git', 'target Operations checkout is not the pinned clean repository')
     path='reviewed-render/roebel-staging/case-runtime/resources.json'
@@ -1771,17 +1774,18 @@ def verify_review_gitops_checkout(root, plan, candidate, *, target_checkout, exp
         for entry in git(directory,'ls-tree','-r',revision).splitlines():
             fields,name=entry.split('\t',1);result[name]=fields
         return result
-    before=tree(root,plan['pins']['operationsRevision']);after=tree(target,expected_target_revision)
+    before=tree(root,recovery_implementation['revision'] if recovery_implementation else plan['pins']['operationsRevision']);after=tree(target,expected_target_revision)
     _require(set(before)==set(after) and {name for name in before if before[name]!=after[name]}=={path}, 'target Operations tree exceeds the exact runtime render change')
     _require(before[path].split()[:2]==after[path].split()[:2], 'target runtime render file mode changed')
     resource=json.loads(git(target,'show',expected_target_revision+':'+path))
     _require(resource==candidate['resources'] and canonical_sha256(resource)==plan['pins']['targetRenderSha256'],'GitOps target revision does not contain the exact successor')
 
 
-def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport):
+def verify_review_gitops_target(root, plan, candidate, *, target_checkout, expected_target_revision, transport, recovery_implementation=None):
     """Unsuspend only after the source controller observes the exact successor."""
     from . import case_runtime_kubernetes as kube
-    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision)
+    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision,
+        recovery_implementation=recovery_implementation)
     cluster=transport.request('GET','/api/v1/namespaces/kube-system',None)
     _require(cluster and cluster.get('metadata',{}).get('uid')==plan['identities']['clusterUid']==kube.CLUSTER_UID,'GitOps source cluster changed')
     source=transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
@@ -2191,7 +2195,7 @@ class ReviewHandoverDriver:
             initialization_plan, initialization_receipt, node_name, transport,
             worker_transport_factory, checks, backup_options, artifact_directory,
             sink, target_checkout=None, expected_target_revision=None, prior=None,
-            expected_prior_sha256=None, clock=None):
+            expected_prior_sha256=None, clock=None, recovery_implementation=None):
         import os,stat
         from pathlib import Path
         validate_plan(plan,expected_plan_sha256)
@@ -2212,6 +2216,7 @@ class ReviewHandoverDriver:
         self.worker,self.transport,self.worker_transport_factory=worker,transport,worker_transport_factory
         self.checks,self.backup_options,self.directory,self.sink=checks,backup_options,directory,sink
         self.target_checkout,self.expected_target_revision=target_checkout,expected_target_revision
+        self.recovery_implementation=copy.deepcopy(recovery_implementation)
         self.clock=clock or (lambda:datetime.now(timezone.utc))
         initial={'schemaVersion':'roebel_review_driver_v1','planSha256':expected_plan_sha256,
                  'candidateSha256':candidate['candidateSha256'],'workerSha256':worker['workerSha256'],
@@ -2363,7 +2368,8 @@ class ReviewHandoverDriver:
             common.update(candidate=self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],clock=self.clock,verify_complete=complete)
             if step=='verify-review-runtime':run('restart',advance_review_runtime_restart,**common)
             else:run('start' if step=='start-review-runtime' else 'restore',advance_review_runtime_transition,**common,
-                operation='start' if step=='start-review-runtime' else 'restore',target_checkout=self.target_checkout,expected_target_revision=self.expected_target_revision)
+                operation='start' if step=='start-review-runtime' else 'restore',target_checkout=self.target_checkout,expected_target_revision=self.expected_target_revision,
+                recovery_implementation=self.recovery_implementation)
 
     def advance(self):
         """Advance/resume the parent using the newest owned checkpoint."""
@@ -2583,7 +2589,11 @@ class ReviewLiveChecks:
             if record and record.get('uid'):owned.add(record['uid'])
             elif record:
                 matching=[p for p in pods['items'] if p['metadata']['name']==driver.worker['pod']['metadata']['name']]
-                for pod in matching:owned.add(storage._consumer_object(pod,driver.worker['pod'])['uid'])
+                for pod in matching:
+                    # PodList items omit only the type envelope. Explicit
+                    # conflicting kinds, labels, owners and specs stay checked.
+                    actual=copy.deepcopy(pod);actual.setdefault('apiVersion','v1');actual.setdefault('kind','Pod')
+                    owned.add(storage._consumer_object(actual,driver.worker['pod'])['uid'])
         start=driver.child('start')
         start_intent=bool(start and any(r['step']==_review_transition_changes(self.root,self.plan,self.candidate,self.candidate['candidateSha256'],'start')[-1][0] for r in start['changes']))
         # Validate successor ownership and complete template even while Pending.
@@ -2621,9 +2631,20 @@ class ReviewLiveChecks:
         boundary=(len(parent['completed']),parent['pending'],parent['status'])
         if boundary==self.last_boundary:
             self._objects(parent,driver);return
-        verify_review_implementation(self.root,plan)
+        verify_review_implementation(self.root,plan,recovery_implementation=driver.recovery_implementation)
         verify_review_gitops_checkout(self.root,plan,self.candidate,target_checkout=driver.target_checkout,
-            expected_target_revision=driver.expected_target_revision)
+            expected_target_revision=driver.expected_target_revision,recovery_implementation=driver.recovery_implementation)
+        if driver.recovery_implementation is not None:
+            source=self.transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
+            allowed={driver.recovery_implementation['revision']}
+            if len(parent['completed'])>=8:allowed.add(driver.expected_target_revision)
+            _require(source and not source.get('metadata',{}).get('deletionTimestamp') and source.get('spec',{}).get('url')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git' and
+                     source['spec'].get('ref')=={'branch':'main'} and not source['spec'].get('suspend',False) and
+                     source.get('status',{}).get('artifact',{}).get('revision') in {'main@sha1:'+r for r in allowed} and
+                     source['status'].get('observedGeneration')==source.get('metadata',{}).get('generation') and
+                     any(c.get('type')=='Ready' and c.get('status')=='True' for c in source['status'].get('conditions',[])) and
+                     not any(c.get('type') in ('Reconciling','Stalled') and c.get('status')=='True' for c in source['status'].get('conditions',[])),
+                     'recovery implementation is not the admitted main revision')
         self._objects(parent,driver)
         from . import case_runtime_bootstrap as core,case_runtime_admission as admission
         core._verifier().verify_tree(self.root)
@@ -2685,7 +2706,7 @@ class ReviewLiveChecks:
         return evidence|{'receiptSha256':canonical_sha256({'evidence':evidence,'http':http,'publicBaselineSha256':driver.journal['publicBaseline']['canonicalSha256']})}
 
 
-def verify_review_implementation(root,plan):
+def verify_review_implementation(root,plan,*,recovery_implementation=None):
     """Bind the running driver to the explicitly pinned clean Operations tree."""
     import subprocess
     validate_plan(plan,plan['planSha256'])
@@ -2693,16 +2714,63 @@ def verify_review_implementation(root,plan):
         result=subprocess.run(['git','-C',str(root),*args],capture_output=True,text=True,timeout=15,check=False)
         _require(result.returncode==0 and len(result.stdout.encode())<=4*1024*1024,'review implementation Git proof unavailable')
         return result.stdout.strip()
-    _require(git('rev-parse','HEAD')==plan['pins']['operationsRevision'] and not git('status','--porcelain','--untracked-files=all') and
+    revision=plan['pins']['operationsRevision']
+    if recovery_implementation is not None:
+        binding=recovery_implementation
+        _closed(binding,{'schemaVersion','planSha256','originalRevision','revision','implementationSha256','parentJournalSha256'},'recovery implementation binding shape changed')
+        _require(binding['schemaVersion']=='roebel_review_default_account_recovery_v1' and binding['planSha256']==plan['planSha256'] and
+                 binding['originalRevision']==revision and isinstance(binding['revision'],str) and re.fullmatch('[0-9a-f]{40}',binding['revision']),
+                 'recovery implementation binding changed')
+        _sha(binding['implementationSha256']);_sha(binding['parentJournalSha256'])
+        _require(git('merge-base',revision,binding['revision'])==revision,'recovery implementation is not descended from the original')
+        _require(canonical_sha256(git('ls-tree','-r',revision))==plan['pins']['implementationSha256'],'original implementation tree pin changed')
+        changes=git('diff','--name-status',revision,binding['revision']).splitlines()
+        _require(set(changes)=={'M\tscripts/case_review_storage.py','M\tscripts/case_review_handover.py','M\tscripts/test_case_review_handover.py'},
+                 'recovery implementation changes exceed the default-account repair')
+        _require(not git('diff','--summary',revision,binding['revision']),'recovery implementation changed file modes')
+        revision=binding['revision']
+    _require(git('rev-parse','HEAD')==revision and not git('status','--porcelain','--untracked-files=all') and
              git('remote','get-url','origin')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git','review implementation is not the exact clean Operations checkout')
-    _require(canonical_sha256(git('ls-tree','-r','HEAD'))==plan['pins']['implementationSha256'],'review implementation tree pin changed')
+    expected=recovery_implementation['implementationSha256'] if recovery_implementation else plan['pins']['implementationSha256']
+    _require(canonical_sha256(git('ls-tree','-r','HEAD'))==expected,'review implementation tree pin changed')
+
+
+def verify_review_recovery_lineage(plan,binding,prior,expected_prior_sha256,artifact_directory):
+    """Reach the explicitly pinned stopped journal without rewriting its plan."""
+    from pathlib import Path
+    _require(prior is not None,'recovery implementation cannot start a new handover')
+    value=_worker_lifecycle_receipt(prior,expected_prior_sha256)
+    directory=Path(artifact_directory)
+    _require(value.get('planSha256')==plan['planSha256'] and value.get('artifactDirectory')==str(directory),'recovery journal binding changed')
+    visited=set();pin=expected_prior_sha256
+    candidates=list(directory.glob('*-driver.json'))
+    _require(len(candidates)<=256,'recovery journal inventory exceeds bound')
+    while pin!=binding['parentJournalSha256']:
+        _require(pin not in visited,'recovery journal cycle');visited.add(pin)
+        pin=value.get('previousReceiptSha256');_sha(pin)
+        matches=[]
+        for path in candidates:
+            # A newly reserved, unlinked output is empty until construction.
+            # It cannot satisfy a referenced predecessor checksum.
+            if path.stat().st_size==0:continue
+            item=json.loads(_review_private_bytes(path))
+            if item.get('canonicalSha256')==pin:matches.append(item)
+        _require(len(matches)==1,'recovery predecessor is missing or ambiguous')
+        value=_worker_lifecycle_receipt(matches[0],pin)
+        _require(value.get('planSha256')==plan['planSha256'] and value.get('artifactDirectory')==str(directory),'recovery predecessor changed operation')
+    _require(value.get('parent') is not None and set(value.get('children',{}))=={'fence','initializer','worker-create'},'recovery does not start from the owned worker setup')
+    ref=value['parent'];_require(re.fullmatch('[0-9a-f]{32}-checkpoint.json',ref.get('file','')),'recovery parent path changed')
+    parent=json.loads(_review_private_bytes(directory/ref['file']))
+    state=_state(plan,parent,parent.get('canonicalSha256'))
+    _require(len(state['completed'])==2 and state['pending']=='verify-backup' and state['status']=='stopped-preserve-state',
+             'recovery anchor must precede backup and migration')
 
 
 def create_review_handover_session(root, plan, candidate, *, runner, snapshot, talos_run,
         storage_plan, initialization_plan, initialization_receipt, node_name, node_ip,
         source_fd, target_fd, source_configuration_receipt, expected_source_configuration_receipt_sha256,
         target_configuration_receipt, admission_receipt, backup_options, artifact_directory,
-        sink, target_checkout, expected_target_revision, prior=None, expected_prior_sha256=None, clock=None):
+        sink, target_checkout, expected_target_revision, prior=None, expected_prior_sha256=None, clock=None, recovery_implementation=None):
     """Wire the admitted driver to an existing executable-bound private session.
 
     Construction performs no cluster writes. Call verify_ready for a read-only
@@ -2710,8 +2778,11 @@ def create_review_handover_session(root, plan, candidate, *, runner, snapshot, t
     owns transport/descriptor lifetime and retains the journal for recovery.
     """
     from . import case_runtime_kubernetes as kube
-    verify_review_implementation(root,plan)
-    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision)
+    verify_review_implementation(root,plan,recovery_implementation=recovery_implementation)
+    if recovery_implementation is not None:
+        verify_review_recovery_lineage(plan,recovery_implementation,prior,expected_prior_sha256,artifact_directory)
+    verify_review_gitops_checkout(root,plan,candidate,target_checkout=target_checkout,expected_target_revision=expected_target_revision,
+        recovery_implementation=recovery_implementation)
     worker=compile_migration_worker(root,plan,expected_plan_sha256=plan['planSha256'],candidate=candidate,
         expected_candidate_sha256=candidate['candidateSha256'],node_name=node_name)
     transport=KubectlReviewHandoverTransport(root,plan,candidate,worker,initialization_plan,runner=runner,snapshot=snapshot)
@@ -2728,4 +2799,4 @@ def create_review_handover_session(root, plan, candidate, *, runner, snapshot, t
         initialization_plan=initialization_plan,initialization_receipt=initialization_receipt,node_name=node_name,transport=transport,
         worker_transport_factory=worker_transport,checks=checks,backup_options=backup_options,artifact_directory=artifact_directory,
         sink=sink,target_checkout=target_checkout,expected_target_revision=expected_target_revision,prior=prior,
-        expected_prior_sha256=expected_prior_sha256,clock=clock)
+        expected_prior_sha256=expected_prior_sha256,clock=clock,recovery_implementation=recovery_implementation)

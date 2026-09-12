@@ -370,6 +370,9 @@ def _consumer_object(observed, desired):
             wrapped = {'apiVersion': 'apps/v1', 'kind': 'Deployment', 'metadata': {},
                        'spec': {'template': {'metadata': {}, 'spec': spec}}}
             value['spec'] = normalize(wrapped)['spec']['template']['spec']
+            # ServiceAccount admission resolves an omitted name to "default".
+            # Token mounting and every named account still compare exactly.
+            _default(value['spec'], 'serviceAccountName', 'default')
     require(actual == expected, 'binding consumer semantics changed')
     return identity
 

@@ -602,6 +602,7 @@ class WorkerLifecycleTests(unittest.TestCase):
             value['metadata'].update(uid=uid(800+list(review.WORKER_RESOURCE_ORDER).index(key)),resourceVersion='10')
             if key=='pod':
                 value['spec']['nodeName']=self.worker['nodeName']
+                value['spec'].update(serviceAccountName='default',serviceAccount='default')
                 value['status']={'phase':'Running','containerStatuses':[{'name':'migration','ready':True,'restartCount':0,'imageID':'containerd://'+self.plan['pins']['migrationImageDigest']}]}
             self.live[path+'/'+value['metadata']['name']]=value
         else:
@@ -643,6 +644,15 @@ class WorkerLifecycleTests(unittest.TestCase):
         self.assertEqual(result['status'],'ready');self.assertEqual(len(self.effects),3)
         self.assertEqual(self.resume()['status'],'ready');self.assertEqual(len(self.effects),3)
         self.assertEqual([entry[2]['kind'] for entry in self.effects],['NetworkPolicy','ConfigMap','Pod'])
+    def test_default_account_does_not_allow_named_account_or_token_mounting(self):
+        self.assertEqual(self.advance()['status'],'ready')
+        path=self.collections['pod']+'/'+self.worker['pod']['metadata']['name']
+        original=copy.deepcopy(self.live[path])
+        for field,value in [('serviceAccountName','privileged-operator'),('automountServiceAccountToken',True)]:
+            self.live[path]=copy.deepcopy(original);self.live[path]['spec'][field]=value
+            with self.assertRaises(BootstrapStopped):self.resume()
+        self.assertEqual(len(self.effects),3)
+
     def test_undelivered_create_is_not_repeated_or_adopted_without_intent(self):
         self.before='create';self.assertEqual(self.advance()['status'],'waiting')
         self.before=None;self.assertEqual(self.resume()['status'],'waiting');self.assertEqual(len(self.effects),1)
@@ -1646,3 +1656,78 @@ class PublicPreservationTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
         self.reader['metadata']['generateName']='public-reader-';self.reader['kind']='Secret'
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
+
+
+class ReviewRecoveryImplementationTests(unittest.TestCase):
+    def setUp(self):
+        import subprocess
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.directory_path=Path(self.directory.name).resolve();self.root=self.directory_path/'repair'
+        source=Path(__file__).resolve().parents[1]
+        def git(*args,cwd=None):
+            return subprocess.check_output(['git',*args],cwd=cwd or self.root,text=True,stderr=subprocess.PIPE).strip()
+        self.git=git;git('clone','--shared','--quiet',str(source),str(self.root),cwd=self.directory_path)
+        git('remote','set-url','origin','https://github.com/GiraeffleAeffle/roebel-staging-operations.git')
+        self.plan,self.evidence=fixture()
+        base=git('rev-parse','HEAD')
+        self.plan['pins'].update(operationsRevision=base,implementationSha256=sha(git('ls-tree','-r','HEAD')))
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+        for name in ('case_review_storage.py','case_review_handover.py','test_case_review_handover.py'):
+            path=self.root/'scripts'/name
+            # On a committed CI checkout the current code is already present;
+            # a comment produces the same three-path implementation boundary.
+            path.write_bytes((source/'scripts'/name).read_bytes()+b'\n# Synthetic recovery revision fixture.\n')
+        git('add','scripts');git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Synthetic recovery implementation')
+        self.binding={'schemaVersion':'roebel_review_default_account_recovery_v1','planSha256':self.plan['planSha256'],
+            'originalRevision':base,'revision':git('rev-parse','HEAD'),'implementationSha256':sha(git('ls-tree','-r','HEAD')),
+            'parentJournalSha256':sha('stopped journal')}
+    def verify(self):
+        review.verify_review_implementation(self.root,self.plan,recovery_implementation=self.binding)
+    def test_separate_exact_execution_binding_preserves_the_original_plan(self):
+        original=copy.deepcopy(self.plan);self.verify();self.assertEqual(self.plan,original)
+        with self.assertRaises(BootstrapStopped):review.verify_review_implementation(self.root,self.plan)
+        self.binding['implementationSha256']=sha('different implementation')
+        with self.assertRaises(BootstrapStopped):self.verify()
+    def test_unrelated_committed_change_and_dirty_checkout_are_rejected(self):
+        path=self.root/'README.md';path.write_text(path.read_text()+'\nUnexpected\n')
+        with self.assertRaises(BootstrapStopped):self.verify()
+        self.git('add','README.md');self.git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Unexpected change')
+        self.binding.update(revision=self.git('rev-parse','HEAD'),implementationSha256=sha(self.git('ls-tree','-r','HEAD')))
+        with self.assertRaises(BootstrapStopped):self.verify()
+    def test_successor_keeps_the_repair_and_changes_only_the_runtime_render(self):
+        target=self.directory_path/'successor';self.git('clone','--shared','--quiet',str(self.root),str(target))
+        self.git('remote','set-url','origin','https://github.com/GiraeffleAeffle/roebel-staging-operations.git',cwd=target)
+        resources=json.loads((self.root/'proposals/synthetic-case-review-migration/review-resources.json').read_text())
+        self.plan['pins']['targetRenderSha256']=sha(resources)
+        self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'});self.binding['planSha256']=self.plan['planSha256']
+        path='reviewed-render/roebel-staging/case-runtime/resources.json'
+        def commit_render():
+            (target/path).write_text(json.dumps(resources)+'\n');self.git('add',path,cwd=target)
+            self.git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Synthetic exact successor',cwd=target)
+            return self.git('rev-parse','HEAD',cwd=target)
+        def verify(revision):review.verify_review_gitops_checkout(self.root,self.plan,{'resources':resources},target_checkout=target,
+            expected_target_revision=revision,recovery_implementation=self.binding)
+        verify(commit_render())
+        self.git('checkout','--quiet','--detach',self.binding['originalRevision'],cwd=target)
+        with self.assertRaises(BootstrapStopped):verify(commit_render())
+    def test_journal_lineage_requires_the_original_stopped_worker_intent(self):
+        directory=self.directory_path/'receipts';directory.mkdir(mode=0o700)
+        parent={'schemaVersion':'roebel_review_handover_receipt_v1','planSha256':self.plan['planSha256'],
+            'operationId':self.plan['operationId'],'previousReceiptSha256':None,'status':'stopped-preserve-state',
+            'completed':[{'step':s,'evidence':self.evidence[s]} for s in review.STEPS[:2]],'pending':'verify-backup'}
+        parent_name='a'*32+'-checkpoint.json';ReceiptSink.reserve(directory/parent_name).commit(parent)
+        anchor={'schemaVersion':'roebel_review_driver_v1','planSha256':self.plan['planSha256'],'artifactDirectory':str(directory),
+            'previousReceiptSha256':None,'parent':{'file':parent_name,'prior':None,'parentIntent':None},
+            'children':dict.fromkeys(('fence','initializer','worker-create'),{})}
+        ReceiptSink.reserve(directory/('b'*32+'-driver.json')).commit(anchor)
+        anchor=json.loads((directory/('b'*32+'-driver.json')).read_text())
+        self.binding['parentJournalSha256']=anchor['canonicalSha256']
+        latest=copy.deepcopy(anchor);latest.pop('canonicalSha256');latest['previousReceiptSha256']=anchor['canonicalSha256']
+        ReceiptSink.reserve(directory/('c'*32+'-driver.json')).commit(latest)
+        latest=json.loads((directory/('c'*32+'-driver.json')).read_text())
+        ReceiptSink.reserve(directory/('d'*32+'-driver.json'))
+        def verify():review.verify_review_recovery_lineage(self.plan,self.binding,latest,latest['canonicalSha256'],directory)
+        verify()
+        with self.assertRaises(BootstrapStopped):review.verify_review_recovery_lineage(self.plan,self.binding,None,None,directory)
+        (directory/('b'*32+'-driver.json')).unlink()
+        with self.assertRaises(BootstrapStopped):verify()
