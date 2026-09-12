@@ -319,7 +319,48 @@ def _state(plan, prior, expected_prior_sha256):
     return state
 
 
-def advance_review_handover(plan, *, expected_plan_sha256, adapter, sink, prior=None, expected_prior_sha256=None, clock=None):
+FINALIZATION_RECOVERY = 'roebel_review_finalization_recovery_v1'
+
+
+def _finalization(binding):
+    return binding is not None and binding.get('schemaVersion') == FINALIZATION_RECOVERY
+
+
+def review_execution_window(plan, binding=None):
+    """A separately pinned tail window; the original migration plan stays intact."""
+    if not _finalization(binding):
+        return _utc(plan['notBeforeUtc']), _utc(plan['expiresAtUtc'])
+    _closed(binding, {'schemaVersion','planSha256','originalRevision','revision','implementationSha256',
+                     'parentJournalSha256','anchorEvidenceSha256','notBeforeUtc','expiresAtUtc','runtimeBefore'},
+            'finalization binding shape changed')
+    _require(binding['planSha256']==plan['planSha256'] and binding['originalRevision']==plan['pins']['operationsRevision'] and
+             isinstance(binding['revision'],str) and re.fullmatch('[0-9a-f]{40}',binding['revision']), 'finalization implementation binding changed')
+    for key in ('implementationSha256','parentJournalSha256','anchorEvidenceSha256'):_sha(binding[key])
+    start,end=_utc(binding['notBeforeUtc']),_utc(binding['expiresAtUtc'])
+    _require(start>=_utc(plan['expiresAtUtc']) and 0<(end-start).total_seconds()<=3600,'finalization window invalid')
+    before=binding['runtimeBefore']
+    _closed(before,{'podUid','podName','containerId','restartCount','lastExitCode'},'finalization runtime pin changed')
+    _require(isinstance(before['podUid'],str) and UUID.fullmatch(before['podUid']) and
+             isinstance(before['podName'],str) and re.fullmatch('roebel-case-steward-control-[a-z0-9-]+',before['podName']) and
+             isinstance(before['containerId'],str) and re.fullmatch(r'(?:containerd|docker)://[0-9a-f]{64}',before['containerId']) and
+             type(before['restartCount']) is int and before['restartCount']==0 and before['lastExitCode'] is None,
+             'finalization requires the observed unrestarted runtime')
+    return start,end
+
+
+def _execution_open(plan, value, binding=None):
+    start,end=review_execution_window(plan,binding)
+    return isinstance(value,datetime) and value.tzinfo is not None and start<=value<end
+
+
+def _finalization_stage(plan, binding, state):
+    if _finalization(binding):
+        review_execution_window(plan,binding)
+        _require(6<=len(state['completed'])<=9 and state['pending'] in (None,*STEPS[6:]),
+                 'finalization cannot execute fencing, backup, migration or worker lifecycle')
+
+
+def advance_review_handover(plan, *, expected_plan_sha256, adapter, sink, prior=None, expected_prior_sha256=None, clock=None, recovery_implementation=None):
     """Advance ordered effects once; recover by observation, never blind replay.
 
     Adapter.verify_ready(plan, state) must verify the complete concrete pinned
@@ -335,9 +376,8 @@ def advance_review_handover(plan, *, expected_plan_sha256, adapter, sink, prior=
     state = _state(plan, prior, expected_prior_sha256)
     now = clock or (lambda:datetime.now(timezone.utc))
     def fresh():
-        value = now()
-        _require(isinstance(value, datetime) and value.tzinfo is not None and
-                 _utc(plan['notBeforeUtc']) <= value < _utc(plan['expiresAtUtc']), 'review handover window closed')
+        _finalization_stage(plan,recovery_implementation,state)
+        _require(_execution_open(plan,now(),recovery_implementation), 'review handover window closed')
         adapter.verify_ready(copy.deepcopy(plan), copy.deepcopy(state))
     sink.commit(state)
     try:
@@ -1240,14 +1280,18 @@ def advance_review_runtime_transition(root, plan, candidate, *, expected_plan_sh
         _require(state['status']!='complete' or state['evidence'] is not None and len(state['changes'])==len(changes) and all(r['observed'] for r in state['changes']),'review transition completion invalid')
         state['previousReceiptSha256']=expected_prior_sha256
     else:_require(expected_prior_sha256 is None,'orphan review transition recovery pin')
+    _finalization_stage(plan,recovery_implementation,parent)
+    if _finalization(recovery_implementation) and operation=='start':
+        _require(prior is not None and len(state['changes'])==len(changes) and
+                 all(r['observed'] for r in state['changes']), 'finalization cannot replay runtime startup')
     now=clock or (lambda:datetime.now(timezone.utc))
     def fresh():
-        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition window closed')
+        _require(_execution_open(plan,now(),recovery_implementation),'review transition window closed')
         verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
-        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition readiness exceeded window')
+        _require(_execution_open(plan,now(),recovery_implementation),'review transition readiness exceeded window')
         if operation=='restore':verify_review_gitops_target(root,plan,candidate,target_checkout=target_checkout,
             expected_target_revision=expected_target_revision,transport=transport,recovery_implementation=recovery_implementation)
-        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review transition source proof exceeded window')
+        _require(_execution_open(plan,now(),recovery_implementation),'review transition source proof exceeded window')
     def commit(status):
         state['status']=status;sink.commit(copy.deepcopy(state))
         return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
@@ -1444,7 +1488,7 @@ def observe_review_runtime(root, plan, candidate, *, expected_candidate_sha256, 
 
 def advance_review_runtime_restart(root, plan, candidate, *, expected_plan_sha256, expected_candidate_sha256,
         parent_receipt, expected_parent_sha256, transport, sink, verify_ready, verify_complete,
-        prior=None, expected_prior_sha256=None, clock=None):
+        prior=None, expected_prior_sha256=None, clock=None, recovery_implementation=None):
     """One owned SIGTERM, then observe a clean same-Pod restart; no blind replay."""
     from . import case_runtime_kubernetes as kube
     validate_plan(plan,expected_plan_sha256);parent=_state(plan,parent_receipt,expected_parent_sha256)
@@ -1462,11 +1506,14 @@ def advance_review_runtime_restart(root, plan, candidate, *, expected_plan_sha25
         _require(state['status']!='complete' or state['after'] is not None and state['evidence'] is not None,'restart completion lacks evidence')
         state['previousReceiptSha256']=expected_prior_sha256
     else:_require(expected_prior_sha256 is None,'orphan review restart pin')
+    _finalization_stage(plan,recovery_implementation,parent)
+    if _finalization(recovery_implementation) and state['before'] is not None:
+        _require(state['before']==recovery_implementation['runtimeBefore'],'finalization restart intent changed')
     now=clock or (lambda:datetime.now(timezone.utc))
     def fresh():
-        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review restart window closed')
+        _require(_execution_open(plan,now(),recovery_implementation),'review restart window closed')
         verify_ready(copy.deepcopy(plan),copy.deepcopy(parent),copy.deepcopy(state))
-        _require(_utc(plan['notBeforeUtc'])<=now()<_utc(plan['expiresAtUtc']),'review restart readiness exceeded window')
+        _require(_execution_open(plan,now(),recovery_implementation),'review restart readiness exceeded window')
     def commit(status):
         state['status']=status;sink.commit(copy.deepcopy(state));return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
     def observe():return observe_review_runtime(root,plan,candidate,expected_candidate_sha256=expected_candidate_sha256,transport=transport)
@@ -1476,6 +1523,8 @@ def advance_review_runtime_restart(root, plan, candidate, *, expected_plan_sha25
         expected_uid=parent['completed'][-1]['evidence']['runtimePodUid']
         _require(current['podUid']==expected_uid,'review restart Pod differs from start receipt')
         if state['before'] is None:
+            if _finalization(recovery_implementation):
+                _require(current==recovery_implementation['runtimeBefore'],'finalization runtime changed before restart')
             state['before']=current;commit('intent');fresh()
             try:transport.exec_pod(kube.NAMESPACE,current['podName'],current['podUid'],'runtime',['node','-e',"process.kill(1, 'SIGTERM')"])
             except Exception:pass
@@ -1651,7 +1700,7 @@ def advance_review_worker_exchange(plan, request, *, expected_plan_sha256, paren
         raise BootstrapStopped('worker exchange stopped; retain artifacts and never repeat the invocation') from None
 
 
-def verify_review_private_configuration(plan, *, source_fd, target_fd):
+def verify_review_private_configuration(plan, *, source_fd, target_fd, recovery_implementation=None):
     """Driver preflight: preserve source settings and cover the whole grant window.
 
     Inputs are owned private descriptors, independently byte-pinned by the plan.
@@ -1700,7 +1749,8 @@ def verify_review_private_configuration(plan, *, source_fd, target_fd):
                  isinstance(review['allowedHosts'],list) and bool(review['allowedHosts']),'review grant context changed')
         allowed={'case_steward','administration','department_agent','department_reviewer'}
         needed={a['actorId'] for a in actors if a.get('actorClass') in allowed}
-        tokens=set();granted=set();start=int(_utc(plan['notBeforeUtc']).timestamp()*1000);end=int(_utc(plan['expiresAtUtc']).timestamp()*1000)
+        start_utc,end_utc=review_execution_window(plan,recovery_implementation)
+        tokens=set();granted=set();start=int(start_utc.timestamp()*1000);end=int(end_utc.timestamp()*1000)
         for grant in review['grants']:
             _closed(grant,{'actor','caseId','notBefore','expiresAt','token'},'review grant shape invalid')
             _closed(grant['actor'],{'actorId','actorClass'},'review grant actor invalid')
@@ -1715,13 +1765,13 @@ def verify_review_private_configuration(plan, *, source_fd, target_fd):
         _require(granted==needed,'review roles lack complete grants')
         return {'status':'configuration-window-verified','sourceConfigurationSha256':plan['pins']['sourceConfigurationSha256'],
                 'targetConfigurationSha256':plan['pins']['targetConfigurationSha256'],'departmentCount':len(departments),'grantCount':len(granted),
-                'verifiedThroughUtc':plan['expiresAtUtc']}
+                'verifiedThroughUtc':recovery_implementation['expiresAtUtc'] if _finalization(recovery_implementation) else plan['expiresAtUtc']}
     except Exception:
         raise BootstrapStopped('private review configuration preflight failed; source must remain running') from None
 
 
 def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, target_fd,
-        source_receipt, expected_source_receipt_sha256, target_receipt, transport, clock=None):
+        source_receipt, expected_source_receipt_sha256, target_receipt, transport, clock=None, recovery_implementation=None):
     """Read both existing Secrets and bind them to private, provisioned inputs.
 
     Source identity comes from its separately pinned provisioning receipt; the
@@ -1736,9 +1786,9 @@ def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, targe
         clock=clock or (lambda:datetime.now(timezone.utc))
         def window():
             now=clock()
-            _require(_utc(plan['notBeforeUtc'])<=now<_utc(plan['expiresAtUtc']), 'configuration observation outside handover window')
+            _require(_execution_open(plan,now,recovery_implementation), 'configuration observation outside handover window')
         window()
-        verified=verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd)
+        verified=verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd,recovery_implementation=recovery_implementation)
         receipts={}
         for side,value,pin,name in (
                 ('source',source_receipt,expected_source_receipt_sha256,'roebel-case-steward-control-runtime'),
@@ -1775,7 +1825,7 @@ def observe_review_configuration(plan, *, expected_plan_sha256, source_fd, targe
                 del raw,encoded,secret
             return identities
         identities=read()
-        _require(verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd)==verified,'private configuration changed during observation')
+        _require(verify_review_private_configuration(plan,source_fd=source_fd,target_fd=target_fd,recovery_implementation=recovery_implementation)==verified,'private configuration changed during observation')
         _require(read()==identities,'configuration Secret changed during observation')
         window()
         result={'schemaVersion':'roebel_review_configuration_observation_v1','planSha256':expected_plan_sha256,
@@ -2260,6 +2310,11 @@ class ReviewHandoverDriver:
         initial={'schemaVersion':'roebel_review_driver_v1','planSha256':expected_plan_sha256,
                  'candidateSha256':candidate['candidateSha256'],'workerSha256':worker['workerSha256'],
                  'artifactDirectory':str(directory),'previousReceiptSha256':None,'parent':None,'children':{},'releases':{},'publicBaseline':None}
+        if _finalization(recovery_implementation):
+            review_execution_window(plan,recovery_implementation)
+            verify_review_recovery_lineage(plan,recovery_implementation,prior,expected_prior_sha256,directory)
+            if expected_prior_sha256!=recovery_implementation['parentJournalSha256']:
+                initial['finalizationBindingSha256']=canonical_sha256(recovery_implementation)
         self.journal=copy.deepcopy(initial)
         if prior is not None:
             self.journal=_worker_lifecycle_receipt(prior,expected_prior_sha256)
@@ -2271,6 +2326,8 @@ class ReviewHandoverDriver:
             for ref in self.journal['children'].values():self._read(ref)
             if self.journal['parent'] is not None:self._read(self.journal['parent'])
         else:_require(expected_prior_sha256 is None,'driver orphan recovery pin')
+        if _finalization(recovery_implementation):
+            self.journal['finalizationBindingSha256']=canonical_sha256(recovery_implementation)
         self._commit()
 
     def _commit(self):
@@ -2324,7 +2381,8 @@ class ReviewHandoverDriver:
 
     def verify_ready(self,plan,state):
         _require(plan==self.plan,'driver plan changed')
-        _require(_utc(plan['notBeforeUtc'])<=self.clock()<_utc(plan['expiresAtUtc']),'driver handover window closed')
+        _finalization_stage(plan,self.recovery_implementation,state)
+        _require(_execution_open(plan,self.clock(),self.recovery_implementation),'driver handover window closed')
         self.checks.verify_ready(plan,state,self)
 
     def _release(self,side,parent,pod_uid=None):
@@ -2405,7 +2463,7 @@ class ReviewHandoverDriver:
         else:
             def complete(p,original,child):return self.checks.verify_complete(p,original,child,self)
             common.update(candidate=self.candidate,expected_candidate_sha256=self.candidate['candidateSha256'],clock=self.clock,verify_complete=complete)
-            if step=='verify-review-runtime':run('restart',advance_review_runtime_restart,**common)
+            if step=='verify-review-runtime':run('restart',advance_review_runtime_restart,**common,recovery_implementation=self.recovery_implementation)
             else:run('start' if step=='start-review-runtime' else 'restore',advance_review_runtime_transition,**common,
                 operation='start' if step=='start-review-runtime' else 'restore',target_checkout=self.target_checkout,expected_target_revision=self.expected_target_revision,
                 recovery_implementation=self.recovery_implementation)
@@ -2417,7 +2475,7 @@ class ReviewHandoverDriver:
         ref=self._allocate(prior,None);self.journal['parent']=ref;self._commit()
         output=ReceiptSink.reserve(self.directory/ref['file'])
         advance_review_handover(self.plan,expected_plan_sha256=self.plan['planSha256'],adapter=self,sink=output,
-            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=self.clock)
+            prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None,clock=self.clock,recovery_implementation=self.recovery_implementation)
         return self._read(ref)
 
 
@@ -2638,7 +2696,7 @@ class ReviewLiveChecks:
         # Validate successor ownership and complete template even while Pending.
         # Readiness is a separate completion gate, never an ownership shortcut.
         for pod in pods['items']:
-            claims={v.get('persistentVolumeClaim',{}).get('claimName') for v in pod.get('spec',{}).get('volumes',[])}
+            claims={v['persistentVolumeClaim'].get('claimName') for v in pod.get('spec',{}).get('volumes',[]) if 'persistentVolumeClaim' in v}
             if not claims & {driver.storage_plan['source']['pvcName'],storage.TARGET_NAME}:continue
             if pod['metadata']['uid'] in owned:continue
             _require(start_intent and claims=={storage.TARGET_NAME},'unexpected retained-volume consumer')
@@ -2666,7 +2724,8 @@ class ReviewLiveChecks:
         _require(response.get('found') is True and saved.check_receipt(response.get('receipt'))==self.admission,'original public Case admission changed')
 
     def verify_ready(self,plan,parent,driver):
-        _require(plan==self.plan and _utc(plan['notBeforeUtc'])<=self.clock()<_utc(plan['expiresAtUtc']),'live driver input or window changed')
+        _finalization_stage(plan,driver.recovery_implementation,parent)
+        _require(plan==self.plan and _execution_open(plan,self.clock(),driver.recovery_implementation),'live driver input or window changed')
         boundary=(len(parent['completed']),parent['pending'],parent['status'])
         if boundary==self.last_boundary:
             self._objects(parent,driver);return
@@ -2713,7 +2772,7 @@ class ReviewLiveChecks:
             allow_reader_degraded=1<=len(parent['completed'])<=8 and self._objects(parent,driver)[1]['spec']['suspend'] is True)
         if baseline is None:driver.journal['publicBaseline']=proof;driver._commit()
         observe_review_configuration(plan,expected_plan_sha256=plan['planSha256'],source_fd=self.source_fd,target_fd=self.target_fd,
-            source_receipt=self.source_receipt,expected_source_receipt_sha256=self.source_receipt_pin,target_receipt=self.target_receipt,transport=self.transport,clock=self.clock)
+            source_receipt=self.source_receipt,expected_source_receipt_sha256=self.source_receipt_pin,target_receipt=self.target_receipt,transport=self.transport,clock=self.clock,recovery_implementation=driver.recovery_implementation)
         self._stores(driver);self._public(driver);self.last_boundary=boundary
 
     def observe_release(self,plan,parent,driver,pod_uid):
@@ -2731,6 +2790,8 @@ class ReviewLiveChecks:
         if runtime is None:return None
         http=self.transport.observe_review_http(runtime);previous={r['step']:r['evidence'] for r in parent['completed']}
         if step=='start-review-runtime':
+            if _finalization(driver.recovery_implementation):
+                _require(runtime==driver.recovery_implementation['runtimeBefore'],'finalization startup runtime changed')
             evidence={k:plan['identities'][k] for k in ('sourceDeploymentUid','targetPvcUid','configurationSecretUid')}
             evidence.update({k:plan['pins'][k] for k in ('targetBindingSha256','migrationImageDigest')});evidence['runtimePodUid']=runtime['podUid']
         elif step=='verify-review-runtime':
@@ -2756,22 +2817,64 @@ def verify_review_implementation(root,plan,*,recovery_implementation=None):
     revision=plan['pins']['operationsRevision']
     if recovery_implementation is not None:
         binding=recovery_implementation
-        _closed(binding,{'schemaVersion','planSha256','originalRevision','revision','implementationSha256','parentJournalSha256'},'recovery implementation binding shape changed')
-        _require(binding['schemaVersion']=='roebel_review_default_account_recovery_v1' and binding['planSha256']==plan['planSha256'] and
+        if _finalization(binding):
+            review_execution_window(plan,binding)
+            paths={'case_review_handover.py','test_case_review_handover.py','test_case_runtime_bootstrap.py','test_run_staging_participant_gateway_live.py'}
+        else:
+            _closed(binding,{'schemaVersion','planSha256','originalRevision','revision','implementationSha256','parentJournalSha256'},'recovery implementation binding shape changed')
+            _require(binding['schemaVersion']=='roebel_review_default_account_recovery_v1','recovery implementation profile changed')
+            paths={'case_review_storage.py','case_review_handover.py','test_case_review_handover.py'}
+        _require(binding['planSha256']==plan['planSha256'] and
                  binding['originalRevision']==revision and isinstance(binding['revision'],str) and re.fullmatch('[0-9a-f]{40}',binding['revision']),
                  'recovery implementation binding changed')
         _sha(binding['implementationSha256']);_sha(binding['parentJournalSha256'])
         _require(git('merge-base',revision,binding['revision'])==revision,'recovery implementation is not descended from the original')
         _require(canonical_sha256(git('ls-tree','-r',revision))==plan['pins']['implementationSha256'],'original implementation tree pin changed')
         changes=git('diff','--name-status',revision,binding['revision']).splitlines()
-        _require(set(changes)=={'M\tscripts/case_review_storage.py','M\tscripts/case_review_handover.py','M\tscripts/test_case_review_handover.py'},
-                 'recovery implementation changes exceed the default-account repair')
+        _require(set(changes)=={'M\tscripts/'+path for path in paths},'recovery implementation changes exceed the pinned repair profile')
         _require(not git('diff','--summary',revision,binding['revision']),'recovery implementation changed file modes')
         revision=binding['revision']
     _require(git('rev-parse','HEAD')==revision and not git('status','--porcelain','--untracked-files=all') and
              git('remote','get-url','origin')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git','review implementation is not the exact clean Operations checkout')
     expected=recovery_implementation['implementationSha256'] if recovery_implementation else plan['pins']['implementationSha256']
     _require(canonical_sha256(git('ls-tree','-r','HEAD'))==expected,'review implementation tree pin changed')
+
+
+def review_finalization_anchor(plan,journal,artifact_directory):
+    """Read the immutable six-stage prefix and fully observed startup receipts."""
+    from pathlib import Path
+    directory=Path(artifact_directory)
+    children=journal.get('children',{})
+    _require(set(children)=={'fence','initializer','worker-create','verify-backup','prepare-migration',
+                            'activate-migration','worker-retire','start'} and
+             set(journal.get('releases',{}))=={'source','migration'} and journal.get('publicBaseline') is not None,
+             'finalization requires completed migration and worker retirement')
+    def read(ref):
+        _closed(ref,{'file','prior','parentIntent'},'finalization checkpoint reference changed')
+        _require(isinstance(ref['file'],str) and re.fullmatch('[0-9a-f]{32}-checkpoint.json',ref['file']), 'finalization checkpoint path changed')
+        try:value=json.loads(_review_private_bytes(directory/ref['file']))
+        except Exception:raise BootstrapStopped('finalization checkpoint is missing or unreadable; preserve state') from None
+        body=_worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+        previous=ref['prior']
+        if previous is not None:_worker_lifecycle_receipt(previous,previous.get('canonicalSha256'))
+        _require(body.get('planSha256')==plan['planSha256'] and body.get('previousReceiptSha256')==
+                 (previous['canonicalSha256'] if previous else None),'finalization checkpoint predecessor changed')
+        return value
+    parent=read(journal['parent']);state=_state(plan,parent,parent['canonicalSha256'])
+    _require(len(state['completed'])==6 and state['pending']=='start-review-runtime' and state['status']=='stopped-preserve-state',
+             'finalization anchor must follow migration and precede startup completion')
+    receipts={name:read(ref) for name,ref in children.items()}
+    for name,status in (('fence','source-fenced'),('initializer','api-absent'),('worker-create','ready'),
+                        ('verify-backup','complete'),('prepare-migration','complete'),('activate-migration','complete'),('worker-retire','retired')):
+        _require(receipts[name].get('status')==status,'finalization prefix is incomplete')
+    start=receipts['start'];changes=start.get('changes',[])
+    _require(start.get('operation')=='start' and start.get('status')=='stopped-preserve-state' and start.get('evidence') is None and
+             [r.get('step') for r in changes]==['review-config','review-role','review-deployment'] and
+             all(r.get('observed') is True and isinstance(r.get('uid'),str) and UUID.fullmatch(r['uid']) for r in changes) and
+             changes[-1]['uid']==plan['identities']['sourceDeploymentUid'],'finalization startup changes are not fully observed')
+    for value in (*journal['releases'].values(),journal['publicBaseline']):
+        _worker_lifecycle_receipt(value,value.get('canonicalSha256'))
+    return canonical_sha256({'parent':parent,'children':receipts,'releases':journal['releases'],'publicBaseline':journal['publicBaseline']})
 
 
 def verify_review_recovery_lineage(plan,binding,prior,expected_prior_sha256,artifact_directory):
@@ -2785,6 +2888,8 @@ def verify_review_recovery_lineage(plan,binding,prior,expected_prior_sha256,arti
     candidates=list(directory.glob('*-driver.json'))
     _require(len(candidates)<=256,'recovery journal inventory exceeds bound')
     while pin!=binding['parentJournalSha256']:
+        if _finalization(binding):
+            _require(value.get('finalizationBindingSha256')==canonical_sha256(binding),'finalization window or implementation changed during recovery')
         _require(pin not in visited,'recovery journal cycle');visited.add(pin)
         pin=value.get('previousReceiptSha256');_sha(pin)
         matches=[]
@@ -2797,6 +2902,11 @@ def verify_review_recovery_lineage(plan,binding,prior,expected_prior_sha256,arti
         _require(len(matches)==1,'recovery predecessor is missing or ambiguous')
         value=_worker_lifecycle_receipt(matches[0],pin)
         _require(value.get('planSha256')==plan['planSha256'] and value.get('artifactDirectory')==str(directory),'recovery predecessor changed operation')
+    if _finalization(binding):
+        review_execution_window(plan,binding)
+        _require('finalizationBindingSha256' not in value and
+                 review_finalization_anchor(plan,value,directory)==binding['anchorEvidenceSha256'],'finalization anchor evidence changed')
+        return
     _require(value.get('parent') is not None and set(value.get('children',{}))=={'fence','initializer','worker-create'},'recovery does not start from the owned worker setup')
     ref=value['parent'];_require(re.fullmatch('[0-9a-f]{32}-checkpoint.json',ref.get('file','')),'recovery parent path changed')
     parent=json.loads(_review_private_bytes(directory/ref['file']))
