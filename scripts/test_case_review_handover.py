@@ -1880,6 +1880,76 @@ class UnstartedReviewSetupRecoveryTests(unittest.TestCase):
         path.write_bytes(original)
 
 
+class TerminalCaptureRecoveryTests(unittest.TestCase):
+    pin_plan=UnstartedReviewSetupRecoveryTests.pin_plan
+    ready=UnstartedReviewSetupRecoveryTests.ready
+    sink=UnstartedReviewSetupRecoveryTests.sink
+    retire=UnstartedReviewSetupRecoveryTests.retire
+    test_continues_without_replaying_old_intent=UnstartedReviewSetupRecoveryTests.test_continues_without_replaying_old_intent
+    test_preserves_after_lost_delete=UnstartedReviewSetupRecoveryTests.test_preserves_after_lost_delete
+    test_closed_window_and_lost_fence_cannot_delete=UnstartedReviewSetupRecoveryTests.test_closed_window_and_lost_fence_cannot_delete
+    test_backup_artifact_or_later_command_cannot_be_carried=UnstartedReviewSetupRecoveryTests.test_backup_artifact_or_later_command_cannot_be_carried
+
+    def setUp(self):
+        UnstartedReviewSetupRecoveryTests.setUp(self)
+        self.pod['status'].update(phase='Failed',reason='DeadlineExceeded')
+        self.pod['status']['containerStatuses'][0].update(ready=False,restartCount=0,
+            imageID=self.old.worker['pod']['spec']['containers'][0]['image'],state={'terminated':{
+                'exitCode':0,'reason':'Completed','startedAt':'2026-09-10T12:00:00Z','finishedAt':'2026-09-10T13:00:00Z'}})
+        # Mailbox contents cannot be recovered after kubelet removes emptyDir.
+        # This mode must not invent an empty-mailbox observation or execute.
+        self.old.worker_transport_factory=lambda *args:self.fail('terminal worker must never be executed')
+
+    def observe_unused(self):self.fail('terminal capture is not claimed unused')
+
+    def make_recovery(self):
+        return review.ExpiredReviewSetupRecovery(self.old,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            expected_driver_sha256=sha(self.old.journal),expected_worker_pod_uid=self.pod['metadata']['uid'],
+            abandon_terminal_capture=True,recovery_root=self.h.root)
+
+    def test_records_unverified_abandonment_and_rejects_changed_proof_on_resume(self):
+        retired=self.retire()
+        proof=retired['abandonedCapture']
+        self.assertEqual(proof['outcome'],'unverified-backup-abandoned')
+        self.assertEqual(proof['workerReceiptSha256'],self.recovery.capture_receipt_pin)
+        self.assertNotIn('unusedMailbox',retired)
+        self.assertNotIn('requestCount',proof)
+        changes=list(self.h.effects)
+        retired['abandonedCapture']['requestSha256']=sha('different capture')
+        retired['abandonedCapture']['canonicalSha256']=sha({k:v for k,v in retired['abandonedCapture'].items() if k!='canonicalSha256'})
+        retired['canonicalSha256']=sha({k:v for k,v in retired.items() if k!='canonicalSha256'})
+        with self.assertRaises(BootstrapStopped):self.retire(retired)
+        self.assertEqual(self.h.effects,changes)
+
+    def test_live_replaced_restarted_or_different_terminal_worker_is_preserved(self):
+        original=copy.deepcopy(self.pod)
+        for change in ('running','replacement','image','restart','code','exit','reason','deadline','unfinished','future'):
+            with self.subTest(change=change):
+                self.pod.clear();self.pod.update(copy.deepcopy(original))
+                status=self.pod['status'];container=status['containerStatuses'][0]
+                if change=='running':status['phase']='Running'
+                elif change=='replacement':self.pod['metadata']['uid']=uid(996)
+                elif change=='image':container['imageID']='foreign-image'
+                elif change=='restart':container['restartCount']=1
+                elif change=='code':self.pod['spec']['containers'][0]['command']=['foreign-command']
+                elif change=='exit':container['state']['terminated']['exitCode']=1
+                elif change=='reason':container['state']['terminated']['reason']='Error'
+                elif change=='deadline':status['reason']='Evicted'
+                elif change=='unfinished':container['state']={'running':{}}
+                else:container['state']['terminated']['finishedAt']='2026-09-11T13:00:00.000Z'
+                with self.assertRaises(BootstrapStopped):self.retire()
+                self.assertEqual(self.h.effects,self.effects_before)
+
+    def test_pending_exchange_with_exported_artifact_cannot_be_abandoned(self):
+        stage=self.old.child('verify-backup')
+        path=self.old.directory/stage['commands']['capture-backup']['receiptFile']
+        receipt=json.loads(path.read_text());receipt['artifacts']={'archive':{'file':'retained-private-archive'}}
+        receipt['canonicalSha256']=sha({k:v for k,v in receipt.items() if k!='canonicalSha256'})
+        path.write_text(json.dumps(receipt))
+        with self.assertRaises(BootstrapStopped):self.make_recovery()
+        self.assertEqual(self.h.effects,self.effects_before)
+
+
 class ReviewRecoveryImplementationTests(unittest.TestCase):
     def setUp(self):
         import subprocess
