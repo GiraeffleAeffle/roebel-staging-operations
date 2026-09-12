@@ -1519,12 +1519,14 @@ class IntegratedDriverTests(unittest.TestCase):
             elif mode=='verify-backup':result=self.facts|{'restoredFilesSha256':self.facts['sourceFilesSha256'],'restoredCandidateChecksum':sha('restored')}
             elif mode=='prepare':result={'candidateRootDir':'/private/synthetic-candidate','receipt':self.migration_candidate}
             else:
+                started=getattr(self,'runtime_now',NOW)
+                stamp=lambda time:time.isoformat(timespec='milliseconds').replace('+00:00','Z')
                 seal=self.checked({'deploymentClaimChecksum':self.target_claim['claimChecksum'],'databaseSha256':self.migration_candidate['targetDatabaseSha256'],
                     'databaseByteLength':4096,'configFingerprint':self.migration_candidate['targetConfigFingerprint'],'recoveryEvidence':self.source_seal['recoveryEvidence'],
-                    'closedAtUtc':'2026-09-10T12:00:01.000Z'},'sealChecksum')
+                    'closedAtUtc':stamp(started+timedelta(seconds=1))},'sealChecksum')
                 result=self.checked({'schemaVersion':'synthetic_review_migration_activation_v1','planChecksum':request['migrationPlan']['planChecksum'],
                     'candidate':self.migration_candidate,'sourceClaim':self.source_claim,'sourceSeal':self.source_seal,'targetClaim':self.target_claim,'targetSeal':seal,
-                    'startedAtUtc':'2026-09-10T12:00:00.000Z'},'activationChecksum')
+                    'startedAtUtc':stamp(started)},'activationChecksum')
             self.results[pin]=self.envelope(request,result);raise TimeoutError('controlled worker response lost')
         data=self.h.archive if action=='archive' else json.dumps(self.results[pin],sort_keys=True,separators=(',',':')).encode()
         os.write(kwargs['output_fd'],data);os.fsync(kwargs['output_fd'])
@@ -1656,6 +1658,139 @@ class PublicPreservationTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
         self.reader['metadata']['generateName']='public-reader-';self.reader['kind']='Secret'
         with self.assertRaises(BootstrapStopped):self.observe(baseline)
+
+
+class ExpiredReviewSetupRecoveryTests(unittest.TestCase):
+    """Exercise an actual stopped driver, lost DELETE responses and continuation."""
+    def setUp(self):
+        from unittest.mock import patch
+        self.h=IntegratedDriverTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        original=review.storage._consumer_object
+        def reject_created_pod(observed,desired):
+            if desired.get('kind')=='Pod' and desired.get('metadata',{}).get('name')=='roebel-case-review-migration-v1':
+                raise BootstrapStopped('synthetic old ownership incompatibility')
+            return original(observed,desired)
+        with patch.object(review.storage,'_consumer_object',side_effect=reject_created_pod):
+            with self.assertRaises(BootstrapStopped):self.h.driver.advance()
+        self.old=self.h.driver;self.old.journal['publicBaseline']={
+            'schemaVersion':'roebel_review_public_preservation_v1','planSha256':self.old.plan['planSha256'],
+            'operationsRevision':self.old.plan['pins']['operationsRevision'],'snapshot':{'syntheticFixture':True}}
+        self.old.journal['publicBaseline']['canonicalSha256']=sha(self.old.journal['publicBaseline']);self.old._commit()
+        self.pod=next(p for p in self.h.pods if p['metadata'].get('name')=='roebel-case-review-migration-v1')
+        self.pod['status'].update(phase='Failed',reason='DeadlineExceeded')
+        self.pod['status']['containerStatuses'][0].update(ready=False,state={'terminated':{'exitCode':0}})
+        self.now=NOW+timedelta(hours=2);self.old.clock=lambda:self.now
+        self.plan=copy.deepcopy(self.old.plan)
+        self.plan.update(operationId='c'*64,notBeforeUtc='2026-09-10T13:59:00.000Z',expiresAtUtc='2026-09-10T14:59:00.000Z')
+        self.plan['pins'].update(operationsRevision='d'*40,implementationSha256=sha('new admitted implementation'))
+        self.pin_plan();self.recovery=self.make_recovery()
+        # The controlled cluster has no credentials or Git server. Its readiness
+        # port checks the actual writer/fence, journal and clock at every call.
+        self.recovery.verify_ready=self.ready
+        self.old.checks.node_filesystem=lambda *args:{'podDirectoryNames':[self.plan['identities']['mountObserverPodUid']],
+            'mountInfo':f"10 1 1:1 / /var/lib/kubelet/pods/{self.plan['identities']['mountObserverPodUid']}/volumes/fixture rw - tmpfs tmpfs rw\n"}
+        self.index=0
+        self.before={p:p.read_bytes() for p in self.h.directory.glob('*') if p.is_file()}
+        self.effects_before=list(self.h.effects)
+    def pin_plan(self):self.plan['planSha256']=sha({k:v for k,v in self.plan.items() if k!='planSha256'})
+    def make_recovery(self):
+        return review.ExpiredReviewSetupRecovery(self.old,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            expected_driver_sha256=sha(self.old.journal),expected_worker_pod_uid=self.pod['metadata']['uid'])
+    def ready(self):
+        if not review._utc(self.plan['notBeforeUtc'])<=self.now<review._utc(self.plan['expiresAtUtc']):raise BootstrapStopped('window closed')
+        if not self.h.flux['spec']['suspend'] or self.h.control['spec']['replicas']!=0:raise BootstrapStopped('fence changed')
+        self.assertEqual(sha(self.old.journal),self.recovery.driver_pin)
+        return {'canonicalSha256':sha('synthetic verified configuration')}
+    def sink(self):
+        self.index+=1;self.output=ReceiptSink.reserve(self.h.directory/f'expired-{self.index}.json');return self.output
+    def retire(self,prior=None):
+        return self.recovery.retire(sink=self.sink(),prior=prior,expected_prior_sha256=prior['canonicalSha256'] if prior else None)
+    def test_expired_setup_continues_all_stages_without_replaying_fences_or_changing_old_receipts(self):
+        retired=self.retire();self.assertEqual(retired['status'],'retired')
+        changes=self.h.effects[len(self.effects_before):]
+        self.assertEqual([m for m,p in changes],['DELETE']*3)
+        self.assertEqual([p for m,p in changes],[self.recovery.paths[k] for k in ('pod','configMap','networkPolicy')])
+        # All fixture DELETEs lose their response after application. None repeats.
+        again=self.retire(retired);self.assertEqual(again['status'],'retired');self.assertEqual(self.h.effects[len(self.effects_before):],changes)
+        directory=self.h.directory/'continued'
+        result=self.recovery.continue_fenced(again,expected_retirement_sha256=again['canonicalSha256'],artifact_directory=directory,sink=self.sink())
+        prior=json.loads(Path(result['driverJournal']).read_text())
+        self.assertEqual(prior['canonicalSha256'],result['driverJournalSha256'])
+        self.assertEqual(prior['previousReceiptSha256'],self.recovery.driver_pin)
+        self.assertEqual(set(prior['children']),{'fence','initializer'})
+        for p,raw in self.before.items():self.assertEqual(p.read_bytes(),raw)
+        self.h.plan=self.plan;self.h.directory=directory;self.h.runtime_now=self.now;self.h.new_driver(prior)
+        self.h.driver.clock=lambda:self.now
+        completed=self.h.driver.advance()
+        self.assertEqual(completed['status'],'complete')
+        self.assertEqual([r['step'] for r in completed['completed']],list(review.STEPS))
+        after=self.h.effects[len(self.effects_before):]
+        self.assertEqual(sum(m=='capture-backup' and p=='invoke' for m,p in after),1)
+        self.assertEqual(sum(m=='SIGTERM' for m,p in after),1)
+        self.assertFalse(self.h.flux['spec']['suspend'])
+        self.assertTrue(list(directory.glob('encrypted-*/case-backup.age')))
+        for p,raw in self.before.items():self.assertEqual(p.read_bytes(),raw)
+    def test_running_replaced_and_drifted_workers_are_preserved(self):
+        original=copy.deepcopy(self.pod)
+        for change in ('running','replacement','injected-code'):
+            with self.subTest(change=change):
+                self.pod.clear();self.pod.update(copy.deepcopy(original))
+                if change=='running':self.pod['status']['phase']='Running'
+                elif change=='replacement':self.pod['metadata']['uid']=uid(991)
+                else:self.pod['spec']['containers'][0]['command']=['foreign-command']
+                with self.assertRaises(BootstrapStopped):self.retire()
+                self.assertEqual(self.h.effects,self.effects_before)
+    def test_closed_window_and_lost_fence_cannot_delete(self):
+        self.now+=timedelta(hours=1)
+        with self.assertRaises(BootstrapStopped):self.retire()
+        self.now-=timedelta(hours=1);self.h.flux['spec']['suspend']=False
+        with self.assertRaises(BootstrapStopped):self.retire()
+        self.assertEqual(self.h.effects,self.effects_before)
+    def test_live_readiness_uses_new_window_and_main_revision_with_the_old_fence(self):
+        from unittest.mock import Mock,patch
+        gate=object.__new__(review.ReviewLiveChecks)
+        gate.root=self.h.root;gate.plan=self.old.plan;gate.candidate=self.old.candidate
+        gate.source=self.h.core.build_plan(self.h.root);gate.transport=self.h
+        self.old.checks=SimpleNamespace(_objects=gate._objects,_stores=Mock(),_public=Mock(),adapter=object(),
+            source_fd=11,target_fd=12,source_receipt={},source_receipt_pin=sha('source'),target_receipt={})
+        path='/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations'
+        source={'metadata':{'generation':1},'spec':{'url':'https://github.com/GiraeffleAeffle/roebel-staging-operations.git','ref':{'branch':'main'}},
+            'status':{'artifact':{'revision':'main@sha1:'+self.plan['pins']['operationsRevision']},'observedGeneration':1,'conditions':[{'type':'Ready','status':'True'}]}}
+        self.h.objects[path]=source
+        with patch.object(review,'verify_review_implementation') as implementation,patch.object(review,'verify_review_gitops_checkout'),\
+             patch.object(self.h.core,'_verifier',return_value=SimpleNamespace(verify_tree=lambda root:None)),\
+             patch.object(review,'observe_review_public_preservation') as public,patch.object(review,'observe_review_configuration',return_value={'verified':True}) as configuration:
+            run=lambda:review.ExpiredReviewSetupRecovery.verify_ready(self.recovery)
+            self.assertEqual(run(),{'verified':True})
+            implementation.assert_called_once_with(self.h.root,self.plan)
+            self.assertEqual(configuration.call_args.args[0],self.plan)
+            self.assertEqual(public.call_args.args[1],self.old.plan)
+            self.h.control['spec']['replicas']=1
+            with self.assertRaises(BootstrapStopped):run()
+            self.h.control['spec']['replicas']=0;source['status']['artifact']['revision']='main@sha1:'+self.old.plan['pins']['operationsRevision']
+            with self.assertRaises(BootstrapStopped):run()
+            source['status']['artifact']['revision']='main@sha1:'+self.plan['pins']['operationsRevision'];self.now+=timedelta(hours=1)
+            with self.assertRaises(BootstrapStopped):run()
+        self.assertEqual(self.h.effects,self.effects_before)
+    def test_retains_policy_until_host_mount_release_and_recovers_owned_deletion(self):
+        normal=self.recovery.release;self.recovery.release=lambda:None
+        first=self.retire();self.assertEqual(first['status'],'waiting')
+        self.assertEqual([m for m,p in self.h.effects[len(self.effects_before):]],['DELETE'])
+        self.recovery.release=normal
+        self.assertEqual(self.retire(first)['status'],'retired')
+        self.assertEqual([m for m,p in self.h.effects[len(self.effects_before):]],['DELETE']*3)
+    def test_plan_changes_and_work_after_creation_cannot_be_carried(self):
+        original=copy.deepcopy(self.plan)
+        for kind in ('case','store','window','operation'):
+            self.plan=copy.deepcopy(original)
+            if kind=='case':self.plan['caseId']='urn:stadtstack:synthetic-case:municipality:roebel-mueritz:'+uid(999)
+            elif kind=='store':self.plan['identities']['targetPvcUid']=uid(998)
+            elif kind=='window':self.plan['notBeforeUtc']='2026-09-10T11:59:00.000Z';self.plan['expiresAtUtc']='2026-09-10T12:59:00.000Z'
+            else:self.plan['operationId']=self.old.plan['operationId']
+            self.pin_plan()
+            with self.assertRaises(BootstrapStopped):self.make_recovery()
+        self.plan=original;self.old.journal['children']['verify-backup']=self.old.journal['children']['worker-create']
+        with self.assertRaises(BootstrapStopped):self.make_recovery()
 
 
 class ReviewRecoveryImplementationTests(unittest.TestCase):

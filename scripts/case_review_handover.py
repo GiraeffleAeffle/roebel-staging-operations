@@ -2800,3 +2800,219 @@ def create_review_handover_session(root, plan, candidate, *, runner, snapshot, t
         worker_transport_factory=worker_transport,checks=checks,backup_options=backup_options,artifact_directory=artifact_directory,
         sink=sink,target_checkout=target_checkout,expected_target_revision=expected_target_revision,prior=prior,
         expected_prior_sha256=expected_prior_sha256,clock=clock,recovery_implementation=recovery_implementation)
+
+
+class ExpiredReviewSetupRecovery:
+    """Retire an expired, never-used worker and carry verified fencing forward.
+
+    The predecessor remains immutable. A new, separately pinned one-hour plan
+    may change only its operation, window and admitted implementation. This is
+    limited to the stopped creation intent before the first backup command;
+    it cannot renew a migration that has already touched either database.
+    """
+    def __init__(self, driver, plan, *, expected_plan_sha256,
+                 expected_driver_sha256, expected_worker_pod_uid):
+        old=driver.plan
+        validate_plan(plan,expected_plan_sha256)
+        _require(canonical_sha256(driver.journal)==expected_driver_sha256,
+                 'expired setup predecessor journal changed')
+        _require(plan['caseId']==old['caseId'] and plan['identities']==old['identities'] and
+                 {k:v for k,v in plan['pins'].items() if k not in ('operationsRevision','implementationSha256')}==
+                 {k:v for k,v in old['pins'].items() if k not in ('operationsRevision','implementationSha256')} and
+                 plan['operationId']!=old['operationId'] and _utc(plan['notBeforeUtc'])>=_utc(old['expiresAtUtc']),
+                 'expired setup continuation changes the Case or retained resources')
+        _require(isinstance(expected_worker_pod_uid,str) and UUID.fullmatch(expected_worker_pod_uid) and
+                 expected_worker_pod_uid not in old['identities'].values(), 'expired worker UID invalid')
+        _require(set(driver.journal['children'])=={'fence','initializer','worker-create'} and
+                 set(driver.journal['releases'])=={'source'} and driver.journal['publicBaseline'] is not None,
+                 'expired setup has work beyond worker creation')
+        parent=driver._read(driver.journal['parent']);state=_state(old,parent,parent['canonicalSha256'])
+        _require(state['status']=='stopped-preserve-state' and len(state['completed'])==2 and
+                 state['pending']=='verify-backup', 'expired setup is not stopped before backup')
+        for record in state['completed']:
+            _require(driver.observe(old,record['step'],state)==record['evidence'], 'expired setup completed evidence changed')
+        created=driver.child('worker-create')
+        _require(created.get('schemaVersion')=='roebel_review_worker_lifecycle_v1' and
+                 created.get('operation')=='create' and created.get('workerSha256')==driver.worker['workerSha256'] and
+                 created.get('status')=='stopped-preserve-state' and set(created.get('records',{}))==set(WORKER_RESOURCE_ORDER) and
+                 created['records']['pod']=={'uid':None,'resourceVersion':None,'observed':False} and
+                 all(created['records'][k].get('observed') is True and UUID.fullmatch(created['records'][k].get('uid',''))
+                     for k in ('networkPolicy','configMap')), 'expired setup lacks its unused worker intent')
+        _validate_lifecycle_worker(driver.root,old,driver.worker,driver.candidate)
+        self.driver,self.plan,self.parent=driver,copy.deepcopy(plan),parent
+        self.driver_pin,self.pod_uid=expected_driver_sha256,expected_worker_pod_uid
+        self.created=created
+        self.paths={k:v+'/'+driver.worker[k]['metadata']['name'] for k,v in _worker_inventory(driver.worker).items()}
+
+    def verify_ready(self):
+        """Use the new window for writes, the old plan only for historical reads."""
+        driver,plan=self.driver,self.plan;checks=driver.checks
+        def window():
+            _require(_utc(plan['notBeforeUtc'])<=driver.clock()<_utc(plan['expiresAtUtc']), 'expired setup recovery window closed')
+        window()
+        _require(canonical_sha256(driver.journal)==self.driver_pin, 'expired setup journal changed during recovery')
+        verify_review_implementation(driver.root,plan)
+        verify_review_gitops_checkout(driver.root,plan,driver.candidate,target_checkout=driver.target_checkout,
+                                      expected_target_revision=driver.expected_target_revision)
+        from . import case_runtime_bootstrap as core
+        core._verifier().verify_tree(driver.root)
+        source=driver.transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
+        _require(source and not source.get('metadata',{}).get('deletionTimestamp') and
+                 source.get('spec',{}).get('url')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git' and
+                 source['spec'].get('ref')=={'branch':'main'} and not source['spec'].get('suspend',False) and
+                 source.get('status',{}).get('artifact',{}).get('revision')=='main@sha1:'+plan['pins']['operationsRevision'] and
+                 source['status'].get('observedGeneration')==source.get('metadata',{}).get('generation') and
+                 any(c.get('type')=='Ready' and c.get('status')=='True' for c in source['status'].get('conditions',[])) and
+                 not any(c.get('type') in ('Reconciling','Stalled') and c.get('status')=='True' for c in source['status'].get('conditions',[])),
+                 'expired setup recovery implementation is not admitted on main')
+        parent={k:v for k,v in self.parent.items() if k!='canonicalSha256'}
+        checks._objects(parent,driver);checks._stores(driver);checks._public(driver)
+        baseline=driver.journal['publicBaseline']
+        observe_review_public_preservation(driver.root,driver.plan,expected_plan_sha256=driver.plan['planSha256'],
+            parent_receipt=self.parent,expected_parent_sha256=self.parent['canonicalSha256'],adapter=checks.adapter,
+            baseline=baseline,expected_baseline_sha256=baseline['canonicalSha256'],allow_reader_degraded=True)
+        configuration=observe_review_configuration(plan,expected_plan_sha256=plan['planSha256'],source_fd=checks.source_fd,
+            target_fd=checks.target_fd,source_receipt=checks.source_receipt,expected_source_receipt_sha256=checks.source_receipt_pin,
+            target_receipt=checks.target_receipt,transport=driver.transport,clock=driver.clock)
+        window()
+        return configuration
+
+    def release(self):
+        return observe_mount_release(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            transport=self.driver.transport,node_filesystem=self.driver.checks.node_filesystem,
+            verify_ready=lambda unused:self.verify_ready(),migration_pod_uid=self.pod_uid)
+
+    def retire(self, *, sink, prior=None, expected_prior_sha256=None):
+        """Delete only the owned terminal Pod, then its code and deny-all policy.
+
+        Save each UID/RV intent before DELETE. A lost response is observed once;
+        recovery never resends it. Host release precedes policy/code deletion.
+        """
+        initial={'schemaVersion':'roebel_expired_review_setup_retirement_v1','planSha256':self.plan['planSha256'],
+                 'predecessorDriverSha256':self.driver_pin,'creationReceiptSha256':self.created['canonicalSha256'],
+                 'workerPodUid':self.pod_uid,'previousReceiptSha256':None,'status':'reserved','records':{},'release':None}
+        state=copy.deepcopy(initial);order=('pod','configMap','networkPolicy')
+        identities={k:self.created['records'][k]['uid'] for k in ('configMap','networkPolicy')}|{'pod':self.pod_uid}
+        if prior is not None:
+            state=_worker_lifecycle_receipt(prior,expected_prior_sha256)
+            _closed(state,initial,'expired setup retirement receipt shape changed')
+            _require(all(state[k]==initial[k] for k in ('schemaVersion','planSha256','predecessorDriverSha256','creationReceiptSha256','workerPodUid')) and
+                     state['status'] in ('reserved','intent','waiting','stopped-preserve-state','retired') and
+                     isinstance(state['records'],dict) and set(state['records'])==set(order[:len(state['records'])]),
+                     'expired setup retirement binding changed')
+            for index,key in enumerate(order[:len(state['records'])]):
+                record=state['records'][key]
+                _closed(record,{'uid','resourceVersion','absent'},'expired setup delete intent changed')
+                _require(record['uid']==identities[key] and isinstance(record['resourceVersion'],str) and record['resourceVersion'].isdigit() and
+                         type(record['absent']) is bool and (record['absent'] or index==len(state['records'])-1), 'expired setup delete order changed')
+            state['previousReceiptSha256']=expected_prior_sha256
+        else:_require(expected_prior_sha256 is None,'expired setup orphan recovery pin')
+        def commit(status):
+            state['status']=status;sink.commit(copy.deepcopy(state))
+            return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
+        def released():
+            proof=self.release()
+            if proof is None:return False
+            _worker_lifecycle_receipt(proof,proof.get('canonicalSha256'))
+            _require(proof.get('planSha256')==self.plan['planSha256'] and proof.get('schemaVersion')=='roebel_review_migration_mount_release_v1' and
+                     proof.get('evidence')=={'migrationPodUid':self.pod_uid,'apiAbsent':True,'mountAbsent':True,'positiveControlVerified':True},
+                     'expired setup physical release changed')
+            state['release']=proof;return True
+        try:
+            commit(state['status']);self.verify_ready()
+            for key in order:
+                self.verify_ready()
+                if key!='pod' and not released():return commit('waiting')
+                path=self.paths[key];observed=self.driver.transport.request('GET',path,None);record=state['records'].get(key)
+                if record is None:
+                    _require(observed is not None,'expired setup resource absent without deletion intent')
+                    identity=storage._consumer_object(observed,self.driver.worker[key])
+                    _require(identity['uid']==identities[key],'expired setup worker resource replaced')
+                    if key=='pod':
+                        status=observed.get('status',{});containers=status.get('containerStatuses',[])
+                        _require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1 and
+                                 containers[0].get('name')=='migration' and containers[0].get('restartCount')==0 and
+                                 set(containers[0].get('state',{}))=={'terminated'} and containers[0]['state']['terminated'].get('exitCode')==0,
+                                 'expired setup worker is not the unused terminal worker')
+                    record={'uid':identity['uid'],'resourceVersion':identity['resourceVersion'],'absent':False}
+                    state['records'][key]=record;commit('intent');self.verify_ready()
+                    # Refresh the transport's observed precondition after readiness reads.
+                    current=self.driver.transport.request('GET',path,None)
+                    _require(current==observed,'expired setup resource changed before deletion')
+                    try:self.driver.transport.request('DELETE',path,{'apiVersion':'v1','kind':'DeleteOptions',
+                        'preconditions':{'uid':record['uid'],'resourceVersion':record['resourceVersion']}})
+                    except Exception:pass
+                    observed=self.driver.transport.request('GET',path,None)
+                if observed is not None:
+                    _require(not record['absent'] and observed.get('metadata',{}).get('uid')==record['uid'], 'expired setup resource replaced after deletion')
+                    return commit('waiting')
+                record['absent']=True;commit('reserved')
+            self.verify_ready()
+            if not released():return commit('waiting')
+            return commit('retired')
+        except Exception:
+            try:commit('stopped-preserve-state')
+            except Exception:pass
+            raise BootstrapStopped('expired setup recovery stopped; preserve receipts and both volumes') from None
+
+    def continue_fenced(self, retirement, *, expected_retirement_sha256, artifact_directory, sink):
+        """Re-attest the completed prefix into a new journal, without replaying it.
+
+        Every carried receipt links its untouched predecessor. No worker intent
+        or database stage is carried; the normal driver creates the new worker.
+        The output directory must be fresh, and the final receipt links all of
+        the evidence needed to resume after a process exits.
+        """
+        import os,stat,secrets
+        from pathlib import Path
+        from .staging_participant_flux_bootstrap import ReceiptSink
+        retired=_worker_lifecycle_receipt(retirement,expected_retirement_sha256)
+        _require(retired.get('schemaVersion')=='roebel_expired_review_setup_retirement_v1' and retired.get('status')=='retired' and
+                 retired.get('planSha256')==self.plan['planSha256'] and retired.get('predecessorDriverSha256')==self.driver_pin and
+                 retired.get('creationReceiptSha256')==self.created['canonicalSha256'] and retired.get('workerPodUid')==self.pod_uid and
+                 set(retired.get('records',{}))=={'pod','configMap','networkPolicy'} and all(r.get('absent') is True for r in retired['records'].values()),
+                 'expired setup retirement is incomplete')
+        configuration=self.verify_ready();release=self.release()
+        _require(release is not None,'expired worker still has a physical mount')
+        _require(all(self.driver.transport.request('GET',path,None) is None for path in self.paths.values()),'expired setup inventory reappeared')
+        directory=Path(artifact_directory)
+        _require(directory.is_absolute() and directory.parent.resolve()==directory.parent and directory!=self.driver.directory,
+                 'expired setup continuation directory invalid')
+        directory.mkdir(mode=0o700,exist_ok=False)
+        info=os.lstat(directory)
+        _require(stat.S_IMODE(info.st_mode)==0o700 and info.st_uid==os.getuid(),'expired setup continuation directory ownership changed')
+        def checkpoint(value,previous,parent):
+            ref={'file':secrets.token_hex(16)+'-checkpoint.json','prior':copy.deepcopy(previous),'parentIntent':copy.deepcopy(parent)}
+            ReceiptSink.reserve(directory/ref['file']).commit(value)
+            return ref,value|{'canonicalSha256':canonical_sha256(value)}
+        children={};carried={}
+        for name in ('fence','initializer'):
+            previous=self.driver.child(name);value=_worker_lifecycle_receipt(previous,previous['canonicalSha256'])
+            value.update(planSha256=self.plan['planSha256'],previousReceiptSha256=previous['canonicalSha256'])
+            children[name],carried[name]=checkpoint(value,previous,self.driver.journal['children'][name]['parentIntent'])
+        source_release=observe_mount_release(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            transport=self.driver.transport,node_filesystem=self.driver.checks.node_filesystem,verify_ready=lambda unused:self.verify_ready())
+        _require(source_release is not None,'expired setup source mounts reappeared')
+        parent=_state(self.plan,None,None)
+        parent['previousReceiptSha256']=self.parent['canonicalSha256']
+        parent['completed']=copy.deepcopy(self.parent['completed'])
+        parent['completed'][0]['evidence']['receiptSha256']=carried['fence']['canonicalSha256']
+        parent['completed'][1]['evidence']=source_release['evidence']|{'receiptSha256':source_release['canonicalSha256']}
+        parent_ref,_=checkpoint(parent,self.parent,None)
+        baseline=_worker_lifecycle_receipt(self.driver.journal['publicBaseline'],self.driver.journal['publicBaseline']['canonicalSha256'])
+        baseline.update(planSha256=self.plan['planSha256'],operationsRevision=self.plan['pins']['operationsRevision'])
+        worker=compile_migration_worker(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],candidate=self.driver.candidate,
+            expected_candidate_sha256=self.driver.candidate['candidateSha256'],node_name=self.driver.worker['nodeName'])
+        journal={'schemaVersion':'roebel_review_driver_v1','planSha256':self.plan['planSha256'],
+                 'candidateSha256':self.driver.candidate['candidateSha256'],'workerSha256':worker['workerSha256'],
+                 'artifactDirectory':str(directory),'previousReceiptSha256':self.driver_pin,'parent':parent_ref,'children':children,
+                 'releases':{'source':source_release},'publicBaseline':baseline|{'canonicalSha256':canonical_sha256(baseline)}}
+        self.verify_ready()
+        journal_path=directory/'continued-driver.json';ReceiptSink.reserve(journal_path).commit(journal)
+        result={'schemaVersion':'roebel_expired_review_setup_continuation_v1','planSha256':self.plan['planSha256'],
+                'predecessorDriverSha256':self.driver_pin,'retirementReceiptSha256':expected_retirement_sha256,
+                'predecessorPublicBaselineSha256':self.driver.journal['publicBaseline']['canonicalSha256'],
+                'configurationReceiptSha256':configuration['canonicalSha256'],'migrationRelease':release,
+                'driverJournal':str(journal_path),'driverJournalSha256':canonical_sha256(journal),'status':'fenced-prefix-reverified'}
+        sink.commit(result)
+        return result|{'canonicalSha256':canonical_sha256(result)}
