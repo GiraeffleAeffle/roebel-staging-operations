@@ -2094,3 +2094,130 @@ class ReviewRecoveryImplementationTests(unittest.TestCase):
         with self.assertRaises(BootstrapStopped):review.verify_review_recovery_lineage(self.plan,self.binding,None,None,directory)
         (directory/('b'*32+'-driver.json')).unlink()
         with self.assertRaises(BootstrapStopped):verify()
+
+
+class ReviewFinalizationTests(unittest.TestCase):
+    """Continue a real six-stage migration with lost write/signal responses."""
+    def setUp(self):
+        self.h=IntegratedDriverTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        h=self.h;self.plan=h.plan;self.directory=h.directory
+        baseline={'schemaVersion':'synthetic_public_baseline','planSha256':self.plan['planSha256']}
+        h.driver.journal['publicBaseline']=baseline|{'canonicalSha256':sha(baseline)};h.driver._commit()
+        complete=h.verify_complete
+        def stop(plan,parent,child,driver):
+            if parent['pending']=='start-review-runtime':raise BootstrapStopped('synthetic post-apply verifier stop')
+            return complete(plan,parent,child,driver)
+        h.verify_complete=stop
+        with self.assertRaises(BootstrapStopped):h.driver.advance()
+        h.verify_complete=complete
+        h.runtime['metadata']['name']='roebel-case-steward-control-synthetic'
+        self.anchor=json.loads(h.journal_sink.path.read_text())
+        ReceiptSink.reserve(self.directory/('a'*32+'-driver.json')).commit({k:v for k,v in self.anchor.items() if k!='canonicalSha256'})
+        before=review.observe_review_runtime(h.root,self.plan,h.candidate,expected_candidate_sha256=h.candidate['candidateSha256'],transport=h)
+        start=review._utc(self.plan['expiresAtUtc']);stamp=lambda v:v.isoformat(timespec='milliseconds').replace('+00:00','Z')
+        self.now=start+timedelta(minutes=1)
+        self.binding={'schemaVersion':review.FINALIZATION_RECOVERY,'planSha256':self.plan['planSha256'],
+            'originalRevision':self.plan['pins']['operationsRevision'],'revision':'b'*40,'implementationSha256':sha('repair'),
+            'parentJournalSha256':self.anchor['canonicalSha256'],
+            'anchorEvidenceSha256':review.review_finalization_anchor(self.plan,self.anchor,self.directory),
+            'notBeforeUtc':stamp(start),'expiresAtUtc':stamp(start+timedelta(hours=1)),'runtimeBefore':before}
+        self.effects=list(h.effects);self.index=0
+    def driver(self,prior=None):
+        h=self.h;self.index+=1;self.sink=ReceiptSink.reserve(self.directory/(f'{self.index:032x}'+'-driver.json'))
+        prior=prior or self.anchor
+        return review.ReviewHandoverDriver(h.root,self.plan,h.candidate,expected_plan_sha256=self.plan['planSha256'],
+            storage_plan=h.h.storage.storage_plan,initialization_plan=h.h.storage.plan,initialization_receipt=h.initialized,node_name='example-node',
+            transport=h,worker_transport_factory=lambda *args: self.fail('finalization must never create a worker transport'),checks=h,
+            backup_options=h.backup,artifact_directory=self.directory,sink=self.sink,prior=prior,expected_prior_sha256=prior['canonicalSha256'],
+            clock=lambda:self.now,recovery_implementation=self.binding)
+    def recover(self):return self.driver(json.loads(self.sink.path.read_text())).advance()
+    def test_tail_completes_once_and_keeps_original_plan_and_backup(self):
+        original=copy.deepcopy(self.plan);result=self.driver().advance()
+        self.assertEqual(result['status'],'complete');self.assertEqual(self.plan,original)
+        self.assertEqual(self.h.effects[len(self.effects):],[('SIGTERM',uid(8500)),('PATCH',self.kustomization_path())])
+        effects=list(self.h.effects);self.assertEqual(self.recover()['status'],'complete');self.assertEqual(self.h.effects,effects)
+        self.assertEqual(sum(e[0]=='capture-backup' and e[1]=='invoke' for e in effects),1)
+    def kustomization_path(self):
+        return f'/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/{self.h.kube.FLUX}/kustomizations/roebel-case-runtime'
+    def test_delayed_restart_and_lost_signal_response_do_not_repeat_effects(self):
+        self.h.pause_restart=True
+        self.assertEqual(self.driver().advance()['pending'],'verify-review-runtime')
+        self.assertEqual(self.recover()['pending'],'verify-review-runtime')
+        self.h.complete_restart();self.assertEqual(self.recover()['status'],'complete')
+        self.assertEqual(sum(e[0]=='SIGTERM' for e in self.h.effects),1)
+    def test_changed_window_or_runtime_pin_cannot_rebind_a_continuation(self):
+        self.h.pause_restart=True;self.driver().advance();prior=json.loads(self.sink.path.read_text())
+        for key,value in [('notBeforeUtc',self.binding['notBeforeUtc'].replace(':00.000Z',':01.000Z')),
+                          ('runtimeBefore',self.binding['runtimeBefore']|{'podUid':uid(999)})]:
+            original=copy.deepcopy(self.binding)
+            with self.subTest(key=key):
+                self.binding[key]=value
+                with self.assertRaises(BootstrapStopped):self.driver(prior)
+            self.binding=original
+    def test_expiry_and_earlier_stages_cannot_mutate(self):
+        driver=self.driver();self.now=review._utc(self.binding['expiresAtUtc'])
+        with self.assertRaises(BootstrapStopped):driver.advance()
+        self.assertEqual(self.h.effects,self.effects)
+        for length in range(6):
+            state={'completed':[{}]*length,'pending':review.STEPS[length]}
+            with self.assertRaises(BootstrapStopped):review._finalization_stage(self.plan,self.binding,state)
+        for key,value in [('notBeforeUtc',self.plan['notBeforeUtc']),('expiresAtUtc','2026-09-12T23:59:00.000Z')]:
+            bad=self.binding|{key:value}
+            with self.assertRaises(BootstrapStopped):review.review_execution_window(self.plan,bad)
+    def test_missing_or_replaced_anchor_checkpoints_and_retirement_fail(self):
+        for name in ('verify-backup','prepare-migration','activate-migration','worker-retire','start'):
+            path=self.directory/self.anchor['children'][name]['file'];raw=path.read_bytes()
+            with self.subTest(name=name):
+                path.unlink()
+                with self.assertRaises(BootstrapStopped):self.driver()
+                path.write_bytes(raw);path.chmod(0o600)
+                value=json.loads(raw);value['status']='reserved';value.pop('canonicalSha256');value['canonicalSha256']=sha(value)
+                path.write_text(json.dumps(value))
+                with self.assertRaises(BootstrapStopped):self.driver()
+                path.write_bytes(raw)
+        self.assertEqual(self.h.effects,self.effects)
+    def test_changed_container_is_rejected_before_signal(self):
+        self.h.runtime['status']['containerStatuses'][0]['containerID']='containerd://'+'c'*64
+        with self.assertRaises(BootstrapStopped):self.driver().advance()
+        self.assertFalse(any(e[0]=='SIGTERM' for e in self.h.effects))
+    def test_tampered_backup_is_not_accepted_from_the_completed_prefix(self):
+        driver=self.driver();cipher=next(self.directory.glob('encrypted-*/case-backup.age'));cipher.write_bytes(b'corrupt')
+        with self.assertRaises(BootstrapStopped):driver.advance()
+        self.assertEqual(self.h.effects,self.effects)
+
+
+class ReviewFinalizationImplementationTests(ReviewRecoveryImplementationTests):
+    def setUp(self):
+        super().setUp()
+        base=self.binding['originalRevision'];self.git('reset','--hard',base)
+        for name in ('case_review_handover.py','test_case_review_handover.py','test_case_runtime_bootstrap.py','test_run_staging_participant_gateway_live.py'):
+            path=self.root/'scripts'/name;path.write_bytes(path.read_bytes()+b'\n# Synthetic finalization fixture.\n')
+        self.git('add','scripts');self.git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Synthetic finalization implementation')
+        start=review._utc(self.plan['expiresAtUtc']);stamp=lambda v:v.isoformat(timespec='milliseconds').replace('+00:00','Z')
+        self.binding.update(schemaVersion=review.FINALIZATION_RECOVERY,revision=self.git('rev-parse','HEAD'),implementationSha256=sha(self.git('ls-tree','-r','HEAD')),
+            anchorEvidenceSha256=sha('anchor'),notBeforeUtc=stamp(start),expiresAtUtc=stamp(start+timedelta(hours=1)),
+            runtimeBefore={'podUid':uid(8500),'podName':'roebel-case-steward-control-synthetic','containerId':'containerd://'+'a'*64,'restartCount':0,'lastExitCode':None})
+    # The old worker-only lineage is deliberately rejected by this profile.
+    def test_journal_lineage_requires_the_original_stopped_worker_intent(self):
+        with self.assertRaises(BootstrapStopped):super().test_journal_lineage_requires_the_original_stopped_worker_intent()
+
+
+class FinalizationConfigurationTests(unittest.TestCase):
+    def test_live_grants_must_cover_the_entire_new_window(self):
+        h=LiveConfigurationObservationTests();h.setUp();self.addCleanup(h.doCleanups)
+        plan=h.plan;start=review._utc(plan['expiresAtUtc']);stamp=lambda v:v.isoformat(timespec='milliseconds').replace('+00:00','Z')
+        binding={'schemaVersion':review.FINALIZATION_RECOVERY,'planSha256':plan['planSha256'],
+            'originalRevision':plan['pins']['operationsRevision'],'revision':'b'*40,'implementationSha256':sha('repair'),
+            'parentJournalSha256':sha('anchor journal'),'anchorEvidenceSha256':sha('anchor evidence'),
+            'notBeforeUtc':stamp(start),'expiresAtUtc':stamp(start+timedelta(minutes=20)),
+            'runtimeBefore':{'podUid':uid(8500),'podName':'roebel-case-steward-control-synthetic','containerId':'containerd://'+'a'*64,'restartCount':0,'lastExitCode':None}}
+        def observe():
+            return review.observe_review_configuration(plan,expected_plan_sha256=plan['planSha256'],source_fd=h.fds[0],target_fd=h.fds[1],
+                source_receipt=h.receipts['source'],expected_source_receipt_sha256=h.receipts['source']['canonicalSha256'],
+                target_receipt=h.receipts['target'],transport=h,clock=lambda:review._utc(binding['notBeforeUtc'])+timedelta(seconds=1),recovery_implementation=binding)
+        self.assertEqual(observe()['configuration']['verifiedThroughUtc'],binding['expiresAtUtc'])
+        # A valid one-hour finalization window can still exceed the existing grants.
+        binding.update(notBeforeUtc=stamp(start+timedelta(hours=3)),expiresAtUtc=stamp(start+timedelta(hours=4)))
+        h.calls.clear()
+        with self.assertRaises(BootstrapStopped):observe()
+        self.assertEqual(h.calls,[])
