@@ -1,5 +1,7 @@
 """Recovery and destructive-order gates for the review handover coordinator."""
+import atexit
 import copy
+from functools import cache
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -14,6 +16,33 @@ from .staging_participant_flux_bootstrap import ReceiptSink, RawResult, canonica
 NOW = datetime(2026, 9, 10, 12, tzinfo=timezone.utc)
 sha = lambda value: canonical_sha256(value)
 uid = lambda number: f'00000000-0000-4000-8000-{number:012d}'
+
+
+@cache
+def pre_review_test_root():
+    """Use the committed source proposal even after the rollout reaches main.
+
+    Validate the current render first. One disposable Git clone supplies the
+    historical input for all migration tests; production checkout stays intact.
+    """
+    import subprocess
+    from . import case_runtime_admission as admission, case_runtime_bootstrap as core
+    root=Path(__file__).resolve().parents[1]
+    core._verifier().verify_tree(root)
+    path='reviewed-render/roebel-staging/case-runtime/resources.json'
+    source=admission.public_host_resources(json.loads((root/'proposals/synthetic-case-runtime/resources.json').read_text()))
+    if json.loads((root/path).read_text())==source:return root
+    temporary=tempfile.TemporaryDirectory(prefix='review-source-fixture-')
+    atexit.register(temporary.cleanup)
+    target=Path(temporary.name).resolve()/'source'
+    def git(*args,cwd=None):
+        return subprocess.run(['git',*args],cwd=cwd,capture_output=True,text=True,check=True)
+    git('clone','--shared','--quiet',str(root),str(target))
+    git('remote','set-url','origin','https://github.com/GiraeffleAeffle/roebel-staging-operations.git',cwd=target)
+    (target/path).write_text(json.dumps(source,indent=2)+'\n')
+    git('add',path,cwd=target)
+    git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Synthetic pre-review fixture',cwd=target)
+    return target
 
 
 def fixture():
@@ -164,7 +193,7 @@ class ReviewHandoverTests(unittest.TestCase):
 class ReviewRuntimeCompilerTests(unittest.TestCase):
     def setUp(self):
         from .test_case_review_storage import ReviewInitializationTests, ROOT
-        self.root=ROOT;self.storage=ReviewInitializationTests();self.storage.setUp();self.addCleanup(self.storage.doCleanups)
+        self.root=pre_review_test_root();self.storage=ReviewInitializationTests();self.storage.setUp();self.addCleanup(self.storage.doCleanups)
         value={'schemaVersion':'roebel_case_configuration_receipt_v1','planSha256':sha('provisioning plan'),
                'reference':{'namespace':'stadtstack-roebel-staging-lab','name':'roebel-case-steward-review-runtime-v1','key':'application-json'},
                'configurationSha256':sha('synthetic private file bytes'),'nonce':'d'*64,'status':'provisioned','uid':uid(900)}
@@ -429,7 +458,7 @@ class ReviewAdmissionTests(unittest.TestCase):
     def test_only_exact_forward_render_is_admitted(self):
         import shutil
         from . import case_runtime_bootstrap as core,case_runtime_admission as admission
-        verifier=core._verifier();base=Path(__file__).resolve().parents[1]
+        verifier=core._verifier();base=pre_review_test_root()
         with tempfile.TemporaryDirectory() as directory:
             target=Path(directory)/'candidate'
             shutil.copytree(base,target,ignore=shutil.ignore_patterns('.git','__pycache__'))

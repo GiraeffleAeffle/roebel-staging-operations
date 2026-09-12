@@ -91,6 +91,12 @@ class CaseBootstrapTests(unittest.TestCase):
                         ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
         from .test_verify_reviewed_render import normalize_case_web_seed
         normalize_case_web_seed(cls.root,bootstrap._verifier())
+        # These tests rehearse the original bootstrap and public-host repair,
+        # independently of whether main has since activated the review runtime.
+        from .case_runtime_admission import public_host_resources
+        source=json.loads((cls.root/'proposals/synthetic-case-runtime/resources.json').read_text())
+        (cls.root/'reviewed-render/roebel-staging/case-runtime/resources.json').write_text(
+            json.dumps(public_host_resources(source),indent=2)+'\n')
 
     def environment(self):
         temporary = tempfile.TemporaryDirectory()
@@ -241,7 +247,10 @@ class CaseBootstrapTests(unittest.TestCase):
                 shutil.copytree(self.root,candidate,dirs_exist_ok=True)
                 changed=candidate/path
                 if path.endswith('resources.json'):
-                    changed.write_bytes(changed.read_bytes().replace(b'0c074f77',b'1c074f77'))
+                    value=json.loads(changed.read_text())
+                    deployment=next(o for o in value['items'] if o['kind']=='Deployment')
+                    deployment['spec']['template']['spec']['containers'][0]['image']='unreviewed:latest'
+                    changed.write_text(json.dumps(value,indent=2)+'\n')
                     with self.assertRaises(verifier.VerificationError):verifier.verify_tree(candidate)
                 else:
                     changed.write_text("raise RuntimeError('candidate code must never execute')")
