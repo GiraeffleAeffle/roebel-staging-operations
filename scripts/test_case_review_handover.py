@@ -1979,6 +1979,48 @@ class TerminalCaptureRecoveryTests(unittest.TestCase):
         self.assertEqual(self.h.effects,self.effects_before)
 
 
+
+class ReviewRetainedConsumerTests(unittest.TestCase):
+    def test_realistic_non_pvc_volumes_preserve_exact_target_and_controller_checks(self):
+        from unittest.mock import patch
+        h=IntegratedDriverTests();h.setUp();self.addCleanup(h.doCleanups)
+        self.assertEqual(h.driver.advance()['status'],'complete')
+        driver=h.driver;namespace=h.kube.NAMESPACE;objects={}
+        for side,name in [('source',driver.storage_plan['source']['pvcName']),('target',review.storage.TARGET_NAME)]:
+            claim_uid=driver.plan['identities'][side+'PvcUid'];volume_name='fixture-'+side
+            objects[f'/api/v1/namespaces/{namespace}/persistentvolumeclaims/{name}']={
+                'metadata':{'uid':claim_uid,'resourceVersion':'1'},'status':{'phase':'Bound'},
+                'spec':{'accessModes':['ReadWriteOncePod'],'volumeName':volume_name}}
+            objects['/api/v1/persistentvolumes/'+volume_name]={
+                'metadata':{'uid':driver.plan['identities'][side+'PvUid'],'resourceVersion':'1'},
+                'spec':{'persistentVolumeReclaimPolicy':'Retain','claimRef':{'uid':claim_uid}}}
+        def request(method,path,payload):
+            self.assertEqual(method,'GET')
+            return copy.deepcopy(objects[path]) if path in objects else h.request(method,path,payload)
+        gate=object.__new__(review.ReviewLiveChecks)
+        gate.plan,gate.root,gate.candidate=driver.plan,driver.root,driver.candidate
+        gate.transport=SimpleNamespace(request=request)
+        pod=next(p for p in h.pods if p['metadata'].get('uid')==uid(8500))
+        volumes=pod['spec']['volumes'];saved=copy.deepcopy(volumes)
+        self.assertTrue(any('configMap' in v for v in volumes))
+        self.assertTrue(any('emptyDir' in v for v in volumes))
+        # Storage shape has its own suite. Exercise this concrete consumer gate,
+        # including full Pod/ReplicaSet comparison, with fixed retained identities.
+        with patch.object(review.storage,'_source'),patch.object(review.storage,'_claim'),patch.object(review.storage,'_volume'):
+            gate._stores(driver)
+            for claim in (driver.storage_plan['source']['pvcName'],None):
+                with self.subTest(extraClaim=claim):
+                    pod['spec']['volumes']=saved+[{'name':'foreign','persistentVolumeClaim':{'claimName':claim}}]
+                    with self.assertRaises(BootstrapStopped):gate._stores(driver)
+            pod['spec']['volumes']=saved
+            owner=pod['metadata']['ownerReferences'][0]['uid']
+            pod['metadata']['ownerReferences'][0]['uid']=uid(999)
+            with self.assertRaises(BootstrapStopped):gate._stores(driver)
+            pod['metadata']['ownerReferences'][0]['uid']=owner
+            start=driver.journal['children'].pop('start')
+            with self.assertRaises(BootstrapStopped):gate._stores(driver)
+            driver.journal['children']['start']=start
+
 class ReviewRecoveryImplementationTests(unittest.TestCase):
     def setUp(self):
         import subprocess

@@ -2638,7 +2638,7 @@ class ReviewLiveChecks:
         # Validate successor ownership and complete template even while Pending.
         # Readiness is a separate completion gate, never an ownership shortcut.
         for pod in pods['items']:
-            claims={v.get('persistentVolumeClaim',{}).get('claimName') for v in pod.get('spec',{}).get('volumes',[])}
+            claims={v['persistentVolumeClaim'].get('claimName') for v in pod.get('spec',{}).get('volumes',[]) if 'persistentVolumeClaim' in v}
             if not claims & {driver.storage_plan['source']['pvcName'],storage.TARGET_NAME}:continue
             if pod['metadata']['uid'] in owned:continue
             _require(start_intent and claims=={storage.TARGET_NAME},'unexpected retained-volume consumer')
