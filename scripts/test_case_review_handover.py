@@ -243,6 +243,7 @@ class ReviewRuntimeCompilerTests(unittest.TestCase):
                     expected_candidate_sha256=candidate['candidateSha256'],node_name='example-node')
 
 
+
 class SourceFenceTests(unittest.TestCase):
     def setUp(self):
         from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
@@ -507,6 +508,34 @@ class WorkerTransportTests(unittest.TestCase):
         command,data,timeout=calls[0];self.assertEqual(command[-2:],['--expected-worker-uid',self.pod_uid]);self.assertIn('-i',command)
         self.assertNotIn('-t',command);self.assertEqual(timeout,60);self.assertEqual(json.loads(data),self.request)
         self.assertEqual(sum(c[0][-1]==self.pod_path for c in self.calls),2)
+
+    def test_unused_mailbox_observer_is_read_only_and_keeps_ownership_checks_after_expiry(self):
+        value={'schemaVersion':'roebel_unused_review_worker_v1','workerPodUid':self.pod_uid,'requestCount':0,
+            **{k:self.plan['pins'][k] for k in ('sourceConfigurationSha256','targetConfigurationSha256')}}
+        self.output=json.dumps(value);self.transport.clock=lambda:NOW+timedelta(hours=2)
+        self.assertEqual(self.transport.observe_unused()['workerPodUid'],self.pod_uid)
+        call=next(c for c in self.calls if 'exec' in c[0])
+        self.assertEqual(call[0][-3:],['node','-e',review.UNUSED_REVIEW_MAILBOX_JS]);self.assertIsNone(call[1])
+        self.assertNotIn('-i',call[0])
+        for changed in ({'requestCount':1},{'requestCount':False},{'workerPodUid':uid(994)}):
+            self.output=json.dumps(value|changed)
+            with self.assertRaises(BootstrapStopped):self.transport.observe_unused()
+        self.output=json.dumps(value);self.after_fault=True
+        with self.assertRaises(BootstrapStopped):self.transport.observe_unused()
+
+    def test_unused_mailbox_probe_rejects_even_an_empty_reserved_request(self):
+        import hashlib,os,subprocess
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary).resolve();directory.chmod(0o700)
+            for side in ('source','target'):
+                path=directory/(side+'.json');path.write_bytes(b'{}');path.chmod(0o600)
+            program=review.UNUSED_REVIEW_MAILBOX_JS.replace("root='/work/private'",'root='+json.dumps(str(directory)))
+            def run():return subprocess.run(['node','-e',program],capture_output=True,text=True,timeout=10,
+                env=os.environ|{'ROEBEL_REVIEW_WORKER_UID':self.pod_uid})
+            good=run();self.assertEqual(good.returncode,0,good.stderr)
+            self.assertEqual(json.loads(good.stdout)['sourceConfigurationSha256'],'sha256:'+hashlib.sha256(b'{}').hexdigest())
+            (directory/('request-'+'a'*64)).mkdir(mode=0o700)
+            stopped=run();self.assertEqual(stopped.returncode,78);self.assertEqual(stopped.stdout,'')
     def test_cri_digest_identity_and_window_expiring_during_reads(self):
         self.objects[self.pod_path]['status']['containerStatuses'][0]['imageID']='containerd://'+self.plan['pins']['migrationImageDigest']
         self.assertEqual(self.exchange()['status'],'private-archive-captured')
@@ -1791,6 +1820,64 @@ class ExpiredReviewSetupRecoveryTests(unittest.TestCase):
             with self.assertRaises(BootstrapStopped):self.make_recovery()
         self.plan=original;self.old.journal['children']['verify-backup']=self.old.journal['children']['worker-create']
         with self.assertRaises(BootstrapStopped):self.make_recovery()
+
+
+class UnstartedReviewSetupRecoveryTests(unittest.TestCase):
+    pin_plan=ExpiredReviewSetupRecoveryTests.pin_plan
+    ready=ExpiredReviewSetupRecoveryTests.ready
+    sink=ExpiredReviewSetupRecoveryTests.sink
+    retire=ExpiredReviewSetupRecoveryTests.retire
+    test_continues_without_replaying_old_intent=ExpiredReviewSetupRecoveryTests.test_expired_setup_continues_all_stages_without_replaying_fences_or_changing_old_receipts
+    test_preserves_after_lost_delete=ExpiredReviewSetupRecoveryTests.test_retains_policy_until_host_mount_release_and_recovers_owned_deletion
+    test_closed_window_and_lost_fence_cannot_delete=ExpiredReviewSetupRecoveryTests.test_closed_window_and_lost_fence_cannot_delete
+
+    def setUp(self):
+        from unittest.mock import patch
+        self.h=IntegratedDriverTests();self.h.setUp();self.addCleanup(self.h.doCleanups)
+        with patch.object(self.h,'exchange',side_effect=BootstrapStopped('entry did not create a reservation')):
+            self.assertEqual(self.h.driver.advance()['status'],'awaiting-evidence')
+        self.old=self.h.driver
+        self.old.journal['publicBaseline']={'schemaVersion':'roebel_review_public_preservation_v1',
+            'planSha256':self.old.plan['planSha256'],'operationsRevision':self.old.plan['pins']['operationsRevision'],'snapshot':{'syntheticFixture':True}}
+        self.old.journal['publicBaseline']['canonicalSha256']=sha(self.old.journal['publicBaseline']);self.old._commit()
+        self.pod=next(p for p in self.h.pods if p['metadata'].get('name')=='roebel-case-review-migration-v1')
+        self.now=NOW+timedelta(hours=2);self.old.clock=lambda:self.now
+        self.plan=copy.deepcopy(self.old.plan)
+        self.plan.update(operationId='c'*64,notBeforeUtc='2026-09-10T13:59:00.000Z',expiresAtUtc='2026-09-10T14:59:00.000Z')
+        self.plan['pins'].update(operationsRevision='d'*40,implementationSha256=sha('repaired worker entry'));self.pin_plan()
+        self.recovery=self.make_recovery();self.recovery.verify_ready=self.ready
+        self.mailbox_empty=True
+        self.old.worker_transport_factory=lambda identity,ready:SimpleNamespace(observe_unused=self.observe_unused)
+        self.old.checks.node_filesystem=lambda *args:{'podDirectoryNames':[self.plan['identities']['mountObserverPodUid']],
+            'mountInfo':f"10 1 1:1 / /var/lib/kubelet/pods/{self.plan['identities']['mountObserverPodUid']}/volumes/fixture rw - tmpfs tmpfs rw\n"}
+        self.index=0;self.before={p:p.read_bytes() for p in self.h.directory.glob('*') if p.is_file()};self.effects_before=list(self.h.effects)
+
+    def make_recovery(self):
+        return review.ExpiredReviewSetupRecovery(self.old,self.plan,expected_plan_sha256=self.plan['planSha256'],
+            expected_driver_sha256=sha(self.old.journal),expected_worker_pod_uid=self.pod['metadata']['uid'],unstarted_capture=True,recovery_root=self.h.root)
+
+    def observe_unused(self):
+        if not self.mailbox_empty:raise BootstrapStopped('reserved invocation exists')
+        value={'schemaVersion':'roebel_unused_review_worker_v1','workerPodUid':self.pod['metadata']['uid'],'requestCount':0,
+            'planSha256':self.old.plan['planSha256'],'workerSha256':self.old.worker['workerSha256'],
+            **{k:self.old.plan['pins'][k] for k in ('sourceConfigurationSha256','targetConfigurationSha256')}}
+        return value|{'canonicalSha256':sha(value)}
+
+    def test_reserved_mailbox_or_replaced_worker_cannot_be_deleted(self):
+        self.mailbox_empty=False
+        with self.assertRaises(BootstrapStopped):self.retire()
+        self.assertEqual(self.h.effects,self.effects_before)
+        self.mailbox_empty=True;self.pod['metadata']['uid']=uid(993)
+        with self.assertRaises(BootstrapStopped):self.retire()
+        self.assertEqual(self.h.effects,self.effects_before)
+
+    def test_backup_artifact_or_later_command_cannot_be_carried(self):
+        ref=self.old.journal['children']['verify-backup'];path=self.old.directory/ref['file'];original=path.read_bytes()
+        for key,value in (('backupReceipt',{'started':True}),('evidence',{'started':True}),('commands',{'verify-backup':{}})):
+            stage=json.loads(original);stage[key]=value;stage.pop('canonicalSha256');stage['canonicalSha256']=sha(stage)
+            path.write_text(json.dumps(stage))
+            with self.assertRaises(BootstrapStopped):self.make_recovery()
+        path.write_bytes(original)
 
 
 class ReviewRecoveryImplementationTests(unittest.TestCase):

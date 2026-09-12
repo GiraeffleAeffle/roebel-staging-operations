@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { closeSync, fchmodSync, ftruncateSync, linkSync, mkdtempSync, openSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fchmodSync, ftruncateSync, linkSync, mkdtempSync, openSync, realpathSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { canonical, CONTROL_IMAGE_DIGEST, runReviewMigration, invokeWorkerRequest, readWorkerOutput, uploadWorkerArchive, verifyWorkerArchive, SOURCE_REVISION } from "./run-case-review-migration.mjs";
+
+test("CLI validates arguments when entered through a ConfigMap-style symlink", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "case-review-cli-link-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const mounted = join(directory, "run-case-review-migration.mjs");
+  symlinkSync(fileURLToPath(new URL("./run-case-review-migration.mjs", import.meta.url)), mounted);
+  const result = spawnSync(process.execPath, [mounted], { encoding: "utf8", timeout: 10_000 });
+  assert.equal(result.status, 78);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "Case review migration stopped; preserve source, target and private receipts.\n");
+});
 
 export const hash = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 export const departments = ["planning", "traffic", "environment", "finance", "legal", "public-order", "social-affairs", "public-works"];
@@ -140,6 +153,27 @@ test("worker mailbox reserves once and recovers a result without repeating runti
   const path=join(root,`request-${pin.slice(7)}`,"result.json");
   writeFileSync(path,"private corruption must not escape");
   stopped(()=>readWorkerOutput(root,pin));
+});
+
+test("worker removes inherited setgid without admitting a group-readable mailbox", async t => {
+  for (const mode of [0o750, 0o2700]) await t.test(mode.toString(8), t => {
+    const h=files(t),root=realpathSync(h.root),effects=[];
+    writeFileSync(join(root,"source.json"),canonical(h.source),{mode:0o600});
+    writeFileSync(join(root,"target.json"),canonical(h.target),{mode:0o600});
+    chmodSync(root,mode);
+    if ((statSync(root).mode&0o7777)!==mode) {t.skip("host clears setgid; Linux CI exercises inheritance");return;}
+    const bytes=Buffer.from(canonical(h.request));
+    if (mode===0o750) {
+      stopped(()=>invokeWorkerRequest(root,bytes,hash(bytes),fakeRuntime(effects)));
+      assert.equal(effects.length,0);assert.equal(statSync(root).mode&0o7777,mode);
+    } else {
+      assert.equal(invokeWorkerRequest(root,bytes,hash(bytes),fakeRuntime(effects)).status,"candidate-prepared");
+      assert.equal(statSync(root).mode&0o7777,0o700);
+      assert.equal(JSON.parse(readWorkerOutput(root,hash(bytes))).mode,"prepare");
+      stopped(()=>invokeWorkerRequest(root,bytes,hash(bytes),fakeRuntime(effects)));
+      assert.equal(effects.length,1);
+    }
+  });
 });
 
 test("worker rejects wrong bytes and unsafe private inputs; an interrupted reservation stays reserved", t => {

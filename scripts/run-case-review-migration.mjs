@@ -3,7 +3,7 @@
  * This program never connects to a cluster, submits an adoption or binds HTTP.
  */
 import { createHash } from "node:crypto";
-import { constants, closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeSync } from "node:fs";
+import { constants, closeSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { captureSealedCase, captureNewlySealedCase, verifyRestoredCase, MAX_ARCHIVE_BYTES } from "./case_review_backup.mjs";
@@ -238,8 +238,22 @@ export function verifyWorkerArchive(root, pin) {
 export function invokeWorkerRequest(root, requestBytes, expectedRequestSha256, runtime) {
   const opened = [];
   try {
-    workerRoot(root); const name = pinName(expectedRequestSha256);
+    const name = pinName(expectedRequestSha256);
     if (!Buffer.isBuffer(requestBytes) || !requestBytes.length || requestBytes.length > MAX_BYTES || digest(requestBytes) !== expectedRequestSha256) fail();
+    // Kubernetes fsGroup volumes may pass setgid to mkdir(0700). Remove only
+    // that inherited bit on the owned mailbox; never broaden its permissions.
+    if (typeof root !== "string" || realpathSync(root) !== root) fail();
+    const before = lstatSync(root);
+    if (!before.isDirectory() || before.uid !== process.getuid() || ![0o700, 0o2700].includes(before.mode & 0o7777)) fail();
+    if ((before.mode & 0o7777) === 0o2700) {
+      const fd = openSync(root, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const current = fstatSync(fd);
+        if (current.dev !== before.dev || current.ino !== before.ino || current.mode !== before.mode || current.uid !== before.uid) fail();
+        fchmodSync(fd, 0o700); fsyncSync(fd);
+      } finally { closeSync(fd); }
+    }
+    workerRoot(root);
     const request = JSON.parse(new TextDecoder("utf-8", {fatal:true}).decode(requestBytes));
     if (!["prepare", "activate", "capture-backup", "verify-backup"].includes(request.mode)) fail();
     // This durable reservation remains on all failures. Never unlink or reuse it.
@@ -306,7 +320,7 @@ function parseArguments(args) {
     sourceConfigFd: found.get("source-config-fd"), targetConfigFd: found.get("target-config-fd"), resultFd: found.get("result-fd"), archiveFd: found.get("archive-fd") };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href) {
   try {
     if (process.env.NODE_OPTIONS || process.env.NODE_PATH || Object.keys(process.env).some((name) => name.startsWith("STADTSTACK_CASE_"))) fail();
     const cli = process.argv.slice(2);
