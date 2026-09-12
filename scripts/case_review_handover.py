@@ -2980,6 +2980,10 @@ class ExpiredReviewSetupRecovery:
         return proof
 
     def _observe_terminal_capture(self, pod):
+        def kubernetes_time(value):
+            _require(isinstance(value,str) and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z',value),
+                     'terminal capture timestamp invalid')
+            return datetime.fromisoformat(value.replace('Z','+00:00'))
         status=pod.get('status',{});containers=status.get('containerStatuses',[])
         _require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1,
                  'capture worker is not terminal at its deadline')
@@ -2989,7 +2993,7 @@ class ExpiredReviewSetupRecovery:
                  set(container.get('state',{}))=={'terminated'} and type(terminated.get('exitCode')) is int and
                  terminated['exitCode']==0 and terminated.get('reason')=='Completed' and
                  container.get('imageID')==self.driver.worker['pod']['spec']['containers'][0]['image'] and
-                 _utc(terminated.get('startedAt'))<=_utc(terminated.get('finishedAt'))<=self.driver.clock(),
+                 kubernetes_time(terminated.get('startedAt'))<=kubernetes_time(terminated.get('finishedAt'))<=self.driver.clock(),
                  'terminal capture identity or completion changed')
         value={'schemaVersion':'roebel_abandoned_terminal_capture_v1','workerPodUid':self.pod_uid,
                'planSha256':self.driver.plan['planSha256'],'workerSha256':self.driver.worker['workerSha256'],

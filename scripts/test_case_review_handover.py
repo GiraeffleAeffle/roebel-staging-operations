@@ -1895,7 +1895,7 @@ class TerminalCaptureRecoveryTests(unittest.TestCase):
         self.pod['status'].update(phase='Failed',reason='DeadlineExceeded')
         self.pod['status']['containerStatuses'][0].update(ready=False,restartCount=0,
             imageID=self.old.worker['pod']['spec']['containers'][0]['image'],state={'terminated':{
-                'exitCode':0,'reason':'Completed','startedAt':'2026-09-10T12:00:00.000Z','finishedAt':'2026-09-10T13:00:00.000Z'}})
+                'exitCode':0,'reason':'Completed','startedAt':'2026-09-10T12:00:00Z','finishedAt':'2026-09-10T13:00:00Z'}})
         # Mailbox contents cannot be recovered after kubelet removes emptyDir.
         # This mode must not invent an empty-mailbox observation or execute.
         self.old.worker_transport_factory=lambda *args:self.fail('terminal worker must never be executed')
