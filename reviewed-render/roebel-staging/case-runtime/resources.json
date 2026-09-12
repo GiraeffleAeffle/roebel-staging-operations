@@ -400,7 +400,7 @@
       "apiVersion": "v1",
       "kind": "ConfigMap",
       "metadata": {
-        "name": "roebel-case-steward-control-reviewed",
+        "name": "roebel-case-steward-review-reviewed-v1",
         "namespace": "stadtstack-roebel-staging-lab",
         "labels": {
           "app.kubernetes.io/name": "roebel-case-steward-control",
@@ -411,8 +411,8 @@
       },
       "immutable": true,
       "data": {
-        "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"admission\",\"port\":18085},{\"bindScope\":\"pod_network\",\"id\":\"private-outbox\",\"port\":18087},{\"bindScope\":\"pod_network\",\"id\":\"probe\",\"port\":18088}],\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"releaseDigest\":\"sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430\",\"schemaVersion\":\"staging_case_control_deployment_binding_v1\",\"storage\":{\"accessMode\":\"ReadWriteOncePod\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"checksum\":\"sha256:5eb3368415ed0d5ae9191ce530875147c2a278043b9ed68b67841ea5b9826b3f\",\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"pvName\":\"pvc-9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"pvcName\":\"roebel-case-steward-control-state\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack/case-control\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\"},\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n",
-        "storage-marker.json": "{\"accessMode\":\"ReadWriteOncePod\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:bfc792b653d3e581da76284c4db03590dc7eadacdf4ec8f18503259a1c2fe4f9\",\"pvName\":\"pvc-9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"pvcName\":\"roebel-case-steward-control-state\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"9f2aefc9-bbfe-4f4b-bb10-4c784ea913fd\",\"releaseDigest\":\"sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack/case-control\",\"schemaVersion\":\"staging_case_control_storage_marker_v1\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\",\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n"
+        "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:7039dd23834c5424e06b7c8fa918a3d54066758f8b74a7991995cbc266ae855b\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"admission\",\"port\":18085},{\"bindScope\":\"pod_network\",\"id\":\"private-outbox\",\"port\":18087},{\"bindScope\":\"pod_network\",\"id\":\"probe\",\"port\":18088},{\"bindScope\":\"pod_network\",\"id\":\"administration-review\",\"port\":18090}],\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:5787d8aa0e276f1c20986e99626a88e19a1c9949eafe565f7e654d35354ffe2e\",\"releaseDigest\":\"sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60\",\"schemaVersion\":\"staging_case_control_deployment_binding_v2\",\"storage\":{\"accessMode\":\"ReadWriteOncePod\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"checksum\":\"sha256:d93155cfd98e72c82bc90b276a2eae5c81b81a932f73e956cc1337cafc249ae9\",\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"pvName\":\"pvc-8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"pvcName\":\"roebel-case-steward-review-state-v1\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack-review/case-control\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\"},\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n",
+        "storage-marker.json": "{\"accessMode\":\"ReadWriteOncePod\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:5787d8aa0e276f1c20986e99626a88e19a1c9949eafe565f7e654d35354ffe2e\",\"pvName\":\"pvc-8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"pvcName\":\"roebel-case-steward-review-state-v1\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"releaseDigest\":\"sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack-review/case-control\",\"schemaVersion\":\"staging_case_control_storage_marker_v1\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\",\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n"
       }
     },
     {
@@ -485,7 +485,7 @@
             "containers": [
               {
                 "name": "runtime",
-                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60",
                 "imagePullPolicy": "IfNotPresent",
                 "ports": [
                   {
@@ -502,6 +502,11 @@
                     "name": "control-probe",
                     "containerPort": 18088,
                     "protocol": "TCP"
+                  },
+                  {
+                    "name": "admin-review",
+                    "containerPort": 18090,
+                    "protocol": "TCP"
                   }
                 ],
                 "env": [
@@ -515,13 +520,13 @@
                   },
                   {
                     "name": "STADTSTACK_CASE_CONTROL_BINDING_SHA256",
-                    "value": "sha256:f6a2fc46f0fda7722f2826d52c61cfb9bf5b3da9ca280670d105e5fe6acffcce"
+                    "value": "sha256:7039dd23834c5424e06b7c8fa918a3d54066758f8b74a7991995cbc266ae855b"
                   }
                 ],
                 "volumeMounts": [
                   {
                     "name": "case-state",
-                    "mountPath": "/var/lib/stadtstack"
+                    "mountPath": "/var/lib/stadtstack-review"
                   },
                   {
                     "name": "private-config",
@@ -605,7 +610,7 @@
               {
                 "name": "case-state",
                 "persistentVolumeClaim": {
-                  "claimName": "roebel-case-steward-control-state"
+                  "claimName": "roebel-case-steward-review-state-v1"
                 }
               },
               {
@@ -618,7 +623,7 @@
               {
                 "name": "reviewed",
                 "configMap": {
-                  "name": "roebel-case-steward-control-reviewed",
+                  "name": "roebel-case-steward-review-reviewed-v1",
                   "defaultMode": 292
                 }
               }
@@ -626,32 +631,32 @@
             "initContainers": [
               {
                 "name": "prepare-reviewed-config",
-                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:0c074f77b66a96116d8fc4e976d5e5f64b33f8fbd6e4ce158a91f8c57abdf430",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:5f0eeec46e1e00150ce5f370ba9749a0f4d6d652dac73839f25699771adb1d60",
                 "imagePullPolicy": "IfNotPresent",
                 "command": [
                   "node",
                   "-e",
-                  "const fs = require('node:fs');\nconst crypto = require('node:crypto');\nconst raw = process.env.ROEBEL_CASE_PRIVATE_CONFIG;\ndelete process.env.ROEBEL_CASE_PRIVATE_CONFIG;\nif (typeof raw !== 'string' || Buffer.byteLength(raw) < 1 || Buffer.byteLength(raw) > 1048576 || crypto.createHash('sha256').update(raw).digest('hex') !== process.env.ROEBEL_CASE_PRIVATE_CONFIG_SHA256) throw Error('private_configuration_invalid');\nlet value;\ntry { value = JSON.parse(raw); } catch { throw Error('private_configuration_invalid'); }\nif (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('private_configuration_invalid');\nconst root = '/var/lib/stadtstack/case-control';\nconst target = root + '/.stadtstack-control-storage-v1.json';\nconst marker = fs.readFileSync('/reviewed/storage-marker.json');\nconst st = fs.lstatSync(root);\nif (!st.isDirectory() || st.isSymbolicLink() || st.uid !== 1000 || st.gid !== 1000 || (st.mode & 0o7777) !== 0o700) throw Error('storage_identity_invalid');\ntry {\n  const prior = fs.lstatSync(target);\n  if (!prior.isFile() || prior.isSymbolicLink() || prior.uid !== 1000 || prior.gid !== 1000 || (prior.mode & 0o7777) !== 0o600 || prior.nlink !== 1 || prior.size !== marker.length || !fs.readFileSync(target).equals(marker)) throw Error('storage_marker_invalid');\n} catch (error) {\n  if (error.code !== 'ENOENT') throw error;\n  if (fs.readdirSync(root).length !== 0) throw Error('storage_bootstrap_not_empty');\n  const fd = fs.openSync(target, 'wx', 0o600);\n  try { fs.writeFileSync(fd, marker); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }\n  const directory = fs.openSync(root, 'r');\n  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }\n}\nconst directoryPath = '/run/stadtstack-control/private';\nconst configurationPath = directoryPath + '/application.json';\ntry { fs.mkdirSync(directoryPath, { mode: 0o700 }); }\ncatch (error) { if (error.code !== 'EEXIST') throw error; }\nconst directoryState = fs.lstatSync(directoryPath);\nif (!directoryState.isDirectory() || directoryState.isSymbolicLink() || directoryState.uid !== 1000 || directoryState.gid !== 1000 || ![0o700, 0o2700].includes(directoryState.mode & 0o7777)) throw Error('private_configuration_directory_invalid');\n// Linux emptyDir fsGroup parents pass setgid to new directories. Remove only\n// that inherited bit on the verified, privately owned directory before writing.\nif ((directoryState.mode & 0o7777) === 0o2700) {\n  const fd = fs.openSync(directoryPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);\n  try {\n    const opened = fs.fstatSync(fd);\n    if (!opened.isDirectory() || opened.dev !== directoryState.dev || opened.ino !== directoryState.ino || opened.uid !== 1000 || opened.gid !== 1000 || (opened.mode & 0o7777) !== 0o2700) throw Error('private_configuration_directory_invalid');\n    fs.fchmodSync(fd, 0o700);\n    if ((fs.fstatSync(fd).mode & 0o7777) !== 0o700) throw Error('private_configuration_directory_invalid');\n  } finally { fs.closeSync(fd); }\n}\ntry {\n  fs.writeFileSync(configurationPath, raw, { flag: 'wx', mode: 0o600 });\n} catch (error) {\n  if (error.code !== 'EEXIST') throw error;\n  const prior = fs.lstatSync(configurationPath);\n  if (!prior.isFile() || prior.isSymbolicLink() || prior.uid !== 1000 || prior.gid !== 1000 || (prior.mode & 0o7777) !== 0o600 || prior.nlink !== 1 || prior.size !== Buffer.byteLength(raw) || !fs.readFileSync(configurationPath).equals(Buffer.from(raw))) throw Error('private_configuration_retry_invalid');\n}\n"
+                  "const fs = require('node:fs');\nconst crypto = require('node:crypto');\nconst raw = process.env.ROEBEL_CASE_PRIVATE_CONFIG;\ndelete process.env.ROEBEL_CASE_PRIVATE_CONFIG;\nif (typeof raw !== 'string' || Buffer.byteLength(raw) < 1 || Buffer.byteLength(raw) > 1048576 || crypto.createHash('sha256').update(raw).digest('hex') !== process.env.ROEBEL_CASE_PRIVATE_CONFIG_SHA256) throw Error('private_configuration_invalid');\nlet value;\ntry { value = JSON.parse(raw); } catch { throw Error('private_configuration_invalid'); }\nif (!value || typeof value !== 'object' || Array.isArray(value)) throw Error('private_configuration_invalid');\nconst root = '/var/lib/stadtstack-review/case-control';\nconst target = root + '/.stadtstack-control-storage-v1.json';\nconst marker = fs.readFileSync('/reviewed/storage-marker.json');\nconst st = fs.lstatSync(root);\nif (!st.isDirectory() || st.isSymbolicLink() || st.uid !== 1000 || st.gid !== 1000 || (st.mode & 0o7777) !== 0o700) throw Error('storage_identity_invalid');\ntry {\n  const prior = fs.lstatSync(target);\n  if (!prior.isFile() || prior.isSymbolicLink() || prior.uid !== 1000 || prior.gid !== 1000 || (prior.mode & 0o7777) !== 0o600 || prior.nlink !== 1 || prior.size !== marker.length || !fs.readFileSync(target).equals(marker)) throw Error('storage_marker_invalid');\n} catch (error) {\n  if (error.code !== 'ENOENT') throw error;\n  if (fs.readdirSync(root).length !== 0) throw Error('storage_bootstrap_not_empty');\n  const fd = fs.openSync(target, 'wx', 0o600);\n  try { fs.writeFileSync(fd, marker); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }\n  const directory = fs.openSync(root, 'r');\n  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }\n}\nconst directoryPath = '/run/stadtstack-control/private';\nconst configurationPath = directoryPath + '/application.json';\ntry { fs.mkdirSync(directoryPath, { mode: 0o700 }); }\ncatch (error) { if (error.code !== 'EEXIST') throw error; }\nconst directoryState = fs.lstatSync(directoryPath);\nif (!directoryState.isDirectory() || directoryState.isSymbolicLink() || directoryState.uid !== 1000 || directoryState.gid !== 1000 || ![0o700, 0o2700].includes(directoryState.mode & 0o7777)) throw Error('private_configuration_directory_invalid');\n// Linux emptyDir fsGroup parents pass setgid to new directories. Remove only\n// that inherited bit on the verified, privately owned directory before writing.\nif ((directoryState.mode & 0o7777) === 0o2700) {\n  const fd = fs.openSync(directoryPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW);\n  try {\n    const opened = fs.fstatSync(fd);\n    if (!opened.isDirectory() || opened.dev !== directoryState.dev || opened.ino !== directoryState.ino || opened.uid !== 1000 || opened.gid !== 1000 || (opened.mode & 0o7777) !== 0o2700) throw Error('private_configuration_directory_invalid');\n    fs.fchmodSync(fd, 0o700);\n    if ((fs.fstatSync(fd).mode & 0o7777) !== 0o700) throw Error('private_configuration_directory_invalid');\n  } finally { fs.closeSync(fd); }\n}\ntry {\n  fs.writeFileSync(configurationPath, raw, { flag: 'wx', mode: 0o600 });\n} catch (error) {\n  if (error.code !== 'EEXIST') throw error;\n  const prior = fs.lstatSync(configurationPath);\n  if (!prior.isFile() || prior.isSymbolicLink() || prior.uid !== 1000 || prior.gid !== 1000 || (prior.mode & 0o7777) !== 0o600 || prior.nlink !== 1 || prior.size !== Buffer.byteLength(raw) || !fs.readFileSync(configurationPath).equals(Buffer.from(raw))) throw Error('private_configuration_retry_invalid');\n}\n"
                 ],
                 "env": [
                   {
                     "name": "ROEBEL_CASE_PRIVATE_CONFIG",
                     "valueFrom": {
                       "secretKeyRef": {
-                        "name": "roebel-case-steward-control-runtime",
+                        "name": "roebel-case-steward-review-runtime-v1",
                         "key": "application-json"
                       }
                     }
                   },
                   {
                     "name": "ROEBEL_CASE_PRIVATE_CONFIG_SHA256",
-                    "value": "b9f2e527e3459e3626e7255c57841388c477a8f51feab0f6ba39a8efd6e5e287"
+                    "value": "dd93e158a010d2cc2a79f55d80913414585ceafe802a5ce76a24d53ae622c17f"
                   }
                 ],
                 "volumeMounts": [
                   {
                     "name": "case-state",
-                    "mountPath": "/var/lib/stadtstack"
+                    "mountPath": "/var/lib/stadtstack-review"
                   },
                   {
                     "name": "private-config",
