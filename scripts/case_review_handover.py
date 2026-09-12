@@ -746,6 +746,28 @@ def observe_mount_release(root, plan, *, expected_plan_sha256, transport, node_f
     return {**receipt,'canonicalSha256':canonical_sha256(receipt)}
 
 
+UNUSED_REVIEW_MAILBOX_JS = """const fs=require('node:fs'),crypto=require('node:crypto');
+try {
+ const root='/work/private',stat=fs.lstatSync(root),fail=()=>{throw Error();};
+ if(fs.realpathSync(root)!==root || !stat.isDirectory() || stat.uid!==process.getuid() ||
+    ![0o700,0o2700].includes(stat.mode&0o7777) ||
+    JSON.stringify(fs.readdirSync(root).sort())!==JSON.stringify(['source.json','target.json'])) fail();
+ const result={schemaVersion:'roebel_unused_review_worker_v1',workerPodUid:process.env.ROEBEL_REVIEW_WORKER_UID,requestCount:0};
+ for(const side of ['source','target']) {
+  const path=root+'/'+side+'.json',before=fs.lstatSync(path);
+  if(!before.isFile() || before.uid!==process.getuid() || (before.mode&0o7777)!==0o600 || before.nlink!==1 || before.size>1048576)fail();
+  const fd=fs.openSync(path,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try {const bytes=fs.readFileSync(fd),after=fs.fstatSync(fd);
+   if(after.ino!==before.ino || after.dev!==before.dev || after.size!==before.size || after.mtimeMs!==before.mtimeMs)fail();
+   result[side+'ConfigurationSha256']='sha256:'+crypto.createHash('sha256').update(bytes).digest('hex');
+  } finally {fs.closeSync(fd);}
+ }
+ if(JSON.stringify(fs.readdirSync(root).sort())!==JSON.stringify(['source.json','target.json']))fail();
+ process.stdout.write(JSON.stringify(result));
+} catch {process.stderr.write('Unused review worker observation stopped.\\n');process.exitCode=78;}
+"""
+
+
 class KubectlReviewWorkerTransport:
     """Fixed worker exec, guarded by ordered parent intent and live ownership.
 
@@ -823,6 +845,23 @@ class KubectlReviewWorkerTransport:
                      not any(v.get('persistentVolumeClaim',{}).get('claimName') in ('roebel-case-steward-control-state','roebel-case-steward-review-state-v1')
                              for v in item.get('spec',{}).get('volumes',[])), 'another Pod still holds a migration claim')
         return pod['metadata']['resourceVersion']
+
+    def observe_unused(self):
+        """Read the exclusive mailbox after expiry without invoking the CLI."""
+        import json
+        self._ownership()
+        result=self.runner.run(self.base+['exec','-n',self.namespace,'roebel-case-review-migration-v1','-c','migration',
+            '--','node','-e',UNUSED_REVIEW_MAILBOX_JS],timeout=30)
+        self._ownership()
+        _require(result.code==0 and len(result.out.encode())<=4096,'unused worker mailbox could not be observed')
+        try:value=json.loads(result.out)
+        except (TypeError,ValueError):raise BootstrapStopped('unused worker mailbox response invalid') from None
+        expected={'schemaVersion':'roebel_unused_review_worker_v1','workerPodUid':self.pod_uid,'requestCount':0,
+                  'sourceConfigurationSha256':self.plan['pins']['sourceConfigurationSha256'],
+                  'targetConfigurationSha256':self.plan['pins']['targetConfigurationSha256']}
+        _require(value==expected and type(value.get('requestCount')) is int,'worker has a reservation or changed configuration')
+        value.update(planSha256=self.plan['planSha256'],workerSha256=self.worker['workerSha256'])
+        return value|{'canonicalSha256':canonical_sha256(value)}
 
     def exchange(self, action, request_bytes, *, request_sha256, parent_receipt,
                  expected_parent_sha256, archive_bytes=None, output_fd=None, expected_archive_sha256=None):
@@ -2807,11 +2846,12 @@ class ExpiredReviewSetupRecovery:
 
     The predecessor remains immutable. A new, separately pinned one-hour plan
     may change only its operation, window and admitted implementation. This is
-    limited to the stopped creation intent before the first backup command;
-    it cannot renew a migration that has already touched either database.
+    limited to a stopped creation or a capture intent whose exclusive worker
+    reservation is freshly proven absent. No database stage can be carried.
     """
     def __init__(self, driver, plan, *, expected_plan_sha256,
-                 expected_driver_sha256, expected_worker_pod_uid):
+                 expected_driver_sha256, expected_worker_pod_uid,
+                 unstarted_capture=False, recovery_root=None):
         old=driver.plan
         validate_plan(plan,expected_plan_sha256)
         _require(canonical_sha256(driver.journal)==expected_driver_sha256,
@@ -2823,26 +2863,52 @@ class ExpiredReviewSetupRecovery:
                  'expired setup continuation changes the Case or retained resources')
         _require(isinstance(expected_worker_pod_uid,str) and UUID.fullmatch(expected_worker_pod_uid) and
                  expected_worker_pod_uid not in old['identities'].values(), 'expired worker UID invalid')
-        _require(set(driver.journal['children'])=={'fence','initializer','worker-create'} and
+        _require(type(unstarted_capture) is bool,'unused worker recovery mode invalid')
+        expected_children={'fence','initializer','worker-create'}|({'verify-backup'} if unstarted_capture else set())
+        _require(set(driver.journal['children'])==expected_children and
                  set(driver.journal['releases'])=={'source'} and driver.journal['publicBaseline'] is not None,
                  'expired setup has work beyond worker creation')
         parent=driver._read(driver.journal['parent']);state=_state(old,parent,parent['canonicalSha256'])
-        _require(state['status']=='stopped-preserve-state' and len(state['completed'])==2 and
+        _require(state['status'] in (('awaiting-evidence','stopped-preserve-state') if unstarted_capture else ('stopped-preserve-state',)) and len(state['completed'])==2 and
                  state['pending']=='verify-backup', 'expired setup is not stopped before backup')
         for record in state['completed']:
             _require(driver.observe(old,record['step'],state)==record['evidence'], 'expired setup completed evidence changed')
         created=driver.child('worker-create')
         _require(created.get('schemaVersion')=='roebel_review_worker_lifecycle_v1' and
                  created.get('operation')=='create' and created.get('workerSha256')==driver.worker['workerSha256'] and
-                 created.get('status')=='stopped-preserve-state' and set(created.get('records',{}))==set(WORKER_RESOURCE_ORDER) and
-                 created['records']['pod']=={'uid':None,'resourceVersion':None,'observed':False} and
+                 created.get('status')==('ready' if unstarted_capture else 'stopped-preserve-state') and set(created.get('records',{}))==set(WORKER_RESOURCE_ORDER) and
+                 (created['records']['pod'].get('uid')==expected_worker_pod_uid and created['records']['pod'].get('observed') is True if unstarted_capture
+                  else created['records']['pod']=={'uid':None,'resourceVersion':None,'observed':False}) and
                  all(created['records'][k].get('observed') is True and UUID.fullmatch(created['records'][k].get('uid',''))
                      for k in ('networkPolicy','configMap')), 'expired setup lacks its unused worker intent')
         _validate_lifecycle_worker(driver.root,old,driver.worker,driver.candidate)
         self.driver,self.plan,self.parent=driver,copy.deepcopy(plan),parent
+        self.unstarted_capture=unstarted_capture
+        self.recovery_root=recovery_root if recovery_root is not None else driver.root
         self.driver_pin,self.pod_uid=expected_driver_sha256,expected_worker_pod_uid
         self.created=created
         self.paths={k:v+'/'+driver.worker[k]['metadata']['name'] for k,v in _worker_inventory(driver.worker).items()}
+        if unstarted_capture:
+            import json
+            stage=driver.child('verify-backup')
+            _require(stage.get('status')=='waiting' and stage.get('step')=='verify-backup' and
+                     stage.get('planSha256')==old['planSha256'] and stage.get('workerPodUid')==self.pod_uid and
+                     stage.get('backupReceipt') is None and stage.get('evidence') is None and
+                     set(stage.get('commands',{}))=={'capture-backup'},'unused worker has backup or later work')
+            command=stage['commands']['capture-backup']
+            _require(re.fullmatch('[0-9a-f]{32}-worker.json',command.get('receiptFile','')),'unused worker receipt path changed')
+            receipt=json.loads(_review_private_bytes(driver.directory/command['receiptFile']))
+            _worker_lifecycle_receipt(receipt,receipt.get('canonicalSha256'))
+            request=build_review_worker_request(old,driver.initialization_plan['targetBinding'],'capture-backup')
+            _require(command.get('requestSha256')==canonical_sha256(request)==receipt.get('requestSha256') and
+                     receipt.get('schemaVersion')=='roebel_review_worker_exchange_v1' and receipt.get('mode')=='capture-backup' and
+                     receipt.get('planSha256')==old['planSha256'] and receipt.get('workerPodUid')==self.pod_uid and
+                     receipt.get('status')=='waiting' and receipt.get('artifacts')=={} and receipt.get('uploadIntent') is False and
+                     receipt.get('invokeIntent') is True and receipt.get('parentIntentSha256')==stage['parentIntent']['canonicalSha256'],
+                     'unused capture receipt has effects or changed identity')
+            prior_state=_state(old,stage['parentIntent'],stage['parentIntent']['canonicalSha256'])
+            _require(prior_state['completed']==state['completed'] and prior_state['pending']=='verify-backup',
+                     'unused capture parent changed')
 
     def verify_ready(self):
         """Use the new window for writes, the old plan only for historical reads."""
@@ -2851,11 +2917,12 @@ class ExpiredReviewSetupRecovery:
             _require(_utc(plan['notBeforeUtc'])<=driver.clock()<_utc(plan['expiresAtUtc']), 'expired setup recovery window closed')
         window()
         _require(canonical_sha256(driver.journal)==self.driver_pin, 'expired setup journal changed during recovery')
-        verify_review_implementation(driver.root,plan)
-        verify_review_gitops_checkout(driver.root,plan,driver.candidate,target_checkout=driver.target_checkout,
+        if self.unstarted_capture:verify_review_implementation(driver.root,driver.plan)
+        verify_review_implementation(self.recovery_root,plan)
+        verify_review_gitops_checkout(self.recovery_root,plan,driver.candidate,target_checkout=driver.target_checkout,
                                       expected_target_revision=driver.expected_target_revision)
         from . import case_runtime_bootstrap as core
-        core._verifier().verify_tree(driver.root)
+        core._verifier().verify_tree(self.recovery_root)
         source=driver.transport.request('GET','/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-roebel-staging/gitrepositories/roebel-staging-operations',None)
         _require(source and not source.get('metadata',{}).get('deletionTimestamp') and
                  source.get('spec',{}).get('url')=='https://github.com/GiraeffleAeffle/roebel-staging-operations.git' and
@@ -2878,12 +2945,21 @@ class ExpiredReviewSetupRecovery:
         return configuration
 
     def release(self):
-        return observe_mount_release(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+        return observe_mount_release(self.recovery_root,self.plan,expected_plan_sha256=self.plan['planSha256'],
             transport=self.driver.transport,node_filesystem=self.driver.checks.node_filesystem,
             verify_ready=lambda unused:self.verify_ready(),migration_pod_uid=self.pod_uid)
 
+    def _unused_proof(self, proof):
+        value=_worker_lifecycle_receipt(proof,proof.get('canonicalSha256') if isinstance(proof,dict) else None)
+        expected={'schemaVersion':'roebel_unused_review_worker_v1','requestCount':0,
+                  'workerPodUid':self.pod_uid,'planSha256':self.driver.plan['planSha256'],
+                  'workerSha256':self.driver.worker['workerSha256'],
+                  **{k:self.driver.plan['pins'][k] for k in ('sourceConfigurationSha256','targetConfigurationSha256')}}
+        _require(value==expected and type(value.get('requestCount')) is int,'unused mailbox retirement proof changed')
+        return proof
+
     def retire(self, *, sink, prior=None, expected_prior_sha256=None):
-        """Delete only the owned terminal Pod, then its code and deny-all policy.
+        """Delete the owned unused Pod, then its code and deny-all policy.
 
         Save each UID/RV intent before DELETE. A lost response is observed once;
         recovery never resends it. Host release precedes policy/code deletion.
@@ -2891,6 +2967,7 @@ class ExpiredReviewSetupRecovery:
         initial={'schemaVersion':'roebel_expired_review_setup_retirement_v1','planSha256':self.plan['planSha256'],
                  'predecessorDriverSha256':self.driver_pin,'creationReceiptSha256':self.created['canonicalSha256'],
                  'workerPodUid':self.pod_uid,'previousReceiptSha256':None,'status':'reserved','records':{},'release':None}
+        if self.unstarted_capture:initial['unusedMailbox']=None
         state=copy.deepcopy(initial);order=('pod','configMap','networkPolicy')
         identities={k:self.created['records'][k]['uid'] for k in ('configMap','networkPolicy')}|{'pod':self.pod_uid}
         if prior is not None:
@@ -2907,6 +2984,8 @@ class ExpiredReviewSetupRecovery:
                          type(record['absent']) is bool and (record['absent'] or index==len(state['records'])-1), 'expired setup delete order changed')
             state['previousReceiptSha256']=expected_prior_sha256
         else:_require(expected_prior_sha256 is None,'expired setup orphan recovery pin')
+        if self.unstarted_capture and state['records']:
+            self._unused_proof(state.get('unusedMailbox'))
         def commit(status):
             state['status']=status;sink.commit(copy.deepcopy(state))
             return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
@@ -2930,7 +3009,13 @@ class ExpiredReviewSetupRecovery:
                     _require(identity['uid']==identities[key],'expired setup worker resource replaced')
                     if key=='pod':
                         status=observed.get('status',{});containers=status.get('containerStatuses',[])
-                        _require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1 and
+                        if self.unstarted_capture:
+                            _require(status.get('phase')=='Running' and len(containers)==1 and containers[0].get('ready') is True,
+                                     'unused worker is no longer available for a fresh mailbox proof')
+                            worker=self.driver.worker_transport_factory(self.pod_uid,lambda *unused:self.verify_ready())
+                            state['unusedMailbox']=self._unused_proof(worker.observe_unused())
+                            self.verify_ready()
+                        else:_require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1 and
                                  containers[0].get('name')=='migration' and containers[0].get('restartCount')==0 and
                                  set(containers[0].get('state',{}))=={'terminated'} and containers[0]['state']['terminated'].get('exitCode')==0,
                                  'expired setup worker is not the unused terminal worker')
@@ -2972,6 +3057,7 @@ class ExpiredReviewSetupRecovery:
                  retired.get('creationReceiptSha256')==self.created['canonicalSha256'] and retired.get('workerPodUid')==self.pod_uid and
                  set(retired.get('records',{}))=={'pod','configMap','networkPolicy'} and all(r.get('absent') is True for r in retired['records'].values()),
                  'expired setup retirement is incomplete')
+        if self.unstarted_capture:self._unused_proof(retired.get('unusedMailbox'))
         configuration=self.verify_ready();release=self.release()
         _require(release is not None,'expired worker still has a physical mount')
         _require(all(self.driver.transport.request('GET',path,None) is None for path in self.paths.values()),'expired setup inventory reappeared')
@@ -2990,7 +3076,7 @@ class ExpiredReviewSetupRecovery:
             previous=self.driver.child(name);value=_worker_lifecycle_receipt(previous,previous['canonicalSha256'])
             value.update(planSha256=self.plan['planSha256'],previousReceiptSha256=previous['canonicalSha256'])
             children[name],carried[name]=checkpoint(value,previous,self.driver.journal['children'][name]['parentIntent'])
-        source_release=observe_mount_release(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],
+        source_release=observe_mount_release(self.recovery_root,self.plan,expected_plan_sha256=self.plan['planSha256'],
             transport=self.driver.transport,node_filesystem=self.driver.checks.node_filesystem,verify_ready=lambda unused:self.verify_ready())
         _require(source_release is not None,'expired setup source mounts reappeared')
         parent=_state(self.plan,None,None)
@@ -3001,7 +3087,7 @@ class ExpiredReviewSetupRecovery:
         parent_ref,_=checkpoint(parent,self.parent,None)
         baseline=_worker_lifecycle_receipt(self.driver.journal['publicBaseline'],self.driver.journal['publicBaseline']['canonicalSha256'])
         baseline.update(planSha256=self.plan['planSha256'],operationsRevision=self.plan['pins']['operationsRevision'])
-        worker=compile_migration_worker(self.driver.root,self.plan,expected_plan_sha256=self.plan['planSha256'],candidate=self.driver.candidate,
+        worker=compile_migration_worker(self.recovery_root,self.plan,expected_plan_sha256=self.plan['planSha256'],candidate=self.driver.candidate,
             expected_candidate_sha256=self.driver.candidate['candidateSha256'],node_name=self.driver.worker['nodeName'])
         journal={'schemaVersion':'roebel_review_driver_v1','planSha256':self.plan['planSha256'],
                  'candidateSha256':self.driver.candidate['candidateSha256'],'workerSha256':worker['workerSha256'],
