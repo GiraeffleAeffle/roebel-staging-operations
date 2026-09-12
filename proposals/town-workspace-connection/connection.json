@@ -1,0 +1,239 @@
+{
+  "schemaVersion": "roebel_town_workspace_connection_proposal_v1",
+  "activationReady": false,
+  "operationsPredecessor": "975cea8d58fa994cd69e607a93e4947741e74bb3",
+  "webSourceRevision": "db2dc5112bb2b96db1143ef6986f8055b1a1cee1",
+  "webImage": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:210dae1009afaa40483c15cf842c8c5a0b54c9eb0ec7ec279bfb540aad7ba4c4",
+  "sessionMigrationSha256": "sha256:c1d4ce09418aa4a10575db5290bcc2cf8019bcedd704c178cd900b96af5a4e15",
+  "loginStage": {
+    "namespace": "stadtstack-roebel-web-preview",
+    "deployment": "roebel-web-presentation",
+    "privateSecret": {
+      "name": "roebel-town-workspace-identity-v1",
+      "immutable": true,
+      "keys": [
+        "client-secret",
+        "session-database-key"
+      ]
+    },
+    "environmentAdditions": [
+      {
+        "name": "ROEBEL_ID_ISSUER",
+        "value": "https://id.roebel.app"
+      },
+      {
+        "name": "WORKSPACE_CLIENT_ID",
+        "value": "roebel-town-workspace-staging"
+      },
+      {
+        "name": "WORKSPACE_CLIENT_SECRET",
+        "valueFrom": {
+          "secretKeyRef": {
+            "name": "roebel-town-workspace-identity-v1",
+            "key": "client-secret",
+            "optional": false
+          }
+        }
+      },
+      {
+        "name": "WORKSPACE_APP_ORIGIN",
+        "value": "https://roebel-web.staging.agentcart.eu"
+      },
+      {
+        "name": "WORKSPACE_SESSION_DATABASE_URL",
+        "value": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
+      },
+      {
+        "name": "WORKSPACE_SESSION_DATABASE_KEY",
+        "valueFrom": {
+          "secretKeyRef": {
+            "name": "roebel-town-workspace-identity-v1",
+            "key": "session-database-key",
+            "optional": false
+          }
+        }
+      }
+    ],
+    "routes": [
+      {
+        "path": "/api/workspace/auth/login",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/api/workspace/auth/callback",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/api/workspace/auth/session",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/api/workspace/auth/logout",
+        "methods": [
+          "POST"
+        ]
+      }
+    ],
+    "egressAddition": {
+      "to": [
+        {
+          "ipBlock": {
+            "cidr": "66.241.125.144/32"
+          }
+        }
+      ],
+      "ports": [
+        {
+          "port": 443,
+          "protocol": "TCP"
+        }
+      ]
+    },
+    "issuerDnsRecheckRequired": true
+  },
+  "reviewStage": {
+    "requires": "Verified OIDC subject bound to the existing unexpired synthetic grants",
+    "privateSecret": {
+      "name": "roebel-town-workspace-review-v1",
+      "immutable": true,
+      "keys": [
+        "review-config.json"
+      ]
+    },
+    "environmentAddition": {
+      "name": "ROEBEL_ADMIN_REVIEW_CONFIG_FILE",
+      "value": "/run/roebel-town-workspace/review-config.json"
+    },
+    "volumeAddition": {
+      "name": "town-workspace-review",
+      "secret": {
+        "secretName": "roebel-town-workspace-review-v1",
+        "defaultMode": 288,
+        "items": [
+          {
+            "key": "review-config.json",
+            "path": "review-config.json"
+          }
+        ]
+      }
+    },
+    "volumeMountAddition": {
+      "name": "town-workspace-review",
+      "mountPath": "/run/roebel-town-workspace",
+      "readOnly": true
+    },
+    "route": {
+      "path": "/api/workspace/case-review",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    "caseService": {
+      "namespace": "stadtstack-roebel-staging-lab",
+      "name": "roebel-case-steward-control",
+      "portAddition": {
+        "name": "admin-review",
+        "port": 18090,
+        "protocol": "TCP",
+        "targetPort": 18090
+      }
+    },
+    "webEgressAddition": {
+      "to": [
+        {
+          "namespaceSelector": {
+            "matchLabels": {
+              "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+            }
+          },
+          "podSelector": {
+            "matchLabels": {
+              "app.kubernetes.io/component": "case-steward-control",
+              "app.kubernetes.io/part-of": "roebel-case-staging"
+            }
+          }
+        }
+      ],
+      "ports": [
+        {
+          "port": 18090,
+          "protocol": "TCP"
+        }
+      ]
+    },
+    "caseIngressAddition": {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-case-steward-control-allow-workspace-review",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "roebel-web-presentation"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18090,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "reconcilerPermissionAddition": {
+      "namespace": "stadtstack-roebel-staging-lab",
+      "role": "roebel-case-runtime-reconciler",
+      "apiGroup": "networking.k8s.io",
+      "resource": "networkpolicies",
+      "resourceName": "roebel-case-steward-control-allow-workspace-review",
+      "verbs": [
+        "get",
+        "patch",
+        "update"
+      ]
+    }
+  },
+  "pending": [
+    "IdP client registration and private client secret",
+    "Verified test-account OIDC subject",
+    "Exact protected admission and render for both stages",
+    "Persistent session migration and live acceptance"
+  ],
+  "ingressMethodPolicy": "Exact listed method/path combinations; other workspace paths and methods denied"
+}

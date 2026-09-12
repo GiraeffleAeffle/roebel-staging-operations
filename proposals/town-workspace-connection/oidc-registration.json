@@ -1,0 +1,18 @@
+{
+  "status": "registration-required",
+  "issuer": "https://id.roebel.app",
+  "client_id": "roebel-town-workspace-staging",
+  "client_name": "Town Workspace — Röbel staging",
+  "application_type": "web",
+  "redirect_uris": [
+    "https://roebel-web.staging.agentcart.eu/api/workspace/auth/callback"
+  ],
+  "grant_types": ["authorization_code"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "client_secret_basic",
+  "scope": "openid profile email roebel",
+  "code_challenge_method": "S256",
+  "providerEnvironmentPrefix": "TOWN_WORKSPACE_STAGING",
+  "clientSecretDelivery": "private-file-only",
+  "subjectRoleMapping": "verified-login-and-explicit-synthetic-grants"
+}
