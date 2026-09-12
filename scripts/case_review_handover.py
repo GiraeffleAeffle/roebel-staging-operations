@@ -2842,16 +2842,20 @@ def create_review_handover_session(root, plan, candidate, *, runner, snapshot, t
 
 
 class ExpiredReviewSetupRecovery:
-    """Retire an expired, never-used worker and carry verified fencing forward.
+    """Retire expired setup work and carry verified fencing forward.
 
     The predecessor remains immutable. A new, separately pinned one-hour plan
     may change only its operation, window and admitted implementation. This is
-    limited to a stopped creation or a capture intent whose exclusive worker
-    reservation is freshly proven absent. No database stage can be carried.
+    A running capture worker needs a fresh empty-mailbox proof. A terminal
+    capture may instead be explicitly abandoned: capture only reads the sealed
+    source and writes private scratch files. Its outcome remains unverified,
+    and the successor must capture, encrypt and restore a new backup. Neither
+    path carries a backup or database stage into the successor.
     """
     def __init__(self, driver, plan, *, expected_plan_sha256,
                  expected_driver_sha256, expected_worker_pod_uid,
-                 unstarted_capture=False, recovery_root=None):
+                 unstarted_capture=False, recovery_root=None,
+                 abandon_terminal_capture=False):
         old=driver.plan
         validate_plan(plan,expected_plan_sha256)
         _require(canonical_sha256(driver.journal)==expected_driver_sha256,
@@ -2863,32 +2867,35 @@ class ExpiredReviewSetupRecovery:
                  'expired setup continuation changes the Case or retained resources')
         _require(isinstance(expected_worker_pod_uid,str) and UUID.fullmatch(expected_worker_pod_uid) and
                  expected_worker_pod_uid not in old['identities'].values(), 'expired worker UID invalid')
-        _require(type(unstarted_capture) is bool,'unused worker recovery mode invalid')
-        expected_children={'fence','initializer','worker-create'}|({'verify-backup'} if unstarted_capture else set())
+        _require(type(unstarted_capture) is bool and type(abandon_terminal_capture) is bool and
+                 not (unstarted_capture and abandon_terminal_capture),'capture recovery mode invalid')
+        capture_intent=unstarted_capture or abandon_terminal_capture
+        expected_children={'fence','initializer','worker-create'}|({'verify-backup'} if capture_intent else set())
         _require(set(driver.journal['children'])==expected_children and
                  set(driver.journal['releases'])=={'source'} and driver.journal['publicBaseline'] is not None,
                  'expired setup has work beyond worker creation')
         parent=driver._read(driver.journal['parent']);state=_state(old,parent,parent['canonicalSha256'])
-        _require(state['status'] in (('awaiting-evidence','stopped-preserve-state') if unstarted_capture else ('stopped-preserve-state',)) and len(state['completed'])==2 and
+        _require(state['status'] in (('awaiting-evidence','stopped-preserve-state') if capture_intent else ('stopped-preserve-state',)) and len(state['completed'])==2 and
                  state['pending']=='verify-backup', 'expired setup is not stopped before backup')
         for record in state['completed']:
             _require(driver.observe(old,record['step'],state)==record['evidence'], 'expired setup completed evidence changed')
         created=driver.child('worker-create')
         _require(created.get('schemaVersion')=='roebel_review_worker_lifecycle_v1' and
                  created.get('operation')=='create' and created.get('workerSha256')==driver.worker['workerSha256'] and
-                 created.get('status')==('ready' if unstarted_capture else 'stopped-preserve-state') and set(created.get('records',{}))==set(WORKER_RESOURCE_ORDER) and
-                 (created['records']['pod'].get('uid')==expected_worker_pod_uid and created['records']['pod'].get('observed') is True if unstarted_capture
+                 created.get('status')==('ready' if capture_intent else 'stopped-preserve-state') and set(created.get('records',{}))==set(WORKER_RESOURCE_ORDER) and
+                 (created['records']['pod'].get('uid')==expected_worker_pod_uid and created['records']['pod'].get('observed') is True if capture_intent
                   else created['records']['pod']=={'uid':None,'resourceVersion':None,'observed':False}) and
                  all(created['records'][k].get('observed') is True and UUID.fullmatch(created['records'][k].get('uid',''))
                      for k in ('networkPolicy','configMap')), 'expired setup lacks its unused worker intent')
         _validate_lifecycle_worker(driver.root,old,driver.worker,driver.candidate)
         self.driver,self.plan,self.parent=driver,copy.deepcopy(plan),parent
         self.unstarted_capture=unstarted_capture
+        self.abandon_terminal_capture=abandon_terminal_capture
         self.recovery_root=recovery_root if recovery_root is not None else driver.root
         self.driver_pin,self.pod_uid=expected_driver_sha256,expected_worker_pod_uid
         self.created=created
         self.paths={k:v+'/'+driver.worker[k]['metadata']['name'] for k,v in _worker_inventory(driver.worker).items()}
-        if unstarted_capture:
+        if capture_intent:
             import json
             stage=driver.child('verify-backup')
             _require(stage.get('status')=='waiting' and stage.get('step')=='verify-backup' and
@@ -2909,6 +2916,8 @@ class ExpiredReviewSetupRecovery:
             prior_state=_state(old,stage['parentIntent'],stage['parentIntent']['canonicalSha256'])
             _require(prior_state['completed']==state['completed'] and prior_state['pending']=='verify-backup',
                      'unused capture parent changed')
+            self.capture_request_pin=command['requestSha256']
+            self.capture_receipt_pin=receipt['canonicalSha256']
 
     def verify_ready(self):
         """Use the new window for writes, the old plan only for historical reads."""
@@ -2917,7 +2926,7 @@ class ExpiredReviewSetupRecovery:
             _require(_utc(plan['notBeforeUtc'])<=driver.clock()<_utc(plan['expiresAtUtc']), 'expired setup recovery window closed')
         window()
         _require(canonical_sha256(driver.journal)==self.driver_pin, 'expired setup journal changed during recovery')
-        if self.unstarted_capture:verify_review_implementation(driver.root,driver.plan)
+        if self.unstarted_capture or self.abandon_terminal_capture:verify_review_implementation(driver.root,driver.plan)
         verify_review_implementation(self.recovery_root,plan)
         verify_review_gitops_checkout(self.recovery_root,plan,driver.candidate,target_checkout=driver.target_checkout,
                                       expected_target_revision=driver.expected_target_revision)
@@ -2958,8 +2967,40 @@ class ExpiredReviewSetupRecovery:
         _require(value==expected and type(value.get('requestCount')) is int,'unused mailbox retirement proof changed')
         return proof
 
+    def _abandoned_proof(self, proof):
+        value=_worker_lifecycle_receipt(proof,proof.get('canonicalSha256') if isinstance(proof,dict) else None)
+        expected={'schemaVersion':'roebel_abandoned_terminal_capture_v1','workerPodUid':self.pod_uid,
+                  'planSha256':self.driver.plan['planSha256'],'workerSha256':self.driver.worker['workerSha256'],
+                  'requestSha256':self.capture_request_pin,'workerReceiptSha256':self.capture_receipt_pin,
+                  'imageDigest':self.driver.plan['pins']['migrationImageDigest'],
+                  'phase':'Failed','reason':'DeadlineExceeded','exitCode':0,'restartCount':0,
+                  'outcome':'unverified-backup-abandoned'}
+        _require(value==expected and type(value.get('exitCode')) is int and type(value.get('restartCount')) is int,
+                 'abandoned capture retirement proof changed')
+        return proof
+
+    def _observe_terminal_capture(self, pod):
+        status=pod.get('status',{});containers=status.get('containerStatuses',[])
+        _require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1,
+                 'capture worker is not terminal at its deadline')
+        container=containers[0];terminated=container.get('state',{}).get('terminated',{})
+        _require(container.get('name')=='migration' and container.get('ready') is False and
+                 type(container.get('restartCount')) is int and container['restartCount']==0 and
+                 set(container.get('state',{}))=={'terminated'} and type(terminated.get('exitCode')) is int and
+                 terminated['exitCode']==0 and terminated.get('reason')=='Completed' and
+                 container.get('imageID')==self.driver.worker['pod']['spec']['containers'][0]['image'] and
+                 _utc(terminated.get('startedAt'))<=_utc(terminated.get('finishedAt'))<=self.driver.clock(),
+                 'terminal capture identity or completion changed')
+        value={'schemaVersion':'roebel_abandoned_terminal_capture_v1','workerPodUid':self.pod_uid,
+               'planSha256':self.driver.plan['planSha256'],'workerSha256':self.driver.worker['workerSha256'],
+               'requestSha256':self.capture_request_pin,'workerReceiptSha256':self.capture_receipt_pin,
+               'imageDigest':self.driver.plan['pins']['migrationImageDigest'],
+               'phase':'Failed','reason':'DeadlineExceeded','exitCode':0,'restartCount':0,
+               'outcome':'unverified-backup-abandoned'}
+        return self._abandoned_proof(value|{'canonicalSha256':canonical_sha256(value)})
+
     def retire(self, *, sink, prior=None, expected_prior_sha256=None):
-        """Delete the owned unused Pod, then its code and deny-all policy.
+        """Delete the owned Pod, then its code and deny-all policy.
 
         Save each UID/RV intent before DELETE. A lost response is observed once;
         recovery never resends it. Host release precedes policy/code deletion.
@@ -2968,6 +3009,7 @@ class ExpiredReviewSetupRecovery:
                  'predecessorDriverSha256':self.driver_pin,'creationReceiptSha256':self.created['canonicalSha256'],
                  'workerPodUid':self.pod_uid,'previousReceiptSha256':None,'status':'reserved','records':{},'release':None}
         if self.unstarted_capture:initial['unusedMailbox']=None
+        if self.abandon_terminal_capture:initial['abandonedCapture']=None
         state=copy.deepcopy(initial);order=('pod','configMap','networkPolicy')
         identities={k:self.created['records'][k]['uid'] for k in ('configMap','networkPolicy')}|{'pod':self.pod_uid}
         if prior is not None:
@@ -2986,6 +3028,8 @@ class ExpiredReviewSetupRecovery:
         else:_require(expected_prior_sha256 is None,'expired setup orphan recovery pin')
         if self.unstarted_capture and state['records']:
             self._unused_proof(state.get('unusedMailbox'))
+        if self.abandon_terminal_capture and state['records']:
+            self._abandoned_proof(state.get('abandonedCapture'))
         def commit(status):
             state['status']=status;sink.commit(copy.deepcopy(state))
             return copy.deepcopy(state)|{'canonicalSha256':canonical_sha256(state)}
@@ -3015,6 +3059,8 @@ class ExpiredReviewSetupRecovery:
                             worker=self.driver.worker_transport_factory(self.pod_uid,lambda *unused:self.verify_ready())
                             state['unusedMailbox']=self._unused_proof(worker.observe_unused())
                             self.verify_ready()
+                        elif self.abandon_terminal_capture:
+                            state['abandonedCapture']=self._observe_terminal_capture(observed)
                         else:_require(status.get('phase')=='Failed' and status.get('reason')=='DeadlineExceeded' and len(containers)==1 and
                                  containers[0].get('name')=='migration' and containers[0].get('restartCount')==0 and
                                  set(containers[0].get('state',{}))=={'terminated'} and containers[0]['state']['terminated'].get('exitCode')==0,
@@ -3058,6 +3104,7 @@ class ExpiredReviewSetupRecovery:
                  set(retired.get('records',{}))=={'pod','configMap','networkPolicy'} and all(r.get('absent') is True for r in retired['records'].values()),
                  'expired setup retirement is incomplete')
         if self.unstarted_capture:self._unused_proof(retired.get('unusedMailbox'))
+        if self.abandon_terminal_capture:self._abandoned_proof(retired.get('abandonedCapture'))
         configuration=self.verify_ready();release=self.release()
         _require(release is not None,'expired worker still has a physical mount')
         _require(all(self.driver.transport.request('GET',path,None) is None for path in self.paths.values()),'expired setup inventory reappeared')
