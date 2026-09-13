@@ -25,14 +25,14 @@
     "proposals/town-workspace-connection/connection.json": "sha256:6abd57e5af9750efcbb84bfe8224f8bea7a4bb49f479f851dc2bd96e3c51f75c",
     "proposals/town-workspace-connection/flux-bootstrap.json": "sha256:edd692c8e8bb7c97971f349fdb0a89da2895f2b9cb3e7d6e41e6f0303e544ffd",
     "proposals/town-workspace-connection/identity-certificate.json": "sha256:ec00646b28bbc8dfda0a3651d858553fa1223381f2a53c219e2df53271d26724",
-    "proposals/town-workspace-connection/identity-instance.json": "sha256:bcc7925d54d3ccd4721f623812930201f7612c80582150de9456cb9b0eca1862",
+    "proposals/town-workspace-connection/identity-instance.json": "sha256:6e5b9673b3ddffe8b02c9f9670f7d9d1a257f5ff0811cb07d5e382da5338d7fc",
     "proposals/town-workspace-connection/identity-state.sql": "sha256:b899390f7ce74d553db3da08e10e5dbccb1bdb7034fad851bfc79e523a5c052d",
     "proposals/town-workspace-connection/oidc-registration.json": "sha256:438eb3b160990625c88b7389d5e5bddaa66d354d41e55ddde376826491a7b1a0",
     "proposals/town-workspace-connection/rehearse-identity-access.sql": "sha256:9731e1a453fe1ba278947c1c2378a2495359856b45fe04ca8b5985423096f537",
     "proposals/town-workspace-connection/rehearse-session-access.sql": "sha256:9cecb2e987544d34f15745e11799987e05cd69bfd1a00927ab6230a71e1838d8",
     "proposals/town-workspace-connection/workspace-sessions.sql": "sha256:c1d4ce09418aa4a10575db5290bcc2cf8019bcedd704c178cd900b96af5a4e15",
     "reviewed-render/roebel-staging/identity/kustomization.yaml": "sha256:0ebeb1403260a4e9da358ae14b13cc531961d541a404d444dedac738826cd9df",
-    "reviewed-render/roebel-staging/identity/resources.json": "sha256:d575240019b575127ecc095e56c6fb056d19e0e6d3f78d37852bedaef7aebfe7"
+    "reviewed-render/roebel-staging/identity/resources.json": "sha256:15d1b03f6a421d1ae6414ddea504d4db6bd2debe24c0b59ee4982a825fe8e48d"
   },
   "schemaVersion": "roebel_town_workspace_rollout_v1",
   "secretValuesIncluded": false,

@@ -320,7 +320,7 @@
               "stadtstack.io/authority": "none"
             },
             "annotations": {
-              "stadtstack.io/source-revision": "8a47361269ecac65e08d17607b37547fd5d7a0b8"
+              "stadtstack.io/source-revision": "3f723aaf461634f86fe337f63f3490159bb9d3c3"
             }
           },
           "spec": {
@@ -336,7 +336,7 @@
             "containers": [
               {
                 "name": "identity",
-                "image": "ghcr.io/giraeffleaeffle/roebel-id-staging@sha256:4a10e93438420da8934d380b08381734952457c1b17bcf97b4da5189f62e07c3",
+                "image": "ghcr.io/giraeffleaeffle/roebel-id-staging@sha256:8a5de7db7293aadece5bcdc6e48bcc1ec2de7f68d7511b56d744e76427049acd",
                 "imagePullPolicy": "IfNotPresent",
                 "ports": [
                   {
