@@ -30,6 +30,11 @@ class CitizenStatusProposalTests(unittest.TestCase):
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.base = Path(cls.temporary.name) / "protected-base"
         shutil.copytree(ROOT, cls.base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        # Build the historical storage/status state without later Workspace pins.
+        fixture_spec = importlib.util.spec_from_file_location('pre_workspace_fixture', ROOT / 'scripts/test_verify_reviewed_render.py')
+        fixtures = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixtures)
+        fixtures.ReviewedRenderVerifierTests().normalize_pre_workspace_seed(cls.base)
         # Retain today's protected code, but bind the active-state fixture to
         # the reviewed predecessor even after a later rollout reaches main.
         predecessor = "9728b97c2d39a3d7ae4d9af439e93b55df9357ef"

@@ -74,6 +74,9 @@ def flux_bootstrap_objects(v,root,original):
     if any(o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-review-reviewed-v1' for o in runtime):
         role=next(o for o in expected if o['kind']=='Role')
         next(r for r in role['rules'] if r['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-review-reviewed-v1')
+    if v.TOWN_WORKSPACE.stage(v, root) == 'review':
+        role=next(o for o in expected if o['kind']=='Role')
+        next(r for r in role['rules'] if r['resources']==['networkpolicies'])['resourceNames'].append('roebel-case-steward-control-allow-workspace-review')
     return expected
 
 
@@ -87,6 +90,9 @@ def verify(v,root):
         expected=proposed.read_bytes()
         repaired=(json.dumps(public_host_resources(json.loads(expected)),indent=2)+'\n').encode() if name=='resources.json' else expected
         allowed=(expected,repaired,successor) if name=='resources.json' else (expected,repaired)
+        if name=='resources.json' and v.TOWN_WORKSPACE.stage(v,root)=='review':
+            v.TOWN_WORKSPACE.verify(v,root)
+            allowed += (v.TOWN_WORKSPACE.expected_files(v.TOWN_WORKSPACE.bundle(v,root),'review')['reviewed-render/roebel-staging/case-runtime/resources.json'].encode(),)
         v.require(active.read_bytes() in allowed,'Case runtime render differs from independently pinned source, exact public Host repair or review successor')
     return {'bootstrapImplementationPresent':True,'automaticActivation':False,
             'webConnectionIncluded':False,'restoreActivation':False}
@@ -119,7 +125,8 @@ def connection(v,root):
     web=v.load_json(root/v.RENDER_ROOT/'web/deployment.json')
     container=web['spec']['template']['spec']['containers'][0]
     found=[e for e in container['env'] if e.get('name')==proposal['environmentAddition']['name']]
-    v.require(not found or (found==[proposal['environmentAddition']] and container['image']==proposal['webImage']),'Case Web connection is not the reviewed credential-free origin/image')
+    image=v.TOWN_WORKSPACE.web_image(v,root,proposal['webImage'])
+    v.require(not found or (found==[proposal['environmentAddition']] and container['image']==image),'Case Web connection is not the reviewed credential-free origin/image')
     return proposal if found else None
 
 

@@ -1,0 +1,29 @@
+{
+  "status": "prepared-independent-instance",
+  "issuer": "https://roebel-id.staging.agentcart.eu",
+  "client_id": "roebel-town-workspace-staging",
+  "client_name": "Town Workspace \u2014 R\u00f6bel staging",
+  "application_type": "web",
+  "redirect_uris": [
+    "https://roebel-web.staging.agentcart.eu/api/workspace/auth/callback"
+  ],
+  "grant_types": [
+    "authorization_code"
+  ],
+  "response_types": [
+    "code"
+  ],
+  "token_endpoint_auth_method": "client_secret_basic",
+  "scope": "openid profile email roebel",
+  "code_challenge_method": "S256",
+  "providerEnvironmentPrefix": "WEB",
+  "clientSecretDelivery": "private-file-only",
+  "subjectRoleMapping": "verified-login-and-explicit-synthetic-grants",
+  "existingProductionProviderChange": false,
+  "identityAssurance": "allowlisted-wallet-signature-only",
+  "syntheticCivicClaims": {
+    "groups": [],
+    "netizen:citizen": false,
+    "netizen:attester": false
+  }
+}

@@ -1,0 +1,540 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-id-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "roebel-id-staging",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/environment": "staging",
+            "stadtstack.io/authority": "none"
+          }
+        },
+        "policyTypes": [
+          "Ingress",
+          "Egress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "ingress-system"
+                  }
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.42.0.10/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.42.0.11/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.42.0.12/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.0.0/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.1.0/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.2.0/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.0.1/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.1.1/32"
+                }
+              },
+              {
+                "ipBlock": {
+                  "cidr": "10.244.2.1/32"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 3010,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ],
+        "egress": [
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "kube-system"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "k8s-app": "kube-dns"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 53,
+                "protocol": "UDP"
+              },
+              {
+                "port": 53,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/component": "tracer-postgrest",
+                    "app.kubernetes.io/name": "roebel-tracer-postgrest",
+                    "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+                    "stadtstack.io/authority": "none",
+                    "stadtstack.io/civic-authority": "none",
+                    "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+                    "stadtstack.io/environment": "staging"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 3000,
+                "protocol": "TCP"
+              }
+            ]
+          },
+          {
+            "to": [
+              {
+                "ipBlock": {
+                  "cidr": "34.111.230.52/32"
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 443,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-tracer-postgrest-allow-staging-identity",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "tracer-postgrest",
+            "app.kubernetes.io/name": "roebel-tracer-postgrest",
+            "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab",
+            "stadtstack.io/authority": "none",
+            "stadtstack.io/civic-authority": "none",
+            "stadtstack.io/data-lifecycle": "ephemeral-tracer",
+            "stadtstack.io/environment": "staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "roebel-id-staging",
+                    "app.kubernetes.io/part-of": "stadtstack",
+                    "stadtstack.io/environment": "staging",
+                    "stadtstack.io/authority": "none"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 3000,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "cert-manager.io/v1",
+      "kind": "Certificate",
+      "metadata": {
+        "name": "roebel-id-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/authority": "none",
+          "stadtstack.io/environment": "staging"
+        }
+      },
+      "spec": {
+        "secretName": "roebel-id-staging-tls",
+        "dnsNames": [
+          "roebel-id.staging.agentcart.eu"
+        ],
+        "issuerRef": {
+          "name": "letsencrypt-prod",
+          "kind": "ClusterIssuer",
+          "group": "cert-manager.io"
+        },
+        "privateKey": {
+          "algorithm": "ECDSA",
+          "size": 256,
+          "rotationPolicy": "Always"
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "roebel-id-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "selector": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        },
+        "ports": [
+          {
+            "name": "http",
+            "port": 3010,
+            "targetPort": "http",
+            "protocol": "TCP"
+          }
+        ],
+        "type": "ClusterIP"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "roebel-id-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "strategy": {
+          "type": "Recreate"
+        },
+        "revisionHistoryLimit": 3,
+        "progressDeadlineSeconds": 300,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "roebel-id-staging",
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/environment": "staging",
+            "stadtstack.io/authority": "none"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "roebel-id-staging",
+              "app.kubernetes.io/part-of": "stadtstack",
+              "stadtstack.io/environment": "staging",
+              "stadtstack.io/authority": "none"
+            },
+            "annotations": {
+              "stadtstack.io/source-revision": "8a47361269ecac65e08d17607b37547fd5d7a0b8"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 65532,
+              "runAsGroup": 65532,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "identity",
+                "image": "ghcr.io/giraeffleaeffle/roebel-id-staging@sha256:4a10e93438420da8934d380b08381734952457c1b17bcf97b4da5189f62e07c3",
+                "imagePullPolicy": "IfNotPresent",
+                "ports": [
+                  {
+                    "name": "http",
+                    "containerPort": 3010,
+                    "protocol": "TCP"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "NODE_ENV",
+                    "value": "production"
+                  },
+                  {
+                    "name": "ROEBEL_ID_DEPLOYMENT_PROFILE",
+                    "value": "staging-synthetic"
+                  },
+                  {
+                    "name": "ISSUER_URL",
+                    "value": "https://roebel-id.staging.agentcart.eu"
+                  },
+                  {
+                    "name": "PORT",
+                    "value": "3010"
+                  },
+                  {
+                    "name": "GNOSIS_RPC_URL",
+                    "value": "https://rpc.gnosischain.com"
+                  },
+                  {
+                    "name": "CHAIN_ID",
+                    "value": "100"
+                  },
+                  {
+                    "name": "SUPABASE_URL",
+                    "value": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000"
+                  },
+                  {
+                    "name": "WEB_CLIENT_ID",
+                    "value": "roebel-town-workspace-staging"
+                  },
+                  {
+                    "name": "WEB_REDIRECT_URIS",
+                    "value": "https://roebel-web.staging.agentcart.eu/api/workspace/auth/callback"
+                  },
+                  {
+                    "name": "COOKIE_KEYS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-staging-identity-v1",
+                        "key": "cookie-keys",
+                        "optional": false
+                      }
+                    }
+                  },
+                  {
+                    "name": "JWKS_JSON",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-staging-identity-v1",
+                        "key": "jwks-json",
+                        "optional": false
+                      }
+                    }
+                  },
+                  {
+                    "name": "WEB_CLIENT_SECRET",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-staging-identity-v1",
+                        "key": "client-secret",
+                        "optional": false
+                      }
+                    }
+                  },
+                  {
+                    "name": "STAGING_IDENTITY_DATABASE_KEY",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-staging-identity-v1",
+                        "key": "database-key",
+                        "optional": false
+                      }
+                    }
+                  },
+                  {
+                    "name": "STAGING_ALLOWED_WALLETS",
+                    "valueFrom": {
+                      "secretKeyRef": {
+                        "name": "roebel-staging-identity-v1",
+                        "key": "allowed-wallets",
+                        "optional": false
+                      }
+                    }
+                  }
+                ],
+                "securityContext": {
+                  "readOnlyRootFilesystem": true,
+                  "allowPrivilegeEscalation": false,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "384Mi"
+                  }
+                },
+                "startupProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 2,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 60
+                },
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 3
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/healthz",
+                    "port": "http"
+                  },
+                  "periodSeconds": 20,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 3
+                }
+              }
+            ],
+            "terminationGracePeriodSeconds": 20
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "Ingress",
+      "metadata": {
+        "name": "roebel-id-staging",
+        "namespace": "stadtstack-roebel-web-preview",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-id-staging",
+          "app.kubernetes.io/part-of": "stadtstack",
+          "stadtstack.io/environment": "staging",
+          "stadtstack.io/authority": "none"
+        },
+        "annotations": {
+          "haproxy-ingress.github.io/config-backend-early": "http-request deny deny_status 405 unless { method GET POST }\nhttp-request deny deny_status 404 if { method GET } !{ path /.well-known/openid-configuration /.well-known/netizen-branding /jwks /auth /me /healthz } !{ path_reg ^/(auth/[A-Za-z0-9_-]+|interaction/[A-Za-z0-9_-]+(/nonce)?)$ }\nhttp-request deny deny_status 404 if { method POST } !{ path /token /me } !{ path_reg ^/interaction/[A-Za-z0-9_-]+/login$ }",
+          "haproxy-ingress.github.io/config-backend": "http-response set-header X-Robots-Tag noindex,nofollow,noarchive\nhttp-response set-header X-Frame-Options DENY\nhttp-response set-header X-Content-Type-Options nosniff\nhttp-response set-header Referrer-Policy no-referrer\nhttp-response set-header Content-Security-Policy \"default-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline' https://esm.sh; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self';\""
+        }
+      },
+      "spec": {
+        "ingressClassName": "haproxy",
+        "tls": [
+          {
+            "hosts": [
+              "roebel-id.staging.agentcart.eu"
+            ],
+            "secretName": "roebel-id-staging-tls"
+          }
+        ],
+        "rules": [
+          {
+            "host": "roebel-id.staging.agentcart.eu",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "roebel-id-staging",
+                      "port": {
+                        "name": "http"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

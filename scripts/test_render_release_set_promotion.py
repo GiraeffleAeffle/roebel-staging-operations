@@ -154,6 +154,8 @@ class AutomaticPromotionTests(unittest.TestCase):
         root = Path(temporary.name) / "repo"
         base = Path(temporary.name) / "base"
         shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        FIXTURES.ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
+        FIXTURES.normalize_case_web_seed(base, VERIFIER)
         if before_synthetic_activation:
             # Historical activation tests need a verified pre-activation base;
             # ordinary image promotions must exercise the current steady state.
