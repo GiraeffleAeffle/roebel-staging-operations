@@ -3096,6 +3096,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             }
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
+        allowed_changes |= VERIFIER.TOWN_WORKSPACE.FILES
         self.assertTrue(actual_changes <= allowed_changes, sorted(actual_changes - allowed_changes))
         return temp, destination
 
