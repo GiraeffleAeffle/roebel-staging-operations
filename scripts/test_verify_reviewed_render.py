@@ -3106,6 +3106,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         )
         self.assertTrue(TRACER_PHASE_A_FIXTURE_FILES <= actual_changes)
         allowed_changes |= VERIFIER.TOWN_WORKSPACE.FILES
+        # The later Workspace review port/policy is also absent from phase A.
+        allowed_changes.add(str(Path(VERIFIER.RENDER_ROOT) / 'case-runtime/resources.json'))
         self.assertTrue(actual_changes <= allowed_changes, sorted(actual_changes - allowed_changes))
         return temp, destination
 
