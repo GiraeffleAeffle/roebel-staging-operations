@@ -5,7 +5,7 @@
   "namespace": "stadtstack-roebel-web-preview",
   "workloadName": "roebel-id-staging",
   "imageRepository": "ghcr.io/giraeffleaeffle/roebel-id-staging",
-  "imageDigest": null,
+  "imageDigest": "sha256:4a10e93438420da8934d380b08381734952457c1b17bcf97b4da5189f62e07c3",
   "replicas": 1,
   "port": 3010,
   "deploymentProfile": "staging-synthetic",
@@ -54,9 +54,27 @@
     "Original discussion, public receipt, Case and retained volumes preserved"
   ],
   "unresolved": [
-    "Pinned published image and provenance",
     "Selected private test wallet and new runtime credentials",
     "TLS resource and exact network/admission render",
     "Persistent migration, live callback and restart acceptance"
-  ]
+  ],
+  "sourceRevision": "8a47361269ecac65e08d17607b37547fd5d7a0b8",
+  "sourcePr": "https://github.com/GiraeffleAeffle/Roebel-App/pull/108",
+  "publisherRun": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/34750456517",
+  "certificate": {
+    "proposal": "identity-certificate.json",
+    "issuer": "letsencrypt-prod",
+    "issuerObservedReady": true,
+    "httpChallengeIngressClass": "haproxy",
+    "activationPerformed": false
+  },
+  "sourceReceiptSha256": "sha256:63f3254329d1022189e85e92c775bfa22963b0ac39bd254870ec42545709fe33",
+  "provenance": {
+    "id": "47150122",
+    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47150122"
+  },
+  "sbomAttestation": {
+    "id": "47150125",
+    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47150125"
+  }
 }

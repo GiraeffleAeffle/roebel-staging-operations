@@ -220,7 +220,6 @@
     }
   },
   "pending": [
-    "Publish source-bound independent identity image",
     "Provision separate signing/cookie/client keys and explicitly allowlisted test wallet",
     "TLS and exact protected admission/render for identity and workspace stages",
     "Persistent identity and session migrations; browser callback and subject mapping",

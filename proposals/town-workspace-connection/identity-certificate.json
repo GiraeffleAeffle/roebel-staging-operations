@@ -1,0 +1,30 @@
+{
+  "apiVersion": "cert-manager.io/v1",
+  "kind": "Certificate",
+  "metadata": {
+    "name": "roebel-id-staging",
+    "namespace": "stadtstack-roebel-web-preview",
+    "labels": {
+      "app.kubernetes.io/name": "roebel-id-staging",
+      "app.kubernetes.io/part-of": "stadtstack",
+      "stadtstack.io/authority": "none",
+      "stadtstack.io/environment": "staging"
+    }
+  },
+  "spec": {
+    "secretName": "roebel-id-staging-tls",
+    "dnsNames": [
+      "roebel-id.staging.agentcart.eu"
+    ],
+    "issuerRef": {
+      "name": "letsencrypt-prod",
+      "kind": "ClusterIssuer",
+      "group": "cert-manager.io"
+    },
+    "privateKey": {
+      "algorithm": "ECDSA",
+      "size": 256,
+      "rotationPolicy": "Always"
+    }
+  }
+}

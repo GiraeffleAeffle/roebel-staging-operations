@@ -54,6 +54,16 @@ verified; the before/after catalog matched. This is not a committed migration.
 Its JWT role is separate from the workspace session role, using
 `iss=roebel-id-staging` and `aud=roebel-id-state-store` with bounded expiry.
 
+Source PR108 merged normally as `8a47361269ecac65e08d17607b37547fd5d7a0b8`
+with passing CI. Identity-only publisher run `34750456517` completed successfully.
+The image is
+`ghcr.io/giraeffleaeffle/roebel-id-staging@sha256:4a10e93438420da8934d380b08381734952457c1b17bcf97b4da5189f62e07c3`.
+Its provenance and SBOM attestations independently verify against the exact
+source and protected publisher identity. The image is published, not deployed.
+The cluster has a ready `letsencrypt-prod` ClusterIssuer with the `haproxy`
+HTTP01 solver. [identity-certificate.json](identity-certificate.json) prepares
+its exact hostname certificate; no certificate has been requested yet.
+
 The instance needs new persistent RSA keys, distinct cookie keys, its own client
 secret, an explicitly selected test wallet, TLS and an admitted image/network
 render. All credentials remain private. Run one replica while SIWE nonces are
