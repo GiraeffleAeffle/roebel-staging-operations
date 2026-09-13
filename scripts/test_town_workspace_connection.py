@@ -1,6 +1,8 @@
 """Offline acceptance of the proposed connection; no admission hook or live writes."""
 import copy
 import importlib.util
+import hashlib
+import subprocess
 import json
 import re
 import shutil
@@ -43,6 +45,18 @@ class WorkspaceRolloutTests(unittest.TestCase):
         self.base=Path(self.temporary.name)/'base'
         shutil.copytree(ROOT,self.base,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
         self.data=policy.bundle(V,self.base)
+        # Every stage is tested from its pinned prepared predecessor, even
+        # when the repository's current render has already advanced.
+        for relative, expected in self.data['predecessorFiles'].items():
+            path = self.base / relative
+            if 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raw = subprocess.check_output([
+                    'git', '-C', str(ROOT), 'show',
+                    self.data['operationsPredecessor'] + ':' + relative,
+                ])
+                self.assertEqual('sha256:' + hashlib.sha256(raw).hexdigest(), expected)
+                path.write_bytes(raw)
+        activate(self.base, 'prepared')
 
     def candidate(self, stage):
         path=Path(self.temporary.name)/stage

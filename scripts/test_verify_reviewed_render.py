@@ -1085,6 +1085,15 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         for relative in VERIFIER.TOWN_WORKSPACE.FILES:
             (destination / relative).unlink(missing_ok=True)
 
+    def pre_workspace_seed(self) -> Path:
+        """Keep historical route assertions bound to their original render."""
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name) / 'pre-workspace'
+        shutil.copytree(ROOT, root, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
+        self.normalize_pre_workspace_seed(root)
+        return root
+
     def normalize_current_seed(self, destination: Path) -> None:
         """Make mutation fixtures current-shaped even when ROOT is future-shaped."""
         self.normalize_pre_workspace_seed(destination)
@@ -5753,9 +5762,10 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.verify(candidate)
 
     def test_civic_projection_route_is_exactly_private_and_read_only(self) -> None:
-        result = VERIFIER.verify(ROOT)
+        root = self.pre_workspace_seed()
+        result = VERIFIER.verify(root)
         self.assertEqual(result["renderFileSet"], "reviewed-public-knowledge-participant-gateway")
-        render = ROOT / "reviewed-render/roebel-staging"
+        render = root / "reviewed-render/roebel-staging"
         ingress = json.loads((render / "web/ingress.json").read_text())
         self.assertEqual(
             ingress["metadata"]["annotations"][
@@ -5821,7 +5831,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_public_case_lookup_exposes_only_exact_discussion_receipts(self) -> None:
         import re
         v=VERIFIER
-        current=v.verify_tree(ROOT)
+        current=v.verify_tree(self.pre_workspace_seed())
         pattern=v.CASE_RUNTIME.PUBLIC_LOOKUP_PATTERN
         base='/api/stadtstack/case-bindings/by-discussion/'
         self.assertTrue(re.fullmatch(pattern,base+'a0'*32))
