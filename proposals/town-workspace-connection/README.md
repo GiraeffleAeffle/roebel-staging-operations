@@ -26,32 +26,40 @@ remain the rollout's preservation inputs.
   The catalog matched its original state after rollback. No persistent schema
   change or real session was created.
 
-## Röbel ID registration needed
+## Independent Röbel ID for staging — 2026-09-13
 
-[oidc-registration.json](oidc-registration.json) is the proposed client metadata,
-not evidence that a client already exists. Public discovery was verified at
-`https://id.roebel.app/.well-known/openid-configuration` on 2026-09-12.
-The running issuer supports the app's authorization-code, `client_secret_basic`
-and S256 flow. The exact staging callback is:
+The user requested an independent staging version to avoid waiting for the
+collaborator's production provider configuration. This supersedes the earlier
+production client-registration plan. The selected issuer is
+`https://roebel-id.staging.agentcart.eu`; DNS resolves to the existing staging
+address `77.42.11.9`. [oidc-registration.json](oidc-registration.json) registers
+one relying party and the exact Web staging callback in this separate instance.
+The production issuer and its client registrations are outside this rollout.
 
-`https://roebel-web.staging.agentcart.eu/api/workspace/auth/callback`
+The new source profile uses a real SIWE browser-wallet signature and a private
+allowlist of one to eight test wallets. It does not require the collaborator's
+Thirdweb project or production Supabase readers. Claims identify only the
+verified wallet, with empty groups and false citizen/attester flags. A separate
+test wallet is not the existing citizen account and does not inherit its history
+or civic rights. Existing email/Google wallet reuse remains a separate integration
+check; an unauthenticated public-provider probe was inconclusive and completed
+no login or message.
 
-The provider's current source supports adding a relying party using an extra
-environment prefix. Its administrator can register this separate client with:
+[identity-instance.json](identity-instance.json) records the non-executable
+instance proposal. [identity-state.sql](identity-state.sql) and
+[rehearse-identity-access.sql](rehearse-identity-access.sql) passed on the actual
+staging PostgreSQL server in one transaction that rolled back. CRUD, grant-state
+deletion, missing/wrong claims, broad-role denial and unrelated-table denial were
+verified; the before/after catalog matched. This is not a committed migration.
+Its JWT role is separate from the workspace session role, using
+`iss=roebel-id-staging` and `aud=roebel-id-state-store` with bounded expiry.
 
-| Provider setting | Value |
-| --- | --- |
-| `FIRST_PARTY_RPS` | Preserve its existing list and append `TOWN_WORKSPACE_STAGING` once. |
-| `TOWN_WORKSPACE_STAGING_CLIENT_ID` | `roebel-town-workspace-staging` |
-| `TOWN_WORKSPACE_STAGING_CLIENT_SECRET` | A new private client secret, supplied to the staging operator through a private file. |
-| `TOWN_WORKSPACE_STAGING_REDIRECT_URIS` | The exact HTTPS callback above. |
-| `TOWN_WORKSPACE_STAGING_BRANDING` | `roebel` |
-| `TOWN_WORKSPACE_STAGING_BRANDING_CONTEXT` | `Town Workspace · Staging / Testbetrieb` |
-
-Existing Nextcloud, Matrix, Web and Ortis clients retain their settings. The
-workspace currently logs out its own server session and cookie; it does not
-require an IdP post-logout callback. No provider change has been made, and no
-message has been sent to the provider administrator.
+The instance needs new persistent RSA keys, distinct cookie keys, its own client
+secret, an explicitly selected test wallet, TLS and an admitted image/network
+render. All credentials remain private. Run one replica while SIWE nonces are
+process-local; restarting it invalidates pending challenges, while persistent
+OAuth state and signing keys must survive. The browser must still prove the
+complete callback flow before its subject is mapped to any synthetic role grant.
 
 ## Connection to prepare for admission
 

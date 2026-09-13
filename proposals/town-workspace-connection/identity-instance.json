@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "roebel_independent_identity_proposal_v1",
+  "activationReady": false,
+  "issuer": "https://roebel-id.staging.agentcart.eu",
+  "namespace": "stadtstack-roebel-web-preview",
+  "workloadName": "roebel-id-staging",
+  "imageRepository": "ghcr.io/giraeffleaeffle/roebel-id-staging",
+  "imageDigest": null,
+  "replicas": 1,
+  "port": 3010,
+  "deploymentProfile": "staging-synthetic",
+  "login": "explicitly-allowlisted-browser-wallet",
+  "thirdwebRequired": false,
+  "productionIdentityReads": false,
+  "privateSecret": {
+    "name": "roebel-staging-identity-v1",
+    "immutable": true,
+    "keys": [
+      "cookie-keys",
+      "jwks-json",
+      "client-secret",
+      "database-key",
+      "allowed-wallets"
+    ]
+  },
+  "database": {
+    "origin": "http://roebel-tracer-postgrest.stadtstack-roebel-staging-lab.svc.cluster.local:3000",
+    "table": "oidc_payloads",
+    "role": "roebel_staging_identity",
+    "issuer": "roebel-id-staging",
+    "audience": "roebel-id-state-store",
+    "expiryRequired": true
+  },
+  "runtime": {
+    "uid": 65532,
+    "gid": 65532,
+    "readOnlyRootFilesystem": true,
+    "serviceAccountTokenMounted": false,
+    "privilegeEscalation": false
+  },
+  "requiredNetworkPaths": [
+    "Staging ingress to issuer TCP3010",
+    "Issuer to exact staging PostgREST Pods TCP3000; matching inbound policy",
+    "Issuer to cluster DNS TCP/UDP53",
+    "Issuer to reviewed Gnosis signature-verification RPC; exact egress unresolved",
+    "Workspace to existing staging ingress TCP443"
+  ],
+  "acceptance": [
+    "Own HTTPS discovery/JWKS and exact one-client registration",
+    "Actual allowlisted wallet signature; unknown wallets rejected",
+    "Verified authorization-code/S256 callback; expired/replayed code rejected",
+    "OAuth persistence through issuer restart; pending nonces require retry",
+    "No implicit civic claims; explicit unexpired role binding after subject verification",
+    "Original discussion, public receipt, Case and retained volumes preserved"
+  ],
+  "unresolved": [
+    "Pinned published image and provenance",
+    "Selected private test wallet and new runtime credentials",
+    "TLS resource and exact network/admission render",
+    "Persistent migration, live callback and restart acceptance"
+  ]
+}

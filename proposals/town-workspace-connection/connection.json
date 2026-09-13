@@ -19,7 +19,7 @@
     "environmentAdditions": [
       {
         "name": "ROEBEL_ID_ISSUER",
-        "value": "https://id.roebel.app"
+        "value": "https://roebel-id.staging.agentcart.eu"
       },
       {
         "name": "WORKSPACE_CLIENT_ID",
@@ -80,22 +80,12 @@
         ]
       }
     ],
-    "egressAddition": {
-      "to": [
-        {
-          "ipBlock": {
-            "cidr": "66.241.125.144/32"
-          }
-        }
-      ],
-      "ports": [
-        {
-          "port": 443,
-          "protocol": "TCP"
-        }
-      ]
-    },
-    "issuerDnsRecheckRequired": true
+    "issuerDnsRecheckRequired": true,
+    "egressAlreadyPresent": {
+      "destination": "77.42.11.9/32",
+      "port": 443,
+      "purpose": "Existing staging ingress; recheck at activation"
+    }
   },
   "reviewStage": {
     "requires": "Verified OIDC subject bound to the existing unexpired synthetic grants",
@@ -230,10 +220,17 @@
     }
   },
   "pending": [
-    "IdP client registration and private client secret",
-    "Verified test-account OIDC subject",
-    "Exact protected admission and render for both stages",
-    "Persistent session migration and live acceptance"
+    "Publish source-bound independent identity image",
+    "Provision separate signing/cookie/client keys and explicitly allowlisted test wallet",
+    "TLS and exact protected admission/render for identity and workspace stages",
+    "Persistent identity and session migrations; browser callback and subject mapping",
+    "Original Case graph and department review acceptance"
   ],
-  "ingressMethodPolicy": "Exact listed method/path combinations; other workspace paths and methods denied"
+  "ingressMethodPolicy": "Exact listed method/path combinations; other workspace paths and methods denied",
+  "identityStage": {
+    "proposal": "identity-instance.json",
+    "storageMigration": "identity-state.sql",
+    "storageMigrationSha256": "sha256:b899390f7ce74d553db3da08e10e5dbccb1bdb7034fad851bfc79e523a5c052d",
+    "before": "loginStage"
+  }
 }
