@@ -308,9 +308,39 @@
           "methods": [
             "POST"
           ]
+        },
+        {
+          "path": "/api/workspace/case-review",
+          "methods": [
+            "GET",
+            "POST"
+          ]
         }
       ],
-      "reviewEnabled": false
+      "reviewEnabled": true,
+      "reviewEgress": {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-steward-control",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18090,
+            "protocol": "TCP"
+          }
+        ]
+      }
     }
   },
   "effects": {
@@ -324,13 +354,13 @@
       "kind": "NetworkPolicy",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:41d0b25ca9bebb2e510e3a16802f50e97f83e0fd58f7d2546013f56ea942464e"
+      "sha256": "sha256:439bed2a57fb540d5bceeedbed3bf4192187322ff94f64e0c2ca8d6f72530a52"
     },
     {
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:ab1b3f002df48c50ba49d7672dea08526338a3dafcc0f7609e271c2c66f7c7ab"
+      "sha256": "sha256:17545ac61abf888843f499fda788fca73c76a7907cb155aa5efb45663167078a"
     },
     {
       "kind": "ServiceAccount",
