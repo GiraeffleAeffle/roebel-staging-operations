@@ -278,7 +278,7 @@ class ReviewRuntimeCompilerTests(unittest.TestCase):
 class SourceFenceTests(unittest.TestCase):
     def setUp(self):
         from . import case_runtime_bootstrap as core, case_runtime_kubernetes as kube
-        self.core,self.kube=core,kube;self.root=Path(__file__).resolve().parent.parent
+        self.core,self.kube=core,kube;self.root=pre_review_test_root()
         self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup);self.number=0
         self.plan,_=fixture()
         now=datetime.now(timezone.utc)
