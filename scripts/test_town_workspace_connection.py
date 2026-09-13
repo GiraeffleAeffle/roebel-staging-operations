@@ -58,6 +58,23 @@ class WorkspaceRolloutTests(unittest.TestCase):
         self.assertTrue(policy.verify_transition(V,login,self.base))
         self.assertTrue(policy.verify_transition(V,review,login))
 
+    def test_both_stages_pass_the_complete_protected_admission_verifier(self):
+        spec = importlib.util.spec_from_file_location('workspace_integration_verifier', ROOT/'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        before = verifier.verify_tree(self.base)
+        for stage in ['login', 'review']:
+            after = verifier.verify_tree(self.candidate(stage))
+            verifier.verify_transition(after, before)
+            before = after
+
+    def test_steady_state_cannot_replace_the_protected_workspace_implementation(self):
+        candidate = Path(self.temporary.name)/'tampered'
+        shutil.copytree(self.base, candidate)
+        with (candidate/'scripts/town_workspace_connection.py').open('a') as file:
+            file.write('\n# candidate replacement\n')
+        with self.assertRaisesRegex(ValueError, 'protected rollout inputs'):
+            policy.verify_transition(V, candidate, self.base)
+
     def test_cannot_skip_identity_subject_gate_or_roll_back_stage(self):
         login=self.candidate('login');review=self.candidate('review')
         for a,b in [(review,self.base),(login,review),(self.base,login)]:

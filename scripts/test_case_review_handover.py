@@ -39,8 +39,10 @@ def pre_review_test_root():
         return subprocess.run(['git',*args],cwd=cwd,capture_output=True,text=True,check=True)
     git('clone','--shared','--quiet',str(root),str(target))
     git('remote','set-url','origin','https://github.com/GiraeffleAeffle/roebel-staging-operations.git',cwd=target)
+    from .test_verify_reviewed_render import ReviewedRenderVerifierTests
+    ReviewedRenderVerifierTests().normalize_pre_workspace_seed(target)
     (target/path).write_text(json.dumps(source,indent=2)+'\n')
-    git('add',path,cwd=target)
+    git('add','-A',cwd=target)
     git('-c','user.name=Synthetic Test','-c','user.email=test@example.invalid','commit','--quiet','-m','Synthetic pre-review fixture',cwd=target)
     return target
 

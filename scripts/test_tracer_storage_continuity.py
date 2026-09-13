@@ -38,6 +38,11 @@ class StorageContinuityTests(unittest.TestCase):
         self.base = Path(self.temporary.name) / "base"
         self.candidate = Path(self.temporary.name) / "candidate"
         shutil.copytree(ROOT, self.base, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        # Build the historical storage/status state without later Workspace pins.
+        fixture_spec = importlib.util.spec_from_file_location('pre_workspace_fixture', ROOT / 'scripts/test_verify_reviewed_render.py')
+        fixtures = importlib.util.module_from_spec(fixture_spec)
+        fixture_spec.loader.exec_module(fixtures)
+        fixtures.ReviewedRenderVerifierTests().normalize_pre_workspace_seed(self.base)
         # Storage activation predates status activation. Restore only that
         # fixed render predecessor; keep the current protected verifier code.
         if verifier.CITIZEN_STATUS.enabled(self.base):

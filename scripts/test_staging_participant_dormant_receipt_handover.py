@@ -455,6 +455,7 @@ class HandoverTests(unittest.TestCase):
         )
         previous_sigterm = signal.getsignal(signal.SIGTERM)
         with (
+            patch.object(RUNNER.sys, "flags", types.SimpleNamespace(isolated=1, safe_path=True)),
             patch.object(RUNNER, "parse_args", return_value=args),
             patch.object(RUNNER, "parse_prebound_blob_descriptors", return_value={}),
             patch.object(RUNNER, "owned_receipt_raw", return_value=b"{}"),

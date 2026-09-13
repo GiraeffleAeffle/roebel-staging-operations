@@ -130,6 +130,19 @@ def load_case_runtime_admission():
 CASE_RUNTIME = load_case_runtime_admission()
 
 
+def load_town_workspace_connection():
+    path = Path(__file__).with_name("town_workspace_connection.py")
+    spec = importlib.util.spec_from_file_location("protected_town_workspace_connection", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected Town Workspace policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+TOWN_WORKSPACE = load_town_workspace_connection()
+
+
 def citizen_status_interface():
     # Test loaders need not register this module in sys.modules. Supply the
     # existing protected render functions without importing candidate code.
@@ -1063,6 +1076,8 @@ def verify_tracer_phase_a_file_boundary(candidate_root: Path, base_root: Path) -
 def verify_repository_file_set(root: Path) -> str:
     """Admit exactly one whole render shape and report which shape it is."""
     actual = repository_files(root)
+    TOWN_WORKSPACE.verify(citizen_status_interface(), root)
+    actual = actual - TOWN_WORKSPACE.FILES
     actual = actual - {str(CITIZEN_STATUS.RECORD_PATH)}
     retained_record = str(TRACER_DATA_PLANE.RETAINED_RECORD_PATH)
     if retained_record in actual:
@@ -4190,6 +4205,7 @@ def verify_web_network_policy(
     case_connection = CASE_RUNTIME.connection(citizen_status_interface(),root)
     if case_connection:
         expected['spec']['egress'].append(case_connection['egressAddition'])
+    expected = TOWN_WORKSPACE.expected_file(citizen_status_interface(), root, RENDER_ROOT + '/web/networkpolicy.json', expected)
     require(policy == expected, "Web NetworkPolicy drift")
     return policy
 
@@ -5492,7 +5508,9 @@ def expected_web_ingress(signed_nostr: bool, participant_gateway: bool = False, 
 
 def verify_web_ingress(root: Path, signed_nostr: bool, participant_gateway: bool = False) -> dict[str, Any]:
     ingress = load_json(root / RENDER_ROOT / "web/ingress.json")
-    require(ingress == expected_web_ingress(signed_nostr, participant_gateway, CASE_RUNTIME.public_lookup_enabled(citizen_status_interface(),root)), "Web Ingress drift")
+    expected = expected_web_ingress(signed_nostr, participant_gateway, CASE_RUNTIME.public_lookup_enabled(citizen_status_interface(),root))
+    expected = TOWN_WORKSPACE.expected_file(citizen_status_interface(), root, RENDER_ROOT + '/web/ingress.json', expected)
+    require(ingress == expected, "Web Ingress drift")
     return ingress
 
 
@@ -5719,6 +5737,7 @@ def verify_network_boundary_migration(
                 public_mecky_network_policy,
             )
         CASE_RUNTIME.extend_web_boundary(citizen_status_interface(),root,expected)
+        TOWN_WORKSPACE.extend_boundary(citizen_status_interface(),root,expected)
         require(migration == expected, "participant gateway network-boundary receipt drift")
         return migration
     if signed_nostr:
@@ -7073,6 +7092,8 @@ def verify_web_identity_contract_set_transition(
 def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     candidate_root: Path = candidate["root"]
     base_root: Path = base["root"]
+    if TOWN_WORKSPACE.verify_transition(citizen_status_interface(), candidate_root, base_root):
+        return
     changed_files = changed_repository_files(candidate_root, base_root)
     CASE_PROPOSAL.verify_transition(citizen_status_interface(), candidate_root, base_root)
     if CASE_RUNTIME.verify_transition(citizen_status_interface(), candidate_root, base_root):

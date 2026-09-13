@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:b5685a0fbcee28161170a820a914e138011c760e41b757792430e1dfcab976b1'
+ROLLOUT_SHA256 = 'sha256:fded32331d5558ce215a6497ce2fb726e114133df610f13a7ea3716443442295'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
@@ -103,6 +103,8 @@ def extend_boundary(v, root, boundary):
 def verify_transition(v, candidate, base):
     a, b = stage(v, base), stage(v, candidate)
     if a == b:
+        v.require(not (v.changed_repository_files(candidate, base) & FILES),
+                  'workspace promotion changed protected rollout inputs or implementation')
         return False
     v.require(a is not None and b is not None and STAGES.index(b) == STAGES.index(a) + 1,
               'workspace activation must advance exactly one reviewed stage')

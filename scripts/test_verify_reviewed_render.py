@@ -191,6 +191,7 @@ def participant_ready_policy() -> dict:
 
 def normalize_case_web_seed(root, verifier=VERIFIER):
     """Reconstruct the pre-Case Web fixture, preserving all other current pins."""
+    ReviewedRenderVerifierTests().normalize_pre_workspace_seed(root)
     proposal=verifier.CASE_RUNTIME.connection(verifier,root)
     if proposal is None:return
     base=verifier.verify_tree(root)
@@ -1069,8 +1070,24 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             VERIFIER.gateway_synthetic_citizen_pass_enabled(normalized),
         )
 
+    def normalize_pre_workspace_seed(self, destination: Path) -> None:
+        """Historical rollout fixtures predate the pinned Workspace stages."""
+        if not (destination / VERIFIER.TOWN_WORKSPACE.STATE).exists():
+            return
+        import subprocess
+        data = VERIFIER.TOWN_WORKSPACE.bundle(VERIFIER, ROOT)
+        for relative, expected in data['predecessorFiles'].items():
+            path = destination / relative
+            if VERIFIER.bytes_digest(path.read_bytes()) != expected:
+                path.write_bytes(subprocess.check_output([
+                    'git', '-C', str(ROOT), 'show', data['operationsPredecessor'] + ':' + relative,
+                ]))
+        for relative in VERIFIER.TOWN_WORKSPACE.FILES:
+            (destination / relative).unlink(missing_ok=True)
+
     def normalize_current_seed(self, destination: Path) -> None:
         """Make mutation fixtures current-shaped even when ROOT is future-shaped."""
+        self.normalize_pre_workspace_seed(destination)
         render = destination / "reviewed-render/roebel-staging"
         future = render / "reviewed-public-knowledge"
         if not future.is_dir():
@@ -1163,6 +1180,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         destination = Path(temp.name) / "candidate"
         shutil.copytree(ROOT, destination, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(destination)
         self.normalize_current_seed(destination)
         self.normalize_inert_participant_seed(destination)
         self.normalize_no_participant_gateway_seed(destination)
@@ -1963,6 +1981,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         ):
             self.assertTrue(VERIFIER.tracer_citizen_adoption_enabled(source))
             shutil.copytree(ROOT, c2, ignore=ignored)
+            ReviewedRenderVerifierTests().normalize_pre_workspace_seed(c2)
             self.normalize_synthetic_citizen_pass_seed(c2)
             shutil.copytree(c2, c1)
             self.normalize_citizen_adoption_c1_seed(c1)
@@ -1974,6 +1993,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
             )
             shutil.copytree(ROOT, c1, ignore=ignored)
+            ReviewedRenderVerifierTests().normalize_pre_workspace_seed(c1)
             shutil.copytree(c1, phase_a)
             self.normalize_citizen_adoption_a_seed(phase_a)
             shutil.copytree(c1, c2)
@@ -1984,6 +2004,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.PARTICIPANT_POLICY.STATIC_ACTIVATION_POLICY,
             )
             shutil.copytree(ROOT, phase_a, ignore=ignored)
+            ReviewedRenderVerifierTests().normalize_pre_workspace_seed(phase_a)
             shutil.copytree(phase_a, c1)
             self.materialize_citizen_adoption_c1_seed(c1)
             shutil.copytree(c1, c2)
@@ -2002,6 +2023,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             destination,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(destination)
         self.normalize_synthetic_citizen_pass_seed(destination)
         self.normalize_citizen_adoption_a_seed(destination)
         return temp, destination
@@ -3274,6 +3296,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
@@ -3283,6 +3306,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.activate_web_identity_contract_set(candidate)
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
@@ -3299,6 +3323,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
@@ -3308,6 +3333,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.activate_web_identity_contract_set(candidate, promote=False)
         with self.assertRaisesRegex(
             VERIFIER.VerificationError,
@@ -3347,6 +3373,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                     candidate,
                     ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
                 )
+                ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
                 self.activate_web_identity_contract_set(candidate)
                 path = candidate / VERIFIER.RENDER_ROOT / "web/deployment.json"
                 deployment = json.loads(path.read_text())
@@ -3373,6 +3400,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                     candidate,
                     ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
                 )
+                ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
                 self.activate_web_identity_contract_set(candidate)
                 path = candidate / VERIFIER.RENDER_ROOT / "web/deployment.json"
                 deployment = json.loads(path.read_text())
@@ -3393,6 +3421,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.normalize_synthetic_citizen_pass_seed(base)
         candidate_temp = tempfile.TemporaryDirectory()
         self.addCleanup(candidate_temp.cleanup)
@@ -3402,6 +3431,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.activate_web_identity_contract_set(candidate)
         runtime_pin = (
             candidate
@@ -3424,6 +3454,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.disable_public_mecky_reviewed_web_source(base)
 
         candidate_temp = tempfile.TemporaryDirectory()
@@ -3434,6 +3465,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.enable_public_mecky_reviewed_web_source(candidate)
 
         result = VERIFIER.verify(candidate, base)
@@ -3448,6 +3480,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         deployment_path = (
             candidate
             / "reviewed-render/roebel-staging/public-mecky/deployment.json"
@@ -3474,6 +3507,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             candidate,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.enable_public_mecky_reviewed_web_source(candidate)
         policy_path = (
             candidate
@@ -3502,6 +3536,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             base,
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.enable_public_mecky_reviewed_web_source(base)
         candidate = Path(candidate_temp.name) / "candidate"
         shutil.copytree(
@@ -3771,7 +3806,9 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         base = Path(base_temp.name) / "base"
         candidate = Path(candidate_temp.name) / "candidate"
         shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         self.set_current_tracer_feed_route(base, False)
         self.set_current_tracer_feed_route(candidate, True)
 
@@ -3809,6 +3846,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
         self.addCleanup(base_temp.cleanup)
         base = Path(base_temp.name) / "base"
         shutil.copytree(ROOT, base, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(base)
         self.set_current_tracer_feed_route(base, False)
 
         def partial_environment(candidate: Path) -> None:
@@ -3850,6 +3888,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 self.addCleanup(candidate_temp.cleanup)
                 candidate = Path(candidate_temp.name) / "candidate"
                 shutil.copytree(ROOT, candidate, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+                ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
                 self.set_current_tracer_feed_route(candidate, True)
                 mutate(candidate)
                 with self.assertRaisesRegex(VERIFIER.VerificationError, expected_error):
@@ -5803,6 +5842,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
     def test_public_case_lookup_requires_reviewed_upstream_connection(self) -> None:
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);candidate=Path(temp.name)/'candidate'
         shutil.copytree(ROOT,candidate,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+        ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
         p=candidate/VERIFIER.RENDER_ROOT/'web/deployment.json'
         web=json.loads(p.read_text())
         env=web['spec']['template']['spec']['containers'][0]['env']
@@ -5818,6 +5858,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                         ('!{ path /api/chat/mecky }','!{ path /api/chat/mecky }'+acl)]:
             temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);candidate=Path(temp.name)/'candidate'
             shutil.copytree(ROOT,candidate,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+            ReviewedRenderVerifierTests().normalize_pre_workspace_seed(candidate)
             p=candidate/VERIFIER.RENDER_ROOT/'web/ingress.json';ingress=json.loads(p.read_text())
             key='haproxy-ingress.github.io/config-backend-early'
             ingress['metadata']['annotations'][key]=ingress['metadata']['annotations'][key].replace(old,new,1)
