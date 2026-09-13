@@ -204,6 +204,10 @@
                     "optional": false
                   }
                 }
+              },
+              {
+                "name": "ROEBEL_ADMIN_REVIEW_CONFIG_FILE",
+                "value": "/run/roebel-town-workspace/review-config.json"
               }
             ],
             "image": "ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:210dae1009afaa40483c15cf842c8c5a0b54c9eb0ec7ec279bfb540aad7ba4c4",
@@ -275,6 +279,11 @@
               {
                 "mountPath": "/tmp",
                 "name": "tmp"
+              },
+              {
+                "name": "town-workspace-review",
+                "mountPath": "/run/roebel-town-workspace",
+                "readOnly": true
               }
             ]
           }
@@ -310,6 +319,19 @@
               "sizeLimit": "128Mi"
             },
             "name": "tmp"
+          },
+          {
+            "name": "town-workspace-review",
+            "secret": {
+              "secretName": "roebel-town-workspace-review-v1",
+              "defaultMode": 288,
+              "items": [
+                {
+                  "key": "review-config.json",
+                  "path": "review-config.json"
+                }
+              ]
+            }
           }
         ]
       }

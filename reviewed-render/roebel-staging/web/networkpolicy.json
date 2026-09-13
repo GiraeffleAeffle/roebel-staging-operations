@@ -151,6 +151,29 @@
             "protocol": "TCP"
           }
         ]
+      },
+      {
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-steward-control",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ],
+        "ports": [
+          {
+            "port": 18090,
+            "protocol": "TCP"
+          }
+        ]
       }
     ],
     "ingress": [

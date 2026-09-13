@@ -304,6 +304,12 @@
             "port": 18085,
             "protocol": "TCP",
             "targetPort": 18085
+          },
+          {
+            "name": "admin-review",
+            "port": 18090,
+            "protocol": "TCP",
+            "targetPort": 18090
           }
         ],
         "selector": {
@@ -862,6 +868,54 @@
             ]
           }
         }
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "roebel-case-steward-control-allow-workspace-review",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/component": "case-steward-control",
+            "app.kubernetes.io/part-of": "roebel-case-staging"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "namespaceSelector": {
+                  "matchLabels": {
+                    "kubernetes.io/metadata.name": "stadtstack-roebel-web-preview"
+                  }
+                },
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "roebel-web-presentation"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "port": 18090,
+                "protocol": "TCP"
+              }
+            ]
+          }
+        ]
       }
     }
   ]
