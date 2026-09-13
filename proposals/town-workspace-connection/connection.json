@@ -220,10 +220,10 @@
     }
   },
   "pending": [
-    "Provision separate signing/cookie/client keys and explicitly allowlisted test wallet",
-    "TLS and exact protected admission/render for identity and workspace stages",
-    "Persistent identity and session migrations; browser callback and subject mapping",
-    "Original Case graph and department review acceptance"
+    "Authorize exact protected admission hook and verify all complete stages",
+    "Provision restricted database JWTs and private runtime Secrets",
+    "Commit rehearsed identity and session migrations; issue TLS; verify actual wallet callback",
+    "Bind verified subject to existing unexpired grants; open original Case in Town Workspace"
   ],
   "ingressMethodPolicy": "Exact listed method/path combinations; other workspace paths and methods denied",
   "identityStage": {

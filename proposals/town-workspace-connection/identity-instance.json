@@ -42,7 +42,7 @@
     "Staging ingress to issuer TCP3010",
     "Issuer to exact staging PostgREST Pods TCP3000; matching inbound policy",
     "Issuer to cluster DNS TCP/UDP53",
-    "Issuer to reviewed Gnosis signature-verification RPC; exact egress unresolved",
+    "Issuer to verified Gnosis RPC 34.111.230.52/32 TCP443 (chain 100)",
     "Workspace to existing staging ingress TCP443"
   ],
   "acceptance": [
@@ -54,9 +54,9 @@
     "Original discussion, public receipt, Case and retained volumes preserved"
   ],
   "unresolved": [
-    "Selected private test wallet and new runtime credentials",
-    "TLS resource and exact network/admission render",
-    "Persistent migration, live callback and restart acceptance"
+    "Restricted database JWTs and private Kubernetes Secret provisioning",
+    "Protected admission hook authorization and complete integration verification",
+    "Persistent migrations, certificate issuance, live callback and restart acceptance"
   ],
   "sourceRevision": "8a47361269ecac65e08d17607b37547fd5d7a0b8",
   "sourcePr": "https://github.com/GiraeffleAeffle/Roebel-App/pull/108",

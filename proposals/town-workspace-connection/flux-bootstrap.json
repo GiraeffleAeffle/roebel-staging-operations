@@ -1,0 +1,219 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ServiceAccount",
+      "metadata": {
+        "name": "roebel-staging-identity-reconciler",
+        "namespace": "flux-roebel-staging"
+      },
+      "automountServiceAccountToken": false
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "roebel-staging-identity-reconciler",
+        "namespace": "stadtstack-roebel-web-preview"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "networking.k8s.io"
+          ],
+          "resources": [
+            "networkpolicies"
+          ],
+          "resourceNames": [
+            "roebel-id-staging"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "cert-manager.io"
+          ],
+          "resources": [
+            "certificates"
+          ],
+          "resourceNames": [
+            "roebel-id-staging"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "services"
+          ],
+          "resourceNames": [
+            "roebel-id-staging"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "apps"
+          ],
+          "resources": [
+            "deployments"
+          ],
+          "resourceNames": [
+            "roebel-id-staging"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "networking.k8s.io"
+          ],
+          "resources": [
+            "ingresses"
+          ],
+          "resourceNames": [
+            "roebel-id-staging"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        },
+        {
+          "apiGroups": [
+            "apps"
+          ],
+          "resources": [
+            "replicasets"
+          ],
+          "verbs": [
+            "list"
+          ]
+        },
+        {
+          "apiGroups": [
+            ""
+          ],
+          "resources": [
+            "pods"
+          ],
+          "verbs": [
+            "list"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "roebel-staging-identity-reconciler",
+        "namespace": "stadtstack-roebel-web-preview"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "roebel-staging-identity-reconciler"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "roebel-staging-identity-reconciler",
+          "namespace": "flux-roebel-staging"
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "Role",
+      "metadata": {
+        "name": "roebel-staging-identity-reconciler",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "rules": [
+        {
+          "apiGroups": [
+            "networking.k8s.io"
+          ],
+          "resources": [
+            "networkpolicies"
+          ],
+          "resourceNames": [
+            "roebel-tracer-postgrest-allow-staging-identity"
+          ],
+          "verbs": [
+            "get",
+            "patch",
+            "update"
+          ]
+        }
+      ]
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "RoleBinding",
+      "metadata": {
+        "name": "roebel-staging-identity-reconciler",
+        "namespace": "stadtstack-roebel-staging-lab"
+      },
+      "roleRef": {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "roebel-staging-identity-reconciler"
+      },
+      "subjects": [
+        {
+          "kind": "ServiceAccount",
+          "name": "roebel-staging-identity-reconciler",
+          "namespace": "flux-roebel-staging"
+        }
+      ]
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "metadata": {
+        "name": "roebel-staging-identity",
+        "namespace": "flux-roebel-staging",
+        "labels": {
+          "stadtstack.io/flux-tenant": "roebel-staging"
+        }
+      },
+      "spec": {
+        "suspend": true,
+        "interval": "5m",
+        "retryInterval": "1m",
+        "timeout": "3m",
+        "prune": false,
+        "force": false,
+        "wait": true,
+        "serviceAccountName": "roebel-staging-identity-reconciler",
+        "path": "./reviewed-render/roebel-staging/identity",
+        "sourceRef": {
+          "kind": "GitRepository",
+          "name": "roebel-staging-operations"
+        }
+      }
+    }
+  ]
+}
