@@ -281,44 +281,15 @@
     },
     "townWorkspace": {
       "authority": "none",
-      "issuer": "https://roebel-id.staging.agentcart.eu",
       "clientId": "roebel-town-workspace-staging",
-      "sessionStoreRole": "roebel_workspace_session",
-      "routes": [
-        {
-          "path": "/api/workspace/auth/login",
-          "methods": [
-            "GET"
-          ]
-        },
-        {
-          "path": "/api/workspace/auth/callback",
-          "methods": [
-            "GET"
-          ]
-        },
-        {
-          "path": "/api/workspace/auth/session",
-          "methods": [
-            "GET"
-          ]
-        },
-        {
-          "path": "/api/workspace/auth/logout",
-          "methods": [
-            "POST"
-          ]
-        },
-        {
-          "path": "/api/workspace/case-review",
-          "methods": [
-            "GET",
-            "POST"
-          ]
-        }
-      ],
-      "reviewEnabled": true,
+      "issuer": "https://roebel-id.staging.agentcart.eu",
       "reviewEgress": {
+        "ports": [
+          {
+            "port": 18090,
+            "protocol": "TCP"
+          }
+        ],
         "to": [
           {
             "namespaceSelector": {
@@ -333,14 +304,50 @@
               }
             }
           }
-        ],
-        "ports": [
-          {
-            "port": 18090,
-            "protocol": "TCP"
-          }
         ]
-      }
+      },
+      "reviewEnabled": true,
+      "routes": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/login"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/callback"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/session"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path": "/api/workspace/auth/logout"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path": "/api/workspace/case-review"
+        },
+        {
+          "pathPattern": "^/api/stadtstack/synthetic-citizen-brief/by-discussion/[0-9a-f]{64}$",
+          "methods": [
+            "GET",
+            "HEAD"
+          ]
+        }
+      ],
+      "sessionStoreRole": "roebel_workspace_session"
     }
   },
   "effects": {
@@ -360,7 +367,7 @@
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:17545ac61abf888843f499fda788fca73c76a7907cb155aa5efb45663167078a"
+      "sha256": "sha256:bfbdde869a60062922fedb1f0b1ff7ba9647e5472b94f1efeca46ddf00f51a4f"
     },
     {
       "kind": "ServiceAccount",
