@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:2bd4d213d9d84327a90fb3fd75a83ea463efa1c91d9de71c9cac44db1d44c67b",
-      "stadtstack.io/source-revision": "e2add2c498c3d1fe80a6f80ba56890e2ac33c62e"
+      "stadtstack.io/release-set-sha256": "sha256:e710905246b290c0ad99b89b6da01577b164b82eef4b38599fcc2155db0e349b",
+      "stadtstack.io/source-revision": "4be97940da16f45c933a4bd8dead555fc9eef7fe"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "e2add2c498c3d1fe80a6f80ba56890e2ac33c62e",
+          "stadtstack.io/source-revision": "4be97940da16f45c933a4bd8dead555fc9eef7fe",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -165,7 +165,7 @@
                 "value": "{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:3e2c5367440aaa35236f4bc1d26548410d21cd4bbd90a0d8385223bee811ca6e",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:bee8f8ae371ee8cdfe3f9ea94b756b2a0949c3dbe8eb2a39d9967a1e132003be",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
