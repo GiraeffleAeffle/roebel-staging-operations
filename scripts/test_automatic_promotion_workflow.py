@@ -86,6 +86,25 @@ class PromotionBranchBehaviorTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(self.remote_head(), head)
 
+    def test_protected_test_checkout_retains_history_and_excludes_candidate_edits(self) -> None:
+        seed = self.root / "seed"
+        tracked = "reviewed-render/roebel-staging/head.json"
+        (seed / tracked).write_text("second baseline\n")
+        self.git(seed, "commit", "-am", "advance baseline")
+        self.git(seed, "push", "origin", "main")
+        workspace = self.candidate("uncommitted candidate\n")
+        workflow = WORKFLOW.read_text()
+        prepare = next(line.strip() for line in workflow.splitlines()
+                       if line.strip().startswith("git worktree add --detach"))
+        result = subprocess.run(["bash", "-c", prepare], cwd=workspace,
+            env=self.env | {"RUNNER_TEMP": str(self.root)}, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        protected = self.root / "protected-base"
+        self.assertEqual(self.git(protected, "show", f"{self.base}:{tracked}"), "baseline")
+        self.assertEqual((protected / tracked).read_text(), "second baseline\n")
+        self.assertEqual((workspace / tracked).read_text(), "uncommitted candidate\n")
+        self.assertEqual(self.git(protected, "rev-parse", "HEAD"), self.git(workspace, "rev-parse", "HEAD"))
+
     def test_new_render_replaces_candidate_with_one_current_base_parent(self) -> None:
         first = self.publish(self.candidate("release one\n"))
         self.assertEqual(first.returncode, 0, first.stderr)

@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Resolve the exact protected application revision
         id: source
@@ -317,8 +317,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir "$RUNNER_TEMP/protected-base"
-          git archive HEAD | tar -x -C "$RUNNER_TEMP/protected-base"
+          git worktree add --detach "$RUNNER_TEMP/protected-base" "$(git rev-parse HEAD)"
           (
             cd "$RUNNER_TEMP/protected-base"
             python3 -m unittest -v scripts/test_verify_reviewed_render.py scripts/test_render_release_set_promotion.py scripts/test_assemble_synthetic_citizen_pass_handoff.py scripts/test_automatic_promotion_workflow.py
