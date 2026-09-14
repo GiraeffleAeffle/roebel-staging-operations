@@ -29,10 +29,32 @@ FILES = {
 STAGES = ('prepared', 'login', 'review', 'brief')
 RELEASE_RECORDS = {ROOT + name for name in ('head.json', 'integrity.json', 'live-preconditions.json')}
 RELEASE_DEPLOYMENTS = {ROOT + name for name in ('web/deployment.json', 'public-mecky/deployment.json')}
+BRIEF_READER_ENV = [
+    {'name': 'MECKY_ALLOW_SYNTHETIC_BRIEF', 'value': 'true'},
+    {'name': 'MECKY_SYNTHETIC_BRIEF_CONFIG', 'value': json.dumps({
+        'caseId': 'urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d',
+        'discussionId': '111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8',
+        'environment': 'staging',
+        'publicOrigin': 'https://roebel-web.staging.agentcart.eu',
+        'topicId': 'urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198',
+        'transport': 'staging_web_service',
+    }, sort_keys=True, separators=(',', ':'))},
+]
+BRIEF_READER_INITIAL_HEAD = {
+    'schemaVersion': 'roebel_staging_release_set_head_v1',
+    'promotionRevision': 'e2add2c498c3d1fe80a6f80ba56890e2ac33c62e',
+    'releaseSetDigest': 'sha256:2bd4d213d9d84327a90fb3fd75a83ea463efa1c91d9de71c9cac44db1d44c67b',
+    'components': [
+        {'component': 'public-mecky', 'sourceRevision': 'e2add2c498c3d1fe80a6f80ba56890e2ac33c62e',
+         'manifestDigest': 'sha256:3e2c5367440aaa35236f4bc1d26548410d21cd4bbd90a0d8385223bee811ca6e'},
+        {'component': 'roebel-web-staging', 'sourceRevision': '6ce216f0b172dee3baec935be378d6d6adaaaaf4',
+         'manifestDigest': 'sha256:b709001cba85ecaa87de1f119a4905f327d2896e0627a3c61eaad3964f38fe80'},
+    ],
+}
 
 
 def stable_deployment(value):
-    """Exclude only the existing Release Set's five independently checked fields.
+    """Exclude the checked release fields and the exact staging Brief reader.
 
     The complete verifier still validates image/source/head/integrity/CAS. This
     keeps an activated workspace from freezing ordinary reviewed image updates.
@@ -44,6 +66,8 @@ def stable_deployment(value):
     container = result['spec']['template']['spec']['containers'][0]
     container.pop('image', None)
     container.pop('imagePullPolicy', None)
+    if result['metadata']['name'] == 'public-mecky' and container.get('env', [])[-2:] == BRIEF_READER_ENV:
+        del container['env'][-2:]
     return result
 
 
@@ -134,6 +158,18 @@ def verify_transition(v, candidate, base):
     if a == b:
         v.require(not (v.changed_repository_files(candidate, base) & FILES),
                   'workspace promotion changed protected rollout inputs or implementation')
+        if a == 'brief':
+            path = ROOT + 'public-mecky/deployment.json'
+            enabled = lambda root: v.load_json(root / path)['spec']['template']['spec']['containers'][0]['env'][-2:] == BRIEF_READER_ENV
+            before, after = enabled(base), enabled(candidate)
+            v.require(not (before and not after), 'workspace Brief reader cannot regress')
+            if after and not before:
+                v.require(v.changed_repository_files(candidate, base) == RELEASE_RECORDS | RELEASE_DEPLOYMENTS,
+                          'workspace Brief reader activation must accompany only its reviewed Release Set')
+                v.require(v.load_json(candidate / (ROOT + 'head.json')) == BRIEF_READER_INITIAL_HEAD,
+                          'workspace Brief reader requires its exact initial transport release')
+                # Return False: the complete Release Set/CAS verifier must also
+                # admit this image transition; the pair grants no early return.
         return False
     v.require(a is not None and b is not None and STAGES.index(b) == STAGES.index(a) + 1,
               'workspace activation must advance exactly one reviewed stage')
