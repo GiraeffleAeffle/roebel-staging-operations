@@ -114,6 +114,66 @@ class WorkspaceRolloutTests(unittest.TestCase):
         self.assertEqual([x for x in a['volumes'] if x['name']!='reviewed'],[x for x in b['volumes'] if x['name']!='reviewed'])
         self.assertEqual(a['initContainers'][0]['env'],b['initContainers'][0]['env'])
 
+    def test_brief_reader_accepts_only_the_complete_fixed_pair(self):
+        brief = self.candidate('brief')
+        path = brief / (policy.ROOT + 'public-mecky/deployment.json')
+        original = json.loads(path.read_text())
+        def write(extra):
+            value = copy.deepcopy(original)
+            value['spec']['template']['spec']['containers'][0]['env'].extend(extra)
+            path.write_text(json.dumps(value))
+        write(policy.BRIEF_READER_ENV)
+        self.assertEqual(policy.verify(V, brief)['stage'], 'brief')
+        wrong_config = copy.deepcopy(policy.BRIEF_READER_ENV)
+        config = json.loads(wrong_config[1]['value'])
+        config['publicOrigin'] = 'https://example.invalid'
+        wrong_config[1]['value'] = json.dumps(config, sort_keys=True, separators=(',', ':'))
+        for extra in [policy.BRIEF_READER_ENV[:1], policy.BRIEF_READER_ENV[1:],
+                      policy.BRIEF_READER_ENV * 2, list(reversed(policy.BRIEF_READER_ENV)),
+                      wrong_config, policy.BRIEF_READER_ENV + [{'name': 'UNREVIEWED', 'value': 'true'}]]:
+            with self.subTest(extra=extra):
+                write(extra)
+                with self.assertRaisesRegex(ValueError, 'outside reviewed release fields'):
+                    policy.verify(V, brief)
+
+    def test_brief_reader_does_not_relax_the_web_deployment(self):
+        brief = self.candidate('brief')
+        path = brief / (policy.ROOT + 'web/deployment.json')
+        value = json.loads(path.read_text())
+        value['spec']['template']['spec']['containers'][0]['env'].extend(policy.BRIEF_READER_ENV)
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'outside reviewed release fields'):
+            policy.verify(V, brief)
+
+    def test_reader_activation_requires_the_initial_release_and_keeps_cas_validation(self):
+        before = self.candidate('brief')
+        after = Path(self.temporary.name) / 'reader'
+        shutil.copytree(before, after)
+        path = after / (policy.ROOT + 'public-mecky/deployment.json')
+        value = json.loads(path.read_text())
+        value['spec']['template']['spec']['containers'][0]['env'].extend(policy.BRIEF_READER_ENV)
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ValueError, 'only its reviewed Release Set'):
+            policy.verify_transition(V, after, before)
+        for relative in (policy.RELEASE_RECORDS | policy.RELEASE_DEPLOYMENTS) - {str(path.relative_to(after))}:
+            with (after / relative).open('a') as file: file.write('\n')
+        with self.assertRaisesRegex(ValueError, 'exact initial transport release'):
+            policy.verify_transition(V, after, before)
+        head_path = after / (policy.ROOT + 'head.json')
+        head = copy.deepcopy(policy.BRIEF_READER_INITIAL_HEAD)
+        head_path.write_text(json.dumps(head))
+        # False deliberately delegates to the full verifier; this partial
+        # release fixture cannot become an admission success through this hook.
+        self.assertFalse(policy.verify_transition(V, after, before))
+        spec = importlib.util.spec_from_file_location('reader_cas_verifier', ROOT/'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        with self.assertRaises(verifier.VerificationError): verifier.verify(after, before)
+        with self.assertRaisesRegex(ValueError, 'cannot regress'):
+            policy.verify_transition(V, before, after)
+        with (after / 'README.md').open('a') as file: file.write('\nUnrelated change\n')
+        with self.assertRaisesRegex(ValueError, 'only its reviewed Release Set'):
+            policy.verify_transition(V, after, before)
+
     def test_steady_state_cannot_replace_the_protected_workspace_implementation(self):
         candidate = Path(self.temporary.name)/'tampered'
         shutil.copytree(self.base, candidate)

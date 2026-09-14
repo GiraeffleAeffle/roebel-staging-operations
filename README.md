@@ -990,3 +990,21 @@ merged without widening the routine automation identity, and followed by
 immediate restoration of the normal review rule. After that bootstrap, every
 later Release Set promotion is again admitted by the protected-base verifier
 and cannot change either network object or the Ingress.
+
+## Mecky reads the reviewed staging Brief
+
+After the Town Workspace reaches `brief`, its protected policy admits one
+fixed `MECKY_ALLOW_SYNTHETIC_BRIEF` / `MECKY_SYNTHETIC_BRIEF_CONFIG` pair on
+Public Mecky. The pair selects the existing synthetic Case, discussion and
+topic, reads through the existing Web Service connection, and keeps public
+citations on the staging HTTPS origin. An incomplete pair, different origin,
+additional configuration or placement on Web is rejected.
+
+Initial activation must accompany the exact published transport Release Set
+in `town_workspace_connection.py`. The ordinary image, integrity and previous
+head checks still run. Subsequent image promotions preserve the pair; they
+cannot remove it or change the selected Case. This needs no network, role,
+Secret, database or Case-state change. Mecky receives only the confirmed public
+Brief and identifies its responses as synthetic demo evidence without municipal
+authority. Live completion requires a reply citing the same Brief checksum
+already returned to the original Röbel discussion.
