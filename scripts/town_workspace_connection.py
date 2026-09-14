@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:f6b1d45d5a59949d9927bc2b6d4b6250343fe5b01d30dc23455b740c828e95eb'
+ROLLOUT_SHA256 = 'sha256:4f84ec5d9f31abbf2313418f24843e95f97366d1158ea26c761b57840f28fa24'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
@@ -26,7 +26,25 @@ FILES = {
     STATE, ROOT + 'identity/resources.json', ROOT + 'identity/kustomization.yaml',
     'scripts/town_workspace_connection.py', 'scripts/test_town_workspace_connection.py',
 }
-STAGES = ('prepared', 'login', 'review')
+STAGES = ('prepared', 'login', 'review', 'brief')
+RELEASE_RECORDS = {ROOT + name for name in ('head.json', 'integrity.json', 'live-preconditions.json')}
+RELEASE_DEPLOYMENTS = {ROOT + name for name in ('web/deployment.json', 'public-mecky/deployment.json')}
+
+
+def stable_deployment(value):
+    """Exclude only the existing Release Set's five independently checked fields.
+
+    The complete verifier still validates image/source/head/integrity/CAS. This
+    keeps an activated workspace from freezing ordinary reviewed image updates.
+    """
+    result = copy.deepcopy(value)
+    result['metadata']['annotations'].pop('stadtstack.io/source-revision', None)
+    result['metadata']['annotations'].pop('stadtstack.io/release-set-sha256', None)
+    result['spec']['template']['metadata']['annotations'].pop('stadtstack.io/source-revision', None)
+    container = result['spec']['template']['spec']['containers'][0]
+    container.pop('image', None)
+    container.pop('imagePullPolicy', None)
+    return result
 
 
 def sha(raw):
@@ -74,6 +92,13 @@ def verify(v, root):
     active = expected_files(data, selected)
     for path, before in data['predecessorFiles'].items():
         file = root / path
+        if selected == 'brief' and path in RELEASE_RECORDS:
+            continue  # Validated by the complete head/integrity/CAS verifier.
+        if selected == 'brief' and path in RELEASE_DEPLOYMENTS:
+            v.require(file.is_file() and not file.is_symlink() and
+                      stable_deployment(v.load_json(file)) == stable_deployment(json.loads(active[path])),
+                      'workspace deployment changed outside reviewed release fields: ' + path)
+            continue
         expected = sha(active[path].encode()) if path in active else before
         v.require(file.is_file() and not file.is_symlink() and sha(file.read_bytes()) == expected,
                   'workspace stage file mismatch: ' + path)
@@ -83,20 +108,24 @@ def verify(v, root):
 
 def expected_file(v, root, path, default):
     selected = stage(v, root)
-    if selected not in ('login', 'review'):
+    if selected not in ('login', 'review', 'brief'):
         return default
     raw = expected_files(bundle(v, root), selected).get(path)
     return json.loads(raw) if raw is not None else default
 
 
 def web_image(v, root, previous):
+    if stage(v, root) == 'brief':
+        head = v.load_json(root / (ROOT + 'head.json'))
+        component = next(c for c in head['components'] if c['component'] == 'roebel-web-staging')
+        return 'ghcr.io/giraeffleaeffle/roebel-web-staging@' + component['manifestDigest']
     expected = expected_file(v, root, ROOT + 'web/deployment.json', None)
     return expected['spec']['template']['spec']['containers'][0]['image'] if expected else previous
 
 
 def extend_boundary(v, root, boundary):
     selected = stage(v, root)
-    if selected in ('login', 'review'):
+    if selected in ('login', 'review', 'brief'):
         boundary['boundary']['townWorkspace'] = copy.deepcopy(bundle(v, root)['stages'][selected]['boundary'])
 
 
@@ -114,4 +143,8 @@ def verify_transition(v, candidate, base):
     expected = set(data['stages'][b]['files']) | {STATE}
     v.require(v.changed_repository_files(candidate, base) == expected,
               'workspace activation changed unrelated files or omitted a stage resource')
+    if b == 'brief':
+        for path, raw in data['stages'][b]['files'].items():
+            v.require((candidate / path).read_bytes() == raw.encode(),
+                      'initial Brief activation must use the exact published release: ' + path)
     return True

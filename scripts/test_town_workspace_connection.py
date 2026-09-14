@@ -76,10 +76,43 @@ class WorkspaceRolloutTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('workspace_integration_verifier', ROOT/'scripts/verify-reviewed-render.py')
         verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
         before = verifier.verify_tree(self.base)
-        for stage in ['login', 'review']:
+        for stage in ['login', 'review', 'brief']:
             after = verifier.verify_tree(self.candidate(stage))
             verifier.verify_transition(after, before)
             before = after
+
+    def test_brief_keeps_runtime_shape_pinned_but_does_not_freeze_release_fields(self):
+        brief=self.candidate('brief')
+        path=brief/(policy.ROOT+'web/deployment.json')
+        original=json.loads(path.read_text());changed=copy.deepcopy(original)
+        changed['spec']['template']['spec']['containers'][0]['image']='ghcr.io/giraeffleaeffle/roebel-web-staging@sha256:'+'7'*64
+        path.write_text(json.dumps(changed,indent=2)+'\n')
+        # The workspace shape checker delegates only release validation; the
+        # complete verifier still rejects an image without its matching head.
+        self.assertEqual(policy.verify(V,brief)['stage'],'brief')
+        spec=importlib.util.spec_from_file_location('brief_release_verifier',ROOT/'scripts/verify-reviewed-render.py')
+        verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+        with self.assertRaisesRegex(verifier.VerificationError,'image binding invalid'):verifier.verify_tree(brief)
+        review=self.candidate('review')
+        with self.assertRaisesRegex(ValueError,'exact published release'):policy.verify_transition(V,brief,review)
+        changed['spec']['template']['spec']['containers'][0]['env'].append({'name':'UNREVIEWED_ORIGIN','value':'https://example.invalid'})
+        path.write_text(json.dumps(changed,indent=2)+'\n')
+        with self.assertRaisesRegex(ValueError,'outside reviewed release fields'):policy.verify(V,brief)
+
+    def test_brief_uses_one_new_binding_map_and_preserves_all_roles_and_storage(self):
+        review=self.candidate('review');brief=self.candidate('brief')
+        before=json.loads((review/(policy.ROOT+'case-runtime/resources.json')).read_text())['items']
+        after=json.loads((brief/(policy.ROOT+'case-runtime/resources.json')).read_text())['items']
+        identify=lambda o:(o['kind'],o['metadata']['name'])
+        old={identify(o):o for o in before};new={identify(o):o for o in after}
+        self.assertEqual(set(new)-set(old),{('ConfigMap','roebel-case-steward-brief-reviewed-v1')})
+        for key,value in old.items():
+            if key!=('Deployment','roebel-case-steward-control'):self.assertEqual(new[key],value)
+        a=old[('Deployment','roebel-case-steward-control')]['spec']['template']['spec']
+        b=new[('Deployment','roebel-case-steward-control')]['spec']['template']['spec']
+        self.assertEqual(a['securityContext'],b['securityContext'])
+        self.assertEqual([x for x in a['volumes'] if x['name']!='reviewed'],[x for x in b['volumes'] if x['name']!='reviewed'])
+        self.assertEqual(a['initContainers'][0]['env'],b['initContainers'][0]['env'])
 
     def test_steady_state_cannot_replace_the_protected_workspace_implementation(self):
         candidate = Path(self.temporary.name)/'tampered'

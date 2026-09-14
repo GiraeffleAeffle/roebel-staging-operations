@@ -15,6 +15,16 @@ FILES={
     'scripts/run-case-runtime.py',
     'scripts/run-case-review-migration.mjs',
     'scripts/case_review_backup.mjs',
+    'scripts/case_runtime_upgrade.mjs',
+    'scripts/case_upgrade_runtime.mjs',
+    'scripts/case_upgrade_worker.py',
+    'scripts/test_case_upgrade_worker.py',
+    'scripts/run-case-runtime-upgrade.mjs',
+    'scripts/test_case_runtime_upgrade.mjs',
+    '.github/workflows/case-runtime-upgrade.yml',
+    'proposals/synthetic-case-runtime-upgrade/README.md',
+    'proposals/synthetic-case-runtime-upgrade/transition.json',
+    'proposals/synthetic-case-runtime-upgrade/resources.json',
     'scripts/case_review_storage.py',
     'scripts/run-case-review-storage.py',
     'scripts/test_case_review_storage.py',
@@ -74,7 +84,10 @@ def flux_bootstrap_objects(v,root,original):
     if any(o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-review-reviewed-v1' for o in runtime):
         role=next(o for o in expected if o['kind']=='Role')
         next(r for r in role['rules'] if r['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-review-reviewed-v1')
-    if v.TOWN_WORKSPACE.stage(v, root) == 'review':
+    if any(o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-brief-reviewed-v1' for o in runtime):
+        role=next(o for o in expected if o['kind']=='Role')
+        next(r for r in role['rules'] if r['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-brief-reviewed-v1')
+    if v.TOWN_WORKSPACE.stage(v, root) in ('review', 'brief'):
         role=next(o for o in expected if o['kind']=='Role')
         next(r for r in role['rules'] if r['resources']==['networkpolicies'])['resourceNames'].append('roebel-case-steward-control-allow-workspace-review')
     return expected
@@ -90,9 +103,10 @@ def verify(v,root):
         expected=proposed.read_bytes()
         repaired=(json.dumps(public_host_resources(json.loads(expected)),indent=2)+'\n').encode() if name=='resources.json' else expected
         allowed=(expected,repaired,successor) if name=='resources.json' else (expected,repaired)
-        if name=='resources.json' and v.TOWN_WORKSPACE.stage(v,root)=='review':
+        selected=v.TOWN_WORKSPACE.stage(v,root)
+        if name=='resources.json' and selected in ('review','brief'):
             v.TOWN_WORKSPACE.verify(v,root)
-            allowed += (v.TOWN_WORKSPACE.expected_files(v.TOWN_WORKSPACE.bundle(v,root),'review')['reviewed-render/roebel-staging/case-runtime/resources.json'].encode(),)
+            allowed += (v.TOWN_WORKSPACE.expected_files(v.TOWN_WORKSPACE.bundle(v,root),selected)['reviewed-render/roebel-staging/case-runtime/resources.json'].encode(),)
         v.require(active.read_bytes() in allowed,'Case runtime render differs from independently pinned source, exact public Host repair or review successor')
     return {'bootstrapImplementationPresent':True,'automaticActivation':False,
             'webConnectionIncluded':False,'restoreActivation':False}
