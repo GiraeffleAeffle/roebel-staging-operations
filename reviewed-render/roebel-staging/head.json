@@ -2,8 +2,8 @@
   "components": [
     {
       "component": "public-mecky",
-      "manifestDigest": "sha256:c832bc5e09c8188bc27b3a7955e6354017b1e647605c12f3ed4dee6387711827",
-      "sourceRevision": "6ce216f0b172dee3baec935be378d6d6adaaaaf4"
+      "manifestDigest": "sha256:3e2c5367440aaa35236f4bc1d26548410d21cd4bbd90a0d8385223bee811ca6e",
+      "sourceRevision": "e2add2c498c3d1fe80a6f80ba56890e2ac33c62e"
     },
     {
       "component": "roebel-web-staging",
@@ -11,7 +11,7 @@
       "sourceRevision": "6ce216f0b172dee3baec935be378d6d6adaaaaf4"
     }
   ],
-  "promotionRevision": "6ce216f0b172dee3baec935be378d6d6adaaaaf4",
-  "releaseSetDigest": "sha256:89275caa90066d6235bfbcfe177b86cbacf4682067f7988afdbbc0842954a3a7",
+  "promotionRevision": "e2add2c498c3d1fe80a6f80ba56890e2ac33c62e",
+  "releaseSetDigest": "sha256:2bd4d213d9d84327a90fb3fd75a83ea463efa1c91d9de71c9cac44db1d44c67b",
   "schemaVersion": "roebel_staging_release_set_head_v1"
 }
