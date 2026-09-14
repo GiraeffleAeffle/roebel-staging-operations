@@ -26,7 +26,7 @@ function exact(value, fields) {
     Object.keys(value).length === fields.length && Object.keys(value).every((k) => fields.includes(k)));
 }
 
-function snapshot(root) {
+export function snapshotCaseFiles(root) {
   requireFact(typeof root === "string" && root === resolve(root) && realpathSync(root) === root);
   const rootStat = lstatSync(root, { bigint: true });
   requireFact(rootStat.isDirectory() && rootStat.uid === BigInt(process.getuid()) && (rootStat.mode & 0o7777n) === 0o700n);
@@ -52,6 +52,23 @@ function snapshot(root) {
     } finally { closeSync(fd); }
   });
   requireFact(identity(lstatSync(root, { bigint: true })) === identity(rootStat) && canonical(readdirSync(root).sort()) === canonical(names));
+  return files;
+}
+const snapshot = snapshotCaseFiles;
+
+/** Shared bounded archive validation. No filesystem effects or version policy. */
+export function validateCaseArchiveFiles(files) {
+  requireFact(Array.isArray(files) && files.length >= 3 && files.length <= 32);
+  const names = new Set(); let total = 0;
+  for (const f of files) {
+    exact(f, ["name", "mode", "byteLength", "sha256", "base64"]);
+    requireFact([0o600, 0o640, 0o644].includes(f.mode) && nameValid(f.name) && !names.has(f.name) && Number.isSafeInteger(f.byteLength) &&
+      f.byteLength >= 0 && f.byteLength <= MAX_FILE_BYTES && typeof f.base64 === "string");
+    names.add(f.name); total += f.byteLength; requireFact(total <= MAX_FILE_BYTES);
+    const data = Buffer.from(f.base64, "base64");
+    requireFact(data.toString("base64") === f.base64 && data.length === f.byteLength && hash(data) === f.sha256);
+  }
+  requireFact(canonical([...names]) === canonical([...names].sort()));
   return files;
 }
 
@@ -118,16 +135,7 @@ export function verifyRestoredCase(bytes, expectedArchiveSha256, preparation, ex
   exact(archive, ["schemaVersion", "evidence", "files"]);
   requireFact(archive.schemaVersion === "roebel_sealed_case_archive_v1" && Array.isArray(archive.files) &&
     archive.files.length >= 3 && archive.files.length <= 32);
-  const names = new Set(); let total = 0;
-  for (const f of archive.files) {
-    exact(f, ["name", "mode", "byteLength", "sha256", "base64"]);
-    requireFact([0o600, 0o640, 0o644].includes(f.mode) && nameValid(f.name) && !names.has(f.name) && Number.isSafeInteger(f.byteLength) &&
-      f.byteLength >= 0 && f.byteLength <= MAX_FILE_BYTES && typeof f.base64 === "string");
-    names.add(f.name); total += f.byteLength; requireFact(total <= MAX_FILE_BYTES);
-    const data = Buffer.from(f.base64, "base64");
-    requireFact(data.toString("base64") === f.base64 && data.length === f.byteLength && hash(data) === f.sha256);
-  }
-  requireFact(canonical([...names]) === canonical([...names].sort()));
+  validateCaseArchiveFiles(archive.files);
   const facts = evidence(archive.files, preparation, expectedClaimChecksum, runtime.verifySeal);
   requireFact(canonical(facts) === canonical(archive.evidence));
   const temporary = realpathSync(mkdtempSync(join(tmpdir(), "roebel-case-backup-restore-")));
