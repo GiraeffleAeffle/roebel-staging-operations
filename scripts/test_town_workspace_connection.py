@@ -14,6 +14,8 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('workspace_proposal', ROOT/'scripts/town_workspace_connection.py')
 policy = importlib.util.module_from_spec(spec); spec.loader.exec_module(policy)
+spec = importlib.util.spec_from_file_location('workspace_comment_policy', ROOT/'scripts/comment_mecky_rollout.py')
+comment_policy = importlib.util.module_from_spec(spec); spec.loader.exec_module(comment_policy)
 
 
 def require(condition, message):
@@ -29,7 +31,8 @@ def changed(a, b):
     return {p for p in files if not (a/p).exists() or not (b/p).exists() or (a/p).read_bytes() != (b/p).read_bytes()}
 
 
-V = SimpleNamespace(require=require, load_json=lambda p:json.loads(p.read_text()), changed_repository_files=changed)
+V = SimpleNamespace(require=require, load_json=lambda p:json.loads(p.read_text()), changed_repository_files=changed,
+                    COMMENT_MECKY=comment_policy)
 
 
 def activate(root, stage):
@@ -44,6 +47,11 @@ class WorkspaceRolloutTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.base=Path(self.temporary.name)/'base'
         shutil.copytree(ROOT,self.base,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+        if comment_policy.enabled(self.base):
+            for path in comment_policy.TRANSITION_FILES - {str(comment_policy.RECORD_PATH)}:
+                (self.base/path).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show',
+                    '0282b120facf75b174be4b20422d74827af95410:'+path]))
+            (self.base/comment_policy.RECORD_PATH).unlink()
         self.data=policy.bundle(V,self.base)
         # Every stage is tested from its pinned prepared predecessor, even
         # when the repository's current render has already advanced.

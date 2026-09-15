@@ -1072,9 +1072,16 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
 
     def normalize_pre_workspace_seed(self, destination: Path) -> None:
         """Historical rollout fixtures predate the pinned Workspace stages."""
+        import subprocess
+        comment = VERIFIER.COMMENT_MECKY
+        if comment.enabled(destination):
+            for relative in comment.TRANSITION_FILES - {str(comment.RECORD_PATH)}:
+                (destination / relative).write_bytes(subprocess.check_output([
+                    'git', '-C', str(ROOT), 'show', '0282b120facf75b174be4b20422d74827af95410:' + relative,
+                ]))
+            (destination / comment.RECORD_PATH).unlink()
         if not (destination / VERIFIER.TOWN_WORKSPACE.STATE).exists():
             return
-        import subprocess
         data = VERIFIER.TOWN_WORKSPACE.bundle(VERIFIER, ROOT)
         for relative, expected in data['predecessorFiles'].items():
             path = destination / relative
@@ -3101,6 +3108,7 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
                 VERIFIER.IDENTITY_ROTATION_RECORD_PATH,
                 str(VERIFIER.TRACER_DATA_PLANE.RETAINED_RECORD_PATH),
                 str(VERIFIER.CITIZEN_STATUS.RECORD_PATH),
+                str(VERIFIER.COMMENT_MECKY.RECORD_PATH),
                 str(Path(VERIFIER.RENDER_ROOT) / "web/ingress.json"),
             }
         )
@@ -3984,6 +3992,8 @@ class ReviewedRenderVerifierTests(unittest.TestCase):
             )
         if VERIFIER.CITIZEN_STATUS.enabled(ROOT):
             http = VERIFIER.CITIZEN_STATUS.extend_http(http)
+        if VERIFIER.COMMENT_MECKY.enabled(ROOT):
+            http = VERIFIER.COMMENT_MECKY.extend_http(http)
         self.assertEqual(gateway["exactGatewayPaths"], http["exactGatewayPaths"])
         self.assertEqual(gateway["methodPathMatrix"], http["methodPathMatrix"])
         self.assertEqual(

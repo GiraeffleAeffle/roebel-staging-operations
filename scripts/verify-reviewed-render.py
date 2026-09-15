@@ -103,6 +103,20 @@ def load_citizen_status_policy():
 CITIZEN_STATUS = load_citizen_status_policy()
 
 
+def load_comment_mecky_policy():
+    # Executable admission comes from beside the protected verifier.
+    path = Path(__file__).with_name("comment_mecky_rollout.py")
+    spec = importlib.util.spec_from_file_location("protected_comment_mecky_policy", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("protected comment policy unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+COMMENT_MECKY = load_comment_mecky_policy()
+
+
 def load_synthetic_case_proposal_policy():
     # Executable policy comes only from beside this protected verifier.
     path = Path(__file__).with_name("synthetic_case_runtime.py")
@@ -286,6 +300,7 @@ PUBLIC_MECKY_REVIEWED_EGRESS_DESTINATION_LABELS = {
 
 EXPECTED_FILES = {
     *CITIZEN_STATUS.POLICY_FILES,
+    *COMMENT_MECKY.POLICY_FILES,
     ".github/CODEOWNERS",
     ".github/workflows/automatic-promotion.yml",
     ".github/workflows/reviewed-render-admission.yml",
@@ -1079,6 +1094,7 @@ def verify_repository_file_set(root: Path) -> str:
     TOWN_WORKSPACE.verify(citizen_status_interface(), root)
     actual = actual - TOWN_WORKSPACE.FILES
     actual = actual - {str(CITIZEN_STATUS.RECORD_PATH)}
+    actual = actual - {str(COMMENT_MECKY.RECORD_PATH)}
     retained_record = str(TRACER_DATA_PLANE.RETAINED_RECORD_PATH)
     if retained_record in actual:
         require(TRACER_DATA_PLANE.retained_enabled(root), "retained record without retained runtime")
@@ -1470,6 +1486,8 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
         )
     if CITIZEN_STATUS.enabled(root):
         gateway_http = CITIZEN_STATUS.extend_http(gateway_http)
+    if COMMENT_MECKY.enabled(root):
+        gateway_http = COMMENT_MECKY.extend_http(gateway_http)
     contract = load_json(root / "policy/repository-contract.json")
     require(contract == {
         "schemaVersion": "roebel_staging_operations_repository_v1",
@@ -1610,6 +1628,7 @@ def verify_contract(root: Path, participant_policy: dict[str, Any]) -> dict[str,
                 if CITIZEN_STATUS.enabled(root)
                 else {}
             ),
+            **({"commentMecky": COMMENT_MECKY.descriptor()} if COMMENT_MECKY.enabled(root) else {}),
             **(
                 {"syntheticCitizenAdoption": synthetic_boundary}
                 if synthetic_citizen_pass
@@ -4932,6 +4951,9 @@ def verify_participant_gateway_runtime_pin(
     value: Any,
     participant_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("schemaVersion") == COMMENT_MECKY.SCHEMA:
+        require(value == COMMENT_MECKY.runtime_pin(citizen_status_interface(), participant_policy), "comment runtime pin drift")
+        return copy.deepcopy(value)
     if isinstance(value, dict) and value.get("schemaVersion") == CITIZEN_STATUS.SCHEMA:
         require(value == CITIZEN_STATUS.runtime_pin(citizen_status_interface(), participant_policy), "citizen status runtime pin drift")
         return copy.deepcopy(value)
@@ -5173,6 +5195,9 @@ def expected_participant_gateway_resources(
     civic_projection_route: bool = False,
 ) -> dict[str, Any]:
     """Compatibility adapter to the single protected policy module."""
+    if runtime_pin.get("schemaVersion") == COMMENT_MECKY.SCHEMA:
+        verify_participant_gateway_runtime_pin(runtime_pin, participant_policy)
+        return COMMENT_MECKY.resources(citizen_status_interface(), participant_policy, civic_projection_route)
     if runtime_pin.get("schemaVersion") == CITIZEN_STATUS.SCHEMA:
         verify_participant_gateway_runtime_pin(runtime_pin, participant_policy)
         return CITIZEN_STATUS.resources(citizen_status_interface(), participant_policy, civic_projection_route)
@@ -5581,8 +5606,10 @@ def verify_network_boundary_migration(
         require(participant_gateway_objects is not None, "participant gateway boundary objects unavailable")
         require(participant_policy is not None, "participant gateway policy unavailable")
         gateway_http = participant_gateway_http_contract(participant_policy)
-        if participant_gateway_objects["runtimePin"]["schemaVersion"] == CITIZEN_STATUS.SCHEMA:
+        if participant_gateway_objects["runtimePin"]["schemaVersion"] in {CITIZEN_STATUS.SCHEMA, COMMENT_MECKY.SCHEMA}:
             gateway_http = CITIZEN_STATUS.extend_http(gateway_http)
+        if participant_gateway_objects["runtimePin"]["schemaVersion"] == COMMENT_MECKY.SCHEMA:
+            gateway_http = COMMENT_MECKY.extend_http(gateway_http)
         ingress_paths = gateway_http["exactGatewayPaths"]
         post_paths = gateway_http["methodPathMatrix"]["POST"]
         gateway_flux = expected_participant_gateway_flux_objects()
@@ -6002,6 +6029,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
     CASE_PROPOSAL.verify_proposal(citizen_status_interface(), root)
     CASE_RUNTIME.verify(citizen_status_interface(), root)
     CITIZEN_STATUS.verify_policy(citizen_status_interface(), root)
+    COMMENT_MECKY.verify_policy(citizen_status_interface(), root)
     participant_policy = verify_participant_gateway_static_policy(root, render_file_set)
     verify_contract(root, participant_policy)
     workbench_baseline = verify_workbench_baseline(root)
@@ -6117,7 +6145,9 @@ def verify_tree(root: Path) -> dict[str, Any]:
         {item["name"]: item for item in web_container["env"]},
         identity_contract_set,
     )
-    citizen_status = CITIZEN_STATUS.verify_state(citizen_status_interface(), root, participant_gateway_objects, tracer_data_plane)
+    comment_mecky = COMMENT_MECKY.verify_state(citizen_status_interface(), root, participant_gateway_objects, tracer_data_plane)
+    citizen_status = CITIZEN_STATUS.verify_state(citizen_status_interface(), root,
+        COMMENT_MECKY.status_predecessor(citizen_status_interface(), participant_gateway_objects), tracer_data_plane)
     rotated_state = (
         selected_identity == IDENTITY_ROTATION.WEB_IDENTITY,
         (root / IDENTITY_ROTATION_SQL_PATH).is_file(),
@@ -6148,6 +6178,7 @@ def verify_tree(root: Path) -> dict[str, Any]:
         "webTracerFeed": tracer_feed_route,
         "webIdentityContractSet": selected_identity,
         "citizenEligibilityStatus": citizen_status,
+        "commentMecky": comment_mecky,
     }
 
 
@@ -6480,7 +6511,7 @@ def gateway_synthetic_citizen_pass_enabled(snapshot: dict[str, Any]) -> bool:
     return bool(
         gateway
         and gateway["runtimePin"].get("schemaVersion")
-        in {"roebel_staging_participant_gateway_runtime_pin_v5", CITIZEN_STATUS.SCHEMA}
+        in {"roebel_staging_participant_gateway_runtime_pin_v5", CITIZEN_STATUS.SCHEMA, COMMENT_MECKY.SCHEMA}
     )
 
 
@@ -7101,6 +7132,10 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
     if CASE_RUNTIME.verify_web_transition(citizen_status_interface(),candidate,base):
         return
     require(not changed_files & CITIZEN_STATUS.POLICY_FILES, "citizen status promotion changed protected policy files")
+    require(not changed_files & COMMENT_MECKY.POLICY_FILES, "comment promotion changed protected policy files")
+    if candidate.get("commentMecky") != base.get("commentMecky"):
+        COMMENT_MECKY.verify_transition(citizen_status_interface(), candidate, base)
+        return
     if candidate.get("citizenEligibilityStatus") != base.get("citizenEligibilityStatus"):
         CITIZEN_STATUS.verify_transition(citizen_status_interface(), candidate, base)
         return

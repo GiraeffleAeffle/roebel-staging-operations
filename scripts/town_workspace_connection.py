@@ -118,6 +118,14 @@ def verify(v, root):
         file = root / path
         if selected == 'brief' and path in RELEASE_RECORDS:
             continue  # Validated by the complete head/integrity/CAS verifier.
+        if selected == 'brief' and path == ROOT + 'network-boundary-migration.json' and v.COMMENT_MECKY.enabled(root):
+            # Apply only the independently pinned comment route and its two
+            # gateway object hashes to the exact reviewed workspace boundary.
+            gateway = v.COMMENT_MECKY.resources(v, v.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY, True)
+            expected = v.COMMENT_MECKY.network_receipt(v, json.loads(active[path]), gateway)
+            v.require(file.is_file() and not file.is_symlink() and v.load_json(file) == expected,
+                      'workspace comment boundary drift')
+            continue
         if selected == 'brief' and path in RELEASE_DEPLOYMENTS:
             v.require(file.is_file() and not file.is_symlink() and
                       stable_deployment(v.load_json(file)) == stable_deployment(json.loads(active[path])),

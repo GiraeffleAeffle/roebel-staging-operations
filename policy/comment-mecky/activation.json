@@ -1,0 +1,63 @@
+{
+  "authority": {
+    "binding": "none",
+    "civicCommandsEnabled": false,
+    "rolesAssigned": false
+  },
+  "database": {
+    "automaticMigration": false,
+    "bootstrapReplay": false,
+    "claim": "roebel-tracer-postgres-data-v1",
+    "deployment": "roebel-tracer-postgres",
+    "functions": [
+      "staging_participant_gateway_reserve_comment_mirror",
+      "staging_participant_gateway_complete_comment_mirror"
+    ],
+    "isolatedCurrentBackupRehearsalRequired": true,
+    "mode": "one-transaction-before-gateway-promotion",
+    "namespace": "stadtstack-roebel-staging-lab",
+    "readiness": "exact-catalog-and-function-body-check-before-and-after-migration",
+    "table": "staging_participant_private.staging_participant_comment_mirrors"
+  },
+  "deactivation": "revoke-only-comment-functions-and-retain-mirror-receipts",
+  "http": {
+    "existingSignedSessionAndGatewayWriteRequired": true,
+    "explicitMentionRequired": true,
+    "methods": [
+      "POST",
+      "OPTIONS"
+    ],
+    "path": "/api/staging-participant/v1/nostr-comment",
+    "sharedRateLimitUnchanged": true
+  },
+  "publication": {
+    "receiptSha256": "sha256:b99bd6b4cf8389e340e1a1da5122c8084a86582920005b4d90a926316b758960",
+    "runId": "34958089634",
+    "supplementalSqlAttestedByPublication": false
+  },
+  "rollback": "exact-predecessor-gateway-requires-separate-admission",
+  "runtime": {
+    "newReadinessInStatusEndpoint": false,
+    "reuseExistingSecrets": true,
+    "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v7",
+    "unavailableCommentRpcStatus": 503
+  },
+  "schemaVersion": "roebel_comment_mecky_activation_policy_v1",
+  "source": {
+    "manifestDigest": "sha256:34e0f20ce51429e29962b774febaf53e18ae90f370c139a6f36870e6bbac0e35",
+    "protectedRef": "refs/heads/main",
+    "repository": "https://github.com/GiraeffleAeffle/Roebel-App.git",
+    "sourceRevision": "063b2221c1eaafdf58edeff191d46fdb062ea257",
+    "sourceTreeSha256": "sha256:0c32062269a8787d7e07f601cf955e69c8c8dcdea1dbf00123d729e8ea0b045d",
+    "workflowSha256": "sha256:57f845cd106120c365a60fcf9e80e00e5304c410f2aafd462ee8f89073dd1a61"
+  },
+  "sql": {
+    "license": {
+      "path": "policy/comment-mecky/LICENSE.AGPL-3.0",
+      "sha256": "sha256:0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    "operationsPath": "policy/comment-mecky/20260915_staging_comment_mecky_mirror.sql",
+    "sha256": "sha256:c800768dc1877b9819a788edd01732ea47b698adc2609b24192b708aa5082f8c",
+    "sourcePath": "supabase/migrations/20260915_staging_comment_mecky_mirror.sql"
+  }
+}

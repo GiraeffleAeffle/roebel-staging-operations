@@ -13,6 +13,15 @@ class UpgradeWorkerTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)/'review'
         shutil.copytree(Path(__file__).resolve().parents[1], root, ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
+        # The upgrade worker predates the comment gateway; restore that fixed
+        # predecessor before selecting its historical Workspace review stage.
+        comment = _verifier().COMMENT_MECKY
+        if comment.enabled(root):
+            import subprocess
+            for path in comment.TRANSITION_FILES - {str(comment.RECORD_PATH)}:
+                (root/path).write_bytes(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),
+                    'show','0282b120facf75b174be4b20422d74827af95410:'+path]))
+            (root/comment.RECORD_PATH).unlink()
         data=workspace.bundle(_verifier().citizen_status_interface(),root)
         for path, raw in workspace.expected_files(data,'review').items(): (root/path).write_text(raw)
         (root/workspace.STATE).write_text(json.dumps({'schemaVersion':'roebel_town_workspace_state_v1','stage':'review'},indent=2)+'\n')
