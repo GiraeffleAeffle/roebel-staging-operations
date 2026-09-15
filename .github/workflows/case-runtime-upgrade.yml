@@ -23,6 +23,8 @@ jobs:
         with:
           persist-credentials: false
           path: operations
+          # The offline worker test reads its pinned predecessor from Git.
+          fetch-depth: 0
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: GiraeffleAeffle/stadtstack
