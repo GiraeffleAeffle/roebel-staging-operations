@@ -5,7 +5,7 @@
   "namespace": "stadtstack-roebel-web-preview",
   "workloadName": "roebel-id-staging",
   "imageRepository": "ghcr.io/giraeffleaeffle/roebel-id-staging",
-  "imageDigest": "sha256:8a5de7db7293aadece5bcdc6e48bcc1ec2de7f68d7511b56d744e76427049acd",
+  "imageDigest": "sha256:66d0ff15f2225a9466dfc6ea66cdcfa5eacb3e3f95b5181504da1bea618edf29",
   "replicas": 1,
   "port": 3010,
   "deploymentProfile": "staging-synthetic",
@@ -58,9 +58,9 @@
     "Protected admission hook authorization and complete integration verification",
     "Persistent migrations, certificate issuance, live callback and restart acceptance"
   ],
-  "sourceRevision": "3f723aaf461634f86fe337f63f3490159bb9d3c3",
-  "sourcePr": "https://github.com/GiraeffleAeffle/Roebel-App/pull/110",
-  "publisherRun": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/34774147852",
+  "sourceRevision": "410a92ae1988452bcdd5f10fdd1bae05e94d898d",
+  "sourcePr": "https://github.com/GiraeffleAeffle/Roebel-App/pull/115",
+  "publisherRun": "https://github.com/GiraeffleAeffle/Roebel-App/actions/runs/35010514746",
   "certificate": {
     "proposal": "identity-certificate.json",
     "issuer": "letsencrypt-prod",
@@ -68,13 +68,13 @@
     "httpChallengeIngressClass": "haproxy",
     "activationPerformed": false
   },
-  "sourceReceiptSha256": "sha256:854523addbf90cebec02c88d4470b88d93c61fe4ba1e4260196b5e2f22ebed83",
+  "sourceReceiptSha256": "sha256:beb2f225f05cc61cf01bb2c842f6321448094d362ae2e223936f66deb88841f1",
   "provenance": {
-    "id": "47190478",
-    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47190478"
+    "id": "47714766",
+    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47714766"
   },
   "sbomAttestation": {
-    "id": "47190485",
-    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47190485"
+    "id": "47714791",
+    "url": "https://github.com/GiraeffleAeffle/Roebel-App/attestations/47714791"
   }
 }

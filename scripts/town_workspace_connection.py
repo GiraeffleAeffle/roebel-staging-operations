@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:4f84ec5d9f31abbf2313418f24843e95f97366d1158ea26c761b57840f28fa24'
+ROLLOUT_SHA256 = 'sha256:c19034daccd3930dffc107113aaff1d613b25ac259e636f7c68a38582d30729e'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
