@@ -23,7 +23,8 @@
         "/api/staging-participant/v1/sign-topic-suggestion",
         "/api/staging-participant/v1/citizen-adoption/challenge",
         "/api/staging-participant/v1/citizen-adoption/eligibility",
-        "/api/staging-participant/v1/citizen-adoption/adoptions"
+        "/api/staging-participant/v1/citizen-adoption/adoptions",
+        "/api/staging-participant/v1/nostr-comment"
       ],
       "exactPostPaths": [
         "/api/staging-participant/v1/challenge",
@@ -35,7 +36,8 @@
         "/api/staging-participant/v1/sign-topic-suggestion",
         "/api/staging-participant/v1/citizen-adoption/challenge",
         "/api/staging-participant/v1/citizen-adoption/eligibility",
-        "/api/staging-participant/v1/citizen-adoption/adoptions"
+        "/api/staging-participant/v1/citizen-adoption/adoptions",
+        "/api/staging-participant/v1/nostr-comment"
       ],
       "gatewayMethodPathMatrix": {
         "GET": [
@@ -55,7 +57,8 @@
           "/api/staging-participant/v1/sign-topic-suggestion",
           "/api/staging-participant/v1/citizen-adoption/challenge",
           "/api/staging-participant/v1/citizen-adoption/eligibility",
-          "/api/staging-participant/v1/citizen-adoption/adoptions"
+          "/api/staging-participant/v1/citizen-adoption/adoptions",
+          "/api/staging-participant/v1/nostr-comment"
         ],
         "POST": [
           "/api/staging-participant/v1/challenge",
@@ -67,7 +70,8 @@
           "/api/staging-participant/v1/sign-topic-suggestion",
           "/api/staging-participant/v1/citizen-adoption/challenge",
           "/api/staging-participant/v1/citizen-adoption/eligibility",
-          "/api/staging-participant/v1/citizen-adoption/adoptions"
+          "/api/staging-participant/v1/citizen-adoption/adoptions",
+          "/api/staging-participant/v1/nostr-comment"
         ]
       },
       "rateLimit": {
@@ -155,12 +159,119 @@
       "sourceKinds": "local_news,ratsinformation"
     },
     "signedNostr": "not-present",
+    "townWorkspace": {
+      "authority": "none",
+      "clientId": "roebel-town-workspace-staging",
+      "issuer": "https://roebel-id.staging.agentcart.eu",
+      "reviewEgress": {
+        "ports": [
+          {
+            "port": 18090,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-steward-control",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ]
+      },
+      "reviewEnabled": true,
+      "routes": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/login"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/callback"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path": "/api/workspace/auth/session"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path": "/api/workspace/auth/logout"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path": "/api/workspace/case-review"
+        },
+        {
+          "methods": [
+            "GET",
+            "HEAD"
+          ],
+          "pathPattern": "^/api/stadtstack/synthetic-citizen-brief/by-discussion/[0-9a-f]{64}$"
+        }
+      ],
+      "sessionStoreRole": "roebel_workspace_session"
+    },
     "tracerActivation": {
       "applicationObjectCount": 8,
       "createBeforeUnsuspend": true,
       "runner": "scripts/run-tracer-data-plane-live.py",
       "secretMaterializerRunner": "scripts/materialize-tracer-data-plane-secrets.py",
       "sharedSourceMutation": "forbidden"
+    },
+    "webCaseBinding": {
+      "authority": "none",
+      "credentials": "none",
+      "egress": {
+        "ports": [
+          {
+            "port": 18086,
+            "protocol": "TCP"
+          }
+        ],
+        "to": [
+          {
+            "namespaceSelector": {
+              "matchLabels": {
+                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
+              }
+            },
+            "podSelector": {
+              "matchLabels": {
+                "app.kubernetes.io/component": "case-public-binding",
+                "app.kubernetes.io/part-of": "roebel-case-staging"
+              }
+            }
+          }
+        ]
+      },
+      "origin": "http://roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local:18086",
+      "publicLookup": {
+        "credentials": "none",
+        "methods": [
+          "GET",
+          "HEAD"
+        ],
+        "pathPattern": "^/api/stadtstack/case-bindings/by-discussion/[0-9a-f]{64}$"
+      },
+      "sourceNamespace": "stadtstack-roebel-web-preview"
     },
     "webCivicProjection": {
       "authority": "none",
@@ -241,113 +352,6 @@
           }
         }
       ]
-    },
-    "webCaseBinding": {
-      "authority": "none",
-      "credentials": "none",
-      "origin": "http://roebel-case-public-binding.stadtstack-roebel-staging-lab.svc.cluster.local:18086",
-      "egress": {
-        "to": [
-          {
-            "namespaceSelector": {
-              "matchLabels": {
-                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
-              }
-            },
-            "podSelector": {
-              "matchLabels": {
-                "app.kubernetes.io/component": "case-public-binding",
-                "app.kubernetes.io/part-of": "roebel-case-staging"
-              }
-            }
-          }
-        ],
-        "ports": [
-          {
-            "port": 18086,
-            "protocol": "TCP"
-          }
-        ]
-      },
-      "sourceNamespace": "stadtstack-roebel-web-preview",
-      "publicLookup": {
-        "pathPattern": "^/api/stadtstack/case-bindings/by-discussion/[0-9a-f]{64}$",
-        "methods": [
-          "GET",
-          "HEAD"
-        ],
-        "credentials": "none"
-      }
-    },
-    "townWorkspace": {
-      "authority": "none",
-      "clientId": "roebel-town-workspace-staging",
-      "issuer": "https://roebel-id.staging.agentcart.eu",
-      "reviewEgress": {
-        "ports": [
-          {
-            "port": 18090,
-            "protocol": "TCP"
-          }
-        ],
-        "to": [
-          {
-            "namespaceSelector": {
-              "matchLabels": {
-                "kubernetes.io/metadata.name": "stadtstack-roebel-staging-lab"
-              }
-            },
-            "podSelector": {
-              "matchLabels": {
-                "app.kubernetes.io/component": "case-steward-control",
-                "app.kubernetes.io/part-of": "roebel-case-staging"
-              }
-            }
-          }
-        ]
-      },
-      "reviewEnabled": true,
-      "routes": [
-        {
-          "methods": [
-            "GET"
-          ],
-          "path": "/api/workspace/auth/login"
-        },
-        {
-          "methods": [
-            "GET"
-          ],
-          "path": "/api/workspace/auth/callback"
-        },
-        {
-          "methods": [
-            "GET"
-          ],
-          "path": "/api/workspace/auth/session"
-        },
-        {
-          "methods": [
-            "POST"
-          ],
-          "path": "/api/workspace/auth/logout"
-        },
-        {
-          "methods": [
-            "GET",
-            "POST"
-          ],
-          "path": "/api/workspace/case-review"
-        },
-        {
-          "pathPattern": "^/api/stadtstack/synthetic-citizen-brief/by-discussion/[0-9a-f]{64}$",
-          "methods": [
-            "GET",
-            "HEAD"
-          ]
-        }
-      ],
-      "sessionStoreRole": "roebel_workspace_session"
     }
   },
   "effects": {
@@ -379,7 +383,7 @@
       "kind": "Deployment",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:227459f6142588f2d3986625f7c481899ec91ec62209c9a9baa70aaca3ce5b7a"
+      "sha256": "sha256:d26ee8ef17381027e2372067762eaf7db6bfb7ed472907c13574d7697045983a"
     },
     {
       "kind": "Service",
@@ -397,7 +401,7 @@
       "kind": "Ingress",
       "name": "roebel-staging-participant-gateway",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:7da65f16152e209bd955f96855c9c305c803e9346d5e92633215f01b755c0470"
+      "sha256": "sha256:c5376acab7b6699ab80bbb65780cb11528e532e0a8953eddda1c77de8b75b544"
     },
     {
       "kind": "NetworkPolicy",

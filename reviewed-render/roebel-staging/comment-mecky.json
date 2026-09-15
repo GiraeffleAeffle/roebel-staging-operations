@@ -1,0 +1,9 @@
+{
+  "authorityBinding": "none",
+  "databasePreflightRequired": true,
+  "liveEvidenceCommitted": false,
+  "policy": "policy/comment-mecky/activation.json",
+  "policyCanonicalSha256": "sha256:e4e7499e2a192ec59291ec3888322af79344ea64bb73cb059909d89db0d55fa0",
+  "runtimePinCanonicalSha256": "sha256:a4a34b57f68bd78a6455942600ccdde662eeac340fcac7e50104b330c317fa90",
+  "schemaVersion": "roebel_comment_mecky_desired_state_v1"
+}
