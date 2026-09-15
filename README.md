@@ -97,6 +97,42 @@ Operations checkout after this policy is admitted; `--root` starts as a
 separate, byte-identical copy. The output binds the full base file manifest.
 Save its output in private review evidence, outside this public repository.
 
+### Signed comments to Mecky
+
+`scripts/comment_mecky_rollout.py` prepares the exact v7 gateway successor for
+`POST /api/staging-participant/v1/nostr-comment`. A participant's saved comment
+must belong to their existing admitted wallet and match its original gateway
+write. A signed `@Mecky` request can then enter the shared conversation. This
+does not promote the comment into a proposal or issue a civic command.
+
+The proposal changes seven desired-state files: gateway image/runtime/ingress,
+the contract and network receipt, integrity, and its activation record. The
+historical route tuples, Case, municipal roles, Secrets and retained bootstrap
+are preserved. Source SQL and its AGPL license are copied unchanged into
+`policy/comment-mecky/`; the source commit and published image are pinned there.
+
+Run `python3 -m unittest -q scripts/test_comment_mecky_rollout.py`. The effect-free
+proposal command accepts `--root`, `--base-root`, `--product-root` and
+`--publication-receipt`. It returns the migration, catalog assertions,
+deactivation SQL and exact candidate files. Save that output outside this
+public repository. The protected policy must be reviewed before admitting the
+separate activation; normal image promotion cannot change the policy.
+
+Before activating the gateway, restore a fresh encrypted staging backup into
+an isolated PostgreSQL 15 instance and rehearse the migration and existing
+admission checks. Then apply the same SQL in one transaction to the identified
+staging owner/database, with lock and statement timeouts. Catalog assertions
+bind both function bodies, signatures, owners, search paths and grants, plus
+the private table's RLS, columns, defaults and constraints. Notify PostgREST
+and verify the runtime before promoting the Web image. The existing `/status`
+response does not prove that these new RPCs exist; keep the separate catalog
+check as a deployment gate. Missing RPCs make comment requests fail with 503.
+
+The deactivation SQL revokes only these two RPCs and retains receipts. It does
+not revert an image or delete data; restoring an earlier runtime requires its
+own exact admission. Separate-person enrollment and a complete fictional Case
+are subsequent workflow acceptance tasks.
+
 ### Existing retained-storage contract
 
 The storage-continuity policy admits one forward transition from the existing
