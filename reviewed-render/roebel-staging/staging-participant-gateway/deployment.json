@@ -138,11 +138,11 @@
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SOURCE_REVISION",
-                "value": "c25cbdff5f18143257c4849d91bbee3b18166ab1"
+                "value": "063b2221c1eaafdf58edeff191d46fdb062ea257"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MANIFEST_DIGEST",
-                "value": "sha256:b69922baff63356efadd705fcecc20e0b73a90725e2402b9a641a00c7b283e73"
+                "value": "sha256:34e0f20ce51429e29962b774febaf53e18ae90f370c139a6f36870e6bbac0e35"
               },
               {
                 "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_MIGRATION_SHA256",
@@ -247,7 +247,7 @@
                 "value": "sha256:85c778d6b805fbfb9c82e343cfd966b1865c15c1fad628173da247ceecff2332"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:b69922baff63356efadd705fcecc20e0b73a90725e2402b9a641a00c7b283e73",
+            "image": "ghcr.io/giraeffleaeffle/roebel-staging-participant-gateway@sha256:34e0f20ce51429e29962b774febaf53e18ae90f370c139a6f36870e6bbac0e35",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
