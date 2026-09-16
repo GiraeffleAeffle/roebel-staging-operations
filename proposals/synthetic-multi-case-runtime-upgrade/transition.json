@@ -133,6 +133,7 @@
       "caseVersion": 28,
       "journalHeadChecksum": "sha256:722bcf2beff904d4b039ba190d55604d5c7edd347caeb2cd256d291824314e9f"
     },
-    "admissionReceiptChecksum": "sha256:83c205824ce707f07c488dee0ddfa3e323883fd985d10899b7f403b789e439fd"
+    "admissionReceiptChecksum": "sha256:83c205824ce707f07c488dee0ddfa3e323883fd985d10899b7f403b789e439fd",
+    "previousUpgradeReceiptChecksum": "sha256:b31ca9fc54acc90032db07f1e1bd04199866d35b4900f2c08c324fac48d26afc"
   }
 }
