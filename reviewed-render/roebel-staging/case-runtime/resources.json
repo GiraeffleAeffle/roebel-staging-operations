@@ -444,6 +444,25 @@
       "apiVersion": "v1",
       "kind": "ConfigMap",
       "metadata": {
+        "name": "roebel-case-steward-multicase-reviewed-v1",
+        "namespace": "stadtstack-roebel-staging-lab",
+        "labels": {
+          "app.kubernetes.io/name": "roebel-case-steward-control",
+          "app.kubernetes.io/component": "case-steward-control",
+          "app.kubernetes.io/part-of": "roebel-case-staging",
+          "stadtstack.io/authority": "none"
+        }
+      },
+      "immutable": true,
+      "data": {
+        "reviewed-binding.json": "{\"bindingChecksum\":\"sha256:a1a574cb791a7fe8c2153ee29a4337cca8a8f9e78b1a7ada4b52eaf70f7811b9\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"listeners\":[{\"bindScope\":\"pod_network\",\"id\":\"admission\",\"port\":18085},{\"bindScope\":\"pod_network\",\"id\":\"private-outbox\",\"port\":18087},{\"bindScope\":\"pod_network\",\"id\":\"probe\",\"port\":18088},{\"bindScope\":\"pod_network\",\"id\":\"administration-review\",\"port\":18090}],\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:3ab4851fffde43370f6ec5c5cc36bffd06a0a3c696b2cef87ea11100e7e00e2f\",\"releaseDigest\":\"sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230\",\"schemaVersion\":\"staging_case_control_deployment_binding_v2\",\"storage\":{\"accessMode\":\"ReadWriteOncePod\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"checksum\":\"sha256:14003bd5c7d4c7fb1948b21c0c5fffdf1dc02a597d12e27837d9575fe016b53e\",\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"pvName\":\"pvc-8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"pvcName\":\"roebel-case-steward-review-state-v1\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack-review/case-control\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\"},\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n",
+        "storage-marker.json": "{\"accessMode\":\"ReadWriteOncePod\",\"deployment\":{\"noOverlappingPods\":true,\"replicas\":1,\"strategy\":\"Recreate\"},\"deploymentEnvironment\":\"staging\",\"filesystemType\":\"0xef53\",\"gid\":1000,\"marker\":{\"fileName\":\".stadtstack-control-storage-v1.json\",\"gid\":1000,\"mode\":\"0600\",\"uid\":1000},\"minAvailableBytes\":\"1073741824\",\"mode\":\"0700\",\"municipalityId\":\"roebel-mueritz\",\"operationsTopologyChecksum\":\"sha256:3ab4851fffde43370f6ec5c5cc36bffd06a0a3c696b2cef87ea11100e7e00e2f\",\"pvName\":\"pvc-8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"pvcName\":\"roebel-case-steward-review-state-v1\",\"pvcNamespace\":\"stadtstack-roebel-staging-lab\",\"pvcUid\":\"8c07f2d4-b767-4bdc-b386-b03b811e33e2\",\"releaseDigest\":\"sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230\",\"requestedBytes\":\"10737418240\",\"rootDir\":\"/var/lib/stadtstack-review/case-control\",\"schemaVersion\":\"staging_case_control_storage_marker_v1\",\"storageClass\":\"hcloud-volumes\",\"uid\":1000,\"volumeMode\":\"Filesystem\",\"workload\":{\"automountServiceAccountToken\":false,\"serviceAccountName\":\"roebel-case-steward-control\"},\"workloadName\":\"roebel-case-steward-control\"}\n"
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
         "name": "roebel-case-public-binding-reviewed-v2",
         "namespace": "stadtstack-roebel-staging-lab",
         "labels": {
@@ -510,7 +529,7 @@
             "containers": [
               {
                 "name": "runtime",
-                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230",
                 "imagePullPolicy": "IfNotPresent",
                 "ports": [
                   {
@@ -545,7 +564,7 @@
                   },
                   {
                     "name": "STADTSTACK_CASE_CONTROL_BINDING_SHA256",
-                    "value": "sha256:82e24d5dd0093ad7bb1ed680c12a0626baa0624c54d54eb89fa9fc045019e44b"
+                    "value": "sha256:a1a574cb791a7fe8c2153ee29a4337cca8a8f9e78b1a7ada4b52eaf70f7811b9"
                   }
                 ],
                 "volumeMounts": [
@@ -648,7 +667,7 @@
               {
                 "name": "reviewed",
                 "configMap": {
-                  "name": "roebel-case-steward-brief-reviewed-v1",
+                  "name": "roebel-case-steward-multicase-reviewed-v1",
                   "defaultMode": 292
                 }
               }
@@ -656,7 +675,7 @@
             "initContainers": [
               {
                 "name": "prepare-reviewed-config",
-                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad",
+                "image": "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230",
                 "imagePullPolicy": "IfNotPresent",
                 "command": [
                   "node",
