@@ -84,10 +84,32 @@ class WorkspaceRolloutTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('workspace_integration_verifier', ROOT/'scripts/verify-reviewed-render.py')
         verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
         before = verifier.verify_tree(self.base)
-        for stage in ['login', 'review', 'brief']:
+        for stage in ['login', 'review', 'brief', 'multi-case']:
             after = verifier.verify_tree(self.candidate(stage))
             verifier.verify_transition(after, before)
             before = after
+
+    def test_multi_case_stage_only_advances_the_control_image_and_binding(self):
+        before = self.candidate('brief'); after = self.candidate('multi-case')
+        self.assertTrue(policy.verify_transition(V, after, before))
+        self.assertEqual(changed(after, before), {policy.STATE, policy.ROOT+'case-runtime/resources.json'})
+        read = lambda root: json.loads((root/(policy.ROOT+'case-runtime/resources.json')).read_text())['items']
+        old, new = read(before), read(after)
+        identify = lambda obj: (obj['kind'], obj['metadata']['name'])
+        old_by_id = {identify(o):o for o in old}; new_by_id = {identify(o):o for o in new}
+        self.assertEqual(set(new_by_id)-set(old_by_id), {('ConfigMap','roebel-case-steward-multicase-reviewed-v1')})
+        for key, value in old_by_id.items():
+            if key != ('Deployment','roebel-case-steward-control'): self.assertEqual(value, new_by_id[key])
+        key = ('Deployment','roebel-case-steward-control')
+        previous = old_by_id[key]; restored = copy.deepcopy(new_by_id[key])
+        a = previous['spec']['template']['spec']; b = restored['spec']['template']['spec']
+        for field in ('containers','initContainers'): b[field][0]['image'] = a[field][0]['image']
+        next(e for e in b['containers'][0]['env'] if e['name']=='STADTSTACK_CASE_CONTROL_BINDING_SHA256')['value'] = next(e['value'] for e in a['containers'][0]['env'] if e['name']=='STADTSTACK_CASE_CONTROL_BINDING_SHA256')
+        next(v for v in b['volumes'] if v['name']=='reviewed')['configMap']['name'] = next(v['configMap']['name'] for v in a['volumes'] if v['name']=='reviewed')
+        self.assertEqual(restored, previous)
+        with self.assertRaisesRegex(ValueError, 'exactly one'): policy.verify_transition(V, before, after)
+        (after/'README.md').write_text((after/'README.md').read_text()+'\nUnrelated change\n')
+        with self.assertRaisesRegex(ValueError, 'unrelated files'): policy.verify_transition(V, after, before)
 
     def test_brief_keeps_runtime_shape_pinned_but_does_not_freeze_release_fields(self):
         brief=self.candidate('brief')

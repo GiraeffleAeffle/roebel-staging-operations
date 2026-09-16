@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:c19034daccd3930dffc107113aaff1d613b25ac259e636f7c68a38582d30729e'
+ROLLOUT_SHA256 = 'sha256:8b21b29f2457cea60fc2d8c1c99fc4b3fb21c45c3cacbad673652644bcfad2f8'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
@@ -25,8 +25,11 @@ FILES = {
 } | {
     STATE, ROOT + 'identity/resources.json', ROOT + 'identity/kustomization.yaml',
     'scripts/town_workspace_connection.py', 'scripts/test_town_workspace_connection.py',
+    'proposals/synthetic-multi-case-runtime-upgrade/README.md',
+    'proposals/synthetic-multi-case-runtime-upgrade/transition.json',
+    'proposals/synthetic-multi-case-runtime-upgrade/topology.json',
 }
-STAGES = ('prepared', 'login', 'review', 'brief')
+STAGES = ('prepared', 'login', 'review', 'brief', 'multi-case')
 RELEASE_RECORDS = {ROOT + name for name in ('head.json', 'integrity.json', 'live-preconditions.json')}
 RELEASE_DEPLOYMENTS = {ROOT + name for name in ('web/deployment.json', 'public-mecky/deployment.json')}
 BRIEF_READER_ENV = [
@@ -116,9 +119,9 @@ def verify(v, root):
     active = expected_files(data, selected)
     for path, before in data['predecessorFiles'].items():
         file = root / path
-        if selected == 'brief' and path in RELEASE_RECORDS:
+        if selected in ('brief', 'multi-case') and path in RELEASE_RECORDS:
             continue  # Validated by the complete head/integrity/CAS verifier.
-        if selected == 'brief' and path == ROOT + 'network-boundary-migration.json' and v.COMMENT_MECKY.enabled(root):
+        if selected in ('brief', 'multi-case') and path == ROOT + 'network-boundary-migration.json' and v.COMMENT_MECKY.enabled(root):
             # Apply only the independently pinned comment route and its two
             # gateway object hashes to the exact reviewed workspace boundary.
             gateway = v.COMMENT_MECKY.resources(v, v.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY, True)
@@ -126,7 +129,7 @@ def verify(v, root):
             v.require(file.is_file() and not file.is_symlink() and v.load_json(file) == expected,
                       'workspace comment boundary drift')
             continue
-        if selected == 'brief' and path in RELEASE_DEPLOYMENTS:
+        if selected in ('brief', 'multi-case') and path in RELEASE_DEPLOYMENTS:
             v.require(file.is_file() and not file.is_symlink() and
                       stable_deployment(v.load_json(file)) == stable_deployment(json.loads(active[path])),
                       'workspace deployment changed outside reviewed release fields: ' + path)
@@ -140,14 +143,14 @@ def verify(v, root):
 
 def expected_file(v, root, path, default):
     selected = stage(v, root)
-    if selected not in ('login', 'review', 'brief'):
+    if selected not in ('login', 'review', 'brief', 'multi-case'):
         return default
     raw = expected_files(bundle(v, root), selected).get(path)
     return json.loads(raw) if raw is not None else default
 
 
 def web_image(v, root, previous):
-    if stage(v, root) == 'brief':
+    if stage(v, root) in ('brief', 'multi-case'):
         head = v.load_json(root / (ROOT + 'head.json'))
         component = next(c for c in head['components'] if c['component'] == 'roebel-web-staging')
         return 'ghcr.io/giraeffleaeffle/roebel-web-staging@' + component['manifestDigest']
@@ -157,7 +160,7 @@ def web_image(v, root, previous):
 
 def extend_boundary(v, root, boundary):
     selected = stage(v, root)
-    if selected in ('login', 'review', 'brief'):
+    if selected in ('login', 'review', 'brief', 'multi-case'):
         boundary['boundary']['townWorkspace'] = copy.deepcopy(bundle(v, root)['stages'][selected]['boundary'])
 
 
@@ -166,7 +169,7 @@ def verify_transition(v, candidate, base):
     if a == b:
         v.require(not (v.changed_repository_files(candidate, base) & FILES),
                   'workspace promotion changed protected rollout inputs or implementation')
-        if a == 'brief':
+        if a in ('brief', 'multi-case'):
             path = ROOT + 'public-mecky/deployment.json'
             enabled = lambda root: v.load_json(root / path)['spec']['template']['spec']['containers'][0]['env'][-2:] == BRIEF_READER_ENV
             before, after = enabled(base), enabled(candidate)
@@ -187,7 +190,7 @@ def verify_transition(v, candidate, base):
     expected = set(data['stages'][b]['files']) | {STATE}
     v.require(v.changed_repository_files(candidate, base) == expected,
               'workspace activation changed unrelated files or omitted a stage resource')
-    if b == 'brief':
+    if b in ('brief', 'multi-case'):
         for path, raw in data['stages'][b]['files'].items():
             v.require((candidate / path).read_bytes() == raw.encode(),
                       'initial Brief activation must use the exact published release: ' + path)

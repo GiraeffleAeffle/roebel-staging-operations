@@ -9,6 +9,7 @@ import { canonical, hash, prepareCaseRuntimeUpgrade, verifyCaseRuntimeUpgrade, a
 import { loadCaseUpgradeRuntime } from "./case_upgrade_runtime.mjs";
 
 export const UPGRADE_IMAGE = "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad";
+const MULTI_CASE_UPGRADE_IMAGE = "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230";
 const MAX = 64 * 1024 * 1024;
 const check = x => { if (!x) throw new Error("case_upgrade_worker_stopped"); };
 function read(path, limit = 1_048_576) {
@@ -30,6 +31,8 @@ function same(a, b) { check(canonical(a) === canonical(b)); }
 
 export function invokeCaseUpgradeWorker(root, requestPin, runtime, policy, assertFenced) {
   try {
+    const image = "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@" + policy.targetBinding?.releaseDigest;
+    check(image === UPGRADE_IMAGE || image === MULTI_CASE_UPGRADE_IMAGE);
     directory(root); pin(requestPin);
     const requestBytes = read(join(root, `request-${pin(requestPin)}.json`)); check(hash(requestBytes) === requestPin);
     const request = JSON.parse(requestBytes), configurationBytes = read(join(root, "configuration.json"));
@@ -67,7 +70,7 @@ export function invokeCaseUpgradeWorker(root, requestPin, runtime, policy, asser
         result = { ...verified, materializationReceiptChecksum: receipt.receiptChecksum, caseVersion: receipt.targetSeal.recoveryEvidence.orderedHeads[0].caseVersion };
       }
     }
-    const body = { schemaVersion: "roebel_case_upgrade_worker_result_v1", requestChecksum: requestPin, mode, image: UPGRADE_IMAGE, result };
+    const body = { schemaVersion: "roebel_case_upgrade_worker_result_v1", requestChecksum: requestPin, mode, image, result };
     const response = { ...body, resultChecksum: hash(canonical(body)) }; save(output, response); return response;
   } catch { throw new Error("case_upgrade_worker_stopped"); }
 }

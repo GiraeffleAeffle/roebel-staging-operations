@@ -13,9 +13,12 @@ import { snapshotCaseFiles } from "./case_review_backup.mjs";
 import { invokeCaseUpgradeWorker, verifyCaseUpgradeFence } from "./run-case-runtime-upgrade.mjs";
 
 const sourceRoot = process.env.CASE_UPGRADE_TEST_SOURCE_ROOT;
+const sourceRevision = process.env.CASE_UPGRADE_TEST_SOURCE_REVISION ?? "e44dfd20367287724fe9b42d84144574c957ea23";
+const multiCaseRevision = "9010479b00f58ff4623c26ef993365e47b168224";
+assert.ok(["e44dfd20367287724fe9b42d84144574c957ea23", multiCaseRevision].includes(sourceRevision));
 assert.ok(sourceRoot && sourceRoot === resolve(sourceRoot), "Set CASE_UPGRADE_TEST_SOURCE_ROOT to the published 7C source checkout");
 assert.equal(execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
-  execFileSync("git", ["-C", sourceRoot, "rev-parse", "e44dfd20367287724fe9b42d84144574c957ea23^{tree}"], { encoding: "utf8" }).trim());
+  execFileSync("git", ["-C", sourceRoot, "rev-parse", `${sourceRevision}^{tree}`], { encoding: "utf8" }).trim());
 assert.equal(execFileSync("git", ["-C", sourceRoot, "diff", "HEAD", "--", "src", "test/fixtures"], { encoding: "utf8" }), "");
 const runtime = await loadCaseUpgradeRuntime(sourceRoot);
 const load = f => import(pathToFileURL(join(sourceRoot, "src", f)).href);
@@ -35,12 +38,16 @@ const json = value => canonical(value) + "\n";
 const sum = value => hash(canonical(value));
 const vector = JSON.parse(readFileSync(join(sourceRoot, "test/fixtures/synthetic-adoption-roebel-v1.json"), "utf8"));
 const resourceList = JSON.parse(readFileSync(new URL("../reviewed-render/roebel-staging/case-runtime/resources.json", import.meta.url), "utf8"));
-const deployed = resourceList.items.find(i => i.kind === "ConfigMap" && i.data?.["reviewed-binding.json"]);
+const sourceMap = sourceRevision === multiCaseRevision ? "roebel-case-steward-brief-reviewed-v1" : "roebel-case-steward-review-reviewed-v1";
+const deployed = resourceList.items.find(i => i.kind === "ConfigMap" && i.metadata.name === sourceMap);
+const targetImage = sourceRevision === multiCaseRevision
+  ? "sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230"
+  : "sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad";
 function bindingAt(rootDir, target = false) {
   const b = JSON.parse(deployed.data["reviewed-binding.json"]);
   b.municipalityId = vector.policy.municipalityId;
   b.storage.rootDir = rootDir;
-  if (target) { b.releaseDigest = "sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad";
+  if (target) { b.releaseDigest = targetImage;
     b.operationsTopologyChecksum = hash("fixture-target-topology"); }
   const marker = { schemaVersion: "staging_case_control_storage_marker_v1" };
   for (const key of ["deploymentEnvironment", "municipalityId", "workloadName", "workload", "releaseDigest", "operationsTopologyChecksum", "deployment"]) marker[key] = b[key];
@@ -209,6 +216,7 @@ test("private worker requires a restored archive before activation and never exp
   writeFileSync(join(work, `restored-${archiveSha256.slice(7)}.json`), archive, { mode: 0o600 });
   assert.throws(activate); // Restored bytes alone are not a verified restore.
   invoke("verify", pins)(); const applied = activate(); assert.equal(applied.result.caseVersion, 27);
+  assert.equal(applied.image, "ghcr.io/giraeffleaeffle/stadtstack-case-steward-control@" + targetImage);
   assert.throws(activate);
   assert.ok(!JSON.stringify(applied).includes(h.configuration.administrationReview.grants[0].token));
   assert.ok(!JSON.stringify(applied).includes("privateEvidenceRefs"));
@@ -226,5 +234,30 @@ test("fence requires this sole consumer, zero writers, suspended reconciliation 
     { pvcConsumerUids: [expected.workerUid, "another-pod"] }, { observedAtUtc: "2026-09-14T09:58:59.000Z" },
     { observedAtUtc: "2026-09-14T10:00:01.000Z" }, { pvcUid: "other-volume" }, { sourceDeploymentUid: "recreated-deployment" }]) {
     assert.throws(() => verifyCaseUpgradeFence(signed({ ...body, ...change }), expected, now));
+  }
+});
+
+if (sourceRevision === multiCaseRevision) test("preserves an already confirmed v28 Brief through the new runtime and two restarts", async t => {
+  const h = await fixture(t);
+  let store = h.open(h.input.sourceBinding), app = application(store, h.configuration, h.admission.caseId);
+  const preview = await app.send(steward, "prepare_brief", { briefId: "brief:already-confirmed" }, 27);
+  await app.send(steward, "apply_brief", { briefId: preview.briefId, preparationChecksum: preview.preparationChecksum }, 27);
+  const beforeView = await app.view();
+  const beforeBrief = await app.service.respond({ method: "GET", path: review.SYNTHETIC_CITIZEN_BRIEF_PATH, body: null });
+  assert.equal(JSON.parse(beforeBrief.body).caseVersion, 28);
+  const seal = store.sealAndClose();
+  const input = { ...h.input, expected: { ...h.input.expected, head: seal.recoveryEvidence.orderedHeads[0] } };
+  const before = snapshotCaseFiles(h.root), prepared = prepareCaseRuntimeUpgrade(input, runtime);
+  const receipt = activateCaseRuntimeUpgrade({ ...prepared, configuration: h.configuration }, runtime, { assertFenced: () => true });
+  assert.equal(receipt.targetSeal.recoveryEvidence.orderedHeads[0].caseVersion, 28);
+  const retained = join(h.parent, `case-control-upgrade-${prepared.plan.planChecksum.slice(7)}`, "retained-source");
+  assert.deepEqual(snapshotCaseFiles(retained), before);
+  assert.deepEqual(readFileSync(join(h.root, seal.databaseBasename)), readFileSync(join(retained, seal.databaseBasename)));
+  for (let cycle = 0; cycle < 2; cycle++) {
+    store = h.open(input.targetBinding); app = application(store, h.configuration, h.admission.caseId);
+    assert.deepEqual(await app.view(), beforeView);
+    assert.deepEqual(await app.service.respond({ method: "GET", path: review.SYNTHETIC_CITIZEN_BRIEF_PATH, body: null }), beforeBrief);
+    assert.deepEqual(store.outbox.replay({ limit: 2 })[0].receipt, h.admission);
+    store.sealAndClose();
   }
 });

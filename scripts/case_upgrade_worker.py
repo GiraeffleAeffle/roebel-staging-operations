@@ -10,6 +10,7 @@ from . import case_runtime_bootstrap as core
 from .staging_participant_flux_bootstrap import canonical_sha256
 
 NAME = 'roebel-case-runtime-upgrade-v1'
+MULTI_CASE_NAME = 'roebel-case-runtime-upgrade-v2'
 PROGRAMS = ('case_runtime_upgrade.mjs', 'case_upgrade_runtime.mjs',
             'run-case-runtime-upgrade.mjs', 'case_review_backup.mjs')
 
@@ -19,12 +20,18 @@ def compile_worker(root):
     verifier = core._verifier()
     verifier.verify_tree(root)
     interface = verifier.citizen_status_interface()
-    verifier.require(verifier.TOWN_WORKSPACE.stage(interface, root) == 'review',
-                     'upgrade worker requires the review predecessor')
-    policy = json.loads((root/'proposals/synthetic-case-runtime-upgrade/transition.json').read_text())
+    stage = verifier.TOWN_WORKSPACE.stage(interface, root)
+    verifier.require(stage in ('review', 'brief'),
+                     'upgrade worker requires an exact review or Brief predecessor')
+    proposal, source_map, name = (
+        ('synthetic-case-runtime-upgrade', 'roebel-case-steward-review-reviewed-v1', NAME)
+        if stage == 'review' else
+        ('synthetic-multi-case-runtime-upgrade', 'roebel-case-steward-brief-reviewed-v1', MULTI_CASE_NAME)
+    )
+    policy = json.loads((root/f'proposals/{proposal}/transition.json').read_text())
     source, target = policy['sourceBinding'], policy['targetBinding']
     items = json.loads((root/'reviewed-render/roebel-staging/case-runtime/resources.json').read_text())['items']
-    config = next(o for o in items if o['kind'] == 'ConfigMap' and o['metadata']['name'] == 'roebel-case-steward-review-reviewed-v1')
+    config = next(o for o in items if o['kind'] == 'ConfigMap' and o['metadata']['name'] == source_map)
     verifier.require(json.loads(config['data']['reviewed-binding.json']) == source, 'upgrade source binding changed')
     spec = next(o for o in items if o['kind'] == 'Deployment' and o['metadata']['name'] == source['workloadName'])['spec']['template']['spec']
     env = spec['initContainers'][0]['env']
@@ -32,8 +39,8 @@ def compile_worker(root):
     actual = 'sha256:' + next(e['value'] for e in env if e['name'] == 'ROEBEL_CASE_PRIVATE_CONFIG_SHA256')
     verifier.require(actual == policy['configurationSha256'] and source['storage']['pvcUid'] == target['storage']['pvcUid'],
                      'upgrade configuration or retained volume changed')
-    labels = {'app.kubernetes.io/name': NAME, 'stadtstack.io/authority': 'none'}
-    metadata = {'name': NAME, 'namespace': source['storage']['pvcNamespace'], 'labels': labels}
+    labels = {'app.kubernetes.io/name': name, 'stadtstack.io/authority': 'none'}
+    metadata = {'name': name, 'namespace': source['storage']['pvcNamespace'], 'labels': labels}
     # Values cross a read-only Secret mount into a private memory-backed file.
     # They never appear in arguments, environment values, ConfigMap or stdout.
     entry = """import fs from 'node:fs';
@@ -68,7 +75,7 @@ try {
                 {'name': 'configuration', 'mountPath': '/configuration', 'readOnly': True},
                 {'name': 'work', 'mountPath': '/work'}]}],
         'volumes': [{'name': 'case-state', 'persistentVolumeClaim': {'claimName': source['storage']['pvcName']}},
-            {'name': 'reviewed', 'configMap': {'name': NAME, 'defaultMode': 0o444}},
+            {'name': 'reviewed', 'configMap': {'name': name, 'defaultMode': 0o444}},
             {'name': 'configuration', 'secret': {'secretName': reference['name'], 'defaultMode': 0o440,
                 'items': [{'key': reference['key'], 'path': 'application.json'}]}},
             {'name': 'work', 'emptyDir': {'medium': 'Memory', 'sizeLimit': '512Mi'}}]}}
