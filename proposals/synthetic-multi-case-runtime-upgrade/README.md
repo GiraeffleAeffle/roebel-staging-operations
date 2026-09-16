@@ -25,6 +25,14 @@ has no network or service-account token and mounts only the existing Case volume
 and configuration Secret. Preserve the retained original and all private receipts.
 A completed or stale historical version27 transition must never be replayed.
 
+The source already contains the version27 materialization receipt from its first
+upgrade. The transition separately pins that exact receipt. The next upgrade
+validates the receipt chain, preserves each previous receipt under its checksum,
+and writes a v2 materialization receipt linking its predecessor. Missing,
+unrecognized or altered predecessor receipts stop preparation. The rehearsal
+performs the first upgrade, confirms the Brief, then performs this second upgrade;
+creating a fresh store with the same image binding is not sufficient coverage.
+
 The original confirmed return must remain
 `sha256:ef7d43ff146dfd83acb259edaabf66ac65b1f61bff21b82987b9a3f925e1edbf`.
 Staff access expires on September17; this proposal does not extend it.

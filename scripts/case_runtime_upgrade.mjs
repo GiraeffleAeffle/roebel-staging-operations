@@ -137,21 +137,58 @@ function parseArchive(bytes, pin) {
   exact(a, ["schemaVersion", "files"]); check(a.schemaVersion === "roebel_case_upgrade_archive_v1");
   return validateCaseArchiveFiles(a.files);
 }
+function previousUpgrade(files, sourceClaim, expected, runtime) {
+  const current = files.find(f => f.name === RECEIPT), pin = expected.previousUpgradeReceiptChecksum;
+  if (!current) { check(pin === undefined); return null; }
+  const validPin = value => typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+  const historyName = value => { check(validPin(value)); return `case-runtime-upgrade-history-${value.slice(7)}.json`; };
+  check(validPin(pin));
+  let value = jsonOf(files, RECEIPT), wantedPin = pin, wantedClaim = sourceClaim;
+  const seen = new Set();
+  while (true) {
+    check(!seen.has(wantedPin) && seen.size < 32); seen.add(wantedPin);
+    const linked = value.schemaVersion === "roebel_case_runtime_upgrade_v2";
+    exact(value, ["schemaVersion", "authorityBinding", "testOnly", "sourceClaim", "sourceSeal",
+      "targetClaim", "targetSeal", "archiveSha256", "receiptChecksum", ...(linked ? ["previousUpgradeReceiptChecksum"] : [])]);
+    const { receiptChecksum, ...body } = value;
+    check((linked || value.schemaVersion === "roebel_case_runtime_upgrade_v1") &&
+      receiptChecksum === wantedPin && sum(body) === wantedPin && validPin(value.archiveSha256) &&
+      value.authorityBinding === "none" && value.testOnly === true);
+    const from = runtime.verifyClaim(value.sourceClaim), to = runtime.verifyClaim(value.targetClaim);
+    const fromSeal = runtime.verifySeal(value.sourceSeal), toSeal = runtime.verifySeal(value.targetSeal);
+    check(same(to, wantedClaim) && fromSeal.deploymentClaimChecksum === from.claimChecksum &&
+      toSeal.deploymentClaimChecksum === to.claimChecksum && fromSeal.sourceReleaseDigest === from.releaseDigest &&
+      toSeal.sourceReleaseDigest === to.releaseDigest && from.releaseDigest !== to.releaseDigest &&
+      fromSeal.municipalityId === from.municipalityId && toSeal.municipalityId === to.municipalityId);
+    const stableSeal = seal => { const c = { ...seal }; delete c.sealChecksum;
+      delete c.sourceReleaseDigest; delete c.deploymentClaimChecksum; return c; };
+    check(same(stableSeal(fromSeal), stableSeal(toSeal)));
+    if (!linked) break;
+    wantedPin = value.previousUpgradeReceiptChecksum; wantedClaim = from;
+    value = jsonOf(files, historyName(wantedPin));
+  }
+  const name = historyName(pin);
+  check(!files.some(f => f.name === name));
+  return { pin, retained: { ...current, name } };
+}
 function materialize(files, source, target, expected, runtime, archiveSha256) {
   const old = facts(files, source, expected, runtime), targetClaim = claim(target, runtime);
+  const previous = previousUpgrade(files, old.claim, expected, runtime);
   const { sealChecksum: _, ...body } = old.seal;
   // This is an Operations materialization seal, with explicit source lineage;
   // no claim that the new runtime already served traffic or wrote a Case event.
   body.sourceReleaseDigest = target.releaseDigest; body.deploymentClaimChecksum = targetClaim.claimChecksum;
   const targetSeal = runtime.verifySeal({ ...body, sealChecksum: sum(body) });
-  const receiptBody = { schemaVersion: "roebel_case_runtime_upgrade_v1", authorityBinding: "none", testOnly: true,
+  const receiptBody = { schemaVersion: previous ? "roebel_case_runtime_upgrade_v2" : "roebel_case_runtime_upgrade_v1", authorityBinding: "none", testOnly: true,
     sourceClaim: old.claim, sourceSeal: old.seal, targetClaim, targetSeal, archiveSha256 };
+  if (previous) receiptBody.previousUpgradeReceiptChecksum = previous.pin;
   const receipt = { ...receiptBody, receiptChecksum: sum(receiptBody) };
   const replacements = [file(CLAIM, targetClaim), file(SEAL, targetSeal), file(target.storage.marker.fileName, marker(target)), file(RECEIPT, receipt)];
-  // A second upgrade needs a separately specified lineage transition.
-  check(!files.some(f => f.name === RECEIPT));
+  // A subsequent upgrade must name its exact previous receipt and preserve
+  // every receipt in that verified chain, including its original bytes.
   const replaced = new Map(replacements.map(f => [f.name, f]));
-  const targetFiles = [...files.filter(f => !replaced.has(f.name)), ...replacements];
+  const targetFiles = [...files.filter(f => !replaced.has(f.name)), ...replacements,
+    ...(previous ? [previous.retained] : [])];
   targetFiles.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
   validateCaseArchiveFiles(targetFiles); facts(targetFiles, target, expected, runtime);
   return { targetFiles, receipt };

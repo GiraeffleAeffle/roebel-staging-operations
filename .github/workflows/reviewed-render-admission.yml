@@ -24,7 +24,7 @@ jobs:
   reviewed-render-admission:
     name: reviewed-render-admission
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:

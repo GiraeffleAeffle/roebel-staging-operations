@@ -35,9 +35,9 @@
     "reviewed-render/roebel-staging/identity/resources.json": "sha256:289b7802ac9f0e85e63000d7f2a818768a95b3f47e0d9a33cf3b9f3240ed689a",
     "proposals/synthetic-case-runtime-upgrade/transition.json": "sha256:d555ef06560e516c695f6168bdfd7cb014e73ffe157bd1157044183fc65157a9",
     "proposals/synthetic-case-runtime-upgrade/resources.json": "sha256:7c356be3bd20e9f6d7dd2809e213081a2926fd784a56c1304c08ecc38b7f05fc",
-    "proposals/synthetic-multi-case-runtime-upgrade/README.md": "sha256:87943babf5394b516afb3c6a73410277044387df3a3374cc552a5e71d2d917cb",
+    "proposals/synthetic-multi-case-runtime-upgrade/README.md": "sha256:ddf8ef9f48994b329858a1ebd6481fc489d82fe47144cb4eca325a82b91d1f37",
     "proposals/synthetic-multi-case-runtime-upgrade/topology.json": "sha256:0349e07a92a77f03e48e42c2f6ca452968b0c0aeb2b2dedd85a9d01c835da241",
-    "proposals/synthetic-multi-case-runtime-upgrade/transition.json": "sha256:a029d9b174538dddcfce0def966690aa70ec8c0e5e2a4ccbe1e683c0b703b7cf"
+    "proposals/synthetic-multi-case-runtime-upgrade/transition.json": "sha256:410aca984b4ca3ba2cde4781f71f6f3ef9a80a45883ab6058e634642b9119d8f"
   },
   "schemaVersion": "roebel_town_workspace_rollout_v1",
   "secretValuesIncluded": false,

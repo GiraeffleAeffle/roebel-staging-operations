@@ -43,8 +43,8 @@ const deployed = resourceList.items.find(i => i.kind === "ConfigMap" && i.metada
 const targetImage = sourceRevision === multiCaseRevision
   ? "sha256:1acde64fb2e79cd4635dfa5e8dd6f9ca2922a78a97938499fa3db159c776d230"
   : "sha256:267025b3592a02123063c7f744644a4b681914d93c3a1db1dc7b2c441bd20cad";
-function bindingAt(rootDir, target = false) {
-  const b = JSON.parse(deployed.data["reviewed-binding.json"]);
+function bindingAt(rootDir, target = false, source = deployed) {
+  const b = JSON.parse(source.data["reviewed-binding.json"]);
   b.municipalityId = vector.policy.municipalityId;
   b.storage.rootDir = rootDir;
   if (target) { b.releaseDigest = targetImage;
@@ -78,10 +78,10 @@ function application(store, configuration, caseId) {
   };
   return { send, view: () => send(steward), service };
 }
-async function fixture(t) {
+async function fixture(t, source = deployed) {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), "case-upgrade-test-"))), root = join(parent, "case-control");
   mkdirSync(root, { mode: 0o700 }); t.after(() => rmSync(parent, { recursive: true, force: true }));
-  const old = bindingAt(root), next = bindingAt(root, true);
+  const old = bindingAt(root, false, source), next = bindingAt(root, true);
   writeFileSync(join(root, old.binding.storage.marker.fileName), json(old.marker), { mode: 0o600 });
   const options = { rootDir: root, municipalityId: vector.policy.municipalityId, policyVersion: vector.policy.policyVersion,
     actorRegistry: registry, allowedSignerPubkeys: [], allowedAgentPubkeys: vector.policy.allowedAgentPubkeys,
@@ -237,21 +237,41 @@ test("fence requires this sole consumer, zero writers, suspended reconciliation 
   }
 });
 
-if (sourceRevision === multiCaseRevision) test("preserves an already confirmed v28 Brief through the new runtime and two restarts", async t => {
-  const h = await fixture(t);
-  let store = h.open(h.input.sourceBinding), app = application(store, h.configuration, h.admission.caseId);
+if (sourceRevision === multiCaseRevision) test("a second upgrade retains its pinned predecessor receipt and the confirmed Brief through two restarts", async t => {
+  const historical = resourceList.items.find(i => i.kind === "ConfigMap" && i.metadata.name === "roebel-case-steward-review-reviewed-v1");
+  const h = await fixture(t, historical), briefBinding = bindingAt(h.root).binding;
+  const original = snapshotCaseFiles(h.root);
+  const first = prepareCaseRuntimeUpgrade({ ...h.input, targetBinding: briefBinding }, runtime);
+  const prior = activateCaseRuntimeUpgrade({ ...first, configuration: h.configuration }, runtime, { assertFenced: () => true });
+  const receiptPath = join(h.root, "case-runtime-upgrade-v1.json"), priorBytes = readFileSync(receiptPath);
+  let store = h.open(briefBinding), app = application(store, h.configuration, h.admission.caseId);
   const preview = await app.send(steward, "prepare_brief", { briefId: "brief:already-confirmed" }, 27);
   await app.send(steward, "apply_brief", { briefId: preview.briefId, preparationChecksum: preview.preparationChecksum }, 27);
   const beforeView = await app.view();
   const beforeBrief = await app.service.respond({ method: "GET", path: review.SYNTHETIC_CITIZEN_BRIEF_PATH, body: null });
   assert.equal(JSON.parse(beforeBrief.body).caseVersion, 28);
   const seal = store.sealAndClose();
-  const input = { ...h.input, expected: { ...h.input.expected, head: seal.recoveryEvidence.orderedHeads[0] } };
-  const before = snapshotCaseFiles(h.root), prepared = prepareCaseRuntimeUpgrade(input, runtime);
+  const input = { ...h.input, sourceBinding: briefBinding,
+    expected: { ...h.input.expected, head: seal.recoveryEvidence.orderedHeads[0], previousUpgradeReceiptChecksum: prior.receiptChecksum } };
+  const before = snapshotCaseFiles(h.root);
+  const { previousUpgradeReceiptChecksum: _, ...missingPin } = input.expected;
+  for (const expected of [missingPin, { ...input.expected, previousUpgradeReceiptChecksum: hash("wrong predecessor") }]) {
+    assert.throws(() => prepareCaseRuntimeUpgrade({ ...input, expected }, runtime));
+    assert.deepEqual(snapshotCaseFiles(h.root), before);
+  }
+  const damaged = JSON.parse(priorBytes); damaged.archiveSha256 = hash("changed archive");
+  writeFileSync(receiptPath, json(damaged));
+  assert.throws(() => prepareCaseRuntimeUpgrade(input, runtime));
+  writeFileSync(receiptPath, priorBytes);
+  const prepared = prepareCaseRuntimeUpgrade(input, runtime);
   const receipt = activateCaseRuntimeUpgrade({ ...prepared, configuration: h.configuration }, runtime, { assertFenced: () => true });
+  assert.equal(receipt.schemaVersion, "roebel_case_runtime_upgrade_v2");
+  assert.equal(receipt.previousUpgradeReceiptChecksum, prior.receiptChecksum);
   assert.equal(receipt.targetSeal.recoveryEvidence.orderedHeads[0].caseVersion, 28);
+  assert.deepEqual(readFileSync(join(h.root, `case-runtime-upgrade-history-${prior.receiptChecksum.slice(7)}.json`)), priorBytes);
   const retained = join(h.parent, `case-control-upgrade-${prepared.plan.planChecksum.slice(7)}`, "retained-source");
   assert.deepEqual(snapshotCaseFiles(retained), before);
+  assert.deepEqual(snapshotCaseFiles(join(h.parent, `case-control-upgrade-${first.plan.planChecksum.slice(7)}`, "retained-source")), original);
   assert.deepEqual(readFileSync(join(h.root, seal.databaseBasename)), readFileSync(join(retained, seal.databaseBasename)));
   for (let cycle = 0; cycle < 2; cycle++) {
     store = h.open(input.targetBinding); app = application(store, h.configuration, h.admission.caseId);
