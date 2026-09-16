@@ -84,10 +84,38 @@ class WorkspaceRolloutTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('workspace_integration_verifier', ROOT/'scripts/verify-reviewed-render.py')
         verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
         before = verifier.verify_tree(self.base)
-        for stage in ['login', 'review', 'brief', 'multi-case']:
+        for stage in ['login', 'review', 'brief', 'multi-case', 'demo-login']:
             after = verifier.verify_tree(self.candidate(stage))
             verifier.verify_transition(after, before)
             before = after
+
+    def test_demo_login_changes_only_allowlist_source_and_cannot_skip_or_regress(self):
+        before = self.candidate('multi-case'); after = self.candidate('demo-login')
+        self.assertTrue(policy.verify_transition(V, after, before))
+        path = policy.ROOT + 'identity/resources.json'
+        self.assertEqual(changed(after, before), {policy.STATE, path})
+        previous = json.loads((before/path).read_text())
+        current = json.loads((after/path).read_text())
+        deployment = next(o for o in current['items'] if o['kind'] == 'Deployment')
+        env = deployment['spec']['template']['spec']['containers'][0]['env']
+        roster = next(e for e in env if e['name'] == 'STAGING_ALLOWED_WALLETS')
+        self.assertEqual(roster['valueFrom']['secretKeyRef'], {
+            'name': 'roebel-staging-demo-login-v1', 'key': 'allowed-wallets', 'optional': False})
+        roster['valueFrom']['secretKeyRef']['name'] = 'roebel-staging-identity-v1'
+        self.assertEqual(current, previous)
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, before, after)
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, after, self.candidate('brief'))
+        # Repointing a signing key is not part of login admission, even when the
+        # Deployment otherwise has the admitted account-list reference.
+        current = json.loads((after/path).read_text())
+        deployment = next(o for o in current['items'] if o['kind'] == 'Deployment')
+        key = next(e for e in deployment['spec']['template']['spec']['containers'][0]['env'] if e['name'] == 'JWKS_JSON')
+        key['valueFrom']['secretKeyRef']['name'] = 'unreviewed-signing-keys'
+        (after/path).write_text(json.dumps(current, indent=2)+'\n')
+        with self.assertRaisesRegex(ValueError, 'pinned input changed'):
+            policy.verify_transition(V, after, before)
 
     def test_multi_case_stage_only_advances_the_control_image_and_binding(self):
         before = self.candidate('brief'); after = self.candidate('multi-case')
