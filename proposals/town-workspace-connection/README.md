@@ -72,3 +72,25 @@ repository. Restricted database JWTs and Kubernetes Secrets are not yet issued.
 
 Step 7C follows: eight department packages, a reviewed Citizen Brief returned to
 Röbel, and a public Mecky answer citing that same public context.
+
+## Separate demo-account login stage
+
+The inactive `demo-login` successor changes only the identity Deployment's
+`STAGING_ALLOWED_WALLETS` Secret reference to `roebel-staging-demo-login-v1`.
+The immutable one-key Secret is provisioned separately after an exact roster
+review; it retains the existing operator and adds five labelled demo accounts.
+The issuer's signing keys, cookies, OIDC client secret, database credential,
+image, service, network policy and all Case/Workspace grants remain unchanged.
+This is login admission only: it creates no department role, test NFT, Case,
+public post or municipal authority. Citizens remain without review access.
+
+The reviewed private roster contains six addresses. Its exact UTF-8 comma-joined
+bytes (no trailing newline) have checksum `sha256:6be96e4a306b6f34eb4abda877c4871a3e86e44faf5f1b648ca70b98ad3014a0`. Before activation the operator
+must verify the Secret is immutable, contains only `allowed-wallets`, and matches
+this checksum. This document contains no private keys or login credentials.
+
+Activation advances exactly from `multi-case` to `demo-login` and changes only
+the two pinned files: the stage record and identity resource list. Verify all
+five fresh signed callbacks, replay rejection and the absence of staff grants;
+preserve the original account and Case/Brief. Adding the Bürgerrat Case and its
+separate author, reviewer and steward scopes remains a subsequent reviewed step.
