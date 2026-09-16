@@ -53,6 +53,17 @@ class WorkspaceRolloutTests(unittest.TestCase):
                     '0282b120facf75b174be4b20422d74827af95410:'+path]))
             (self.base/comment_policy.RECORD_PATH).unlink()
         self.data=policy.bundle(V,self.base)
+        # Identity was introduced by preparation, so predecessorFiles does not
+        # restore it. Rebuild the historical fixture from the published blob;
+        # copying the active demo roster into earlier stages invalidates them.
+        relative = policy.ROOT + 'identity/resources.json'
+        raw = subprocess.check_output([
+            'git', '-C', str(ROOT), 'show',
+            'c96ceb92fc302ea296b2d6240a156b336eff8eb8:' + relative,
+        ])
+        self.assertEqual('sha256:' + hashlib.sha256(raw).hexdigest(),
+                         self.data['proposalFiles'][relative])
+        (self.base / relative).write_bytes(raw)
         # Every stage is tested from its pinned prepared predecessor, even
         # when the repository's current render has already advanced.
         for relative, expected in self.data['predecessorFiles'].items():
