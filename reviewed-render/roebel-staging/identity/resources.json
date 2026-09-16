@@ -426,7 +426,7 @@
                     "name": "STAGING_ALLOWED_WALLETS",
                     "valueFrom": {
                       "secretKeyRef": {
-                        "name": "roebel-staging-identity-v1",
+                        "name": "roebel-staging-demo-login-v1",
                         "key": "allowed-wallets",
                         "optional": false
                       }
