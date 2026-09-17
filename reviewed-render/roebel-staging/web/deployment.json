@@ -330,7 +330,7 @@
                   "path": "review-config.json"
                 }
               ],
-              "secretName": "roebel-town-workspace-review-v1"
+              "secretName": "roebel-town-workspace-buergerrat-review-v1"
             }
           }
         ]
