@@ -1,6 +1,8 @@
+import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import unittest
 from .case_upgrade_worker import compile_worker, NAME, MULTI_CASE_NAME, PROGRAMS
@@ -9,12 +11,25 @@ from .case_runtime_bootstrap import _verifier
 
 
 class UpgradeWorkerTests(unittest.TestCase):
+    def restore_prepared_identity(self, root, data):
+        # A later login stage changes this input independently of Case upgrades.
+        # Historical workers must use its original, checksum-verified fixture.
+        relative = workspace.ROOT + 'identity/resources.json'
+        raw = subprocess.check_output([
+            'git', '-C', str(Path(__file__).resolve().parents[1]), 'show',
+            'c96ceb92fc302ea296b2d6240a156b336eff8eb8:' + relative,
+        ])
+        self.assertEqual('sha256:' + hashlib.sha256(raw).hexdigest(),
+                         data['proposalFiles'][relative])
+        (root / relative).write_bytes(raw)
+
     def test_current_confirmed_case_uses_the_exact_second_worker_and_cannot_repeat_after_activation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)/'brief'
             shutil.copytree(Path(__file__).resolve().parents[1], root, ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
             interface = _verifier().citizen_status_interface()
             data = workspace.bundle(interface, root)
+            self.restore_prepared_identity(root, data)
             case_path = workspace.ROOT+'case-runtime/resources.json'
             (root/case_path).write_text(workspace.expected_files(data,'brief')[case_path])
             (root/workspace.STATE).write_text(json.dumps({'schemaVersion':'roebel_town_workspace_state_v1','stage':'brief'},indent=2)+'\n')
@@ -42,12 +57,12 @@ class UpgradeWorkerTests(unittest.TestCase):
         # predecessor before selecting its historical Workspace review stage.
         comment = _verifier().COMMENT_MECKY
         if comment.enabled(root):
-            import subprocess
             for path in comment.TRANSITION_FILES - {str(comment.RECORD_PATH)}:
                 (root/path).write_bytes(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),
                     'show','0282b120facf75b174be4b20422d74827af95410:'+path]))
             (root/comment.RECORD_PATH).unlink()
         data=workspace.bundle(_verifier().citizen_status_interface(),root)
+        self.restore_prepared_identity(root, data)
         for path, raw in workspace.expected_files(data,'review').items(): (root/path).write_text(raw)
         (root/workspace.STATE).write_text(json.dumps({'schemaVersion':'roebel_town_workspace_state_v1','stage':'review'},indent=2)+'\n')
         worker = compile_worker(root)

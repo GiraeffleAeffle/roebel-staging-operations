@@ -9,6 +9,11 @@ on:
       - scripts/run-case-runtime-upgrade.mjs
       - scripts/case_review_backup.mjs
       - scripts/test_case_runtime_upgrade.mjs
+      - scripts/test_case_review_migration.mjs
+      - scripts/town_workspace_connection.py
+      - scripts/test_town_workspace_connection.py
+      - proposals/town-workspace-connection/rollout.json
+      - reviewed-render/roebel-staging/**
       - .github/workflows/case-runtime-upgrade.yml
   push:
     branches: [main]
