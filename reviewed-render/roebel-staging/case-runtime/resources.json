@@ -687,14 +687,14 @@
                     "name": "ROEBEL_CASE_PRIVATE_CONFIG",
                     "valueFrom": {
                       "secretKeyRef": {
-                        "name": "roebel-case-steward-review-runtime-v1",
+                        "name": "roebel-case-steward-buergerrat-runtime-v1",
                         "key": "application-json"
                       }
                     }
                   },
                   {
                     "name": "ROEBEL_CASE_PRIVATE_CONFIG_SHA256",
-                    "value": "dd93e158a010d2cc2a79f55d80913414585ceafe802a5ce76a24d53ae622c17f"
+                    "value": "0330d4d71aac7422089b418b05b6fd73f1670a4dca6e6f375a4c6e38b2169d86"
                   }
                 ],
                 "volumeMounts": [

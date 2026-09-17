@@ -170,7 +170,7 @@
               },
               {
                 "name": "MECKY_SYNTHETIC_BRIEF_CONFIG",
-                "value": "{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
+                "value": "{\"additionalBindings\":[{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a0af46-8ad8-7ae9-bda6-055cc84b1960\",\"discussionId\":\"1cd5c293e0eddf7dd04e5efd7b8fff58936dc8f8399d6f9b1bb2a674d60fd01b\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:buergerrat-begegnungsort-20260917\"}],\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
             "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:b65c1aec74a609773056fd20e6cb1a2f2fdb7462b94e656619c57116e3f3f980",
