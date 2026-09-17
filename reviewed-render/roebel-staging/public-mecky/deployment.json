@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:7d7cd3cd36b8d8571c76bb21ca3f0ad17f0f70b1a7197843b21f78ab46e2eb75",
-      "stadtstack.io/source-revision": "343d33c3b44fa2ebc0ca0669d7598470dc864257"
+      "stadtstack.io/release-set-sha256": "sha256:b2772c13658db8893f7f1dc7017771449b2ed46a365c4095e5f62e02003c803d",
+      "stadtstack.io/source-revision": "be739047c3c5f25500e875d7f34e61980f7cac45"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "343d33c3b44fa2ebc0ca0669d7598470dc864257",
+          "stadtstack.io/source-revision": "be739047c3c5f25500e875d7f34e61980f7cac45",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -54,7 +54,7 @@
               },
               {
                 "name": "NODE_NAME",
-                "value": "R\u00f6bel/M\u00fcritz E2E"
+                "value": "Röbel/Müritz E2E"
               },
               {
                 "name": "AGENT_NAME",
@@ -62,7 +62,7 @@
               },
               {
                 "name": "AGENT_DISPLAY_NAME",
-                "value": "Mecky \u00b7 E2E"
+                "value": "Mecky · E2E"
               },
               {
                 "name": "INPUT_RELAY_URL",
@@ -157,6 +157,14 @@
                 "value": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080"
               },
               {
+                "name": "MECKY_PUBLIC_APP_BASE_URL",
+                "value": "http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080"
+              },
+              {
+                "name": "MECKY_PUBLIC_APP_ORIGIN",
+                "value": "https://roebel-web.staging.agentcart.eu"
+              },
+              {
                 "name": "MECKY_ALLOW_SYNTHETIC_BRIEF",
                 "value": "true"
               },
@@ -165,7 +173,7 @@
                 "value": "{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:b15364e08eb0c094385b45e206bf539cfe611d2a40b7e70e21835a70b00f5564",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:b65c1aec74a609773056fd20e6cb1a2f2fdb7462b94e656619c57116e3f3f980",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
