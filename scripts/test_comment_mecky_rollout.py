@@ -24,6 +24,8 @@ class CommentRolloutTests(unittest.TestCase):
         # This test describes the fixed pre-comment transition, including after
         # its desired state has subsequently reached main.
         import subprocess
+        contract_path = cls.base / 'policy/repository-contract.json'
+        workbench = json.loads(contract_path.read_text())['workbenchImagePromotionBoundary']
         for path in c.TRANSITION_FILES - {str(c.RECORD_PATH)}:
             (cls.base / path).write_bytes(subprocess.check_output(['git', '-C', str(ROOT), 'show',
                 '0282b120facf75b174be4b20422d74827af95410:' + path]))
@@ -32,6 +34,13 @@ class CommentRolloutTests(unittest.TestCase):
             (cls.base / path).write_bytes(subprocess.check_output(['git', '-C', str(ROOT), 'show',
                 '0282b120facf75b174be4b20422d74827af95410:' + path]))
         (cls.base / c.RECORD_PATH).unlink(missing_ok=True)
+        if v.TOWN_WORKSPACE.stage(v, cls.base) == 'discussion-context':
+            (cls.base / v.TOWN_WORKSPACE.STATE).write_text(json.dumps({
+                'schemaVersion': 'roebel_town_workspace_state_v1', 'stage': 'demo-login',
+            }, indent=2) + '\n')
+        contract = json.loads(contract_path.read_text())
+        contract['workbenchImagePromotionBoundary'] = workbench
+        contract_path.write_text(json.dumps(contract, indent=2) + '\n')
         cls.before = v.verify_tree(cls.base)
         cls.files = c.activation_files(v, cls.base, cls.before)
 

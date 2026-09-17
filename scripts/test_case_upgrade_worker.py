@@ -12,6 +12,14 @@ from .case_runtime_bootstrap import _verifier
 
 class UpgradeWorkerTests(unittest.TestCase):
     def restore_prepared_identity(self, root, data):
+        # The later public-discussion reader is independent of Case upgrades.
+        # Keep the historical release coherent before testing a review worker.
+        if json.loads((root / workspace.STATE).read_text())['stage'] == 'discussion-context':
+            for path in set(data['stages']['discussion-context']['files']) | {workspace.STATE}:
+                (root / path).write_bytes(subprocess.check_output([
+                    'git', '-C', str(Path(__file__).resolve().parents[1]), 'show',
+                    'a19e23df47e3818e1c7981d1cadf229299644556:' + path,
+                ]))
         # A later login stage changes this input independently of Case upgrades.
         # Historical workers must use its original, checksum-verified fixture.
         relative = workspace.ROOT + 'identity/resources.json'
@@ -57,10 +65,15 @@ class UpgradeWorkerTests(unittest.TestCase):
         # predecessor before selecting its historical Workspace review stage.
         comment = _verifier().COMMENT_MECKY
         if comment.enabled(root):
+            contract_path = root / 'policy/repository-contract.json'
+            workbench = json.loads(contract_path.read_text())['workbenchImagePromotionBoundary']
             for path in comment.TRANSITION_FILES - {str(comment.RECORD_PATH)}:
                 (root/path).write_bytes(subprocess.check_output(['git','-C',str(Path(__file__).resolve().parents[1]),
                     'show','0282b120facf75b174be4b20422d74827af95410:'+path]))
             (root/comment.RECORD_PATH).unlink()
+            contract = json.loads(contract_path.read_text())
+            contract['workbenchImagePromotionBoundary'] = workbench
+            contract_path.write_text(json.dumps(contract, indent=2) + '\n')
         data=workspace.bundle(_verifier().citizen_status_interface(),root)
         self.restore_prepared_identity(root, data)
         for path, raw in workspace.expected_files(data,'review').items(): (root/path).write_text(raw)

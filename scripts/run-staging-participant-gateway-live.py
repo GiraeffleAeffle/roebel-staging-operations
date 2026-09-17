@@ -346,15 +346,15 @@ RELAY_FIXTURE_RESET_TRANSPORT_RECEIPT_SCHEMA = "roebel_staging_relay_fixture_res
 # verifier below.  Keep this guard before output reservation, credential
 # decryption, and cluster contact so any future verifier disablement fails shut.
 RELAY_FIXTURE_RESET_LIVE_EXECUTION_ENABLED = True
-WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683"
-WORKBENCH_PROMOTION_SOURCE_REVISION = "6b78c635f5b8f9603e16d3fe386eb8574df27740"
+WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256 = "sha256:4e871e380c5e29fadf661dfc87a5b038f92c37a13927f80b42ef1587b819a46c"
+WORKBENCH_PROMOTION_SOURCE_REVISION = "be739047c3c5f25500e875d7f34e61980f7cac45"
 WORKBENCH_PROMOTION_TARGET_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
-    "sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529"
+    "sha256:892df870d45699095f6e834bd51ec29641d92cfa1d7420467c72ce0c72cfde60"
 )
 WORKBENCH_PROMOTION_PREDECESSOR_IMAGE = (
     "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@"
-    "sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2"
+    "sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529"
 )
 # The already-reviewed relay-reset capability remains bound to its historical
 # two-component pin.  A workbench-only promotion must not silently retarget
