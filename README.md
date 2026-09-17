@@ -1068,3 +1068,24 @@ comparison, rollback, probes and byte-preservation checks remain in force.
 The relay image and stored events are unchanged. This lets proposal creation
 select the latest verified correction while preserving earlier signed replies
 and any suggestions already bound to them.
+
+
+## Bürgerrat Case access and reviewed return
+
+The `buergerrat-access` stage follows `discussion-context`. It changes only
+four pinned resource files plus the stage record: the control configuration
+Secret reference and its exact content hash, the Web review Secret reference,
+Mecky's additional binding for the admitted Bürgerrat Case, and render integrity.
+The immutable successor configurations preserve the eighteen original grants
+and add seventeen grants for the new Case only: eight authors, eight reviewers
+and one steward, expiring 2026-09-20 at 16:00 UTC. Both citizen accounts retain
+no department role. Secret contents remain outside this repository.
+
+Mecky retains the original Case binding and gains one explicit additional
+binding from the new public admission receipt. It can retrieve only reviewed
+public Briefs through the existing transport. The same images, volumes, network
+rules, cluster RBAC and source discussion remain in place. Configuration must be
+provisioned and verified before activation; existing Secrets are retained for
+rollback. This stage does not publish department drafts, confirm a Brief or
+establish municipal authority. Those separately approved synthetic actions
+follow authenticated role and preservation checks.
