@@ -43,9 +43,14 @@ class CitizenStatusProposalTests(unittest.TestCase):
             f"{verifier.RENDER_ROOT}/{name}"
             for name in ("head.json", "live-preconditions.json", "web/deployment.json", "web/networkpolicy.json", "web/ingress.json", "public-mecky/deployment.json")
         }
+        contract_path = cls.base / 'policy/repository-contract.json'
+        workbench = json.loads(contract_path.read_text())['workbenchImagePromotionBoundary']
         for path in sorted(historical_files):
             (cls.base / path).write_bytes(subprocess.check_output(["git", "-C", str(ROOT), "show", predecessor + ":" + path]))
         (cls.base / status.RECORD_PATH).unlink(missing_ok=True)
+        contract = json.loads(contract_path.read_text())
+        contract['workbenchImagePromotionBoundary'] = workbench
+        contract_path.write_text(json.dumps(contract, indent=2) + '\n')
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="roebel-status-input-")

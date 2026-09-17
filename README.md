@@ -1044,3 +1044,27 @@ Secret, database or Case-state change. Mecky receives only the confirmed public
 Brief and identifies its responses as synthetic demo evidence without municipal
 authority. Live completion requires a reply citing the same Brief checksum
 already returned to the original Röbel discussion.
+
+## Mecky reads the signed public discussion
+
+The `discussion-context` stage follows `demo-login` and adds the fixed
+`MECKY_PUBLIC_APP_BASE_URL` / `MECKY_PUBLIC_APP_ORIGIN` pair to Public Mecky.
+It reads the signed root through the existing Web Service and cites its public
+HTTPS discussion URL. The root remains a citizen statement; it grants no
+municipal authority. No network rule, account, role, Secret, Case or database
+changes in this stage. The existing Brief configuration is preserved.
+
+Preparation pins the entire six-file activation in the protected rollout
+bundle while leaving the active render unchanged. Activation requires its
+exact initial Release Set and cannot skip or reverse a stage. An incomplete
+pair, changed origin or any other environment change fails admission.
+
+The separate workbench image promotion advances only the existing Deployment
+from `sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529`
+to `sha256:892df870d45699095f6e834bd51ec29641d92cfa1d7420467c72ce0c72cfde60`.
+Its verified artifact pin binds Röbel source
+`be739047c3c5f25500e875d7f34e61980f7cac45`. The existing UID/owner/version/image
+comparison, rollback, probes and byte-preservation checks remain in force.
+The relay image and stored events are unchanged. This lets proposal creation
+select the latest verified correction while preserving earlier signed replies
+and any suggestions already bound to them.

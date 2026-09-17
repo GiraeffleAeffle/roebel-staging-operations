@@ -48,10 +48,15 @@ class WorkspaceRolloutTests(unittest.TestCase):
         self.base=Path(self.temporary.name)/'base'
         shutil.copytree(ROOT,self.base,ignore=shutil.ignore_patterns('.git','__pycache__','*.pyc'))
         if comment_policy.enabled(self.base):
+            contract_path = self.base / 'policy/repository-contract.json'
+            workbench = json.loads(contract_path.read_text())['workbenchImagePromotionBoundary']
             for path in comment_policy.TRANSITION_FILES - {str(comment_policy.RECORD_PATH)}:
                 (self.base/path).write_bytes(subprocess.check_output(['git','-C',str(ROOT),'show',
                     '0282b120facf75b174be4b20422d74827af95410:'+path]))
             (self.base/comment_policy.RECORD_PATH).unlink()
+            contract = json.loads(contract_path.read_text())
+            contract['workbenchImagePromotionBoundary'] = workbench
+            contract_path.write_text(json.dumps(contract, indent=2) + '\n')
         self.data=policy.bundle(V,self.base)
         # Identity was introduced by preparation, so predecessorFiles does not
         # restore it. Rebuild the historical fixture from the published blob;
@@ -99,6 +104,63 @@ class WorkspaceRolloutTests(unittest.TestCase):
             after = verifier.verify_tree(self.candidate(stage))
             verifier.verify_transition(after, before)
             before = after
+
+    def discussion_context_transition(self):
+        before = Path(self.temporary.name) / 'context-before'
+        shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
+        # Restore only this rollout's live predecessor; retain today's policy.
+        paths = set(self.data['stages']['discussion-context']['files']) | {policy.STATE}
+        for path in paths:
+            (before / path).write_bytes(subprocess.check_output([
+                'git', '-C', str(ROOT), 'show',
+                'a19e23df47e3818e1c7981d1cadf229299644556:' + path,
+            ]))
+        after = Path(self.temporary.name) / 'context-after'
+        shutil.copytree(before, after)
+        for path, raw in self.data['stages']['discussion-context']['files'].items():
+            (after / path).write_text(raw)
+        (after / policy.STATE).write_text(json.dumps({
+            'schemaVersion': 'roebel_town_workspace_state_v1', 'stage': 'discussion-context',
+        }, indent=2) + '\n')
+        return before, after
+
+    def test_discussion_context_passes_complete_admission_and_preserves_other_resources(self):
+        before, after = self.discussion_context_transition()
+        spec = importlib.util.spec_from_file_location('context_verifier', ROOT / 'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        verifier.verify_transition(verifier.verify_tree(after), verifier.verify_tree(before))
+        self.assertEqual(changed(after, before), policy.RELEASE_RECORDS | policy.RELEASE_DEPLOYMENTS | {policy.STATE})
+        read = lambda root: json.loads((root / (policy.ROOT + 'public-mecky/deployment.json')).read_text())
+        old = read(before)['spec']['template']['spec']['containers'][0]['env']
+        current = read(after)['spec']['template']['spec']['containers'][0]['env']
+        pair = current[-4:-2]
+        self.assertEqual(pair, [
+            {'name': 'MECKY_PUBLIC_APP_BASE_URL', 'value': 'http://roebel-web-presentation.stadtstack-roebel-web-preview.svc.cluster.local:8080'},
+            {'name': 'MECKY_PUBLIC_APP_ORIGIN', 'value': 'https://roebel-web.staging.agentcart.eu'},
+        ])
+        self.assertEqual(current[:-4] + current[-2:], old)
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, before, after)
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, after, self.candidate('multi-case'))
+
+    def test_discussion_context_rejects_changed_origin_partial_pair_and_other_env(self):
+        before, after = self.discussion_context_transition()
+        spec = importlib.util.spec_from_file_location('context_negative_verifier', ROOT / 'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        path = after / (policy.ROOT + 'public-mecky/deployment.json')
+        original = json.loads(path.read_text())
+        for mutation in ('origin', 'partial', 'extra', 'reordered'):
+            with self.subTest(mutation=mutation):
+                value = copy.deepcopy(original)
+                env = value['spec']['template']['spec']['containers'][0]['env']
+                if mutation == 'origin': env[-3]['value'] = 'https://example.invalid'
+                if mutation == 'partial': del env[-4]
+                if mutation == 'extra': env.insert(-2, {'name': 'UNREVIEWED', 'value': 'true'})
+                if mutation == 'reordered': env[-4:-2] = list(reversed(env[-4:-2]))
+                path.write_text(json.dumps(value, indent=2) + '\n')
+                with self.assertRaisesRegex(verifier.VerificationError, 'outside reviewed release fields'):
+                    policy.verify_transition(verifier, after, before)
 
     def test_demo_login_changes_only_allowlist_source_and_cannot_skip_or_regress(self):
         before = self.candidate('multi-case'); after = self.candidate('demo-login')

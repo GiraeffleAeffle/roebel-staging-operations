@@ -2768,10 +2768,10 @@ class ParticipantLiveWrapperTests(unittest.TestCase):
         self.assertNotIn("private_workbench_promotion_outputs", source)
 
     def test_relay_fixture_reset_pin_stays_independent_from_workbench_promotion(self):
-        self.assertEqual(MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION, "6b78c635f5b8f9603e16d3fe386eb8574df27740")
-        self.assertEqual(MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256, "sha256:0398095ccdc3a054df42f94abdc75d348201695947ce0268ba81318d05947683")
-        self.assertEqual(MODULE.WORKBENCH_PROMOTION_PREDECESSOR_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:03cc0dd35b81004ecc2a6045a16ea09184d2faa10a20bf7c83a825e7440170e2")
-        self.assertEqual(MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION, "be739047c3c5f25500e875d7f34e61980f7cac45")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_ARTIFACT_RECEIPT_SHA256, "sha256:4e871e380c5e29fadf661dfc87a5b038f92c37a13927f80b42ef1587b819a46c")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_PREDECESSOR_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:3e6e572b2a661a34fc981a65f3875dd3ba437f8c155be1f4ab0c30f4079ed529")
+        self.assertEqual(MODULE.WORKBENCH_PROMOTION_TARGET_IMAGE, "ghcr.io/giraeffleaeffle/roebel-e2e-workbench@sha256:892df870d45699095f6e834bd51ec29641d92cfa1d7420467c72ce0c72cfde60")
         self.assertEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, "36ac41d7049df815aaebbe4301c098a0ec7e4101")
         self.assertEqual(MODULE.RELAY_FIXTURE_RESET_ARTIFACT_RECEIPT_SHA256, "sha256:08d2b65bb57434ba6f35d8083f32b22f43010e1222544a8ce074e208f95efd9b")
         self.assertNotEqual(MODULE.RELAY_FIXTURE_RESET_SOURCE_REVISION, MODULE.WORKBENCH_PROMOTION_SOURCE_REVISION)
