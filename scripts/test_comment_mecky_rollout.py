@@ -24,6 +24,12 @@ class CommentRolloutTests(unittest.TestCase):
         # This test describes the fixed pre-comment transition, including after
         # its desired state has subsequently reached main.
         import subprocess
+        if v.TOWN_WORKSPACE.stage(v, cls.base) == 'buergerrat-access':
+            data = v.TOWN_WORKSPACE.bundle(v, cls.base)
+            for path in set(data['stages']['buergerrat-access']['files']) | {v.TOWN_WORKSPACE.STATE}:
+                (cls.base / path).write_bytes(subprocess.check_output([
+                    'git', '-C', str(ROOT), 'show', '3234b888b7fdf968e688d33603453c0c4e500604:' + path,
+                ]))
         contract_path = cls.base / 'policy/repository-contract.json'
         workbench = json.loads(contract_path.read_text())['workbenchImagePromotionBoundary']
         for path in c.TRANSITION_FILES - {str(c.RECORD_PATH)}:

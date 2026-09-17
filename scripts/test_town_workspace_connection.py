@@ -105,11 +105,64 @@ class WorkspaceRolloutTests(unittest.TestCase):
             verifier.verify_transition(after, before)
             before = after
 
+    def buergerrat_access_transition(self):
+        before = Path(self.temporary.name) / 'access-before'
+        shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
+        paths = set(self.data['stages']['buergerrat-access']['files']) | {policy.STATE}
+        for path in paths:
+            (before / path).write_bytes(subprocess.check_output([
+                'git', '-C', str(ROOT), 'show', '3234b888b7fdf968e688d33603453c0c4e500604:' + path,
+            ]))
+        after = Path(self.temporary.name) / 'access-after'
+        shutil.copytree(before, after)
+        for path, raw in self.data['stages']['buergerrat-access']['files'].items():
+            (after / path).write_text(raw)
+        (after / policy.STATE).write_text(json.dumps({
+            'schemaVersion': 'roebel_town_workspace_state_v1', 'stage': 'buergerrat-access',
+        }, indent=2) + '\n')
+        return before, after
+
+    def test_buergerrat_access_passes_complete_admission_without_image_or_network_changes(self):
+        before, after = self.buergerrat_access_transition()
+        spec = importlib.util.spec_from_file_location('access_verifier', ROOT/'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        verifier.verify_transition(verifier.verify_tree(after), verifier.verify_tree(before))
+        self.assertEqual(changed(after, before), set(self.data['stages']['buergerrat-access']['files']) | {policy.STATE})
+        for name in ('web/deployment.json', 'public-mecky/deployment.json'):
+            old = json.loads((before/(policy.ROOT+name)).read_text())['spec']['template']['spec']['containers'][0]
+            new = json.loads((after/(policy.ROOT+name)).read_text())['spec']['template']['spec']['containers'][0]
+            self.assertEqual(old['image'], new['image'])
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, before, after)
+
+    def test_buergerrat_access_rejects_changed_secret_config_pin_or_mecky_case(self):
+        before, after = self.buergerrat_access_transition()
+        spec = importlib.util.spec_from_file_location('access_negative_verifier', ROOT/'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        interface = verifier.citizen_status_interface()
+        path=after/(policy.ROOT+'case-runtime/resources.json');original=path.read_bytes()
+        for replacement in ('roebel-case-steward-other-runtime-v1', '0'*64):
+            value=json.loads(original)
+            control=next(o for o in value['items'] if o['kind']=='Deployment' and o['metadata']['name']=='roebel-case-steward-control')
+            env=control['spec']['template']['spec']['initContainers'][0]['env']
+            if replacement.startswith('roebel-'):env[0]['valueFrom']['secretKeyRef']['name']=replacement
+            else:env[1]['value']=replacement
+            path.write_text(json.dumps(value,indent=2)+'\n')
+            with self.assertRaisesRegex(verifier.VerificationError, 'stage file mismatch'):
+                policy.verify_transition(interface,after,before)
+        path.write_bytes(original)
+        path=after/(policy.ROOT+'public-mecky/deployment.json');original=path.read_bytes();value=json.loads(original)
+        env=next(e for e in value['spec']['template']['spec']['containers'][0]['env'] if e['name']=='MECKY_SYNTHETIC_BRIEF_CONFIG')
+        config=json.loads(env['value']);config['additionalBindings'][0]['caseId']=config['caseId'];env['value']=json.dumps(config)
+        path.write_text(json.dumps(value,indent=2)+'\n')
+        with self.assertRaisesRegex(verifier.VerificationError, 'deployment changed'):
+            policy.verify_transition(interface,after,before)
+
     def discussion_context_transition(self):
         before = Path(self.temporary.name) / 'context-before'
         shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
         # Restore only this rollout's live predecessor; retain today's policy.
-        paths = set(self.data['stages']['discussion-context']['files']) | {policy.STATE}
+        paths = set(self.data['stages']['discussion-context']['files']) | set(self.data['stages']['buergerrat-access']['files']) | {policy.STATE}
         for path in paths:
             (before / path).write_bytes(subprocess.check_output([
                 'git', '-C', str(ROOT), 'show',

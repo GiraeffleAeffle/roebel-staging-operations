@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:0e5882bcf122cf485b59755b1caa40d9607ac3de7db7f66a1d38a473f5bcf82c'
+ROLLOUT_SHA256 = 'sha256:aa2e0f36d2ce61f5f77277a035a0a46213eeea708819e93071fe7c2b5a0de70d'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
@@ -29,8 +29,8 @@ FILES = {
     'proposals/synthetic-multi-case-runtime-upgrade/transition.json',
     'proposals/synthetic-multi-case-runtime-upgrade/topology.json',
 }
-STAGES = ('prepared', 'login', 'review', 'brief', 'multi-case', 'demo-login', 'discussion-context')
-RELEASE_STAGES = ('brief', 'multi-case', 'demo-login', 'discussion-context')
+STAGES = ('prepared', 'login', 'review', 'brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access')
+RELEASE_STAGES = ('brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access')
 RELEASE_RECORDS = {ROOT + name for name in ('head.json', 'integrity.json', 'live-preconditions.json')}
 RELEASE_DEPLOYMENTS = {ROOT + name for name in ('web/deployment.json', 'public-mecky/deployment.json')}
 BRIEF_READER_ENV = [
@@ -116,7 +116,7 @@ def verify(v, root):
     active = expected_files(data, selected)
     for path, expected in data['proposalFiles'].items():
         file = root / path
-        if selected in ('demo-login', 'discussion-context') and path == ROOT + 'identity/resources.json':
+        if selected in ('demo-login', 'discussion-context', 'buergerrat-access') and path == ROOT + 'identity/resources.json':
             expected = sha(active[path].encode())
         v.require(file.is_file() and not file.is_symlink() and sha(file.read_bytes()) == expected,
                   'workspace pinned input changed: ' + path)
