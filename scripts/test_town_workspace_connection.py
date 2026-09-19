@@ -108,7 +108,11 @@ class WorkspaceRolloutTests(unittest.TestCase):
     def buergerrat_access_transition(self):
         before = Path(self.temporary.name) / 'access-before'
         shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
-        paths = set(self.data['stages']['buergerrat-access']['files']) | {policy.STATE}
+        # Restore a complete historical release: the access rollout changes
+        # only some of these files, so today's image promotion would otherwise
+        # leave its integrity digest paired with the predecessor's release head.
+        paths = (set(self.data['stages']['buergerrat-access']['files'])
+                 | policy.RELEASE_RECORDS | policy.RELEASE_DEPLOYMENTS | {policy.STATE})
         for path in paths:
             (before / path).write_bytes(subprocess.check_output([
                 'git', '-C', str(ROOT), 'show', '3234b888b7fdf968e688d33603453c0c4e500604:' + path,
