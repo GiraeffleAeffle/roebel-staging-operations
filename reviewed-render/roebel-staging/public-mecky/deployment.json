@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:b2772c13658db8893f7f1dc7017771449b2ed46a365c4095e5f62e02003c803d",
-      "stadtstack.io/source-revision": "be739047c3c5f25500e875d7f34e61980f7cac45"
+      "stadtstack.io/release-set-sha256": "sha256:1a85aed6c0d2e0d8e4e7b8c31f44babe2cd11fa005d89bf4979216ec9f270863",
+      "stadtstack.io/source-revision": "4c6633e6c4ad94960fcd82da2380f2d82aab9c33"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "be739047c3c5f25500e875d7f34e61980f7cac45",
+          "stadtstack.io/source-revision": "4c6633e6c4ad94960fcd82da2380f2d82aab9c33",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -54,7 +54,7 @@
               },
               {
                 "name": "NODE_NAME",
-                "value": "Röbel/Müritz E2E"
+                "value": "R\u00f6bel/M\u00fcritz E2E"
               },
               {
                 "name": "AGENT_NAME",
@@ -62,7 +62,7 @@
               },
               {
                 "name": "AGENT_DISPLAY_NAME",
-                "value": "Mecky · E2E"
+                "value": "Mecky \u00b7 E2E"
               },
               {
                 "name": "INPUT_RELAY_URL",
@@ -173,7 +173,7 @@
                 "value": "{\"additionalBindings\":[{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a0af46-8ad8-7ae9-bda6-055cc84b1960\",\"discussionId\":\"1cd5c293e0eddf7dd04e5efd7b8fff58936dc8f8399d6f9b1bb2a674d60fd01b\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:buergerrat-begegnungsort-20260917\"}],\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:b65c1aec74a609773056fd20e6cb1a2f2fdb7462b94e656619c57116e3f3f980",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:18e110478a48880d65c03a3b5f1929bf0f83cac961242b9ecb49372bba4fc0ef",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
