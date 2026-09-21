@@ -1,6 +1,6 @@
 {
-  "desiredRenderSha256": "sha256:9d87804cb6012f3229844bc935a702d24bd4bb9ced771625873a81222ef9cabd",
+  "desiredRenderSha256": "sha256:4d96cdc6c4c7709f46b2066fbec8edec59b53da11b518841ba0e156a8cc7e656",
   "networkBoundaryMigrationSha256": "sha256:c76d309dc1bcdc0a2443527f16344a0a1fe5fb31127b7a9e3462c0f788dd5ab9",
-  "releaseSetDigest": "sha256:be2482b608c37b643b021eec294f3d4e99db4735c3f060acdcf6171874a88f50",
+  "releaseSetDigest": "sha256:2d13f456f084b42558562933abd117f7f5ceb92281d1ab85c2944a19652296dd",
   "schemaVersion": "roebel_staging_reviewed_render_v1"
 }
