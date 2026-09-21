@@ -42,6 +42,78 @@ def activate(root, stage):
 
 
 class WorkspaceRolloutTests(unittest.TestCase):
+    def document_transition(self):
+        before = Path(self.temporary.name) / 'document-before'
+        shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
+        # Keep this fixture valid after the rollout and subsequent image updates.
+        paths = set(self.data['stages']['document-knowledge']['files']) | {policy.STATE}
+        for relative in paths:
+            (before / relative).write_bytes(subprocess.check_output([
+                'git', '-C', str(ROOT), 'show',
+                '358085584a3082939b970779295065624331d7e6:' + relative,
+            ]))
+        after = Path(self.temporary.name) / 'document-after'
+        shutil.copytree(before, after)
+        for relative, raw in self.data['stages']['document-knowledge']['files'].items():
+            (after / relative).write_text(raw)
+        (after / policy.STATE).write_text(json.dumps({
+            'schemaVersion': 'roebel_town_workspace_state_v1', 'stage': 'document-knowledge',
+        }, indent=2)+'\n')
+        spec = importlib.util.spec_from_file_location('document_verifier', ROOT/'scripts/verify-reviewed-render.py')
+        verifier = importlib.util.module_from_spec(spec); spec.loader.exec_module(verifier)
+        return before, after, verifier
+
+    def test_document_catalogue_complete_forward_transition(self):
+        before, after, verifier = self.document_transition()
+        verifier.verify_transition(verifier.verify_tree(after), verifier.verify_tree(before))
+        expected = set(self.data['stages']['document-knowledge']['files']) | {policy.STATE}
+        # Fields whose exact bytes are already current need no meaningless diff.
+        actual = changed(after, before)
+        self.assertEqual(actual, expected)
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            policy.verify_transition(V, before, after)
+        web = json.loads((after/(policy.ROOT+'web/deployment.json')).read_text())['spec']['template']['spec']
+        self.assertFalse(web['automountServiceAccountToken'])
+        mount = next(m for m in web['containers'][0]['volumeMounts'] if m['name']=='public-knowledge')
+        self.assertTrue(mount['readOnly']); self.assertNotIn('subPath', mount)
+
+    def test_document_mount_and_source_declaration_cannot_drift(self):
+        before, after, verifier = self.document_transition()
+        paths = ['web/deployment.json','public-mecky/deployment.json']
+        for relative in paths:
+            path=after/(policy.ROOT+relative); original=path.read_bytes(); value=json.loads(original)
+            container=value['spec']['template']['spec']['containers'][0]
+            if relative.startswith('web/'):
+                next(m for m in container['volumeMounts'] if m['name']=='public-knowledge')['readOnly']=False
+            else:
+                next(e for e in container['env'] if e['name']=='MECKY_REVIEWED_SOURCE_KINDS')['value']='community_document'
+            path.write_text(json.dumps(value))
+            with self.assertRaisesRegex(verifier.VerificationError, 'workspace deployment changed'):
+                verifier.verify_tree(after)
+            path.write_bytes(original)
+
+    def test_document_ingress_is_exact_and_keeps_post_denial(self):
+        before, after, verifier = self.document_transition()
+        path=after/(policy.ROOT+'web/ingress.json'); value=json.loads(path.read_text())
+        acl=value['metadata']['annotations']['haproxy-ingress.github.io/config-backend-early']
+        self.assertEqual(acl.splitlines()[0], json.loads((before/(policy.ROOT+'web/ingress.json')).read_text())['metadata']['annotations']['haproxy-ingress.github.io/config-backend-early'].splitlines()[0])
+        self.assertNotIn('path_beg /api/federation', acl)
+        value['metadata']['annotations']['haproxy-ingress.github.io/config-backend-early']=acl.replace('!{ path /api/federation/', '!{ path_beg /api/federation/')
+        path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(verifier.VerificationError, 'workspace stage file mismatch'):
+            verifier.verify_tree(after)
+
+    def test_document_corpus_is_pinned_and_has_only_approved_projections(self):
+        before, after, verifier = self.document_transition()
+        path=after/'proposals/document-knowledge/catalogue-configmap.json'; value=json.loads(path.read_text())
+        self.assertEqual(set(value['data']), {'local-news.json','ratsinformation.json','community-documents.json'})
+        doc=json.loads(value['data']['community-documents.json'])
+        self.assertEqual(len(doc['records']),11)
+        self.assertTrue(all(r['authority']=='community_statement' and r['publishedAt'] is None for r in doc['records']))
+        value['data']['private-notes']='not admitted';path.write_text(json.dumps(value))
+        with self.assertRaisesRegex(verifier.VerificationError, 'workspace pinned input changed'):
+            verifier.verify_tree(after)
+
     def setUp(self):
         self.temporary=tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -112,6 +184,7 @@ class WorkspaceRolloutTests(unittest.TestCase):
         # only some of these files, so today's image promotion would otherwise
         # leave its integrity digest paired with the predecessor's release head.
         paths = (set(self.data['stages']['buergerrat-access']['files'])
+                 | set(self.data['stages']['document-knowledge']['files'])
                  | policy.RELEASE_RECORDS | policy.RELEASE_DEPLOYMENTS | {policy.STATE})
         for path in paths:
             (before / path).write_bytes(subprocess.check_output([
@@ -166,7 +239,9 @@ class WorkspaceRolloutTests(unittest.TestCase):
         before = Path(self.temporary.name) / 'context-before'
         shutil.copytree(ROOT, before, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
         # Restore only this rollout's live predecessor; retain today's policy.
-        paths = set(self.data['stages']['discussion-context']['files']) | set(self.data['stages']['buergerrat-access']['files']) | {policy.STATE}
+        paths = (set(self.data['stages']['discussion-context']['files'])
+                 | set(self.data['stages']['buergerrat-access']['files'])
+                 | set(self.data['stages']['document-knowledge']['files']) | {policy.STATE})
         for path in paths:
             (before / path).write_bytes(subprocess.check_output([
                 'git', '-C', str(ROOT), 'show',

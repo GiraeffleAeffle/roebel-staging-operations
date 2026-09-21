@@ -13,7 +13,7 @@ ROOT = 'reviewed-render/roebel-staging/'
 PROPOSAL = 'proposals/town-workspace-connection/'
 ROLLOUT = PROPOSAL + 'rollout.json'
 STATE = ROOT + 'town-workspace.json'
-ROLLOUT_SHA256 = 'sha256:aa2e0f36d2ce61f5f77277a035a0a46213eeea708819e93071fe7c2b5a0de70d'
+ROLLOUT_SHA256 = 'sha256:156adad122500e0c37e78672526f9a58e9fea7d62ca3c366e391e796468c90b3'
 FILES = {
     PROPOSAL + name for name in (
         'README.md', 'connection.json', 'oidc-registration.json',
@@ -28,9 +28,12 @@ FILES = {
     'proposals/synthetic-multi-case-runtime-upgrade/README.md',
     'proposals/synthetic-multi-case-runtime-upgrade/transition.json',
     'proposals/synthetic-multi-case-runtime-upgrade/topology.json',
+    'proposals/document-knowledge/catalogue-configmap.json',
+    'proposals/document-knowledge/README.md',
 }
-STAGES = ('prepared', 'login', 'review', 'brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access')
-RELEASE_STAGES = ('brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access')
+STAGES = ('prepared', 'login', 'review', 'brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access', 'document-knowledge')
+RELEASE_STAGES = ('brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access', 'document-knowledge')
+DOCUMENT_SOURCE_KINDS = 'local_news,ratsinformation,community_document'
 RELEASE_RECORDS = {ROOT + name for name in ('head.json', 'integrity.json', 'live-preconditions.json')}
 RELEASE_DEPLOYMENTS = {ROOT + name for name in ('web/deployment.json', 'public-mecky/deployment.json')}
 BRIEF_READER_ENV = [
@@ -116,7 +119,7 @@ def verify(v, root):
     active = expected_files(data, selected)
     for path, expected in data['proposalFiles'].items():
         file = root / path
-        if selected in ('demo-login', 'discussion-context', 'buergerrat-access') and path == ROOT + 'identity/resources.json':
+        if selected in ('demo-login', 'discussion-context', 'buergerrat-access', 'document-knowledge') and path == ROOT + 'identity/resources.json':
             expected = sha(active[path].encode())
         v.require(file.is_file() and not file.is_symlink() and sha(file.read_bytes()) == expected,
                   'workspace pinned input changed: ' + path)
@@ -124,7 +127,7 @@ def verify(v, root):
         file = root / path
         if selected in RELEASE_STAGES and path in RELEASE_RECORDS:
             continue  # Validated by the complete head/integrity/CAS verifier.
-        if selected in RELEASE_STAGES and path == ROOT + 'network-boundary-migration.json' and v.COMMENT_MECKY.enabled(root):
+        if selected in RELEASE_STAGES and selected != 'document-knowledge' and path == ROOT + 'network-boundary-migration.json' and v.COMMENT_MECKY.enabled(root):
             # Apply only the independently pinned comment route and its two
             # gateway object hashes to the exact reviewed workspace boundary.
             gateway = v.COMMENT_MECKY.resources(v, v.PARTICIPANT_POLICY.APPROVED_NEXT_ACTIVATION_POLICY, True)
@@ -165,6 +168,12 @@ def extend_boundary(v, root, boundary):
     selected = stage(v, root)
     if selected in STAGES[1:]:
         boundary['boundary']['townWorkspace'] = copy.deepcopy(bundle(v, root)['stages'][selected]['boundary'])
+    if selected == 'document-knowledge':
+        boundary['boundary']['publicMeckyReviewedWebSource']['sourceKinds'] = DOCUMENT_SOURCE_KINDS
+
+
+def reviewed_source_kinds(v, root, default):
+    return DOCUMENT_SOURCE_KINDS if stage(v, root) == 'document-knowledge' else default
 
 
 def verify_transition(v, candidate, base):

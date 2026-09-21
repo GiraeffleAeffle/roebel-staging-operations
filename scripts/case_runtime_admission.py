@@ -90,7 +90,7 @@ def flux_bootstrap_objects(v,root,original):
     if any(o['kind']=='ConfigMap' and o['metadata']['name']=='roebel-case-steward-multicase-reviewed-v1' for o in runtime):
         role=next(o for o in expected if o['kind']=='Role')
         next(r for r in role['rules'] if r['resources']==['configmaps'])['resourceNames'].append('roebel-case-steward-multicase-reviewed-v1')
-    if v.TOWN_WORKSPACE.stage(v, root) in ('review', 'brief', 'multi-case', 'demo-login', 'discussion-context', 'buergerrat-access'):
+    if v.TOWN_WORKSPACE.stage(v, root) in ('review', *v.TOWN_WORKSPACE.RELEASE_STAGES):
         role=next(o for o in expected if o['kind']=='Role')
         next(r for r in role['rules'] if r['resources']==['networkpolicies'])['resourceNames'].append('roebel-case-steward-control-allow-workspace-review')
     return expected
@@ -107,7 +107,7 @@ def verify(v,root):
         repaired=(json.dumps(public_host_resources(json.loads(expected)),indent=2)+'\n').encode() if name=='resources.json' else expected
         allowed=(expected,repaired,successor) if name=='resources.json' else (expected,repaired)
         selected=v.TOWN_WORKSPACE.stage(v,root)
-        if name=='resources.json' and selected in ('review','brief','multi-case','demo-login','discussion-context','buergerrat-access'):
+        if name=='resources.json' and selected in ('review', *v.TOWN_WORKSPACE.RELEASE_STAGES):
             v.TOWN_WORKSPACE.verify(v,root)
             allowed += (v.TOWN_WORKSPACE.expected_files(v.TOWN_WORKSPACE.bundle(v,root),selected)['reviewed-render/roebel-staging/case-runtime/resources.json'].encode(),)
         v.require(active.read_bytes() in allowed,'Case runtime render differs from independently pinned source, exact public Host repair or review successor')
