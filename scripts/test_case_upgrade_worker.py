@@ -12,6 +12,14 @@ from .case_runtime_bootstrap import _verifier
 
 class UpgradeWorkerTests(unittest.TestCase):
     def restore_prepared_identity(self, root, data):
+        # Restore the complete earlier release before selecting a historical
+        # worker; the document catalogue also changes the comment ingress.
+        if json.loads((root / workspace.STATE).read_text())['stage'] == 'document-knowledge':
+            for path in set(data['stages']['document-knowledge']['files']) | {workspace.STATE}:
+                (root / path).write_bytes(subprocess.check_output([
+                    'git', '-C', str(Path(__file__).resolve().parents[1]), 'show',
+                    '358085584a3082939b970779295065624331d7e6:' + path,
+                ]))
         if json.loads((root / workspace.STATE).read_text())['stage'] == 'buergerrat-access':
             for path in set(data['stages']['buergerrat-access']['files']) | {workspace.STATE}:
                 (root / path).write_bytes(subprocess.check_output([
