@@ -2260,7 +2260,9 @@ def verify_deployment(
             }, "public-mecky reviewed knowledge base URL invalid")
             require(by_name.get("MECKY_REVIEWED_SOURCE_KINDS") == {
                 "name": "MECKY_REVIEWED_SOURCE_KINDS",
-                "value": REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS,
+                "value": TOWN_WORKSPACE.reviewed_source_kinds(
+                    citizen_status_interface(), root, REVIEWED_PUBLIC_KNOWLEDGE_SOURCE_KINDS,
+                ),
             }, "public-mecky reviewed source ordering invalid")
             for item in env:
                 value_from = item.get("valueFrom", {}) if isinstance(item, dict) else {}
