@@ -156,12 +156,41 @@
           "app.kubernetes.io/part-of": "stadtstack-roebel-staging-lab"
         }
       },
-      "sourceKinds": "local_news,ratsinformation"
+      "sourceKinds": "local_news,ratsinformation,community_document"
     },
     "signedNostr": "not-present",
     "townWorkspace": {
       "authority": "none",
       "clientId": "roebel-town-workspace-staging",
+      "documentKnowledge": {
+        "authority": "community_statement",
+        "configMap": {
+          "labels": {
+            "app.kubernetes.io/part-of": "stadtstack",
+            "stadtstack.io/authority": "none"
+          },
+          "name": "roebel-public-knowledge-v1",
+          "namespace": "stadtstack-roebel-web-preview"
+        },
+        "initialConfigMapSha256": "sha256:86d8c2fea14aa7019014bd0e965a4abfb129758e8f922a7cd79e2c20a066def2",
+        "initialProjectionDigests": {
+          "community-documents.json": "sha256:e16a1532a158c135ef329c630f01b0f6608321390d7f48c35c98e5ddfbfe493d",
+          "local-news.json": "sha256:d7dcc103886e9f4e7c4cd5636b8e26bbc5d9d81b417b09e65f60b279973f14be",
+          "ratsinformation.json": "sha256:577bd781debe3d3465cfd34ad0127612bdc1827d6eae15fe3d7446fd32ac9089"
+        },
+        "mountPath": "/run/roebel-public-knowledge",
+        "readOnly": true,
+        "readOnlyExactPaths": [
+          "/api/federation/v1/municipalities/roebel-mueritz/public-knowledge/community-documents",
+          "/api/federation/v1/municipalities/roebel-mueritz/public-knowledge/local-news",
+          "/api/federation/v1/municipalities/roebel-mueritz/public-knowledge/ratsinformation"
+        ],
+        "readOnlyMethods": [
+          "GET",
+          "HEAD"
+        ],
+        "sourceKinds": "local_news,ratsinformation,community_document"
+      },
       "issuer": "https://roebel-id.staging.agentcart.eu",
       "reviewEgress": {
         "ports": [
@@ -371,7 +400,7 @@
       "kind": "Ingress",
       "name": "roebel-web-presentation",
       "namespace": "stadtstack-roebel-web-preview",
-      "sha256": "sha256:bfbdde869a60062922fedb1f0b1ff7ba9647e5472b94f1efeca46ddf00f51a4f"
+      "sha256": "sha256:34fae187744f7f97c8d5218b90fe08b72e524dcebf8f8c624a4d21245a1e1dec"
     },
     {
       "kind": "ServiceAccount",
