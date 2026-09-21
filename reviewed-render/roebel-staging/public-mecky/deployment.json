@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:dde13504e36579822ae49fcdeaa0b0b405b6107692cde61309dc821ff6275d48",
-      "stadtstack.io/source-revision": "b1dd33223a43323552bbb5743c33093421a27665"
+      "stadtstack.io/release-set-sha256": "sha256:be2482b608c37b643b021eec294f3d4e99db4735c3f060acdcf6171874a88f50",
+      "stadtstack.io/source-revision": "5be3d74a1788f0dae949668afbbf6e2ebef1caf8"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "b1dd33223a43323552bbb5743c33093421a27665",
+          "stadtstack.io/source-revision": "5be3d74a1788f0dae949668afbbf6e2ebef1caf8",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -150,7 +150,7 @@
               },
               {
                 "name": "MECKY_REVIEWED_SOURCE_KINDS",
-                "value": "local_news,ratsinformation"
+                "value": "local_news,ratsinformation,community_document"
               },
               {
                 "name": "MECKY_REVIEWED_KNOWLEDGE_BASE_URL",
@@ -173,7 +173,7 @@
                 "value": "{\"additionalBindings\":[{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a0af46-8ad8-7ae9-bda6-055cc84b1960\",\"discussionId\":\"1cd5c293e0eddf7dd04e5efd7b8fff58936dc8f8399d6f9b1bb2a674d60fd01b\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:buergerrat-begegnungsort-20260917\"}],\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:da80c8bc0c00415cdecbd84256c4f380c3c69215652ce674bdbec02dc14eaf22",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:3bbcb08385654939dc3a17c292e3b9d9f033a75387e9068b8d6d0e807e168df3",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
