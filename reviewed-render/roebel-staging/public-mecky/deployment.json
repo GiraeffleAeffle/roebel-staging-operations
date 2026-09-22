@@ -3,8 +3,8 @@
   "kind": "Deployment",
   "metadata": {
     "annotations": {
-      "stadtstack.io/release-set-sha256": "sha256:2d13f456f084b42558562933abd117f7f5ceb92281d1ab85c2944a19652296dd",
-      "stadtstack.io/source-revision": "eb500149718bf0ccb66e4180f7bc83bb6822ff1e"
+      "stadtstack.io/release-set-sha256": "sha256:a3f504fd907a81e818e654a16680dc6b5b19b07292ca38370f5010b914c6454f",
+      "stadtstack.io/source-revision": "8e1a80104f83c6735aa6e2dd8c8617183b3d2144"
     },
     "labels": {
       "app.kubernetes.io/component": "public-mecky",
@@ -35,7 +35,7 @@
           "stadtstack.io/image-manifest": "sha256:61fb0c5a4b41441e9beefbe8215bc4280e9388805cf924e0a0d80e96e0dd82ee",
           "stadtstack.io/inference-model": "Qwen/Qwen3.6-35B-A3B-FP8",
           "stadtstack.io/release": "roebel-mecky-model-compat-v1",
-          "stadtstack.io/source-revision": "eb500149718bf0ccb66e4180f7bc83bb6822ff1e",
+          "stadtstack.io/source-revision": "8e1a80104f83c6735aa6e2dd8c8617183b3d2144",
           "stadtstack.io/update": "retry-ordinary-conversation-inference"
         },
         "labels": {
@@ -173,7 +173,7 @@
                 "value": "{\"additionalBindings\":[{\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a0af46-8ad8-7ae9-bda6-055cc84b1960\",\"discussionId\":\"1cd5c293e0eddf7dd04e5efd7b8fff58936dc8f8399d6f9b1bb2a674d60fd01b\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:buergerrat-begegnungsort-20260917\"}],\"caseId\":\"urn:stadtstack:synthetic-case:municipality:roebel-mueritz:01a070fa-8770-7afd-9a92-2965149e730d\",\"discussionId\":\"111c8d6752760fe73e7d0fc0bb3392aeefe690391ea2721fd68101adbca782b8\",\"environment\":\"staging\",\"publicOrigin\":\"https://roebel-web.staging.agentcart.eu\",\"topicId\":\"urn:stadtstack:topic:municipality:roebel-mueritz:staging-test-05-09-2026-verkehrssicherheit-am-abzweig-b-198\",\"transport\":\"staging_web_service\"}"
               }
             ],
-            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:49c59a8fed5612bce4cd42bc47fa2718f0d9b1215469a9779955f5857a2c9d99",
+            "image": "ghcr.io/giraeffleaeffle/public-mecky@sha256:6d25990a864746560a86c72b28772bdf69fb2d7c502201c441797c435ba6c41f",
             "imagePullPolicy": "IfNotPresent",
             "livenessProbe": {
               "failureThreshold": 3,
