@@ -56,6 +56,12 @@ TRACER_ACTIVATION_RUNNER_PATH = "scripts/run-tracer-data-plane-live.py"
 TRACER_MATERIALIZER_PATH = "scripts/materialize-tracer-data-plane-secrets.py"
 TRACER_POLICY_PATH = "scripts/tracer_data_plane_policy.py"
 TRACER_RENDER_ROOT = "reviewed-render/roebel-staging/tracer-data-plane"
+SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH = (
+    "reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json"
+)
+SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH = (
+    f"{TRACER_RENDER_ROOT}/bootstrap/76-staging-synthetic-citizen-adoption.sql"
+)
 ELIGIBILITY_ISSUER_MATERIALIZER_PATH = "scripts/materialize-staging-participant-eligibility-issuer.py"
 ELIGIBILITY_ISSUER_POLICY_PATH = "policy/staging-participant-eligibility-issuer-materialization-policy.json"
 ELIGIBILITY_ISSUER_POLICY_SCHEMA = "roebel_staging_participant_eligibility_issuer_materialization_policy_v2"
@@ -458,6 +464,8 @@ ACTIVE_RUNTIME_PROTECTED_PATHS = tuple(dict.fromkeys((
     f"{TRACER_RENDER_ROOT}/bootstrap/73-staging-participant-gateway.sql",
     f"{TRACER_RENDER_ROOT}/bootstrap/74-staging-participant-topic-tracer.sql",
     f"{TRACER_RENDER_ROOT}/bootstrap/75-staging-citizen-adoption.sql",
+    SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+    SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
     "reviewed-render/roebel-staging/staging-participant-gateway/networkpolicy.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/serviceaccount.json",
     "reviewed-render/roebel-staging/staging-participant-gateway/service.json",
@@ -3388,6 +3396,82 @@ def secret_materialization_v4(r: Runner, kubeconfig: str, p: dict[str, Any]) -> 
 def require_same_secret_materialization_v4(before: dict[str, Any], after: dict[str, Any], label: str) -> None:
     require(after == before, f"Secret identity/keyset/resourceVersion changed {label}")
 
+
+def synthetic_active_runtime_policy_v5(
+    rev: str,
+    real_policy: dict[str, Any],
+) -> dict[str, Any]:
+    """Bind the reviewed synthetic overlay and migration 76 from protected Git."""
+    try:
+        base = POLICY.assert_activation_ready(real_policy)
+        active = POLICY.synthetic_active_runtime_policy_descriptor(base)
+    except POLICY.PolicyError as exc:
+        raise ActivationError(str(exc)) from exc
+    require(
+        base == POLICY.APPROVED_NEXT_ACTIVATION_POLICY,
+        "synthetic active runtime requires the exact real citizen policy",
+    )
+    transition = obj(
+        git_blob(rev, SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH).decode("utf-8"),
+        "synthetic citizen pass transition",
+    )
+    require(
+        set(transition) == {
+            "schemaVersion", "environment", "testOnly", "authorityBinding",
+            "sourceRevision", "capability", "forward", "rollback",
+        }
+        and transition.get("schemaVersion")
+        == "roebel_staging_synthetic_citizen_pass_transition_v1"
+        and transition.get("environment") == "staging"
+        and transition.get("testOnly") is True
+        and transition.get("authorityBinding") == "none"
+        and transition.get("sourceRevision")
+        == POLICY.SYNTHETIC_ACTIVE_SOURCE_REVISION
+        and transition.get("capability")
+        == POLICY.synthetic_citizen_adoption_boundary()
+        and transition.get("forward") == {
+            "atomicComponents": [
+                "roebel-web-staging",
+                "staging-participant-gateway",
+                "ephemeral-tracer-data-plane",
+            ],
+            "migrationPath": SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+        },
+        "synthetic citizen pass transition boundary drift",
+    )
+    rollback = transition["rollback"]
+    require(
+        isinstance(rollback, dict)
+        and set(rollback) == {"strategy", "restoreFiles", "removeFiles"}
+        and rollback.get("strategy")
+        == "restore-exact-predecessor-bytes-and-remove-added-files"
+        and rollback.get("removeFiles") == [
+            SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH,
+            SYNTHETIC_CITIZEN_PASS_TRANSITION_PATH,
+        ]
+        and isinstance(rollback.get("restoreFiles"), list)
+        and rollback["restoreFiles"]
+        and len({item.get("path") for item in rollback["restoreFiles"]})
+        == len(rollback["restoreFiles"])
+        and all(
+            isinstance(item, dict)
+            and set(item) == {"path", "predecessorSha256", "successorSha256"}
+            and isinstance(item["path"], str) and item["path"]
+            and POLICY.SHA256.fullmatch(item["predecessorSha256"]) is not None
+            and POLICY.SHA256.fullmatch(item["successorSha256"]) is not None
+            for item in rollback["restoreFiles"]
+        ),
+        "synthetic citizen pass rollback boundary drift",
+    )
+    migration = git_blob(rev, SYNTHETIC_CITIZEN_ADOPTION_SQL_PATH)
+    require(
+        bytes_digest(migration)
+        == POLICY.SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256,
+        "synthetic citizen adoption migration 76 hash drift",
+    )
+    return active
+
+
 def eligibility_issuer_policy_v5(rev: str, p: dict[str, Any]) -> dict[str, Any]:
     """Bind the public issuer identity from its separately protected policy."""
     raw = git_blob(rev, ELIGIBILITY_ISSUER_POLICY_PATH)
@@ -4417,13 +4501,13 @@ def expected_database_status_v4(p: dict[str, Any]) -> dict[str, str]:
     }
 
 def expected_database_status_v5(p: dict[str, Any]) -> dict[str, str]:
-    """Exact private readiness payload emitted by the citizen-adoption image."""
+    """Static private readiness fields emitted by the exact v5 image."""
     require(
         p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5",
         "participant v5 readiness policy schema drift",
     )
     pins = p["productPins"]
-    return {
+    expected = {
         "schemaVersion": "roebel_staging_participant_gateway_status_v3",
         "status": "ready",
         "municipalityId": p["runtime"]["topicPolicy"]["municipalityId"],
@@ -4438,6 +4522,59 @@ def expected_database_status_v5(p: dict[str, Any]) -> dict[str, str]:
         "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
         "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
     }
+    if p == POLICY.SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        synthetic = p["runtime"]["syntheticCitizenAdoption"]
+        expected.update({
+            "syntheticCitizenAdoptionMigrationSha256": (
+                pins["syntheticCitizenAdoptionMigration"]["sha256"]
+            ),
+            "syntheticCitizenAdoptionDatabaseSchemaSha256": (
+                pins["syntheticCitizenAdoptionDatabaseSchemaSha256"]
+            ),
+            "syntheticCitizenNftAddress": synthetic["testCitizenNft"]["address"],
+            "syntheticCitizenNftRuntimeCodeKeccak256": (
+                synthetic["testCitizenNft"]["runtimeCodeKeccak256"]
+            ),
+            "syntheticCitizenAdoptionAuthorityBinding": "none",
+        })
+    return expected
+
+
+def validate_database_status_payload_v5(
+    value: Any,
+    p: dict[str, Any],
+) -> dict[str, str]:
+    """Validate static pins plus the live finalized test-contract observation."""
+    require(isinstance(value, dict), "internal participant v5 status must be an object")
+    expected = expected_database_status_v5(p)
+    dynamic_fields: set[str] = set()
+    if p == POLICY.SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        dynamic_fields = {
+            "syntheticCitizenNftFinalizedBlockNumber",
+            "syntheticCitizenNftFinalizedBlockHash",
+        }
+    require(
+        set(value) == set(expected) | dynamic_fields,
+        "internal participant v5 status field set drift",
+    )
+    if dynamic_fields:
+        require(
+            recovery_ascii_decimal_v4(
+                value.get("syntheticCitizenNftFinalizedBlockNumber")
+            )
+            and isinstance(value.get("syntheticCitizenNftFinalizedBlockHash"), str)
+            and re.fullmatch(
+                r"0x[0-9a-f]{64}",
+                value["syntheticCitizenNftFinalizedBlockHash"],
+            ) is not None
+            and value.get("syntheticCitizenAdoptionAuthorityBinding") == "none",
+            "internal participant synthetic citizen readiness drift",
+        )
+    require(
+        {key: value[key] for key in expected} == expected,
+        "internal participant v5 status product/database contract drift",
+    )
+    return copy.deepcopy(value)
 
 
 def validate_database_status_receipt_v4(value: Any, p: dict[str, Any]) -> dict[str, Any]:
@@ -4513,14 +4650,15 @@ def validate_database_status_receipt_v4(value: Any, p: dict[str, Any]) -> dict[s
 def validate_database_status_receipt_v5(value: Any, p: dict[str, Any]) -> dict[str, Any]:
     """Fail closed on the complete v3 readiness and citizen database pins."""
     require(isinstance(value, dict), "internal participant v5 readiness receipt must be an object")
-    expected_status = expected_database_status_v5(p)
+    receipt_status = {
+        key: field
+        for key, field in value.items()
+        if key not in {"probe", "rbac"}
+    }
+    validated_status = validate_database_status_payload_v5(receipt_status, p)
     require(
-        set(value) == set(expected_status) | {"probe", "rbac"},
+        set(value) == set(validated_status) | {"probe", "rbac"},
         "internal participant v5 readiness receipt field set drift",
-    )
-    require(
-        {key: value[key] for key in expected_status} == expected_status,
-        "internal participant v5 readiness product/database contract drift",
     )
     probe = value["probe"]
     expected_image = p["productPins"]["imageRepository"] + "@" + p["productPins"]["imageManifestDigest"]
@@ -4694,12 +4832,11 @@ def database_status_v5(r: Runner, kubeconfig: str, p: dict[str, Any], runtime: d
         and not current_spec.get("imagePullSecrets"),
         "readiness-probed participant v5 Pod runtime pin changed",
     )
-    expected = expected_database_status_v5(p)
-    require(
-        obj(body, "internal participant v5 /status") == expected,
-        "internal participant v5 /status citizen/database contract drift",
+    status = validate_database_status_payload_v5(
+        obj(body, "internal participant v5 /status"),
+        p,
     )
-    return validate_database_status_receipt_v5(expected | {
+    return validate_database_status_receipt_v5(status | {
         "probe": probe | {
             "podUid": selected["uid"],
             "podImage": exact_image,
@@ -4879,15 +5016,39 @@ def route_matrix_v5(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
     total_deadline = time.monotonic() + boundary["timeoutsSeconds"]["routeMatrixTotal"]
     origin = p["endpoints"]["browserOrigin"].rstrip("/")
     prefix = boundary["prefix"]
+    synthetic_active = p == POLICY.SYNTHETIC_ACTIVE_RUNTIME_POLICY
+    routes = (
+        POLICY.SYNTHETIC_ACTIVE_ROUTES if synthetic_active else POLICY.ROUTES
+    )
+    posts = list(
+        POLICY.SYNTHETIC_ACTIVE_POST_ROUTES
+        if synthetic_active
+        else POLICY.POST_ROUTES
+    )
+    public_gets = list(
+        POLICY.SYNTHETIC_ACTIVE_PUBLIC_GET_ROUTES
+        if synthetic_active
+        else POLICY.PUBLIC_GET_ROUTES
+    )
+    dynamic_get_prefixes = list(
+        POLICY.SYNTHETIC_ACTIVE_DYNAMIC_GET_PREFIXES
+        if synthetic_active
+        else POLICY.DYNAMIC_GET_PREFIXES
+    )
+    expected_route_matrix = list(
+        POLICY.SYNTHETIC_ACTIVE_ROUTE_EXPECTATIONS
+        if synthetic_active
+        else POLICY.ROUTE_EXPECTATIONS
+    )
     require(
         p.get("schemaVersion") == "roebel_staging_participant_gateway_activation_policy_v5"
         and prefix == POLICY.HTTP_PREFIX
-        and [entry["path"] for entry in boundary["routes"]] == list(POLICY.ALL_HTTP_ROUTES),
+        and [entry["path"] for entry in boundary["routes"]] == list(routes)
+        and boundary.get("dynamicGetPrefixes") == dynamic_get_prefixes
+        and boundary.get("routeProbeSamples") == public_gets,
         "fixed v5 route inventory drift",
     )
     status_path = POLICY.ROUTES[0]
-    posts = list(POLICY.POST_ROUTES)
-    public_gets = list(POLICY.PUBLIC_GET_ROUTES)
     result: list[dict[str, Any]] = []
 
     def propagation_timeout(attempts: int, status: int) -> None:
@@ -5004,7 +5165,7 @@ def route_matrix_v5(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         result.append({"case": label, "method": method, "path": path, "status": 404})
 
     wrong_origin = "https://attacker.invalid"
-    for path in (posts[0], posts[-3]):
+    for path in (posts[0], POLICY.ROUTES[-3]):
         observed = call("POST", path, request_origin=wrong_origin, body=b"{}")
         _require_json_response_v4(observed, 403, {"error": "origin_forbidden"}, f"wrong-origin {path}")
         require(
@@ -5015,7 +5176,7 @@ def route_matrix_v5(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
             "case": "wrong-origin", "method": "POST", "path": path, "status": 403,
         })
 
-    adoption_sample, eligibility_sample = public_gets
+    adoption_sample, eligibility_sample = public_gets[:2]
     observed = call("GET", adoption_sample)
     _require_json_response_v4(
         observed, 404, {"error": "citizen_adoption_not_found"},
@@ -5046,8 +5207,42 @@ def route_matrix_v5(r: Runner, p: dict[str, Any]) -> list[dict[str, Any]]:
         "case": "eligibility-status-reserved", "method": "GET",
         "path": eligibility_sample, "status": 503,
     })
+    if synthetic_active:
+        synthetic_sample = public_gets[2]
+        observed = call("GET", synthetic_sample)
+        _require_json_response_v4(
+            observed,
+            404,
+            {"error": "synthetic_citizen_adoption_not_found"},
+            "public synthetic citizen adoption absent",
+        )
+        _require_cors_v4(observed, origin)
+        result.append({
+            "case": "synthetic-adoption-absent",
+            "method": "GET",
+            "path": synthetic_sample,
+            "status": 404,
+        })
+
+        synthetic_malformed = (
+            POLICY.SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid"
+        )
+        observed = call("GET", synthetic_malformed)
+        _require_json_response_v4(
+            observed,
+            404,
+            {"error": "not_found"},
+            "malformed public synthetic adoption",
+        )
+        _require_cors_v4(observed, origin)
+        result.append({
+            "case": "synthetic-adoption-malformed",
+            "method": "GET",
+            "path": synthetic_malformed,
+            "status": 404,
+        })
     require(
-        result == boundary["expectations"] == list(POLICY.ROUTE_EXPECTATIONS),
+        result == boundary["expectations"] == expected_route_matrix,
         "v5 route matrix receipt differs from protected expectations",
     )
     return result
@@ -7094,7 +7289,10 @@ def validate_active_runtime_facts_v5(
     facts: Any,
     p: dict[str, Any],
     rev: str,
+    *,
+    activation_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    activation_policy = p if activation_policy is None else activation_policy
     required = {
         "schemaVersion", "policySha256", "protectedRevision", "collectedAt",
         "validUntil", "maxAgeSeconds", "clusterBinding", "publication",
@@ -7107,7 +7305,8 @@ def validate_active_runtime_facts_v5(
         isinstance(facts, dict)
         and set(facts) == required
         and facts.get("schemaVersion") == ACTIVE_RUNTIME_FACTS_SCHEMA
-        and facts.get("policySha256") == POLICY.activation_policy_sha256(p)
+        and facts.get("policySha256")
+        == POLICY.activation_policy_sha256(activation_policy)
         and facts.get("protectedRevision") == rev
         and facts.get("maxAgeSeconds") == 300,
         "active runtime trusted facts closure drift",
@@ -7208,7 +7407,11 @@ def validate_active_runtime_facts_v5(
     validate_haproxy_success_fact_v4(facts["haproxy"], p, "active runtime")
     require(
         facts["routeMatrix"] == p["httpBoundary"]["expectations"]
-        == list(POLICY.ROUTE_EXPECTATIONS),
+        == list(
+            POLICY.SYNTHETIC_ACTIVE_ROUTE_EXPECTATIONS
+            if p == POLICY.SYNTHETIC_ACTIVE_RUNTIME_POLICY
+            else POLICY.ROUTE_EXPECTATIONS
+        ),
         "active runtime v5 route matrix drift",
     )
     secrets_receipt = facts["secretMaterialization"]
@@ -7272,6 +7475,7 @@ def bind_active_runtime_receipt_v5(
     rev: str,
     runner_hashes: dict[str, str],
 ) -> dict[str, Any]:
+    runtime_policy = synthetic_active_runtime_policy_v5(rev, p)
     require(
         isinstance(receipt, dict)
         and set(receipt) == {
@@ -7297,7 +7501,12 @@ def bind_active_runtime_receipt_v5(
         and receipt.get("civicAuthorityEffects") is False,
         "active runtime receipt identity/effects drift",
     )
-    validate_active_runtime_facts_v5(receipt["trustedLiveFacts"], p, rev)
+    validate_active_runtime_facts_v5(
+        receipt["trustedLiveFacts"],
+        runtime_policy,
+        rev,
+        activation_policy=p,
+    )
     public_projection(unsigned)
     return {
         "schemaVersion": ACTIVE_RUNTIME_RECEIPT_SCHEMA,
@@ -7325,40 +7534,41 @@ def verify_active_runtime_v5(
         "active runtime verification requires the exact v5 policy",
     )
     require(kube is not None and Path(kube).is_file(), "active runtime verification requires explicit existing kubeconfig")
+    runtime_policy = synthetic_active_runtime_policy_v5(rev, p)
     started = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     valid_until = started + dt.timedelta(seconds=300)
-    rendered = render_v4(rev, p)
+    rendered = render_v4(rev, runtime_policy)
     snapshot: KubeconfigSnapshot | None = None
     try:
         snapshot = snapshot_kubeconfig_v4(kube, r)
         snapshot_path = str(snapshot.path)
-        initial_cluster = cluster_binding_v4(r, snapshot, p)
-        publication = anonymous_publication_v5(p)
-        endpoints = endpoint_facts_v4(r, snapshot_path, p)
-        preserved = preservation_v4(r, snapshot_path, p)
+        initial_cluster = cluster_binding_v4(r, snapshot, runtime_policy)
+        publication = anonymous_publication_v5(runtime_policy)
+        endpoints = endpoint_facts_v4(r, snapshot_path, runtime_policy)
+        preserved = preservation_v4(r, snapshot_path, runtime_policy)
         semantics_before, owned_before = active_semantic_objects_v5(r, snapshot_path, rendered)
         policies_before = policy_union_v4(
             r, snapshot_path, owned_before, flux_tracking_state="complete",
         )
-        secrets_before = secret_materialization_v4(r, snapshot_path, p)
-        issuer_before = eligibility_issuer_secret_projection_v5(snapshot, p, rev)
-        before_ingress_cluster = cluster_binding_v4(r, snapshot, p)
+        secrets_before = secret_materialization_v4(r, snapshot_path, runtime_policy)
+        issuer_before = eligibility_issuer_secret_projection_v5(snapshot, runtime_policy, rev)
+        before_ingress_cluster = cluster_binding_v4(r, snapshot, runtime_policy)
         require_same_cluster_identity_v4(initial_cluster, before_ingress_cluster, "before active ingress probe")
-        deployment, haproxy = health_v4(r, snapshot_path, p)
-        runtime = runtime_image_v4(r, snapshot_path, p)
-        database = database_status_v5(r, snapshot_path, p, runtime)
-        routes = route_matrix_v5(r, p)
-        flux = active_flux_success_proof_v5(r, snapshot_path, p, rev)
+        deployment, haproxy = health_v4(r, snapshot_path, runtime_policy)
+        runtime = runtime_image_v4(r, snapshot_path, runtime_policy)
+        database = database_status_v5(r, snapshot_path, runtime_policy, runtime)
+        routes = route_matrix_v5(r, runtime_policy)
+        flux = active_flux_success_proof_v5(r, snapshot_path, runtime_policy, rev)
         semantics_after, owned_after = active_semantic_objects_v5(r, snapshot_path, rendered)
         policies_after = policy_union_v4(
             r, snapshot_path, owned_after, flux_tracking_state="complete",
         )
-        secrets_after = secret_materialization_v4(r, snapshot_path, p)
+        secrets_after = secret_materialization_v4(r, snapshot_path, runtime_policy)
         require_same_secret_materialization_v4(secrets_before, secrets_after, "after active Flux proof")
-        issuer_after = eligibility_issuer_secret_projection_v5(snapshot, p, rev)
+        issuer_after = eligibility_issuer_secret_projection_v5(snapshot, runtime_policy, rev)
         require_same_eligibility_issuer_secret_projection_v5(issuer_before, issuer_after)
         preservation = verify_preservation_v4(r, snapshot_path, preserved)
-        final_cluster = cluster_binding_v4(r, snapshot, p)
+        final_cluster = cluster_binding_v4(r, snapshot, runtime_policy)
         require_same_cluster_identity_v4(initial_cluster, final_cluster, "after active Flux proof")
         facts = {
             "schemaVersion": ACTIVE_RUNTIME_FACTS_SCHEMA,
@@ -7388,7 +7598,7 @@ def verify_active_runtime_v5(
                 "beforeIngress": semantics_before,
                 "afterFlux": semantics_after,
             },
-            "deployment": deployment_health_fact_v4(deployment, p),
+            "deployment": deployment_health_fact_v4(deployment, runtime_policy),
             "haproxy": haproxy,
             "routeMatrix": routes,
             "flux": flux,
@@ -7408,7 +7618,12 @@ def verify_active_runtime_v5(
                 "civicAuthorityEffects": False,
             },
         }
-        validate_active_runtime_facts_v5(facts, p, rev)
+        validate_active_runtime_facts_v5(
+            facts,
+            runtime_policy,
+            rev,
+            activation_policy=p,
+        )
         require(
             dt.datetime.now(dt.timezone.utc) <= valid_until,
             "active runtime trusted facts expired",
