@@ -7,6 +7,24 @@ Case runtime. Immutable images, source revisions and object identities are
 checked by the protected-base admission verifier. Private configuration,
 credentials, participant posts and actual Case records stay outside Git.
 
+## Owner-authorized staging retirement
+
+The retirement change is based on Operations revision
+`ade0f8b314e8e4905434348a1b936096f8537298`. Automatic release-set promotion is
+removed, including its scheduled and manual triggers. The nine reviewed
+Kustomizations for Case runtime, identity, Public Mecky, reviewed public
+knowledge, the participant gateway and its workbench ingress, the tracer data
+plane, Web, and the workbench baseline now declare `resources: []`. The tracer
+bootstrap ConfigMap generator is removed from its Kustomization as well.
+
+This is a source-only retirement proposal, not evidence of live resource
+removal. Opening the pull request does not merge it, reconcile a cluster,
+delete storage, or change DNS. Review, merge, and any live retirement actions
+remain separately controlled. No deployment or activation gate is enabled by
+this change. Resource files, policy, admission checks, and operator scripts are
+retained unchanged as historical review inputs; the rollout guidance below
+describes the pre-retirement system, not authorization to reactivate it.
+
 ## Protected retirement admission
 
 Retirement is a separate, closed admission path, not a relaxation of active
