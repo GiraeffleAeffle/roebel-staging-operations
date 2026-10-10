@@ -7,6 +7,26 @@ Case runtime. Immutable images, source revisions and object identities are
 checked by the protected-base admission verifier. Private configuration,
 credentials, participant posts and actual Case records stay outside Git.
 
+## Protected retirement admission
+
+Retirement is a separate, closed admission path, not a relaxation of active
+release verification. It requires the exact `RETIRED` marker
+(`roebel-staging-retired-v1` followed by a newline) and `retirement.json` matching
+the protected policy in `scripts/verify-reviewed-render.py`: the archive revision
+and checksum, all nine deployable entrypoints, and an empty live-resource list.
+All nine Kustomizations must contain exactly the empty resource list; automatic
+promotion must be removed. The archived repository file set and bytes remain
+checksum-bound. Protected-base admission additionally forbids changes outside
+the entrypoints, retirement records, README and automatic-promotion removal,
+including any candidate changes to the verifier or rehearsal workflow.
+
+Without the marker, existing active verification is unchanged. Retirement
+cannot reactivate through ordinary admission and cannot compile a live upgrade
+worker. Both pinned runtime replay suites still run; retired rehearsal replaces
+live-worker compilation with retirement admission and its negative tests.
+The empty Git desired state is not proof of live cluster deletion, and archived
+manifests are not an instruction to apply them.
+
 ## Synthetic Case rollout
 
 `scripts/run-case-runtime.py` provides one ordered, receipt-backed workflow:

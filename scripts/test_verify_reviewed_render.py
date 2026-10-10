@@ -21,6 +21,104 @@ assert SPEC and SPEC.loader
 VERIFIER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFIER)
 
+class RetirementTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "retired"
+        shutil.copytree(ROOT, self.root, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+        for relative in VERIFIER.RETIREMENT_ENTRYPOINTS:
+            (self.root / relative).write_bytes(VERIFIER.RETIREMENT_EMPTY_KUSTOMIZATION)
+        (self.root / ".github/workflows/automatic-promotion.yml").unlink(missing_ok=True)
+        (self.root / "RETIRED").write_bytes(b"roebel-staging-retired-v1\n")
+        self.manifest = {
+            "schemaVersion": "roebel_staging_retirement_v1", "status": "retired",
+            "archiveRevision": VERIFIER.RETIREMENT_ARCHIVE_REVISION,
+            "archiveSha256": VERIFIER.RETIREMENT_ARCHIVE_SHA256,
+            "entrypoints": sorted(VERIFIER.RETIREMENT_ENTRYPOINTS), "liveResources": [],
+        }
+        self.write_manifest()
+
+    def write_manifest(self):
+        (self.root / "retirement.json").write_text(json.dumps(self.manifest))
+
+    def test_exact_retirement_has_no_live_resources(self):
+        result = VERIFIER.verify(self.root)
+        self.assertEqual(result["renderFileSet"], "retired")
+        self.assertEqual(result["liveResources"], [])
+
+    def test_empty_entrypoints_without_marker_are_not_admitted(self):
+        (self.root / "RETIRED").unlink()
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root)
+
+    def test_manifest_cannot_claim_live_resources_or_another_archive(self):
+        for key, value in (("liveResources", ["Deployment"]),
+                           ("archiveSha256", "sha256:" + "0" * 64),
+                           ("archiveRevision", "0" * 40),
+                           ("entrypoints", [])):
+            with self.subTest(key=key):
+                original = self.manifest[key]
+                self.manifest[key] = value
+                self.write_manifest()
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(self.root)
+                self.manifest[key] = original
+        self.write_manifest()
+
+    def test_any_nonempty_entrypoint_is_rejected(self):
+        for relative in sorted(VERIFIER.RETIREMENT_ENTRYPOINTS):
+            with self.subTest(path=relative):
+                path = self.root / relative
+                path.write_bytes(VERIFIER.RETIREMENT_EMPTY_KUSTOMIZATION.replace(b"[]", b"[deployment.json]"))
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(self.root)
+                path.write_bytes(VERIFIER.RETIREMENT_EMPTY_KUSTOMIZATION)
+
+    def test_archived_file_mutation_addition_and_deletion_are_rejected(self):
+        path = self.root / "LICENSE"
+        original = path.read_bytes()
+        for value in (b"changed archive", None):
+            with self.subTest(value=value):
+                if value is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(value)
+                with self.assertRaises(VERIFIER.VerificationError):
+                    VERIFIER.verify(self.root)
+                path.write_bytes(original)
+        (self.root / "unexpected-deployment.yaml").write_text("kind: Deployment\n")
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root)
+
+    def test_marker_symlink_and_automatic_promotion_are_rejected(self):
+        marker = self.root / "RETIRED"
+        marker.unlink()
+        marker.symlink_to(self.root / "retirement.json")
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root)
+        marker.unlink()
+        marker.write_bytes(b"roebel-staging-retired-v1\n")
+        (self.root / ".github/workflows/automatic-promotion.yml").write_text("name: forbidden\n")
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root)
+
+    def test_retired_transition_cannot_change_policy_or_reactivate(self):
+        base = Path(self.temp.name) / "base"
+        shutil.copytree(self.root, base)
+        VERIFIER.verify(self.root, base)
+        (self.root / "scripts/verify-reviewed-render.py").write_text("changed policy\n")
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root, base)
+        (self.root / "RETIRED").unlink()
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify(self.root, base)
+
+    def test_retired_tree_cannot_compile_a_live_worker(self):
+        with self.assertRaises(VERIFIER.VerificationError):
+            VERIFIER.verify_tree(self.root)
+
+
 TRACER_PHASE_A_FIXTURE_REVISION = "7b7893a0ae7b8e509e9794625019626c9f0654df"
 TRACER_PHASE_A_FIXTURE_FILES = {
     "reviewed-render/roebel-staging/head.json",
