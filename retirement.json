@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "roebel_staging_retirement_v1",
+  "status": "retired",
+  "archiveRevision": "ade0f8b314e8e4905434348a1b936096f8537298",
+  "archiveSha256": "sha256:52b3b45b3801b85508883216590c4a2c0a82d2c63d976331319bac4c1e547c8b",
+  "entrypoints": [
+    "reviewed-render/roebel-staging/case-runtime/kustomization.yaml",
+    "reviewed-render/roebel-staging/identity/kustomization.yaml",
+    "reviewed-render/roebel-staging/public-mecky/kustomization.yaml",
+    "reviewed-render/roebel-staging/reviewed-public-knowledge/kustomization.yaml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/kustomization.yaml",
+    "reviewed-render/roebel-staging/staging-participant-gateway/workbench-ingress/kustomization.yaml",
+    "reviewed-render/roebel-staging/tracer-data-plane/kustomization.yaml",
+    "reviewed-render/roebel-staging/web/kustomization.yaml",
+    "reviewed-render/roebel-staging/workbench-baseline/kustomization.yaml"
+  ],
+  "liveResources": []
+}
