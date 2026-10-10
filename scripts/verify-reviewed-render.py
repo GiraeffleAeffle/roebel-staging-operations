@@ -7671,7 +7671,85 @@ def verify_transition(candidate: dict[str, Any], base: dict[str, Any]) -> None:
         require(candidate["live"]["preconditions"][index]["currentImage"] == base_images[component], f"{component} live CAS image does not equal protected base image")
 
 
+# Protected retirement policy: archived resources are evidence, not desired state.
+# Every deployable entrypoint must be empty; no arbitrary marker-based bypass.
+RETIREMENT_ENTRYPOINTS = {
+    f"{RENDER_ROOT}/{name}/kustomization.yaml"
+    for name in (
+        "case-runtime", "identity", "public-mecky", "reviewed-public-knowledge",
+        "staging-participant-gateway", "staging-participant-gateway/workbench-ingress",
+        "tracer-data-plane", "web", "workbench-baseline",
+    )
+}
+RETIREMENT_POLICY_FILES = {
+    "scripts/verify-reviewed-render.py", "scripts/test_verify_reviewed_render.py",
+    ".github/workflows/case-runtime-upgrade.yml",
+}
+RETIREMENT_TRANSITION_FILES = RETIREMENT_ENTRYPOINTS | {
+    "README.md", "RETIRED", "retirement.json",
+    ".github/workflows/automatic-promotion.yml",
+}
+RETIREMENT_ARCHIVE_REVISION = "ade0f8b314e8e4905434348a1b936096f8537298"
+RETIREMENT_ARCHIVE_SHA256 = "sha256:52b3b45b3801b85508883216590c4a2c0a82d2c63d976331319bac4c1e547c8b"
+RETIREMENT_EMPTY_KUSTOMIZATION = (
+    b"apiVersion: kustomize.config.k8s.io/v1beta1\n"
+    b"kind: Kustomization\nresources: []\n"
+)
+
+
+def verify_retirement(root: Path, base_root: Path | None = None) -> dict[str, Any]:
+    files = repository_files(root)
+    require("RETIRED" in files and (root / "RETIRED").read_bytes() == b"roebel-staging-retired-v1\n",
+            "retirement marker missing or invalid")
+    require("retirement.json" in files, "retirement manifest missing")
+    expected = {
+        "schemaVersion": "roebel_staging_retirement_v1",
+        "status": "retired",
+        "archiveRevision": RETIREMENT_ARCHIVE_REVISION,
+        "archiveSha256": RETIREMENT_ARCHIVE_SHA256,
+        "entrypoints": sorted(RETIREMENT_ENTRYPOINTS),
+        "liveResources": [],
+    }
+    require(load_json(root / "retirement.json") == expected, "retirement manifest drift")
+    require(".github/workflows/automatic-promotion.yml" not in files,
+            "retirement must remove automatic promotion")
+    for relative in sorted(RETIREMENT_ENTRYPOINTS):
+        require(relative in files and (root / relative).read_bytes() == RETIREMENT_EMPTY_KUSTOMIZATION,
+                f"retirement entrypoint is not exactly empty: {relative}")
+    archive = {
+        relative: bytes_digest((root / relative).read_bytes())
+        for relative in sorted(files - RETIREMENT_TRANSITION_FILES - RETIREMENT_POLICY_FILES)
+    }
+    digest = bytes_digest(json.dumps(archive, sort_keys=True, separators=(",", ":")).encode())
+    require(digest == RETIREMENT_ARCHIVE_SHA256,
+            "retirement archived repository file set or bytes changed")
+    require(RETIREMENT_POLICY_FILES <= files, "retirement policy files missing")
+    if base_root is not None:
+        base_files = repository_files(base_root)
+        require(files == (base_files - {".github/workflows/automatic-promotion.yml"}) | {"RETIRED", "retirement.json"},
+                "retirement transition file set drift")
+        changed = changed_repository_files(root, base_root)
+        require(changed <= RETIREMENT_TRANSITION_FILES,
+                "retirement changed files outside the retirement boundary")
+        if "RETIRED" not in base_files:
+            verify_tree(base_root)
+        else:
+            verify_retirement(base_root)
+    return {
+        "schemaVersion": "roebel_staging_operations_verification_v1",
+        "status": "passed", "environment": "roebel-staging",
+        "renderFileSet": "retired", "liveResources": [],
+        "archiveSha256": digest, "baseTransitionVerified": base_root is not None,
+        "effects": {"secretRead": False, "secretWrite": False,
+                    "clusterMutation": False, "civicMutation": False},
+    }
+
+
 def verify(root: Path, base_root: Path | None = None) -> dict[str, Any]:
+    if (root / "RETIRED").exists() or (root / "RETIRED").is_symlink():
+        return verify_retirement(root, base_root)
+    if base_root is not None:
+        require(not (base_root / "RETIRED").exists(), "retired state cannot reactivate")
     candidate = verify_tree(root)
     if base_root is not None:
         base = verify_tree(base_root)
