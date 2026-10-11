@@ -107,6 +107,8 @@ CITIZEN_ADOPTION_PROTECTED_PATHS = tuple(dict.fromkeys((
     ELIGIBILITY_ISSUER_RUNNER,
     ELIGIBILITY_ISSUER_POLICY,
     "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/75-staging-citizen-adoption.sql",
+    "reviewed-render/roebel-staging/tracer-data-plane/bootstrap/76-staging-synthetic-citizen-adoption.sql",
+    "reviewed-render/roebel-staging/synthetic-citizen-pass-transition.json",
     *HANDOVER_COMPATIBILITY_PATHS,
 )))
 HANDOVER_CURRENT_PRESERVATION_PATHS = (
@@ -5528,7 +5530,14 @@ def main(argv: list[str] | None = None) -> int:
                 forward_signals=False,
                 pass_fds=(activation_runner.blob.fd, kubectl_fd),
             )
+            logging_error = best_effort_print_child(active)
+            if logging_error is not None:
+                child_cleanup_errors.append(logging_error)
             try:
+                reject_failed_activation_without_durable_receipt(
+                    active,
+                    active_runtime_receipt,
+                )
                 require(active_runtime_receipt.exists(), "active runtime verifier produced no durable receipt")
                 active_runtime_bound = snapshot_owned_receipt(
                     active_runtime_receipt,
@@ -5548,9 +5557,6 @@ def main(argv: list[str] | None = None) -> int:
                 )
             finally:
                 session.receipt_reconciled()
-            logging_error = best_effort_print_child(active)
-            if logging_error is not None:
-                child_cleanup_errors.append(logging_error)
             require(active.returncode == 0, "protected active runtime verifier did not complete cleanly")
             operation_succeeded = True
             base_status = "participant-runtime-verified"

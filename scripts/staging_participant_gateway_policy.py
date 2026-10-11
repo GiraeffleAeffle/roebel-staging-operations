@@ -180,6 +180,72 @@ ROUTE_EXPECTATIONS = (
     {"case": "public-adoption-malformed", "method": "GET", "path": CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid", "status": 404},
     {"case": "eligibility-status-reserved", "method": "GET", "path": CITIZEN_ELIGIBILITY_STATUS_SAMPLE, "status": 503},
 )
+
+# The real citizen policy above remains unchanged.  The currently reviewed
+# staging release adds a separately typed, no-authority synthetic tracer on
+# top of it.  Keep that additive boundary distinct so it cannot be mistaken
+# for civic eligibility or silently widen the real citizen contract.
+SYNTHETIC_CITIZEN_ADOPTION_CHALLENGE_ROUTE = (
+    HTTP_PREFIX + "/synthetic-citizen-adoption/challenge"
+)
+SYNTHETIC_CITIZEN_ADOPTION_TRACERS_ROUTE = (
+    HTTP_PREFIX + "/synthetic-citizen-adoption/tracers"
+)
+SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_PREFIX = (
+    HTTP_PREFIX + "/synthetic-citizen-adoption/by-suggestion/"
+)
+SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE = (
+    SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_PREFIX
+    + "3" * 64
+    + "/adopter/"
+    + "4" * 64
+)
+SYNTHETIC_ACTIVE_ROUTES = ROUTES + (
+    SYNTHETIC_CITIZEN_ADOPTION_CHALLENGE_ROUTE,
+    SYNTHETIC_CITIZEN_ADOPTION_TRACERS_ROUTE,
+)
+SYNTHETIC_ACTIVE_POST_ROUTES = SYNTHETIC_ACTIVE_ROUTES[1:]
+SYNTHETIC_ACTIVE_DYNAMIC_GET_PREFIXES = DYNAMIC_GET_PREFIXES + (
+    SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_PREFIX,
+)
+SYNTHETIC_ACTIVE_PUBLIC_GET_ROUTES = PUBLIC_GET_ROUTES + (
+    SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE,
+)
+SYNTHETIC_ACTIVE_ROUTE_EXPECTATIONS = (
+    {"case": "status", "method": "GET", "path": SYNTHETIC_ACTIVE_ROUTES[0], "status": 200},
+    *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in SYNTHETIC_ACTIVE_ROUTES),
+    *({"case": "unauthenticated-post", "method": "POST", "path": path, "status": 401} for path in SYNTHETIC_ACTIVE_POST_ROUTES),
+    {"case": "method-denied", "method": "POST", "path": SYNTHETIC_ACTIVE_ROUTES[0], "status": 405},
+    *({"case": "method-denied", "method": "GET", "path": path, "status": 405} for path in SYNTHETIC_ACTIVE_POST_ROUTES),
+    *({"case": "method-denied", "method": "POST", "path": path, "status": 405} for path in SYNTHETIC_ACTIVE_PUBLIC_GET_ROUTES),
+    {"case": "method-denied", "method": "HEAD", "path": SYNTHETIC_ACTIVE_ROUTES[0], "status": 405},
+    {"case": "method-denied", "method": "DELETE", "path": SYNTHETIC_ACTIVE_ROUTES[0], "status": 405},
+    {"case": "unknown", "method": "GET", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "trailing-slash", "method": "GET", "path": SYNTHETIC_ACTIVE_ROUTES[0] + "/", "status": 404},
+    {"case": "query", "method": "GET", "path": SYNTHETIC_ACTIVE_ROUTES[0] + "?unexpected=1", "status": 404},
+    {"case": "unknown-preflight", "method": "OPTIONS", "path": HTTP_PREFIX + "/unknown", "status": 404},
+    {"case": "wrong-origin", "method": "POST", "path": SYNTHETIC_ACTIVE_POST_ROUTES[0], "status": 403},
+    {"case": "wrong-origin", "method": "POST", "path": ROUTES[-3], "status": 403},
+    {"case": "public-adoption-absent", "method": "GET", "path": CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE, "status": 404},
+    {"case": "public-adoption-malformed", "method": "GET", "path": CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid", "status": 404},
+    {"case": "eligibility-status-reserved", "method": "GET", "path": CITIZEN_ELIGIBILITY_STATUS_SAMPLE, "status": 503},
+    {"case": "synthetic-adoption-absent", "method": "GET", "path": SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_SAMPLE, "status": 404},
+    {"case": "synthetic-adoption-malformed", "method": "GET", "path": SYNTHETIC_CITIZEN_ADOPTION_PUBLIC_READ_PREFIX + "invalid", "status": 404},
+)
+
+SYNTHETIC_ACTIVE_SOURCE_REVISION = "1b004dc0a1b156baf639fcdd54ab5a1b5501a575"
+SYNTHETIC_ACTIVE_SOURCE_TREE_SHA256 = "sha256:827fea9741a90f9d2eede3bea2074687cd464ad496de33dac441dce7c2f84f15"
+SYNTHETIC_ACTIVE_GATEWAY_MANIFEST_DIGEST = "sha256:c2920003a6e514d56c662731877e665d518b1a22bc921cd3d58c60c77651d7e2"
+SYNTHETIC_ACTIVE_GATEWAY_WORKFLOW_SHA256 = "sha256:6c4c09517f53e18a301630cecb341f9996ba74eaa1dc1126ef735eb1c6460ac3"
+SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_PATH = (
+    "supabase/migrations/20260902_staging_synthetic_citizen_adoption.sql"
+)
+SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256 = (
+    "sha256:992e56a65af74b32e35d2211ac57714f32e2e72e4fb82ea59afeb7dbbcefb282"
+)
+SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256 = (
+    "sha256:bcaa0b098a99b145e5111c17e29e5e7d9e9eb0840ee27643b3c26db34118bd66"
+)
 LEGACY_ROUTE_EXPECTATIONS = (
     {"case": "status", "method": "GET", "path": LEGACY_ROUTES[0], "status": 200},
     *({"case": "preflight", "method": "OPTIONS", "path": path, "status": 204} for path in LEGACY_ROUTES),
@@ -708,6 +774,82 @@ def _approved_next_activation_policy() -> dict[str, Any]:
 APPROVED_NEXT_ACTIVATION_POLICY = _approved_next_activation_policy()
 
 
+def synthetic_citizen_adoption_boundary() -> dict[str, Any]:
+    """Return the exact test-only capability added by the reviewed release."""
+    return {
+        "schemaVersion": "roebel_staging_synthetic_citizen_pass_boundary_v1",
+        "environment": "staging",
+        "testOnly": True,
+        "authorityBinding": "none",
+        "realCitizenEligibility": False,
+        "civicCaseCreated": False,
+        "administrativeEndorsement": False,
+        "bindingVote": False,
+        "treasuryEffect": False,
+        "paymentEffect": False,
+        "policyVersion": "roebel-test-citizen-nft-v2-staging-2026-09",
+        "testCitizenNft": {
+            "chainId": 100,
+            "address": "0x0be374808a567c9088ac8208b90a4239432b3220",
+            "runtimeCodeKeccak256": "0x481949efe62483d881190ec16e7ac6ffd796b0e601ea952507fa6eee1986bafb",
+        },
+        "migrationSha256": SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256,
+        "databaseSchemaSha256": SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256,
+        "rollback": "restore-exact-predecessor-bytes-and-remove-76-artifact",
+    }
+
+
+def synthetic_active_runtime_policy_descriptor(
+    real_policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Derive the exact reviewed synthetic runtime without widening real policy.
+
+    The committed v5 descriptor remains the real citizen-adoption policy.  This
+    closed overlay models only the already-reviewed staging release and is not
+    accepted as a replacement for that civic-eligibility policy.
+    """
+    value = copy.deepcopy(
+        APPROVED_NEXT_ACTIVATION_POLICY if real_policy is None else real_policy
+    )
+    _require(
+        value == APPROVED_NEXT_ACTIVATION_POLICY,
+        "synthetic active runtime requires the exact real citizen policy",
+    )
+    value["productPins"].update({
+        "sourceRevision": SYNTHETIC_ACTIVE_SOURCE_REVISION,
+        "sourceTreeSha256": SYNTHETIC_ACTIVE_SOURCE_TREE_SHA256,
+        "imageManifestDigest": SYNTHETIC_ACTIVE_GATEWAY_MANIFEST_DIGEST,
+        "workflowSha256": SYNTHETIC_ACTIVE_GATEWAY_WORKFLOW_SHA256,
+        "syntheticCitizenAdoptionMigration": {
+            "path": SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_PATH,
+            "sha256": SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256,
+        },
+        "syntheticCitizenAdoptionDatabaseSchemaSha256": (
+            SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256
+        ),
+    })
+    value["runtime"]["syntheticCitizenAdoption"] = (
+        synthetic_citizen_adoption_boundary()
+    )
+    boundary = value["httpBoundary"]
+    boundary["dynamicGetPrefixes"] = list(SYNTHETIC_ACTIVE_DYNAMIC_GET_PREFIXES)
+    boundary["routeProbeSamples"] = list(SYNTHETIC_ACTIVE_PUBLIC_GET_ROUTES)
+    boundary["routes"] = [
+        {"path": SYNTHETIC_ACTIVE_ROUTES[0], "methods": ["GET", "OPTIONS"]},
+        *[
+            {"path": path, "methods": ["POST", "OPTIONS"]}
+            for path in SYNTHETIC_ACTIVE_POST_ROUTES
+        ],
+    ]
+    boundary["expectations"] = [
+        copy.deepcopy(item) for item in SYNTHETIC_ACTIVE_ROUTE_EXPECTATIONS
+    ]
+    return value
+
+
+SYNTHETIC_ACTIVE_RUNTIME_POLICY = synthetic_active_runtime_policy_descriptor()
+
+
 def activation_policy_descriptor() -> dict[str, Any]:
     """Return the exact protected v4 predecessor for transition validation."""
     return copy.deepcopy(STATIC_ACTIVATION_POLICY)
@@ -777,13 +919,32 @@ def expected_runtime_pin(policy: dict[str, Any] | None = None) -> dict[str, Any]
         "deactivationSha256": pins["deactivation"]["sha256"],
         "activationPolicySha256": activation_policy_sha256(value),
     }
-    if value == APPROVED_NEXT_ACTIVATION_POLICY:
+    if value in (APPROVED_NEXT_ACTIVATION_POLICY, SYNTHETIC_ACTIVE_RUNTIME_POLICY):
         result.update({
             "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v4",
             "publicationReceiptSchemaVersion": pins["publicationReceiptSchemaVersion"],
             "citizenAdoptionMigrationSha256": pins["citizenAdoptionMigration"]["sha256"],
             "citizenAdoptionDatabaseSchemaSha256": pins["citizenAdoptionDatabaseSchemaSha256"],
             "citizenAdoption": copy.deepcopy(value["runtime"]["citizenAdoption"]),
+        })
+    if value == SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        # The reviewed synthetic capability is an additive staging release,
+        # not a replacement for the real citizen activation policy.  Its
+        # runtime pin therefore retains the real policy's immutable binding.
+        result.update({
+            "schemaVersion": "roebel_staging_participant_gateway_runtime_pin_v5",
+            "activationPolicySha256": activation_policy_sha256(
+                APPROVED_NEXT_ACTIVATION_POLICY
+            ),
+            "syntheticCitizenAdoptionMigrationSha256": (
+                pins["syntheticCitizenAdoptionMigration"]["sha256"]
+            ),
+            "syntheticCitizenAdoptionDatabaseSchemaSha256": (
+                pins["syntheticCitizenAdoptionDatabaseSchemaSha256"]
+            ),
+            "syntheticCitizenAdoption": copy.deepcopy(
+                value["runtime"]["syntheticCitizenAdoption"]
+            ),
         })
     return result
 
@@ -820,7 +981,10 @@ def validate_activation_policy_transition(previous: Any, candidate: Any) -> dict
 
 
 def assert_activation_ready(policy: dict[str, Any] | None = None) -> dict[str, Any]:
-    value = validate_activation_policy(STATIC_ACTIVATION_POLICY if policy is None else policy)
+    candidate = STATIC_ACTIVATION_POLICY if policy is None else policy
+    if candidate == SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        return copy.deepcopy(candidate)
+    value = validate_activation_policy(candidate)
     blockers = activation_blockers(value)
     _require(not blockers and value["activationReady"] is True, "participant activation blocked: protected product, database and endpoint pins are incomplete")
     return value
@@ -1327,7 +1491,11 @@ def expected_gateway_ingress(policy: dict[str, Any] | None = None) -> dict[str, 
     value = assert_activation_ready(policy)
     boundary = value["httpBoundary"]
     exact_paths = list(
-        LEGACY_ROUTES if value == STATIC_ACTIVATION_POLICY else ROUTES
+        LEGACY_ROUTES
+        if value == STATIC_ACTIVATION_POLICY
+        else SYNTHETIC_ACTIVE_ROUTES
+        if value == SYNTHETIC_ACTIVE_RUNTIME_POLICY
+        else ROUTES
     )
     dynamic_get_prefixes = boundary.get("dynamicGetPrefixes", [])
     post_paths = [route["path"] for route in boundary["routes"] if "POST" in route["methods"]]
@@ -1509,7 +1677,7 @@ def expected_gateway_resources(
             "value": value["runtime"]["topicPolicy"]["policyVersion"],
         },
     ]
-    if value == APPROVED_NEXT_ACTIVATION_POLICY:
+    if value in (APPROVED_NEXT_ACTIVATION_POLICY, SYNTHETIC_ACTIVE_RUNTIME_POLICY):
         environment.extend([{
             "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_CITIZEN_ADOPTION_POLICY_VERSION",
             "value": value["runtime"]["citizenAdoption"]["policyVersion"],
@@ -1544,6 +1712,34 @@ def expected_gateway_resources(
             "value": value["productPins"]["citizenAdoptionDatabaseSchemaSha256"],
         },
         ])
+    if value == SYNTHETIC_ACTIVE_RUNTIME_POLICY:
+        synthetic = value["runtime"]["syntheticCitizenAdoption"]
+        environment.extend([
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION",
+                "value": "enabled",
+            },
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_POLICY_VERSION",
+                "value": synthetic["policyVersion"],
+            },
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_ADDRESS",
+                "value": synthetic["testCitizenNft"]["address"],
+            },
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_TEST_CITIZEN_NFT_RUNTIME_CODE_KECCAK256",
+                "value": synthetic["testCitizenNft"]["runtimeCodeKeccak256"],
+            },
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_MIGRATION_SHA256",
+                "value": value["productPins"]["syntheticCitizenAdoptionMigration"]["sha256"],
+            },
+            {
+                "name": "ROEBEL_STAGING_PARTICIPANT_GATEWAY_SYNTHETIC_CITIZEN_ADOPTION_DATABASE_SCHEMA_SHA256",
+                "value": value["productPins"]["syntheticCitizenAdoptionDatabaseSchemaSha256"],
+            },
+        ])
     deployment = {
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -1568,7 +1764,7 @@ def expected_gateway_resources(
                         "ports": [{"containerPort": GATEWAY_PORT, "name": "http", "protocol": "TCP"}],
                         "readinessProbe": (
                             http_readiness_probe()
-                            if value == APPROVED_NEXT_ACTIVATION_POLICY
+                            if value in (APPROVED_NEXT_ACTIVATION_POLICY, SYNTHETIC_ACTIVE_RUNTIME_POLICY)
                             else tcp_probe(3, 10)
                         ),
                         "livenessProbe": tcp_probe(3, 20),

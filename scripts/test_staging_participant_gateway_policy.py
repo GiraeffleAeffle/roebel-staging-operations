@@ -243,6 +243,53 @@ class StaticPolicyTests(unittest.TestCase):
             },
         )
 
+    def test_synthetic_active_runtime_contract_is_an_exact_no_authority_overlay(self):
+        real_policy = ready_policy()
+        active = POLICY.synthetic_active_runtime_policy_descriptor(real_policy)
+        self.assertEqual(real_policy, ready_policy())
+        synthetic = active["runtime"]["syntheticCitizenAdoption"]
+        self.assertEqual(
+            {key: synthetic[key] for key in (
+                "testOnly", "authorityBinding", "realCitizenEligibility",
+                "civicCaseCreated", "administrativeEndorsement", "bindingVote",
+                "treasuryEffect", "paymentEffect",
+            )},
+            {"testOnly": True, "authorityBinding": "none", "realCitizenEligibility": False,
+             "civicCaseCreated": False, "administrativeEndorsement": False,
+             "bindingVote": False, "treasuryEffect": False, "paymentEffect": False},
+        )
+        self.assertEqual(active["runtime"]["citizenAdoption"], real_policy["runtime"]["citizenAdoption"])
+        self.assertEqual(active["authority"], real_policy["authority"])
+
+    def test_synthetic_active_runtime_resources_match_the_exact_reviewed_render(self):
+        active = POLICY.synthetic_active_runtime_policy_descriptor(ready_policy())
+        resources = POLICY.expected_gateway_resources(
+            active,
+            include_web_presentation=True,
+        )
+        expected = {
+            f"{POLICY.GATEWAY_ROOT}/networkpolicy.json": resources["networkPolicy"],
+            f"{POLICY.GATEWAY_ROOT}/serviceaccount.json": resources["serviceAccount"],
+            f"{POLICY.GATEWAY_ROOT}/service.json": resources["service"],
+            f"{POLICY.GATEWAY_ROOT}/deployment.json": resources["deployment"],
+            f"{POLICY.GATEWAY_ROOT}/ingress.json": resources["ingress"],
+            f"{POLICY.GATEWAY_ROOT}/runtime-pin.json": resources["runtimePin"],
+            f"{POLICY.WORKBENCH_INGRESS_ROOT}/networkpolicy.json": (
+                resources["workbenchIngressNetworkPolicy"]
+            ),
+        }
+        for path, value in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(json.loads((ROOT / path).read_text()), value)
+        self.assertEqual(
+            (ROOT / f"{POLICY.GATEWAY_ROOT}/kustomization.yaml").read_text(),
+            resources["kustomization"],
+        )
+        self.assertEqual(
+            (ROOT / f"{POLICY.WORKBENCH_INGRESS_ROOT}/kustomization.yaml").read_text(),
+            resources["workbenchIngressKustomization"],
+        )
+
     def test_two_suspended_flux_identities_are_separate_and_exact(self):
         gateway = POLICY.gateway_flux_objects()
         reciprocal = POLICY.workbench_ingress_flux_objects()
